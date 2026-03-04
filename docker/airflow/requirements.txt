@@ -1,0 +1,22 @@
+# ===== Airflow 추가 패키지 =====
+
+# Celery (CeleryExecutor 필수)
+apache-airflow-providers-celery>=3.7.0
+redis>=5.0.0
+
+# DuckDB
+duckdb>=1.4.2
+
+# MinIO / S3
+minio>=7.2.0
+apache-airflow-providers-amazon>=8.0.0
+
+# Data Processing
+pandas>=2.2.0
+pyarrow>=15.0.0
+polars>=0.20.0
+
+# Utilities
+python-dotenv>=1.0.0
+httpx>=0.27.0
+tqdm>=4.66.0  # Progress bar 라이브러리

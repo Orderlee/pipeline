@@ -1,0 +1,394 @@
+# =====================================================
+# Data Pipeline Docker Compose
+# Python + DuckDB + MinIO + Airflow + GPU 지원
+# =====================================================
+
+name: pipeline
+
+services:
+  # ===== 메인 앱 (GPU 지원) =====
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: datapipeline:gpu-cu124
+    user: root
+    command: ["sleep", "infinity"]  # 대기 상태로 유지 (docker exec로 스크립트 실행)
+    ports:
+      - "${APP_PORT:-0}:8000"
+    env_file:
+      - .env
+    environment:
+      - MINIO_ENDPOINT=minio:9000
+      - MINIO_ACCESS_KEY=${MINIO_ROOT_USER:-minioadmin}
+      - MINIO_SECRET_KEY=${MINIO_ROOT_PASSWORD:-minioadmin}
+      - DUCKDB_PATH=${DATAOPS_DUCKDB_PATH:-/data/pipeline.duckdb}
+      - DATAOPS_DUCKDB_PATH=${DATAOPS_DUCKDB_PATH:-/data/pipeline.duckdb}
+      - DATAOPS_PIPELINE_ROOT=/nas/datasets/projects
+      - DATAOPS_NAS_ROOT=/nas/datasets/projects
+      - DATAOPS_NAS_ROOTS=/nas/datasets/projects;/nas/incoming
+      - VIDEO_ENV_MODEL_DIR=/data/models/places365
+      - VIDEO_ENV_AUTO_DOWNLOAD=false
+      - VIDEO_FFPROBE_TIMEOUT_SEC=120
+      - VIDEO_FFPROBE_RETRY_COUNT=1
+      - VIDEO_FFPROBE_RETRY_DELAY_MS=250
+      - DAGSTER_HOME=/app/dagster_home
+      - PYTHONPATH=/:/src/python:/src/vlm
+      # raw_files.source_path를 컨테이너 마운트 경로로 매핑
+      - "DATAOPS_ASSET_PATH_PREFIX_FROM=/home/pia/mou/nas_192tb;/home/pia/mou/archive;/home/pia/mou/incoming"
+      - "DATAOPS_ASSET_PATH_PREFIX_TO=/nas"
+    volumes:
+      - ./app:/app
+      - ./data:/data
+      - type: bind
+        source: ${DATASETS_HOST_PATH:-/home/pia/mou/nas_192tb/datasets}
+        target: /nas/datasets
+        read_only: false
+      - type: bind
+        source: ${PROJECTS_HOST_PATH:-/home/pia/mou/nas_192tb/datasets/projects}
+        target: /nas/datasets/projects
+        read_only: true
+      - type: bind
+        source: ${ARCHIVE_HOST_PATH:-/home/pia/mou/archive}
+        target: /nas/archive
+        read_only: false       # ingest 후 archive 이동에 쓰기 필요
+      - type: bind
+        source: ${INCOMING_HOST_PATH:-/home/pia/mou/incoming}
+        target: /nas/incoming
+        read_only: false       # ingest 후 원본 삭제/이동에 쓰기 필요
+      - /home/pia/test_data:/test_data            # 테스트 데이터 (읽기쓰기)
+      - ../src/python:/src/python:ro      # 파이프라인 코드 마운트
+      - ../src:/src/vlm:ro                # vlm_pipeline 모듈 마운트
+      - ../configs:/configs:ro             # 설정 파일 마운트
+      - ../catalog:/catalog                # 카탈로그 데이터
+      - ../split_dataset:/split_dataset:ro
+      - ../gcp:/gcp:ro
+      - ../scripts:/scripts:ro
+      - type: bind
+        source: ${GCLOUD_CONFIG_HOST_PATH:-/home/pia/.config/gcloud}
+        target: /root/.config/gcloud
+        read_only: false
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    gpus: all
+    depends_on:
+      - minio
+    restart: unless-stopped
+
+  # ===== Dagster (Web + Daemon) =====
+  dagster:
+    image: datapipeline:gpu-cu124
+    user: root
+    working_dir: /app/dagster_home
+    command: ["/bin/bash", "-c", "DAGSTER_HOME=/app/dagster_home /app/dg dev -w /app/workspace.yaml -h 0.0.0.0 -p 3030"]
+    ports:
+      - "${DAGSTER_PORT:-3030}:3030"
+    env_file:
+      - .env
+    environment:
+      - DAGSTER_HOME=/app/dagster_home
+      - PYTHONPATH=/:/src/python:/src/vlm
+      - MINIO_ENDPOINT=minio:9000
+      - MINIO_ACCESS_KEY=${MINIO_ROOT_USER:-minioadmin}
+      - MINIO_SECRET_KEY=${MINIO_ROOT_PASSWORD:-minioadmin}
+      - DATAOPS_MINIO__ENDPOINT=http://minio:9000
+      - DATAOPS_MINIO__ACCESS_KEY=${MINIO_ROOT_USER:-minioadmin}
+      - DATAOPS_MINIO__SECRET_KEY=${MINIO_ROOT_PASSWORD:-minioadmin}
+      - DATAOPS_MINIO__BUCKET=raw-data
+      - DUCKDB_PATH=${DATAOPS_DUCKDB_PATH:-/data/pipeline.duckdb}
+      - DATAOPS_DUCKDB_PATH=${DATAOPS_DUCKDB_PATH:-/data/pipeline.duckdb}
+      - DATAOPS_PIPELINE_ROOT=/nas/datasets/projects
+      - DATAOPS_NAS_ROOT=/nas/datasets/projects
+      - DATAOPS_NAS_ROOTS=/nas/datasets/projects;/nas/incoming
+      - VIDEO_ENV_MODEL_DIR=/data/models/places365
+      - VIDEO_ENV_AUTO_DOWNLOAD=false
+      - VIDEO_FFPROBE_TIMEOUT_SEC=120
+      - VIDEO_FFPROBE_RETRY_COUNT=1
+      - VIDEO_FFPROBE_RETRY_DELAY_MS=250
+      - "DATAOPS_ASSET_PATH_PREFIX_FROM=/home/pia/mou/nas_192tb;/home/pia/mou/archive;/home/pia/mou/incoming"
+      - "DATAOPS_ASSET_PATH_PREFIX_TO=/nas"
+    volumes:
+      - ./app:/app
+      - ./data:/data
+      - type: bind
+        source: ${DATASETS_HOST_PATH:-/home/pia/mou/nas_192tb/datasets}
+        target: /nas/datasets
+        read_only: false
+      - type: bind
+        source: ${PROJECTS_HOST_PATH:-/home/pia/mou/nas_192tb/datasets/projects}
+        target: /nas/datasets/projects
+        read_only: true
+      - type: bind
+        source: ${ARCHIVE_HOST_PATH:-/home/pia/mou/archive}
+        target: /nas/archive
+        read_only: false       # ingest 후 archive 이동에 쓰기 필요
+      - type: bind
+        source: ${INCOMING_HOST_PATH:-/home/pia/mou/incoming}
+        target: /nas/incoming
+        read_only: false       # ingest 후 원본 삭제/이동에 쓰기 필요
+      - /home/pia/test_data:/test_data            # 테스트 데이터 (읽기쓰기)
+      - ../src/python:/src/python:ro
+      - ../src:/src/vlm:ro                # vlm_pipeline 모듈 마운트
+      - ../configs:/configs:ro
+      - ../catalog:/catalog
+      - ../split_dataset:/split_dataset:ro
+      - ../gcp:/gcp:ro
+      - ../scripts:/scripts:ro
+      - type: bind
+        source: ${GCLOUD_CONFIG_HOST_PATH:-/home/pia/.config/gcloud}
+        target: /root/.config/gcloud
+        read_only: false
+    depends_on:
+      - postgres
+      - minio
+    gpus: all
+    restart: unless-stopped
+
+  # ===== MotherDuck asset_catalog -> MinIO 업로더 (원샷 실행) =====
+  # 기본적으로는 실행되지 않으며, 필요 시 아래처럼 실행:
+  #   docker compose --profile tools run --rm asset-uploader python3 motherduck_asset_catalog_to_minio.py --db pipeline_db --limit 20 --dry-run
+  asset-uploader:
+    image: datapipeline:gpu-cu124
+    profiles: ["tools"]
+    env_file:
+      - .env
+    environment:
+      # common.config(BaseSettings) 오버라이드용 (env_prefix=DATAOPS_, delimiter=__)
+      - DATAOPS_MINIO__ENDPOINT=http://minio:9000
+      - DATAOPS_MINIO__ACCESS_KEY=${MINIO_ROOT_USER:-minioadmin}
+      - DATAOPS_MINIO__SECRET_KEY=${MINIO_ROOT_PASSWORD:-minioadmin}
+      - DATAOPS_MINIO__BUCKET=raw-data
+      - DATAOPS_PIPELINE_ROOT=/nas/datasets/projects
+      - DATAOPS_NAS_ROOT=/nas/datasets/projects
+      - DATAOPS_NAS_ROOTS=/nas/datasets/projects;/nas/incoming
+      # asset_catalog.source_path를 컨테이너 마운트 경로로 매핑
+      # 다중 OS 지원: 세미콜론(;)으로 여러 소스 경로 구분
+      - "DATAOPS_ASSET_PATH_PREFIX_FROM=/home/pia/mou/nas_192tb;/home/pia/mou/archive;/home/pia/mou/incoming"
+      - "DATAOPS_ASSET_PATH_PREFIX_TO=/nas"
+    working_dir: /src/python
+    command: ["python3", "motherduck_asset_catalog_to_minio.py"]
+    volumes:
+      - ./data:/data
+      - type: bind
+        source: ${DATASETS_HOST_PATH:-/home/pia/mou/nas_192tb/datasets}
+        target: /nas/datasets
+        read_only: false
+      - type: bind
+        source: ${PROJECTS_HOST_PATH:-/home/pia/mou/nas_192tb/datasets/projects}
+        target: /nas/datasets/projects
+        read_only: true
+      - type: bind
+        source: ${ARCHIVE_HOST_PATH:-/home/pia/mou/archive}
+        target: /nas/archive
+        read_only: true
+      - type: bind
+        source: ${INCOMING_HOST_PATH:-/home/pia/mou/incoming}
+        target: /nas/incoming
+        read_only: true
+      - ../src/python:/src/python:ro
+      - ../configs:/configs:ro
+      - ../catalog:/catalog
+    depends_on:
+      - minio
+
+  # ===== MinIO (S3 호환 오브젝트 스토리지) =====
+  minio:
+    image: minio/minio:latest
+    ports:
+      # 0.0.0.0으로 외부 접속 허용
+      - "0.0.0.0:${MINIO_API_PORT:-9000}:9000"   # API
+      - "0.0.0.0:${MINIO_CONSOLE_PORT:-9001}:9001"   # Console
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
+      MINIO_PROMETHEUS_AUTH_TYPE: public
+    volumes:
+      - minio_data:/data
+    command: server /data --console-address ":9001"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
+
+  # ===== Grafana (Dashboard) =====
+  grafana:
+    image: grafana/grafana:12.3.1-ubuntu
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_USER:-admin}space
+      
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-admin}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/minio-dashboard.json:/var/lib/grafana/dashboards/minio-dashboard.json:ro
+      - ./grafana/nas-folder-tree-dashboard.json:/var/lib/grafana/dashboards/nas-folder-tree-dashboard.json:ro
+    depends_on:
+      - postgres
+    restart: unless-stopped
+
+  # ===== PostgreSQL (Airflow 메타데이터 DB) =====
+  postgres:
+    image: postgres:15
+    ports:
+      - "${POSTGRES_PORT:-0}:5432"   # 외부 접속용 (기본값 0=랜덤 포트로 충돌 방지)
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-airflow}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-airflow}
+      POSTGRES_DB: ${POSTGRES_DB:-airflow}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-airflow}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      default:
+        aliases:
+          - pipeline-postgres
+
+  # ===== Airflow 공통 설정 (앵커) =====
+  # profiles로 실제 실행 방지 (템플릿 용도로만 사용)
+  airflow-common: &airflow-common
+    profiles: ["do-not-start"]
+    image: apache/airflow:2.10.4-python3.11
+    environment:
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__CORE__LOAD_EXAMPLES: "False"
+      AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "false"
+      AIRFLOW__WEBSERVER__EXPOSE_CONFIG: "true"
+      AIRFLOW__CORE__DEFAULT_TIMEZONE: "Asia/Seoul"
+      # SECRET_KEY 고정 (세션 안정성)
+      AIRFLOW__WEBSERVER__SECRET_KEY: "datapipeline-airflow-secret-key-2026"
+      # 세션 백엔드 설정 (쿠키 기반)
+      AIRFLOW__WEBSERVER__SESSION_BACKEND: securecookie
+      # 프록시/외부 접속 설정
+      AIRFLOW__WEBSERVER__ENABLE_PROXY_FIX: "True"
+      AIRFLOW__WEBSERVER__BASE_URL: "http://172.168.43.184:8080"
+      # 쿠키 설정 (HTTP 환경)
+      AIRFLOW__WEBSERVER__COOKIE_SECURE: "False"
+      AIRFLOW__WEBSERVER__COOKIE_SAMESITE: "Lax"
+      # CSRF 비활성화 (내부망 환경)
+      AIRFLOW__WEBSERVER__WTF_CSRF_ENABLED: "False"
+      # FERNET_KEY 고정 (암호화 안정성)
+      AIRFLOW__CORE__FERNET_KEY: "TC3nmDci5z0h-QuFBZRi6OYojnv_kXNj08Bl7bvXD8I="
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${POSTGRES_USER:-airflow}:${POSTGRES_PASSWORD:-airflow}@pipeline-postgres/${POSTGRES_DB:-airflow}
+      # MinIO 연결 설정
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin}
+      # DuckDB 설정
+      DUCKDB_PATH: /data/pipeline.duckdb
+      DATAOPS_PIPELINE_ROOT: /nas/datasets/projects
+      DATAOPS_NAS_ROOT: /nas/datasets/projects
+      DATAOPS_NAS_ROOTS: /nas/datasets/projects;/nas/incoming
+      PIP_NO_CACHE_DIR: "1"
+    user: "${AIRFLOW_UID:-50000}:0"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./airflow/dags:/opt/airflow/dags
+      - ./airflow/logs:/opt/airflow/logs
+      - ./airflow/plugins:/opt/airflow/plugins
+      - ./airflow/requirements.txt:/opt/airflow/requirements.txt:ro
+      - ./data:/data
+      - ./.env:/opt/airflow/.env:ro
+      - ../src/python:/src/python:ro      # 파이프라인 코드 마운트
+      - ../configs:/configs:ro             # 설정 파일 마운트
+      - ../catalog:/catalog                # 카탈로그 데이터
+      - type: bind
+        source: ${DATASETS_HOST_PATH:-/home/pia/mou/nas_192tb/datasets}
+        target: /nas/datasets
+        read_only: false
+      - type: bind
+        source: ${PROJECTS_HOST_PATH:-/home/pia/mou/nas_192tb/datasets/projects}
+        target: /nas/datasets/projects
+        read_only: true
+      - type: bind
+        source: ${ARCHIVE_HOST_PATH:-/home/pia/mou/archive}
+        target: /nas/archive
+        read_only: true
+      - type: bind
+        source: ${INCOMING_HOST_PATH:-/home/pia/mou/incoming}
+        target: /nas/incoming
+        read_only: true
+    restart: unless-stopped
+
+  # ===== Airflow 초기화 =====
+  airflow-init:
+    <<: *airflow-common
+    user: "0:0"
+    restart: "no"
+    entrypoint: /bin/bash
+    command:
+      - -c
+      - |
+        set -euo pipefail
+        mkdir -p /opt/airflow/{dags,logs,plugins}
+        chown -R ${AIRFLOW_UID:-50000}:0 /opt/airflow/{dags,logs,plugins}
+        airflow db migrate
+        airflow users create \
+          --username "${AIRFLOW_USER:-admin}" \
+          --password "${AIRFLOW_PASSWORD:-admin}" \
+          --firstname Admin --lastname User \
+          --role Admin --email admin@example.com || true
+        echo "Airflow 초기화 완료!"
+
+  # ===== Airflow 웹서버 =====
+  airflow-webserver:
+    <<: *airflow-common
+    entrypoint: /bin/bash
+    command:
+      - -c
+      - |
+        pip install --no-cache-dir -r /opt/airflow/requirements.txt
+        exec airflow webserver
+    ports:
+      - "8080:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8080/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+      airflow-scheduler:
+        condition: service_started
+
+  # ===== Airflow 스케줄러 =====
+  airflow-scheduler:
+    <<: *airflow-common
+    entrypoint: /bin/bash
+    command:
+      - -c
+      - |
+        pip install --no-cache-dir -r /opt/airflow/requirements.txt
+        exec airflow scheduler
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+
+# ===== 볼륨 정의 =====
+volumes:
+  minio_data:
+  postgres_data:
+  grafana_data:
+
+# ===== 네트워크 정의 =====
+networks:
+  default:
+    name: pipeline-network
