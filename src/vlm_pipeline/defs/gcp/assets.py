@@ -16,18 +16,6 @@ DEFAULT_GCP_SCRIPT_PATH = "/gcp/download_from_gcs_rclone.py"
 DEFAULT_GCP_DOWNLOAD_DIR = "/nas/incoming"
 DEFAULT_GCP_BUCKETS = ["khon-kaen-rtsp-bucket", "adlib-hotel-202512"]
 
-# TEMP TEST SCOPE (remove after adlib-hotel-202512 date-folder test)
-TEMP_FORCE_TEST_SCOPE = True
-TEMP_TEST_BUCKETS = ["adlib-hotel-202512"]
-TEMP_TEST_DATE_FOLDERS = [
-    "20260122",
-    "20260123",
-    "20260124",
-    "20260125",
-    "20260126",
-    "20260127",
-]
-
 
 def _as_int(value: object, default: int) -> int:
     try:
@@ -64,6 +52,10 @@ def _as_int(value: object, default: int) -> int:
             int,
             default_value=_as_int(os.getenv("GCS_MAX_RESTARTS"), 3),
         ),
+        "zero_byte_retries": Field(
+            int,
+            default_value=_as_int(os.getenv("GCS_ZERO_BYTE_RETRIES"), 2),
+        ),
         "timeout_sec": Field(int, default_value=60 * 60 * 6),
     },
 )
@@ -73,12 +65,6 @@ def gcs_download_to_incoming(context):
     script_path = Path(cfg.get("script_path") or DEFAULT_GCP_SCRIPT_PATH)
     if not script_path.exists():
         raise FileNotFoundError(f"GCP download script not found: {script_path}")
-
-    if TEMP_FORCE_TEST_SCOPE:
-        context.log.warning(
-            "TEMP GCP test scope enabled: "
-            f"buckets={TEMP_TEST_BUCKETS}, date_folders={TEMP_TEST_DATE_FOLDERS}"
-        )
 
     cmd = [
         "python3",
@@ -96,12 +82,11 @@ def gcs_download_to_incoming(context):
         str(_as_int(cfg.get("stall_seconds"), 300)),
         "--max-restarts",
         str(_as_int(cfg.get("max_restarts"), 3)),
+        "--zero-byte-retries",
+        str(max(0, _as_int(cfg.get("zero_byte_retries"), 2))),
     ]
 
-    if TEMP_FORCE_TEST_SCOPE:
-        buckets = list(TEMP_TEST_BUCKETS)
-    else:
-        buckets = [str(item).strip() for item in (cfg.get("buckets") or []) if str(item).strip()]
+    buckets = [str(item).strip() for item in (cfg.get("buckets") or []) if str(item).strip()]
     if buckets:
         cmd.extend(["--buckets", *buckets])
     else:
@@ -129,12 +114,9 @@ def gcs_download_to_incoming(context):
     if bool(cfg.get("list_only", False)):
         cmd.append("--list-only")
 
-    if TEMP_FORCE_TEST_SCOPE:
-        date_folders = list(TEMP_TEST_DATE_FOLDERS)
-    else:
-        date_folders = [
-            str(item).strip() for item in (cfg.get("date_folders") or []) if str(item).strip()
-        ]
+    date_folders = [
+        str(item).strip() for item in (cfg.get("date_folders") or []) if str(item).strip()
+    ]
     if date_folders:
         cmd.extend(["--date-folders", *date_folders])
 

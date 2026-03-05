@@ -1,9 +1,8 @@
 -- ============================================================
--- VLM Data Pipeline — MVP 8테이블 DDL (Strict 8)
+-- VLM Data Pipeline — MVP 7테이블 DDL (Strict 7)
 -- ============================================================
 -- 운영 테이블: raw_files, image_metadata, video_metadata, labels,
 --            processed_clips, datasets, dataset_clips
--- 백업 테이블은 migration.sql에서 _bak_* 형태로 관리
 
 -- ============================================================
 -- 1. raw_files: NAS 파일 스캔 및 수집 상태 관리

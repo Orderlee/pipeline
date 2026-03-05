@@ -8,7 +8,6 @@ import duckdb
 
 db_path = "/data/pipeline.duckdb"
 archive_base = Path("/nas/archive")
-archive_month = archive_base / datetime.now().strftime("%Y/%m")
 incoming_base = Path("/nas/incoming")
 
 con = duckdb.connect(db_path)
@@ -47,10 +46,10 @@ print(f"source_unit_path: {source_unit_path}")
 print(f"source_unit exists: {source_unit_path.exists()}")
 
 # archive 디렉토리 생성
-archive_unit_dir = archive_month / source_unit_name
+archive_unit_dir = archive_base / source_unit_name
 idx = 2
 while archive_unit_dir.exists():
-    archive_unit_dir = archive_month / f"{source_unit_name}__{idx}"
+    archive_unit_dir = archive_base / f"{source_unit_name}__{idx}"
     idx += 1
 
 print(f"archive_unit_dir: {archive_unit_dir}")

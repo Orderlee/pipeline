@@ -272,52 +272,56 @@ class DuckDBResource(ConfigurableResource):
     def mark_duplicate_skipped_assets(self, duplicate_asset_files: dict[str, str]) -> int:
         """기존 원본 자산(raw_files)에 duplicate 스킵 이력을 기록.
 
-        error_message가 비어있는 자산에만
-        duplicate_skipped_in_manifest:<file_name> 형태로 기록한다.
+        - error_message가 비어있으면 새 marker를 기록한다.
+        - 기존 error_message가 duplicate marker면 파일명을 누적(merge)한다.
+        - 그 외 타입의 error_message는 덮어쓰지 않는다.
         """
-        normalized_items: list[tuple[str, str]] = []
+        normalized_items: dict[str, set[str]] = {}
+
+        def _parse_file_names(payload: str) -> set[str]:
+            names = {name.strip() for name in str(payload or "").split(",") if name.strip()}
+            return names or {"unknown_file"}
+
         for asset_id, file_name in (duplicate_asset_files or {}).items():
             normalized_id = str(asset_id or "").strip()
-            normalized_file = str(file_name or "").strip()
             if not normalized_id:
                 continue
-            if not normalized_file:
-                normalized_file = "unknown_file"
-            normalized_items.append((normalized_id, normalized_file))
+            normalized_items.setdefault(normalized_id, set()).update(_parse_file_names(file_name))
 
         if not normalized_items:
             return 0
 
-        updated = 0
         now = datetime.now()
         with self.connect() as conn:
-            for asset_id, file_name in sorted(set(normalized_items)):
-                updatable = conn.execute(
-                    """
-                    SELECT COUNT(*)
-                    FROM raw_files
-                    WHERE asset_id = ?
-                      AND (error_message IS NULL OR trim(error_message) = '')
-                    """,
-                    [asset_id],
-                ).fetchone()[0]
-                if not updatable:
+            placeholders = ", ".join("?" * len(normalized_items))
+            rows = conn.execute(
+                f"SELECT asset_id, error_message FROM raw_files WHERE asset_id IN ({placeholders})",
+                list(normalized_items.keys()),
+            ).fetchall()
+
+            updates: list[tuple] = []
+            for asset_id, current_error_raw in rows:
+                current_error = str(current_error_raw or "").strip()
+                file_names = normalized_items[asset_id]
+                if not current_error:
+                    merged_files = set(file_names)
+                elif current_error.startswith("duplicate_skipped_in_manifest:"):
+                    existing_payload = current_error.replace("duplicate_skipped_in_manifest:", "", 1)
+                    merged_files = _parse_file_names(existing_payload) | set(file_names)
+                else:
                     continue
 
-                marker = f"duplicate_skipped_in_manifest:{file_name}"
-                conn.execute(
-                    """
-                    UPDATE raw_files
-                    SET error_message = ?,
-                        updated_at = ?
-                    WHERE asset_id = ?
-                      AND (error_message IS NULL OR trim(error_message) = '')
-                    """,
-                    [marker, now, asset_id],
-                )
-                updated += int(updatable)
+                marker = f"duplicate_skipped_in_manifest:{','.join(sorted(merged_files))}"
+                if marker != current_error:
+                    updates.append((marker, now, asset_id))
 
-        return updated
+            if updates:
+                conn.executemany(
+                    "UPDATE raw_files SET error_message = ?, updated_at = ? WHERE asset_id = ?",
+                    updates,
+                )
+
+        return len(updates)
 
     def delete_asset_for_reingest(self, asset_id: str) -> None:
         """실패/중단된 ingest 자산을 재처리 가능 상태로 정리."""
@@ -336,6 +340,74 @@ class DuckDBResource(ConfigurableResource):
             conn.execute("DELETE FROM image_metadata WHERE asset_id = ?", [asset_id])
             conn.execute("DELETE FROM video_metadata WHERE asset_id = ?", [asset_id])
             conn.execute("DELETE FROM raw_files WHERE asset_id = ?", [asset_id])
+
+    def delete_failed_rows_by_error_filters(
+        self,
+        *,
+        exact_errors: list[str] | None = None,
+        like_patterns: list[str] | None = None,
+    ) -> int:
+        """raw_files failed row를 error_message 필터로 삭제한다."""
+        exact_values = [str(v).strip() for v in (exact_errors or []) if str(v).strip()]
+        like_values = [str(v).strip() for v in (like_patterns or []) if str(v).strip()]
+        if not exact_values and not like_values:
+            return 0
+
+        clauses: list[str] = []
+        params: list[Any] = []
+        if exact_values:
+            placeholders = ", ".join(["?"] * len(exact_values))
+            clauses.append(f"error_message IN ({placeholders})")
+            params.extend(exact_values)
+        for pattern in like_values:
+            clauses.append("error_message LIKE ?")
+            params.append(pattern)
+
+        where_filter = " OR ".join(clauses)
+        with self.connect() as conn:
+            target_count = conn.execute(
+                f"""
+                SELECT COUNT(*)
+                FROM raw_files
+                WHERE ingest_status = 'failed'
+                  AND ({where_filter})
+                """,
+                params,
+            ).fetchone()[0]
+            if int(target_count) <= 0:
+                return 0
+            conn.execute(
+                f"""
+                DELETE FROM raw_files
+                WHERE ingest_status = 'failed'
+                  AND ({where_filter})
+                """,
+                params,
+            )
+            return int(target_count)
+
+    def recover_archive_move_failed_asset(self, asset_id: str, archive_path: str) -> bool:
+        """archive 파일 존재가 확인된 failed row를 completed로 복구."""
+        normalized_asset_id = str(asset_id or "").strip()
+        normalized_archive_path = str(archive_path or "").strip()
+        if not normalized_asset_id or not normalized_archive_path:
+            return False
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                UPDATE raw_files
+                SET ingest_status = 'completed',
+                    error_message = NULL,
+                    archive_path = ?,
+                    raw_bucket = COALESCE(raw_bucket, 'vlm-raw'),
+                    updated_at = ?
+                WHERE asset_id = ?
+                  AND ingest_status = 'failed'
+                RETURNING asset_id
+                """,
+                [normalized_archive_path, datetime.now(), normalized_asset_id],
+            ).fetchone()
+        return row is not None
 
     # ── DEDUP 섹션 (Dev B) ─────────────────────────────
 

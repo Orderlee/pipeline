@@ -6,7 +6,7 @@ Layer 3: Dagster @op, lib/ + resources/ import.
 from __future__ import annotations
 
 import os
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, as_completed  # noqa: F401 — 업로드 재활성화 시 사용
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -18,6 +18,72 @@ from vlm_pipeline.lib.validator import detect_media_type, validate_incoming
 from vlm_pipeline.lib.video_loader import load_video_once
 from vlm_pipeline.resources.duckdb import DuckDBResource
 from vlm_pipeline.resources.minio import MinIOResource
+
+
+TRANSIENT_ERROR_MARKERS = (
+    "could not set lock on file",
+    "conflicting lock is held",
+    "duckdb lock",
+    "ffprobe_timeout",
+    "timed out",
+    "timeout",
+    "temporarily unavailable",
+    "connection reset",
+)
+
+
+def _is_transient_error(exc: Exception) -> bool:
+    message = str(exc or "").strip().lower()
+    return any(marker in message for marker in TRANSIENT_ERROR_MARKERS)
+
+
+def _derive_error_code(error_message: str, default_code: str = "unknown_error") -> str:
+    message = str(error_message or "").strip()
+    if not message:
+        return default_code
+    lowered = message.lower()
+    if "could not set lock on file" in lowered or "conflicting lock is held" in lowered:
+        return "duckdb_lock_conflict"
+
+    prefix = message.split(":", 1)[0].strip().lower()
+    if not prefix:
+        return default_code
+
+    normalized = []
+    for ch in prefix:
+        if ch.isalnum() or ch in {"_", "-"}:
+            normalized.append(ch)
+        elif ch.isspace():
+            normalized.append("_")
+    candidate = "".join(normalized).strip("_")
+    return candidate or default_code
+
+
+def _append_ingest_rejection(
+    ingest_rejections: list[dict] | None,
+    *,
+    source_path: str,
+    rel_path: str | None,
+    media_type: str,
+    stage: str,
+    error_message: str,
+    retryable: bool,
+    error_code: str | None = None,
+) -> None:
+    if ingest_rejections is None:
+        return
+    normalized_message = str(error_message or "").strip()
+    ingest_rejections.append(
+        {
+            "source_path": str(source_path or ""),
+            "rel_path": str(rel_path or ""),
+            "media_type": str(media_type or "unknown"),
+            "stage": stage,
+            "error_code": error_code or _derive_error_code(normalized_message),
+            "error_message": normalized_message,
+            "retryable": bool(retryable),
+        }
+    )
 
 
 def _is_retryable_failed_record(stale_record: dict) -> bool:
@@ -35,23 +101,14 @@ def _is_retryable_failed_record(stale_record: dict) -> bool:
     if any(error_message.startswith(prefix) for prefix in non_retryable_prefixes):
         return False
 
-    retryable_markers = (
-        "could not set lock on file",
-        "conflicting lock is held",
-        "duckdb lock",
-        "ffprobe_timeout",
-        "timed out",
-        "timeout",
-        "temporarily unavailable",
-        "connection reset",
-    )
-    return any(marker in error_message for marker in retryable_markers)
+    return any(marker in error_message for marker in TRANSIENT_ERROR_MARKERS)
 
 
 def register_incoming(
     context,
     db: DuckDBResource,
     manifest: dict,
+    ingest_rejections: list[dict] | None = None,
 ) -> list[dict]:
     """검증 → 정규화 → raw_files 배치 INSERT.
 
@@ -64,15 +121,8 @@ def register_incoming(
     batch_id = manifest.get("manifest_id", f"batch_{datetime.now():%Y%m%d_%H%M%S}")
     source_unit_name = manifest.get("source_unit_name", "")
 
-    def _sanitize_rel_dir(rel_path_value: str) -> str:
-        rel_dir = str(Path(rel_path_value).parent)
-        if rel_dir in ("", "."):
-            return ""
-        parts = [p for p in Path(rel_dir).parts if p not in ("", ".", "..")]
-        return "/".join(sanitize_path_component(p) for p in parts if p)
-
-    def _sanitize_source_unit(name: str) -> str:
-        parts = [p for p in Path(str(name or "")).parts if p not in ("", ".", "..")]
+    def _sanitize_path_parts(raw: str) -> str:
+        parts = [p for p in Path(str(raw or "")).parts if p not in ("", ".", "..")]
         return "/".join(sanitize_path_component(p) for p in parts if p)
 
     for entry in manifest.get("files", []):
@@ -82,16 +132,18 @@ def register_incoming(
             # 검증
             vr = validate_incoming(filepath)
             if vr.level == "FAIL":
-                db.insert_raw_files_batch([{
-                    "asset_id": str(uuid4()),
-                    "source_path": filepath,
-                    "original_name": Path(filepath).name,
-                    "media_type": detect_media_type(filepath),
-                    "ingest_batch_id": batch_id,
-                    "transfer_tool": manifest.get("transfer_tool", "manual"),
-                    "ingest_status": "failed",
-                    "error_message": vr.message,
-                }])
+                media_type = detect_media_type(filepath)
+                _append_ingest_rejection(
+                    ingest_rejections,
+                    source_path=filepath,
+                    rel_path=rel_path,
+                    media_type=media_type,
+                    stage="register",
+                    error_message=vr.message,
+                    retryable=False,
+                    error_code=vr.message,
+                )
+                context.log.warning(f"register 검증 실패(미삽입): {filepath}: {vr.message}")
                 results.append({"path": filepath, "status": "failed", "message": vr.message})
                 continue
 
@@ -103,7 +155,7 @@ def register_incoming(
             # raw_key 생성: 날짜/source_unit_name/rel_path (폴더 구조 유지)
             date_prefix = datetime.now().strftime("%Y/%m")
             if rel_path:
-                sanitized_rel_dir = _sanitize_rel_dir(rel_path)
+                sanitized_rel_dir = _sanitize_path_parts(str(Path(rel_path).parent))
                 if sanitized_rel_dir:
                     sanitized_rel = f"{sanitized_rel_dir}/{sanitized_name}"
                 else:
@@ -111,7 +163,7 @@ def register_incoming(
             else:
                 sanitized_rel = sanitized_name
 
-            sanitized_source_unit_name = _sanitize_source_unit(source_unit_name)
+            sanitized_source_unit_name = _sanitize_path_parts(source_unit_name)
             if sanitized_source_unit_name:
                 raw_key = f"{date_prefix}/{sanitized_source_unit_name}/{sanitized_rel}"
             else:
@@ -144,14 +196,16 @@ def register_incoming(
 
         except Exception as e:
             context.log.error(f"처리 실패: {filepath}: {e}")
-            db.insert_raw_files_batch([{
-                "asset_id": str(uuid4()),
-                "source_path": filepath,
-                "original_name": Path(filepath).name if filepath else "unknown",
-                "ingest_batch_id": batch_id,
-                "ingest_status": "failed",
-                "error_message": str(e),
-            }])
+            _append_ingest_rejection(
+                ingest_rejections,
+                source_path=filepath,
+                rel_path=rel_path,
+                media_type=detect_media_type(filepath),
+                stage="register",
+                error_message=str(e),
+                retryable=False,
+                error_code="register_exception",
+            )
             results.append({"path": filepath, "status": "failed", "message": str(e)})
 
     return results
@@ -163,6 +217,8 @@ def normalize_and_archive(
     minio: MinIOResource,
     records: list[dict],
     archive_dir: str,
+    ingest_rejections: list[dict] | None = None,
+    retry_candidates: list[dict] | None = None,
 ) -> list[dict]:
     """1-pass 로딩 → checksum → verify → image/video_metadata → MinIO 업로드.
 
@@ -211,7 +267,10 @@ def normalize_and_archive(
         asset_id = rec["asset_id"]
         media_type = rec.get("media_type", "image")
         raw_key = rec["raw_key"]
+        rel_path = rec.get("rel_path", "")
         db_record = rec.get("record", {})
+        stage_hint = "normalize"
+        meta: dict | None = None
 
         try:
             # 1-pass 로딩
@@ -221,6 +280,7 @@ def normalize_and_archive(
                 # include_file_stream=True: checksum 계산과 업로드 입력 stream을 1회 read로 통합
                 meta = load_video_once(filepath, include_file_stream=True)
 
+            stage_hint = "db"
             # 정확 중복 검출
             existing = db.find_by_checksum(meta["checksum"])
             if existing:
@@ -274,12 +334,42 @@ def normalize_and_archive(
             context.log.error(f"normalize 실패: {filepath}: {e}")
             error_message = str(e)
             rec["status"] = "failed"
-            if db.has_raw_file(asset_id):
-                db.update_raw_file_status(asset_id, "failed", error_message)
-            else:
-                db_record["ingest_status"] = "failed"
-                db_record["error_message"] = error_message
-                db.insert_raw_files_batch([db_record])
+            is_transient = _is_transient_error(e)
+            if meta is not None:
+                _close_video_stream(meta)
+            if is_transient and retry_candidates is not None:
+                retry_candidates.append(
+                    {
+                        "source_path": filepath,
+                        "rel_path": str(rel_path or Path(filepath).name),
+                        "media_type": media_type,
+                    }
+                )
+
+            cleanup_error: Exception | None = None
+            try:
+                if db.has_raw_file(asset_id):
+                    db.delete_asset_for_reingest(asset_id)
+            except Exception as cleanup_exc:  # noqa: BLE001
+                cleanup_error = cleanup_exc
+
+            if cleanup_error is not None:
+                context.log.warning(
+                    "ingest 실패 레코드 정리 중 추가 오류: "
+                    f"asset_id={asset_id}, err={cleanup_error}"
+                )
+
+            rejection_stage = "db" if stage_hint == "db" else "normalize"
+            _append_ingest_rejection(
+                ingest_rejections,
+                source_path=filepath,
+                rel_path=rel_path,
+                media_type=media_type,
+                stage=rejection_stage,
+                error_message=error_message,
+                retryable=is_transient,
+                error_code="duckdb_lock_conflict" if is_transient else None,
+            )
 
     def _upload_single(task: dict[str, Any]) -> None:
         media_type = task["media_type"]
@@ -287,54 +377,48 @@ def normalize_and_archive(
         meta = task["meta"]
         if media_type == "image":
             content_type = f"image/{meta.get('image_metadata', {}).get('codec', 'jpeg')}"
-            minio.upload("vlm-raw", raw_key, meta["file_bytes"], content_type)
+            # minio.upload("vlm-raw", raw_key, meta["file_bytes"], content_type)
             return
 
         stream = meta.get("file_stream")
         if stream is not None:
-            minio.upload_fileobj("vlm-raw", raw_key, stream, content_type="video/mp4")
+            # minio.upload_fileobj("vlm-raw", raw_key, stream, content_type="video/mp4")
             return
 
         # 비상 fallback (stream 누락 시)
-        minio.upload("vlm-raw", raw_key, Path(task["filepath"]).read_bytes(), "video/mp4")
+        # minio.upload("vlm-raw", raw_key, Path(task["filepath"]).read_bytes(), "video/mp4")
 
-    # 2) MinIO 업로드는 병렬 처리
-    futures: dict[Any, dict[str, Any]] = {}
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        for task in upload_tasks:
-            futures[executor.submit(_upload_single, task)] = task
+    # 2) MinIO 업로드 (비활성화 중 — 재활성화 시 ThreadPoolExecutor + as_completed 복원)
+    for task in upload_tasks:
+        filepath = task["filepath"]
+        asset_id = task["asset_id"]
+        raw_key = task["raw_key"]
+        media_type = task["media_type"]
+        meta = task["meta"]
 
-        for future in as_completed(futures):
-            task = futures[future]
-            filepath = task["filepath"]
-            asset_id = task["asset_id"]
-            raw_key = task["raw_key"]
-            media_type = task["media_type"]
-            meta = task["meta"]
+        try:
+            _upload_single(task)
+            context.log.info(f"MinIO 업로드 스킵(비활성화): vlm-raw/{raw_key}")
 
-            try:
-                future.result()
-                context.log.info(f"MinIO 업로드 완료: vlm-raw/{raw_key}")
-
-                uploaded.append(
-                    {
-                        "asset_id": asset_id,
-                        "source_path": filepath,
-                        "raw_key": raw_key,
-                        "media_type": media_type,
-                        "checksum": meta["checksum"],
-                        "file_size": meta["file_size"],
-                    }
-                )
-            except Exception as e:
-                context.log.error(f"업로드 실패: {filepath}: {e}")
-                for rec in records:
-                    if rec.get("asset_id") == asset_id:
-                        rec["status"] = "failed"
-                        break
-                db.update_raw_file_status(asset_id, "failed", str(e))
-            finally:
-                _close_video_stream(meta)
+            uploaded.append(
+                {
+                    "asset_id": asset_id,
+                    "source_path": filepath,
+                    "raw_key": raw_key,
+                    "media_type": media_type,
+                    "checksum": meta["checksum"],
+                    "file_size": meta["file_size"],
+                }
+            )
+        except Exception as e:
+            context.log.error(f"업로드 실패: {filepath}: {e}")
+            for rec in records:
+                if rec.get("asset_id") == asset_id:
+                    rec["status"] = "failed"
+                    break
+            db.update_raw_file_status(asset_id, "failed", str(e))
+        finally:
+            _close_video_stream(meta)
 
     return uploaded
 

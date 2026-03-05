@@ -94,8 +94,29 @@ DEFAULT_LEGACY_PATTERNS = ["*_14-*.mp4", "*_12-*.mp4"]
 
 DEFAULT_STALL_SECONDS = 300
 DEFAULT_MAX_RESTARTS = 3
+DEFAULT_ZERO_BYTE_RETRIES = 2
 DONE_MARKER_FILENAME = "_DONE"
 PARTIAL_DIR_PREFIX = ".partial__"
+MEDIA_EXTENSIONS = {
+    ".jpg",
+    ".jpeg",
+    ".png",
+    ".bmp",
+    ".tif",
+    ".tiff",
+    ".webp",
+    ".heic",
+    ".mp4",
+    ".avi",
+    ".mov",
+    ".mkv",
+    ".webm",
+    ".mpeg",
+    ".mpg",
+    ".m4v",
+    ".mts",
+    ".m2ts",
+}
 
 NO_MATCH_MESSAGES = (
     "no urls matched",
@@ -482,8 +503,42 @@ def _write_done_marker(folder_dir: str, *, dry_run: bool) -> None:
     marker_path.write_text(payload, encoding="utf-8")
 
 
+def _find_zero_byte_media_files(folder_dir: str) -> List[str]:
+    root = Path(folder_dir)
+    if not root.exists():
+        return []
+    zero_files: List[str] = []
+    try:
+        for path in root.rglob("*"):
+            if not path.is_file():
+                continue
+            if path.name == DONE_MARKER_FILENAME:
+                continue
+            if path.suffix.lower() not in MEDIA_EXTENSIONS:
+                continue
+            try:
+                if path.stat().st_size <= 0:
+                    zero_files.append(str(path))
+            except OSError:
+                continue
+    except OSError:
+        return []
+    zero_files.sort()
+    return zero_files
+
+
+def _remove_files(paths: Sequence[str]) -> None:
+    for raw in paths:
+        path = Path(str(raw))
+        try:
+            if path.exists():
+                path.unlink()
+        except OSError:
+            continue
+
+
 def _archive_done_marker_exists(archive_dir: str, bucket: str, folder: str) -> bool:
-    """archive(YYYY/MM) 하위에 동일 bucket/folder가 있으면 True.
+    """archive 하위에 동일 bucket/folder가 있으면 True.
 
     우선 _DONE 마커를 확인하고, 과거 데이터(마커 미도입 시점)를 위해
     폴더 존재 + 파일 1개 이상도 archived로 간주한다.
@@ -492,30 +547,33 @@ def _archive_done_marker_exists(archive_dir: str, bucket: str, folder: str) -> b
     if not archive_root.exists():
         return False
 
-    # 빠른 경로: 현재 월 확인
-    current_month = datetime.now().strftime("%Y/%m")
-    quick_marker = archive_root / current_month / bucket / folder / DONE_MARKER_FILENAME
     try:
-        if quick_marker.exists():
+        # 현재 구조: archive/<bucket>/<folder>/_DONE
+        folder_path = archive_root / bucket / folder
+        marker = folder_path / DONE_MARKER_FILENAME
+        if marker.exists():
             return True
-    except OSError:
-        return False
+        if folder_path.is_dir():
+            try:
+                if any(p.is_file() for p in folder_path.rglob("*")):
+                    return True
+            except OSError:
+                pass
 
-    # fallback: archive_root/<YYYY>/<MM>/<bucket>/<folder> 탐색
-    try:
+        # legacy fallback: archive/<YYYY>/<MM>/<bucket>/<folder>
         for year_dir in archive_root.iterdir():
             if not year_dir.is_dir() or not year_dir.name.isdigit() or len(year_dir.name) != 4:
                 continue
             for month_dir in year_dir.iterdir():
                 if not month_dir.is_dir() or not month_dir.name.isdigit():
                     continue
-                folder_path = month_dir / bucket / folder
-                marker = folder_path / DONE_MARKER_FILENAME
-                if marker.exists():
+                legacy_folder_path = month_dir / bucket / folder
+                legacy_marker = legacy_folder_path / DONE_MARKER_FILENAME
+                if legacy_marker.exists():
                     return True
-                if folder_path.is_dir():
+                if legacy_folder_path.is_dir():
                     try:
-                        if any(p.is_file() for p in folder_path.rglob("*")):
+                        if any(p.is_file() for p in legacy_folder_path.rglob("*")):
                             return True
                     except OSError:
                         continue
@@ -960,6 +1018,7 @@ def _download_date_folders(
     max_restarts: int,
     archive_dir: str,
     skip_archived_done: bool,
+    zero_byte_retries: int,
 ) -> DownloadSummary:
     summary = DownloadSummary()
     folders_list = list(folders)
@@ -1013,6 +1072,57 @@ def _download_date_folders(
             print(f"[ERROR] download failed for folder={folder} (exit={result.returncode})", file=sys.stderr)
             continue
 
+        verify_dir = transfer_dst
+        zero_files = _find_zero_byte_media_files(verify_dir)
+        repair_attempt = 0
+        while zero_files and not dry_run and repair_attempt < zero_byte_retries:
+            repair_attempt += 1
+            print(
+                f"[WARN] zero-byte media detected: folder={folder}, count={len(zero_files)}, "
+                f"repair_attempt={repair_attempt}/{zero_byte_retries}",
+                file=sys.stderr,
+            )
+            _remove_files(zero_files)
+            if backend == "rclone":
+                repair_cmd = ["rclone"] + _rclone_global_args(config_path=config_path, extra_args=extra_args)
+                repair_cmd += _build_rclone_folder_copy_cmd(
+                    src=f"{remote_root}/{folder}",
+                    dst=transfer_dst,
+                    skip_existing=False,
+                )
+            else:
+                repair_cmd = _build_gcloud_rsync_cmd(
+                    bucket=bucket,
+                    folder=folder,
+                    dst=transfer_dst,
+                    skip_existing=False,
+                )
+            repair_result = _run_cmd_with_restarts(
+                repair_cmd,
+                dry_run=False,
+                capture_output=True,
+                stall_seconds=stall_seconds,
+                max_restarts=max_restarts,
+                label=f"zero-byte-repair folder={folder}",
+            )
+            if repair_result.returncode != 0:
+                print(
+                    f"[ERROR] zero-byte repair failed: folder={folder} exit={repair_result.returncode}",
+                    file=sys.stderr,
+                )
+                break
+            zero_files = _find_zero_byte_media_files(verify_dir)
+
+        if zero_files:
+            summary.failed += 1
+            preview = ", ".join(Path(p).name for p in zero_files[:5])
+            print(
+                f"[ERROR] zero-byte media remains after download: folder={folder}, "
+                f"count={len(zero_files)}, samples=[{preview}]",
+                file=sys.stderr,
+            )
+            continue
+
         if transfer_dst == dst_partial:
             _finalize_partial_folder(dst_partial, dst_final, dry_run=dry_run)
         _write_done_marker(dst_final, dry_run=dry_run)
@@ -1064,6 +1174,7 @@ def _run_date_folder_mode(args: argparse.Namespace, *, backend: str, bucket: str
     print(f"Skip existing: {args.skip_existing}")
     print(f"Stall seconds: {args.stall_seconds}")
     print(f"Max restarts: {args.max_restarts}")
+    print(f"Zero-byte retries: {args.zero_byte_retries}")
     print(f"Dry run: {args.dry_run}")
     print(f"Archive dir: {args.archive_dir}")
     print(f"Skip archived done: {args.skip_archived_done}")
@@ -1100,6 +1211,7 @@ def _run_date_folder_mode(args: argparse.Namespace, *, backend: str, bucket: str
         max_restarts=args.max_restarts,
         archive_dir=args.archive_dir,
         skip_archived_done=args.skip_archived_done,
+        zero_byte_retries=args.zero_byte_retries,
     )
 
     print("")
@@ -1344,6 +1456,12 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         default=_env_int("GCS_MAX_RESTARTS", DEFAULT_MAX_RESTARTS),
         help="Maximum restart attempts per stalled task",
     )
+    parser.add_argument(
+        "--zero-byte-retries",
+        type=int,
+        default=_env_int("GCS_ZERO_BYTE_RETRIES", DEFAULT_ZERO_BYTE_RETRIES),
+        help="Retry count when zero-byte media files are detected after folder download",
+    )
     parser.add_argument("--list-only", action="store_true", help="(date-folders) list target folders and exit")
     parser.add_argument("--dry-run", action="store_true", help="Print commands without executing them")
 
@@ -1368,6 +1486,9 @@ def main() -> None:
         sys.exit(2)
     if args.max_restarts < 0:
         print("[ERROR] --max-restarts must be >= 0", file=sys.stderr)
+        sys.exit(2)
+    if args.zero_byte_retries < 0:
+        print("[ERROR] --zero-byte-retries must be >= 0", file=sys.stderr)
         sys.exit(2)
 
     try:

@@ -85,7 +85,7 @@ motherduck_sync_job = define_asset_job(
 gcs_download_schedule = ScheduleDefinition(
     name="gcs_download_schedule",
     job=gcs_download_job,
-    cron_schedule="* * * * *",
+    cron_schedule="0 */6 * * *",
     execution_timezone="Asia/Seoul",
     run_config={
         "ops": {
