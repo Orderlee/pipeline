@@ -25,7 +25,7 @@ import time
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Iterable, List, Sequence
+from typing import Callable, Iterable, List, Sequence
 
 try:
     from tqdm.auto import tqdm
@@ -314,6 +314,7 @@ def _run_cmd_once(
     dry_run: bool,
     capture_output: bool,
     stall_seconds: int,
+    activity_probe: Callable[[], bool] | None = None,
     echo_output: bool = True,
 ) -> subprocess.CompletedProcess[str]:
     print("[CMD]", _format_cmd(cmd))
@@ -371,6 +372,14 @@ def _run_cmd_once(
 
     stalled = False
     while process.poll() is None:
+        if activity_probe is not None:
+            try:
+                if activity_probe():
+                    with lock:
+                        last_activity[0] = time.monotonic()
+            except Exception:
+                # Activity probe failures must not break download flow.
+                pass
         if stall_seconds > 0:
             with lock:
                 idle_for = time.monotonic() - last_activity[0]
@@ -407,6 +416,7 @@ def _run_cmd_with_restarts(
     stall_seconds: int,
     max_restarts: int,
     label: str,
+    activity_probe: Callable[[], bool] | None = None,
     echo_output: bool = True,
 ) -> subprocess.CompletedProcess[str]:
     attempts = max_restarts + 1
@@ -421,6 +431,7 @@ def _run_cmd_with_restarts(
             dry_run=dry_run,
             capture_output=capture_output,
             stall_seconds=stall_seconds,
+            activity_probe=activity_probe,
             echo_output=echo_output,
         )
         last_result = result
@@ -462,8 +473,66 @@ def _ensure_dir(path: str, *, dry_run: bool = False) -> None:
         return
     try:
         Path(path).mkdir(parents=True, exist_ok=True)
-    except PermissionError as exc:
-        raise ValueError(f"permission denied for destination directory: {path}") from exc
+    except OSError as exc:
+        raise RuntimeError(f"failed to create directory: {path}: {exc}") from exc
+
+
+def _snapshot_transfer_dir(path: str) -> tuple[int, int, int]:
+    """Return (file_count, total_size, max_mtime_ns) for top-level files in a directory."""
+    dir_path = Path(path)
+    if not dir_path.exists() or not dir_path.is_dir():
+        return (0, 0, 0)
+
+    file_count = 0
+    total_size = 0
+    max_mtime_ns = 0
+    try:
+        with os.scandir(dir_path) as entries:
+            for entry in entries:
+                try:
+                    if not entry.is_file(follow_symlinks=False):
+                        continue
+                    stat = entry.stat(follow_symlinks=False)
+                except OSError:
+                    continue
+                file_count += 1
+                total_size += int(stat.st_size)
+                max_mtime_ns = max(max_mtime_ns, int(stat.st_mtime_ns))
+    except OSError:
+        return (file_count, total_size, max_mtime_ns)
+
+    return (file_count, total_size, max_mtime_ns)
+
+
+def _make_dir_activity_probe(path: str, *, check_interval_sec: int = 15) -> Callable[[], bool]:
+    """Treat destination file growth as activity to avoid false stall kills on quiet transfers."""
+    state: dict[str, float | tuple[int, int, int]] = {
+        "last_check_monotonic": 0.0,
+        "snapshot": _snapshot_transfer_dir(path),
+    }
+
+    def _probe() -> bool:
+        now = time.monotonic()
+        last_check = float(state["last_check_monotonic"])
+        if now - last_check < check_interval_sec:
+            return False
+        state["last_check_monotonic"] = now
+
+        prev_snapshot = state["snapshot"]
+        cur = _snapshot_transfer_dir(path)
+        state["snapshot"] = cur
+
+        if not isinstance(prev_snapshot, tuple):
+            return False
+        prev_count, prev_size, prev_mtime = prev_snapshot
+        cur_count, cur_size, cur_mtime = cur
+        return (
+            cur_count > prev_count
+            or cur_size > prev_size
+            or cur_mtime > prev_mtime
+        )
+
+    return _probe
 
 
 def _resolve_date_folder_paths(download_dir: str, folder: str) -> tuple[str, str]:
@@ -1036,6 +1105,14 @@ def _download_date_folders(
         dst_final, dst_partial = _resolve_date_folder_paths(download_dir, folder)
         transfer_dst = dst_final if Path(dst_final).exists() else dst_partial
         _ensure_dir(transfer_dst, dry_run=dry_run)
+        transfer_activity_probe = _make_dir_activity_probe(transfer_dst)
+        if transfer_dst == dst_partial and Path(dst_partial).exists():
+            partial_count, partial_size, _ = _snapshot_transfer_dir(dst_partial)
+            if partial_count > 0:
+                print(
+                    f"[INFO] Resuming partial folder: {dst_partial} "
+                    f"(files={partial_count}, size={partial_size} bytes)"
+                )
 
         if backend == "rclone":
             src = f"{remote_root}/{folder}"
@@ -1049,6 +1126,7 @@ def _download_date_folders(
                 stall_seconds=stall_seconds,
                 max_restarts=max_restarts,
                 label=f"rclone folder={folder}",
+                activity_probe=transfer_activity_probe,
             )
         else:
             cmd = _build_gcloud_rsync_cmd(
@@ -1065,6 +1143,7 @@ def _download_date_folders(
                 stall_seconds=stall_seconds,
                 max_restarts=max_restarts,
                 label=f"gcloud folder={folder}",
+                activity_probe=transfer_activity_probe,
             )
 
         if result.returncode != 0:
@@ -1104,6 +1183,7 @@ def _download_date_folders(
                 stall_seconds=stall_seconds,
                 max_restarts=max_restarts,
                 label=f"zero-byte-repair folder={folder}",
+                activity_probe=transfer_activity_probe,
             )
             if repair_result.returncode != 0:
                 print(

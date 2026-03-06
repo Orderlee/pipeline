@@ -7,6 +7,7 @@ import time
 from contextlib import contextmanager
 from datetime import datetime
 from itertools import combinations
+from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
@@ -90,6 +91,16 @@ class DuckDBResource(ConfigurableResource):
             yield conn
         finally:
             conn.close()
+
+    def ensure_schema(self) -> None:
+        """필수 스키마(raw_files 포함)를 보장한다."""
+        schema_path = Path(__file__).resolve().parents[1] / "sql" / "schema.sql"
+        if not schema_path.exists():
+            raise FileNotFoundError(f"schema.sql not found: {schema_path}")
+
+        ddl = schema_path.read_text(encoding="utf-8")
+        with self.connect() as conn:
+            conn.execute(ddl)
 
     # ── INGEST 섹션 (Dev A) ────────────────────────────
 

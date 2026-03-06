@@ -27,6 +27,13 @@ def _int_env(name: str, default: int, minimum: int = 0) -> int:
     return max(minimum, value)
 
 
+def _bool_env(name: str, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
 @sensor(
     job_name="mvp_stage_job",
     minimum_interval_seconds=_int_env("INCOMING_SENSOR_INTERVAL_SEC", 180, 30),
@@ -82,6 +89,10 @@ def incoming_manifest_sensor(context):
         context.log.info(f"stale cursor 항목 정리: {len(stale_keys)}개 (삭제된 manifest)")
 
     max_in_flight_runs = max(1, _int_env("INCOMING_SENSOR_MAX_IN_FLIGHT_RUNS", 2, 1))
+    max_new_run_requests_per_tick = max(
+        1,
+        _int_env("INCOMING_SENSOR_MAX_NEW_RUN_REQUESTS_PER_TICK", 2, 1),
+    )
     max_retry_per_manifest = _int_env("INCOMING_SENSOR_MAX_RETRY_PER_MANIFEST", 3, 1)
     in_flight_runs = _collect_in_flight_runs(context)
     in_flight_run_count = len(in_flight_runs)
@@ -149,6 +160,7 @@ def incoming_manifest_sensor(context):
     launched_manifest_keys: set[str] = set()
     deferred_in_flight_source = 0
     deferred_global_limit = 0
+    deferred_tick_limit = 0
 
     for entry in new_entries:
         manifest_path = entry["path"]
@@ -172,6 +184,10 @@ def incoming_manifest_sensor(context):
         # 전역 in-flight 임계치 보호: 이번 tick에서 생성하는 요청까지 포함해 제한
         if in_flight_run_count + len(run_requests) >= max_in_flight_runs:
             deferred_global_limit += 1
+            continue
+        # tick당 enqueue 상한: backlog가 빠르게 커지는 것을 완화한다.
+        if len(run_requests) >= max_new_run_requests_per_tick:
+            deferred_tick_limit += 1
             continue
 
         try:
@@ -235,6 +251,8 @@ def incoming_manifest_sensor(context):
             f"in_flight_source={deferred_in_flight_source}",
             f"global_limit={deferred_global_limit}",
             f"limit={max_in_flight_runs}",
+            f"tick_limit={deferred_tick_limit}",
+            f"max_new_per_tick={max_new_run_requests_per_tick}",
         ]
         suffix = f", 중복 manifest 정리={superseded_count}" if superseded_count > 0 else ""
         yield SkipReason(
@@ -246,6 +264,149 @@ def incoming_manifest_sensor(context):
 
     for request in run_requests:
         yield request
+
+
+@sensor(
+    minimum_interval_seconds=_int_env("STUCK_RUN_GUARD_INTERVAL_SEC", 120, 30),
+    default_status=DefaultSensorStatus.RUNNING,
+    description="오래 정체된 STARTED run cancel + (옵션) 자동 재큐잉",
+)
+def stuck_run_guard_sensor(context):
+    if not _bool_env("STUCK_RUN_GUARD_ENABLED", True):
+        return SkipReason("stuck run guard 비활성화됨")
+
+    timeout_sec = _int_env("STUCK_RUN_GUARD_TIMEOUT_SEC", 3 * 60 * 60, 60)
+    max_cancels = _int_env("STUCK_RUN_GUARD_MAX_CANCELS_PER_TICK", 1, 1)
+    auto_requeue_enabled = _bool_env("STUCK_RUN_GUARD_AUTO_REQUEUE_ENABLED", True)
+    max_requeues = _int_env("STUCK_RUN_GUARD_MAX_REQUEUES_PER_TICK", 1, 1)
+    target_jobs_raw = os.getenv(
+        "STUCK_RUN_GUARD_TARGET_JOBS",
+        "mvp_stage_job,ingest_job,motherduck_sync_job",
+    )
+    target_jobs = {item.strip() for item in target_jobs_raw.split(",") if item.strip()}
+    now_ts = time.time()
+
+    try:
+        started_runs = context.instance.get_runs(
+            filters=RunsFilter(statuses=[DagsterRunStatus.STARTED]),
+            limit=200,
+        )
+    except Exception as exc:  # noqa: BLE001
+        return SkipReason(f"stuck run 조회 실패: {exc}")
+
+    canceled = 0
+    inspected = 0
+    for run in started_runs:
+        if run.job_name not in target_jobs:
+            continue
+        tags = getattr(run, "tags", {}) or {}
+        if str(tags.get("duckdb_writer", "")).lower() != "true":
+            continue
+
+        inspected += 1
+        try:
+            stats = context.instance.get_run_stats(run.run_id)
+            start_time = getattr(stats, "start_time", None)
+        except Exception:  # noqa: BLE001
+            start_time = None
+        if not start_time:
+            continue
+
+        age_sec = int(now_ts - float(start_time))
+        if age_sec < timeout_sec:
+            continue
+
+        try:
+            cancel_requested = bool(context.instance.run_coordinator.cancel_run(run.run_id))
+            context.instance.add_run_tags(
+                run.run_id,
+                {"stuck_guard_cancel_requested_at": str(int(now_ts))},
+            )
+            context.log.warning(
+                "stuck run cancel 요청: "
+                f"run_id={run.run_id}, job={run.job_name}, age={age_sec}s, "
+                f"cancel_requested={cancel_requested}"
+            )
+            canceled += 1
+        except Exception as exc:  # noqa: BLE001
+            context.log.warning(f"stuck run cancel 실패: run_id={run.run_id}: {exc}")
+
+        if canceled >= max_cancels:
+            break
+
+    requeued = 0
+    delegated_to_incoming = 0
+    if auto_requeue_enabled:
+        try:
+            canceled_runs = context.instance.get_runs(
+                filters=RunsFilter(statuses=[DagsterRunStatus.CANCELED]),
+                limit=200,
+            )
+        except Exception as exc:  # noqa: BLE001
+            context.log.warning(f"canceled run 조회 실패: {exc}")
+            canceled_runs = []
+
+        for run in canceled_runs:
+            if requeued >= max_requeues:
+                break
+            if run.job_name not in target_jobs:
+                continue
+
+            tags = getattr(run, "tags", {}) or {}
+            if "stuck_guard_cancel_requested_at" not in tags:
+                continue
+            if "stuck_guard_requeued_at" in tags or "stuck_guard_requeue_delegated_at" in tags:
+                continue
+
+            # incoming_manifest_sensor가 생성한 run은 기존 retry 로직이 자동 재큐잉한다.
+            if str(tags.get("trigger", "")).strip() == "incoming_manifest_sensor":
+                delegated_to_incoming += 1
+                try:
+                    context.instance.add_run_tags(
+                        run.run_id,
+                        {"stuck_guard_requeue_delegated_at": str(int(now_ts))},
+                    )
+                except Exception:  # noqa: BLE001
+                    pass
+                continue
+
+            try:
+                next_tags = dict(tags)
+                next_tags["trigger"] = "stuck_run_guard_requeue"
+                next_tags["stuck_guard_requeue_of"] = run.run_id
+                next_tags["stuck_guard_requeue_ts"] = str(int(now_ts))
+
+                run_config = getattr(run, "run_config", None) or {}
+                run_key = f"stuck-requeue-{run.run_id}-{int(now_ts)}"
+
+                yield RunRequest(
+                    job_name=run.job_name,
+                    run_key=run_key,
+                    run_config=run_config,
+                    tags=next_tags,
+                )
+                context.instance.add_run_tags(
+                    run.run_id,
+                    {"stuck_guard_requeued_at": str(int(now_ts))},
+                )
+                requeued += 1
+                context.log.warning(
+                    "stuck run 자동 재큐잉: "
+                    f"from_run={run.run_id}, job={run.job_name}, run_key={run_key}"
+                )
+            except Exception as exc:  # noqa: BLE001
+                context.log.warning(f"stuck run 재큐잉 실패: run_id={run.run_id}: {exc}")
+
+    if canceled == 0 and requeued == 0 and delegated_to_incoming == 0:
+        return SkipReason(
+            f"stuck run 없음 (inspected={inspected}, timeout={timeout_sec}s, jobs={sorted(target_jobs)})"
+        )
+
+    return SkipReason(
+        "stuck run guard 처리 완료: "
+        f"canceled={canceled}, requeued={requeued}, delegated={delegated_to_incoming}, "
+        f"timeout={timeout_sec}s, jobs={sorted(target_jobs)}"
+    )
 
 
 def _parse_cursor(raw_cursor: str | None) -> dict[str, int]:
@@ -394,7 +555,9 @@ def _collect_in_flight_runs(context) -> list:
         return context.instance.get_runs(
             filters=RunsFilter(
                 job_name="mvp_stage_job",
-                statuses=[DagsterRunStatus.QUEUED, DagsterRunStatus.STARTED],
+                # QUEUED까지 포함하면 run coordinator 대기열만으로도 sensor가 과도하게 멈춘다.
+                # 실제 실행 압력(backpressure)은 STARTED 기준으로만 판단한다.
+                statuses=[DagsterRunStatus.STARTED],
             ),
             limit=200,
         )

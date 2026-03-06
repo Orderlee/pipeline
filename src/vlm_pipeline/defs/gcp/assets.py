@@ -14,7 +14,7 @@ from dagster import AssetKey, Field, asset
 
 DEFAULT_GCP_SCRIPT_PATH = "/gcp/download_from_gcs_rclone.py"
 DEFAULT_GCP_DOWNLOAD_DIR = "/nas/incoming"
-DEFAULT_GCP_BUCKETS = ["khon-kaen-rtsp-bucket", "adlib-hotel-202512"]
+DEFAULT_GCP_BUCKETS = ["adlibhotel-event-bucket", "kkpolice-event-bucket"]
 
 
 def _as_int(value: object, default: int) -> int:
@@ -33,7 +33,7 @@ def _as_int(value: object, default: int) -> int:
         "mode": Field(str, default_value="date-folders"),
         "download_dir": Field(str, default_value=DEFAULT_GCP_DOWNLOAD_DIR),
         "archive_dir": Field(str, default_value=os.getenv("ARCHIVE_DIR", "/nas/archive")),
-        "backend": Field(str, default_value=os.getenv("GCS_BACKEND", "auto")),
+        "backend": Field(str, default_value=os.getenv("GCS_BACKEND", "gcloud")),
         "bucket": Field(str, default_value=os.getenv("BUCKET_NAME", DEFAULT_GCP_BUCKETS[0])),
         "buckets": Field([str], default_value=DEFAULT_GCP_BUCKETS),
         "bucket_subdir": Field(bool, default_value=True),

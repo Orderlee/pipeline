@@ -579,6 +579,7 @@ def ingested_raw_files(
     manifest가 없으면 DuckDB 상태 요약만 반환.
     """
     config = PipelineConfig()
+    db.ensure_schema()
 
     # manifest_path는 sensor의 tags에서 전달
     manifest_path = context.run.tags.get("manifest_path")

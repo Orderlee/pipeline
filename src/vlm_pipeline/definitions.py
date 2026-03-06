@@ -13,9 +13,13 @@ from dagster import AssetKey, Definitions, EnvVar, ScheduleDefinition, define_as
 
 from vlm_pipeline.defs.build.assets import built_dataset
 from vlm_pipeline.defs.dedup.assets import dedup_results
-from vlm_pipeline.defs.gcp.assets import gcs_download_to_incoming
+from vlm_pipeline.defs.gcp.assets import DEFAULT_GCP_BUCKETS, gcs_download_to_incoming
 from vlm_pipeline.defs.ingest.assets import ingested_raw_files
-from vlm_pipeline.defs.ingest.sensor import auto_bootstrap_manifest_sensor, incoming_manifest_sensor
+from vlm_pipeline.defs.ingest.sensor import (
+    auto_bootstrap_manifest_sensor,
+    incoming_manifest_sensor,
+    stuck_run_guard_sensor,
+)
 from vlm_pipeline.defs.label.assets import labeled_files
 from vlm_pipeline.defs.process.assets import processed_clips
 from vlm_pipeline.defs.sync.assets import motherduck_sync
@@ -96,7 +100,7 @@ gcs_download_schedule = ScheduleDefinition(
                     "backend": "gcloud",
                     "skip_existing": True,
                     "dry_run": False,
-                    "buckets": ["khon-kaen-rtsp-bucket", "adlib-hotel-202512"],
+                    "buckets": DEFAULT_GCP_BUCKETS,
                     "bucket_subdir": True,
                 }
             }
@@ -125,7 +129,12 @@ defs = Definitions(
         motherduck_sync_job,
     ],
     schedules=[gcs_download_schedule],
-    sensors=[incoming_manifest_sensor, auto_bootstrap_manifest_sensor, *MOTHERDUCK_TABLE_SENSORS],
+    sensors=[
+        incoming_manifest_sensor,
+        auto_bootstrap_manifest_sensor,
+        stuck_run_guard_sensor,
+        *MOTHERDUCK_TABLE_SENSORS,
+    ],
     resources={
         "db": DuckDBResource(db_path=EnvVar("DATAOPS_DUCKDB_PATH")),
         "minio": MinIOResource(

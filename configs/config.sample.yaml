@@ -1,9 +1,0 @@
-# Application settings (copy to configs/global.yaml and adjust per environment)
-nas_root: "/path/to/nas/datasets/projects"
-duckdb_path: "./docker/data/pipeline.duckdb"
-
-minio:
-  endpoint: "http://localhost:9000"
-  access_key: "minioadmin"
-  secret_key: "minioadmin"
-  bucket: "raw-data"
