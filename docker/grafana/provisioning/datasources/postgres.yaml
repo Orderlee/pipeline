@@ -1,0 +1,18 @@
+apiVersion: 1
+
+datasources:
+  - name: PostgreSQL
+    type: postgres
+    access: proxy
+    url: pipeline-postgres:5432
+    database: nas_tree
+    user: airflow
+    secureJsonData:
+      password: airflow
+    jsonData:
+      sslmode: disable
+      maxOpenConns: 10
+      maxIdleConns: 10
+      connMaxLifetime: 14400
+    isDefault: true
+    editable: true
