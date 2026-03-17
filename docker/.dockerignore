@@ -1,0 +1,9 @@
+app/dagster_home/storage/
+app/dagster_home/logs/
+**/__pycache__/
+**/*.pyc
+.git/
+.env
+*.egg-info/
+.mypy_cache/
+.pytest_cache/
