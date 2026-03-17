@@ -1,0 +1,20 @@
+duckdb==1.4.3
+boto3>=1.41.5
+tqdm>=4.66.0
+pydantic>=2.10.0
+pydantic-settings>=2.0.0
+pyyaml>=6.0.2
+psycopg2-binary>=2.9.9
+dvc
+dagster>=1.6,<2
+dagster-webserver>=1.6,<2
+imagehash>=4.3.1
+Pillow>=10.4.0
+pillow-heif>=0.18.0
+korean-romanizer>=0.27.0
+minio>=7.2.0
+google-cloud-aiplatform
+requests>=2.31.0
+--extra-index-url https://download.pytorch.org/whl/cu124
+torch==2.5.1+cu124
+torchvision==0.20.1+cu124

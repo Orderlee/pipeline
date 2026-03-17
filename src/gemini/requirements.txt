@@ -1,0 +1,2 @@
+# Docker/runtime source of truth: docker/app/requirements.txt
+google-cloud-aiplatform

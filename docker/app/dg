@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+# Minimal shim until native `dg` is available in the image.
+exec dagster "$@"

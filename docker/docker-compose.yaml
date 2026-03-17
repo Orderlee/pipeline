@@ -1,0 +1,280 @@
+# =====================================================
+# Data Pipeline Docker Compose
+# Python + DuckDB + MinIO + Dagster + GPU 지원
+# =====================================================
+
+name: pipeline
+
+x-common-env: &common-env
+  MINIO_ENDPOINT: ${MINIO_ENDPOINT:-http://172.168.47.36:9000}
+  MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
+  MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin}
+  DUCKDB_PATH: ${DATAOPS_DUCKDB_PATH:-/data/pipeline.duckdb}
+  DATAOPS_DUCKDB_PATH: ${DATAOPS_DUCKDB_PATH:-/data/pipeline.duckdb}
+  DATAOPS_PIPELINE_ROOT: /nas/datasets/projects
+  DATAOPS_NAS_ROOT: /nas/datasets/projects
+  DATAOPS_NAS_ROOTS: /nas/datasets/projects;/nas/incoming
+  VIDEO_ENV_MODEL_DIR: /data/models/places365
+  VIDEO_ENV_AUTO_DOWNLOAD: "false"
+  YOLO_API_URL: http://yolo:8001
+  VIDEO_FFPROBE_TIMEOUT_SEC: "120"
+  VIDEO_FFPROBE_RETRY_COUNT: "1"
+  VIDEO_FFPROBE_RETRY_DELAY_MS: "250"
+  DAGSTER_HOME: /app/dagster_home
+  PYTHONPATH: /:/src/python:/src/vlm
+  DATAOPS_ASSET_PATH_PREFIX_FROM: /home/pia/mou/nas_192tb;/home/pia/mou/archive;/home/pia/mou/incoming
+  DATAOPS_ASSET_PATH_PREFIX_TO: /nas
+
+x-common-volumes: &common-volumes
+  - ./app:/app
+  - ./data:/data
+  - type: bind
+    source: ${DATASETS_HOST_PATH:-/home/pia/mou/nas_192tb/datasets}
+    target: /nas/datasets
+    read_only: false
+  - type: bind
+    source: ${PROJECTS_HOST_PATH:-/home/pia/mou/nas_192tb/datasets/projects}
+    target: /nas/datasets/projects
+    read_only: true
+  - type: bind
+    source: ${ARCHIVE_HOST_PATH:-/home/pia/mou/archive}
+    target: /nas/archive
+    read_only: false
+  - type: bind
+    source: ${INCOMING_HOST_PATH:-/home/pia/mou/incoming}
+    target: /nas/incoming
+    read_only: false
+  - /home/pia/test_data:/test_data
+  - ../src/python:/src/python:ro
+  - ../src:/src/vlm:ro
+  - ../configs:/configs:ro
+  - ../split_dataset:/split_dataset:ro
+  - ../gcp:/gcp:ro
+  - ../scripts:/scripts:ro
+  - type: bind
+    source: ${GCLOUD_CONFIG_HOST_PATH:-/home/pia/.config/gcloud}
+    target: /root/.config/gcloud
+    read_only: false
+
+services:
+  # ===== 메인 앱 (GPU 지원) =====
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: datapipeline:gpu-cu124
+    user: root
+    command: ["sleep", "infinity"]
+    ports:
+      - "${APP_PORT:-0}:8000"
+    env_file:
+      - .env
+    environment:
+      <<: *common-env
+    volumes: *common-volumes
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    gpus: all
+    depends_on:
+      - minio
+    restart: unless-stopped
+
+  # ===== Dagster (Web + Daemon) =====
+  dagster:
+    image: datapipeline:gpu-cu124
+    user: root
+    working_dir: /app/dagster_home
+    command: ["/bin/bash", "-c", "DAGSTER_HOME=/app/dagster_home /app/dg dev -w /app/workspace.yaml -h 0.0.0.0 -p 3030"]
+    ports:
+      - "${DAGSTER_PORT:-3030}:3030"
+    env_file:
+      - .env
+    environment:
+      <<: *common-env
+      DATAOPS_MINIO__ENDPOINT: ${MINIO_ENDPOINT:-http://172.168.47.36:9000}
+      DATAOPS_MINIO__ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
+      DATAOPS_MINIO__SECRET_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin}
+      DATAOPS_MINIO__BUCKET: raw-data
+    volumes: *common-volumes
+    depends_on:
+      - postgres
+      - minio
+    gpus: all
+    restart: unless-stopped
+
+  # ===== Staging Dagster (dev 브랜치 검증용) =====
+  dagster-staging:
+    profiles: ["staging"]
+    image: datapipeline:gpu-cu124
+    user: root
+    working_dir: /app/dagster_home_staging
+    command: ["/bin/bash", "-c", "DAGSTER_HOME=/app/dagster_home_staging /app/dg dev -w /app/workspace.yaml -h 0.0.0.0 -p 3030"]
+    ports:
+      - "3031:3030"
+    env_file:
+      - .env.staging
+    environment:
+      <<: *common-env
+      IS_STAGING: "true"
+      ENABLE_YOLO_DETECTION: "true"
+      ENABLE_MANUAL_LABEL_IMPORT: "true"
+      DAGSTER_HOME: /app/dagster_home_staging
+      DATAOPS_DUCKDB_PATH: /data/staging.duckdb
+      DUCKDB_PATH: /data/staging.duckdb
+      INCOMING_DIR: /nas/staging/incoming
+      ARCHIVE_DIR: /nas/staging/archive
+      ARCHIVE_PENDING_DIR: /nas/staging/archive_pending
+      MANIFEST_DIR: /nas/staging/incoming/.manifests
+      MINIO_ENDPOINT: http://172.168.47.36:9002
+      DATAOPS_MINIO__ENDPOINT: http://172.168.47.36:9002
+      DATAOPS_MINIO__ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
+      DATAOPS_MINIO__SECRET_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin}
+      DATAOPS_MINIO__BUCKET: raw-data
+    volumes:
+      - ./app:/app
+      - ./data:/data
+      - type: bind
+        source: /home/pia/mou/nas_192tb/datasets
+        target: /nas/datasets
+        read_only: false
+      - type: bind
+        source: /home/pia/mou/nas_192tb/datasets/projects
+        target: /nas/datasets/projects
+        read_only: true
+      - type: bind
+        source: /home/pia/mou/archive
+        target: /nas/archive
+        read_only: false
+      - type: bind
+        source: /home/pia/mou/incoming
+        target: /nas/incoming
+        read_only: false
+      - type: bind
+        source: /home/pia/mou/staging
+        target: /nas/staging
+        read_only: false
+      - /home/pia/test_data:/test_data
+      - ../src/python:/src/python:ro
+      - ../src:/src/vlm:ro
+      - ../configs:/configs:ro
+      - ../split_dataset:/split_dataset:ro
+      - ../gcp:/gcp:ro
+      - ../scripts:/scripts:ro
+      - type: bind
+        source: ${GCLOUD_CONFIG_HOST_PATH:-/home/pia/.config/gcloud}
+        target: /root/.config/gcloud
+        read_only: false
+    depends_on:
+      - postgres
+    gpus: all
+    restart: unless-stopped
+
+  # ===== MinIO (S3 호환 오브젝트 스토리지) =====
+  minio:
+    image: minio/minio:latest
+    ports:
+      - "0.0.0.0:${MINIO_API_PORT:-9000}:9000"
+      - "0.0.0.0:${MINIO_CONSOLE_PORT:-9001}:9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
+      MINIO_PROMETHEUS_AUTH_TYPE: public
+    volumes:
+      - minio_data:/data
+    command: server /data --console-address ":9001"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
+
+  # ===== Grafana (Dashboard) =====
+  grafana:
+    image: grafana/grafana:12.3.1-ubuntu
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-admin}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/minio-dashboard.json:/var/lib/grafana/dashboards/minio-dashboard.json:ro
+      - ./grafana/nas-folder-tree-dashboard.json:/var/lib/grafana/dashboards/nas-folder-tree-dashboard.json:ro
+    depends_on:
+      - postgres
+    restart: unless-stopped
+
+  # ===== PostgreSQL (Grafana / 메타데이터 DB) =====
+  postgres:
+    image: postgres:15
+    ports:
+      - "${POSTGRES_PORT:-0}:5432"
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-airflow}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-airflow}
+      POSTGRES_DB: ${POSTGRES_DB:-airflow}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-airflow}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      default:
+        aliases:
+          - pipeline-postgres
+
+  # ===== YOLO-World Detection Server (GPU 1 전용) =====
+  yolo:
+    build:
+      context: ./yolo
+      dockerfile: Dockerfile
+    image: datapipeline-yolo:gpu-cu124
+    user: root
+    ports:
+      - "${YOLO_PORT:-8001}:8001"
+    environment:
+      YOLO_MODEL_PATH: /data/models/yolo/yolov8l-worldv2.pt
+      YOLO_DEVICE: "cuda:1"
+      YOLO_IMGSZ: "640"
+      YOLO_PORT: "8001"
+      YOLO_MAX_BATCH: "8"
+      YOLO_DEFAULT_CLASSES: ${YOLO_DEFAULT_CLASSES:-person,car,truck,bus,motorcycle,bicycle,fire,smoke,flame,knife,gun,bag,backpack,suitcase,helmet,safety vest,hard hat,traffic cone,barricade,dog,cat}
+      NVIDIA_VISIBLE_DEVICES: "1"
+    volumes:
+      - ./data/models:/data/models:ro
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["1"]
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
+      interval: 30s
+      timeout: 10s
+      start_period: 60s
+      retries: 3
+    restart: unless-stopped
+
+# ===== 볼륨 정의 =====
+volumes:
+  minio_data:
+  postgres_data:
+  grafana_data:
+
+# ===== 네트워크 정의 =====
+networks:
+  default:
+    name: pipeline-network

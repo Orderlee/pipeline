@@ -1,0 +1,66 @@
+# Data & Logs
+minio_data/
+scanner_output/
+catalog/logs/
+catalog/*.duckdb
+catalog/*.duckdb.wal
+catalog/snapshots/
+*.log
+*.tmp
+
+# Environment & Configs
+.env
+gmail-361002-cbcf95afec4a.json
+configs/global.yaml
+configs/minio.json
+configs/qdrant.json
+configs/duckdb.yaml
+!configs/config.sample.yaml
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+.pytest_cache/
+
+# Rust
+target/
+**/*.rs.bk
+
+# IDE
+.vscode/
+.idea/
+.cursor/
+*.swp
+.DS_Store
+._.DS_Store
+
+# Docker
+docker/minio/data/
+docker/qdrant/storage/
+docker/airflow/logs/
+docker/data/
+docker/app/credentials/
+docker/app/dagster_home/storage/
+docker/app/dagster_home_staging/storage/
+docker/app/dagster_home/history/
+
+# MD
+260213_qa_list.md
+CLAUDE.md
+mvp_agent_teams_workplan.md
+mvp_pipeline_plan.md
+WORKLOG.md
+*_qa_list.md
+*_QA_list.md
+# etc
+pyproject.toml
+
+# MCP 설정 (API 키 포함)
+.mcp.json
+.agent/
+
+# 일일 작업 로그 자동 생성 로그
+.worklog_logs/
