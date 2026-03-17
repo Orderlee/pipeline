@@ -1,0 +1,6 @@
+duckdb>=1.1.0
+tqdm>=4.66.0
+pydantic>=2.10.0
+pydantic-settings>=2.0.0
+pyyaml>=6.0.2
+psycopg2-binary>=2.9.9
