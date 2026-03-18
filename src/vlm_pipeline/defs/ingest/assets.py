@@ -10,7 +10,6 @@ from pathlib import Path
 
 from dagster import AssetKey, asset
 
-from vlm_pipeline.lib.env_utils import IS_STAGING
 from vlm_pipeline.lib.phash import compute_phash
 from vlm_pipeline.resources.config import PipelineConfig
 from vlm_pipeline.resources.duckdb import DuckDBResource

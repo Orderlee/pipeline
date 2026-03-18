@@ -131,6 +131,78 @@ def clip_timestamp(
     return summary
 
 
+@asset(
+    name="clip_timestamp_routed",
+    deps=["raw_ingest"],
+    description="Staging spec flow: ready_for_labeling + requested_outputs에 timestamp 포함 시 Gemini 이벤트 구간 추출",
+    group_name="auto_labeling",
+    config_schema={"limit": Field(int, default_value=50)},
+)
+def clip_timestamp_routed(
+    context,
+    db: DuckDBResource,
+    minio: MinIOResource,
+) -> dict:
+    """run tag: spec_id, requested_outputs, resolved_config_id. requested_outputs에 timestamp 있을 때만 실행."""
+    tags = context.run.tags if context.run else {}
+    spec_id = tags.get("spec_id")
+    requested = (tags.get("requested_outputs") or "").strip().split("_")
+    if not spec_id or "timestamp" not in requested:
+        context.log.info("clip_timestamp_routed 스킵: spec_id 또는 requested_outputs(timestamp) 없음")
+        return {"processed": 0, "failed": 0, "skipped": True}
+
+    limit = int(context.op_config.get("limit", 50))
+    candidates = db.find_ready_for_labeling_timestamp_backlog(spec_id, limit=limit)
+    if not candidates:
+        context.log.info("clip_timestamp_routed: 대상 없음")
+        return {"processed": 0, "failed": 0}
+
+    analyzer = _init_gemini_analyzer(context)
+    processed = 0
+    failed = 0
+    for idx, cand in enumerate(candidates, start=1):
+        asset_id = cand["asset_id"]
+        raw_key = str(cand.get("raw_key") or "")
+        temp_paths: list[Path] = []
+        try:
+            video_path, temp_path = _materialize_video(minio, cand)
+            if temp_path:
+                temp_paths.append(temp_path)
+            duration_val = cand.get("duration_sec")
+            gemini_video_path, gemini_temp_path = _prepare_gemini_video_for_request(
+                video_path, duration_sec=duration_val
+            )
+            if gemini_temp_path:
+                temp_paths.append(gemini_temp_path)
+            label_key = _build_gemini_label_key(raw_key)
+            response_text = analyzer.analyze_video(
+                str(gemini_video_path),
+                prompt=VIDEO_EVENT_PROMPT,
+                mime_type="video/mp4" if gemini_temp_path else None,
+            )
+            cleaned = extract_clean_json_text(response_text)
+            label_bytes = cleaned.encode("utf-8")
+            minio.ensure_bucket("vlm-labels")
+            minio.upload("vlm-labels", label_key, label_bytes, "application/json")
+            db.update_timestamp_status(
+                asset_id,
+                "completed",
+                label_key=label_key,
+                completed_at=datetime.now(),
+            )
+            processed += 1
+        except Exception as exc:
+            failed += 1
+            db.update_timestamp_status(
+                asset_id, "failed", error=str(exc)[:500], completed_at=datetime.now()
+            )
+            context.log.error(f"clip_timestamp_routed 실패: asset_id={asset_id}: {exc}")
+        finally:
+            for path in reversed(temp_paths):
+                _cleanup_temp(path)
+    return {"processed": processed, "failed": failed}
+
+
 # ── helpers ──
 
 def _init_gemini_analyzer(context) -> GeminiAnalyzer:
