@@ -9,6 +9,7 @@ from .duckdb_base import DuckDBBaseMixin
 from .duckdb_dedup import DuckDBDedupMixin
 from .duckdb_ingest import DuckDBIngestMixin
 from .duckdb_labeling import DuckDBLabelingMixin
+from .duckdb_spec import DuckDBSpecMixin
 
 
 class DuckDBResource(
@@ -16,6 +17,7 @@ class DuckDBResource(
     DuckDBIngestMixin,
     DuckDBDedupMixin,
     DuckDBLabelingMixin,
+    DuckDBSpecMixin,
     ConfigurableResource,
 ):
     """DuckDB 통합 리소스 — 섹션별 CRUD 메서드 제공."""

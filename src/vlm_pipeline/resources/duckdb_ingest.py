@@ -13,11 +13,30 @@ class DuckDBIngestMixin:
     def insert_raw_files_batch(self, records: list[dict]) -> int:
         if not records:
             return 0
-        rows = []
-        for rec in records:
-            now = datetime.now()
-            rows.append(
-                [
+        with self.connect() as conn:
+            columns = self._table_columns(conn, "raw_files")
+            has_source_unit = "source_unit_name" in columns
+            has_spec_id = "spec_id" in columns
+
+            base_cols = [
+                "asset_id", "source_path", "original_name", "media_type",
+                "file_size", "checksum", "archive_path", "raw_bucket", "raw_key",
+                "ingest_batch_id", "transfer_tool", "ingest_status", "error_message",
+                "created_at", "updated_at",
+            ]
+            if has_source_unit:
+                base_cols.append("source_unit_name")
+            if has_spec_id:
+                base_cols.append("spec_id")
+
+            placeholders = ", ".join("?" * len(base_cols))
+            insert_cols = ", ".join(base_cols)
+            sql = f"INSERT INTO raw_files ({insert_cols}) VALUES ({placeholders})"
+
+            rows = []
+            for rec in records:
+                now = datetime.now()
+                row = [
                     rec.get("asset_id") or str(uuid4()),
                     rec.get("source_path"),
                     rec.get("original_name"),
@@ -34,20 +53,13 @@ class DuckDBIngestMixin:
                     rec.get("created_at", now),
                     rec.get("updated_at", now),
                 ]
-            )
+                if has_source_unit:
+                    row.append(rec.get("source_unit_name"))
+                if has_spec_id:
+                    row.append(rec.get("spec_id"))
+                rows.append(row)
 
-        with self.connect() as conn:
-            conn.executemany(
-                """
-                INSERT INTO raw_files (
-                    asset_id, source_path, original_name, media_type,
-                    file_size, checksum, archive_path, raw_bucket, raw_key,
-                    ingest_batch_id, transfer_tool, ingest_status, error_message,
-                    created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                rows,
-            )
+            conn.executemany(sql, rows)
             return len(rows)
 
     def insert_image_metadata(self, asset_id: str, meta: dict) -> None:
@@ -186,6 +198,33 @@ class DuckDBIngestMixin:
                 """,
                 [status, error_message, archive_path, raw_bucket, datetime.now(), asset_id],
             )
+
+    def batch_update_spec_and_status(
+        self, updates: list[dict]
+    ) -> int:
+        """raw_files.ingest_status( 및 spec_id) 배치 업데이트. updates: [{"asset_id", "ingest_status", "spec_id"?}]. spec_id 컬럼 있을 때만 spec_id 반영."""
+        if not updates:
+            return 0
+        now = datetime.now()
+        with self.connect() as conn:
+            columns = self._table_columns(conn, "raw_files")
+            has_spec_id = "spec_id" in columns
+            for u in updates:
+                aid = u.get("asset_id")
+                if not aid:
+                    continue
+                status = u.get("ingest_status", "pending")
+                if has_spec_id and "spec_id" in u:
+                    conn.execute(
+                        "UPDATE raw_files SET ingest_status = ?, spec_id = ?, updated_at = ? WHERE asset_id = ?",
+                        [status, u.get("spec_id"), now, aid],
+                    )
+                else:
+                    conn.execute(
+                        "UPDATE raw_files SET ingest_status = ?, updated_at = ? WHERE asset_id = ?",
+                        [status, now, aid],
+                    )
+            return len([x for x in updates if x.get("asset_id")])
 
     def batch_update_status(self, updates: list[dict]) -> int:
         """배치 상태 업데이트. updates: [{"asset_id", "status", "archive_path"?, "error_message"?}]"""
@@ -747,6 +786,31 @@ class DuckDBIngestMixin:
                 [normalized_archive_path, datetime.now(), normalized_asset_id],
             ).fetchone()
         return row is not None
+
+    def list_completed_videos_for_spec_router(
+        self, limit: int = 500
+    ) -> list[dict[str, Any]]:
+        """ingest_router용: ingest_status=completed, spec_id 미설정 비디오. source_unit_name 컬럼 있을 때만."""
+        with self.connect() as conn:
+            columns = self._table_columns(conn, "raw_files")
+            if "source_unit_name" not in columns or "spec_id" not in columns:
+                return []
+            rows = conn.execute(
+                """
+                SELECT asset_id, COALESCE(source_unit_name, '') AS source_unit_name, raw_key
+                FROM raw_files
+                WHERE media_type = 'video'
+                  AND ingest_status = 'completed'
+                  AND (spec_id IS NULL OR spec_id = '')
+                ORDER BY created_at
+                LIMIT ?
+                """,
+                [max(1, int(limit))],
+            ).fetchall()
+            return [
+                {"asset_id": r[0], "source_unit_name": r[1] or "", "raw_key": r[2]}
+                for r in rows
+            ]
 
     def find_by_raw_key_stem(self, stem: str) -> dict[str, Any] | None:
         with self.connect() as conn:

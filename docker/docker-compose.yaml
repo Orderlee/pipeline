@@ -113,7 +113,7 @@ services:
     image: datapipeline:gpu-cu124
     user: root
     working_dir: /app/dagster_home_staging
-    command: ["/bin/bash", "-c", "DAGSTER_HOME=/app/dagster_home_staging /app/dg dev -w /app/workspace.yaml -h 0.0.0.0 -p 3030"]
+    command: ["/bin/bash", "-c", "DAGSTER_HOME=/app/dagster_home_staging /app/dg dev -w /app/workspace_staging.yaml -h 0.0.0.0 -p 3030"]
     ports:
       - "3031:3030"
     env_file:

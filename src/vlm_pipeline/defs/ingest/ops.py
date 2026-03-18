@@ -162,6 +162,8 @@ def register_incoming(
                 "ingest_status": "pending",
                 "error_message": vr.message if vr.level == "WARN" else None,
             }
+            if source_unit_name:
+                record["source_unit_name"] = source_unit_name
 
             results.append({
                 "asset_id": asset_id,

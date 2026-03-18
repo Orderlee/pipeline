@@ -83,9 +83,36 @@ VALID_OUTPUTS = frozenset([
 ])
 
 # output 간 의존성: key를 요청하면 value도 자동 포함
+# (frame_extraction은 bbox 요청 시 내부 stage로만 추가, requested_outputs에는 미포함)
 _OUTPUT_DEPENDENCIES: dict[str, list[str]] = {
     "captioning": ["timestamp"],  # captioning은 timestamp(이벤트 구간 추출)에 의존
 }
+
+# categories → classes 파생 (auto_labeling_unified_spec, staging spec flow)
+CATEGORY_TO_CLASSES: dict[str, list[str]] = {
+    "smoke": ["smoke"],
+    "fire": ["fire", "flame"],
+    "falldown": ["person_fallen"],
+    "weapon": ["knife", "gun", "weapon"],
+    "violence": ["violence", "fight"],
+}
+
+
+def derive_classes_from_categories(categories: list[str] | None) -> list[str]:
+    """categories 배열을 받아 classes 배열 반환. 중복 제거, 순서 유지."""
+    if not categories:
+        return []
+    seen: set[str] = set()
+    out: list[str] = []
+    for cat in categories:
+        cat = (cat or "").strip().lower()
+        if not cat or cat in seen:
+            continue
+        for c in CATEGORY_TO_CLASSES.get(cat, [cat]):
+            if c not in seen:
+                seen.add(c)
+                out.append(c)
+    return out
 
 
 def resolve_outputs(run_mode: str | None, outputs_raw: str | None) -> list[str]:

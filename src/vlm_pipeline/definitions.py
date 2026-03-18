@@ -1,4 +1,4 @@
-"""Dagster Definitions — 단일 진입점.
+"""Dagster Definitions — Production 전용 진입점.
 
 Layer 5: 모든 assets + resources + sensors를 import하여 조립.
 docker/app/dagster_defs.py의 MVP 파이프라인과 동일 구조.
@@ -26,15 +26,17 @@ from vlm_pipeline.defs.ingest.sensor import (
 from vlm_pipeline.defs.label.assets import clip_timestamp
 from vlm_pipeline.defs.label.manual_import import manual_label_import
 from vlm_pipeline.defs.label.sensor import auto_labeling_sensor
-from vlm_pipeline.defs.dispatch.sensor import dispatch_sensor
-from vlm_pipeline.defs.dispatch.sensor_incoming_mover import incoming_to_pending_sensor
-from vlm_pipeline.defs.process.assets import clip_captioning, clip_to_frame, raw_video_to_frame
+from vlm_pipeline.defs.process.assets import (
+    clip_captioning,
+    clip_to_frame,
+    raw_video_to_frame,
+)
 from vlm_pipeline.defs.process.sensor import video_frame_extract_sensor
 from vlm_pipeline.defs.sync.assets import motherduck_sync
 from vlm_pipeline.defs.sync.sensor import MOTHERDUCK_TABLE_SENSORS
 from vlm_pipeline.defs.yolo.assets import yolo_image_detection
 from vlm_pipeline.defs.yolo.sensor import yolo_detection_sensor
-from vlm_pipeline.lib.env_utils import IS_STAGING, bool_env
+from vlm_pipeline.lib.env_utils import bool_env
 from vlm_pipeline.resources.duckdb import DuckDBResource
 from vlm_pipeline.resources.minio import MinIOResource
 
@@ -54,20 +56,6 @@ mvp_stage_job = define_asset_job(
     ],
     tags={"duckdb_writer": "true"},
     description="전체 파이프라인 — 수집 → timestamp → captioning → clip절단 → 데이터셋 조립",
-)
-
-dispatch_stage_job = define_asset_job(
-    "dispatch_stage_job",
-    selection=[
-        raw_ingest,
-        clip_timestamp,
-        clip_captioning,
-        clip_to_frame,
-        raw_video_to_frame,
-        yolo_image_detection,
-    ],
-    tags={"duckdb_writer": "true"},
-    description="Staging-only dispatch — run_mode에 따라 처리 분기",
 )
 
 ingest_job = define_asset_job(
@@ -173,6 +161,7 @@ gcs_download_schedule = ScheduleDefinition(
 )
 
 # ── Definitions ──
+
 assets = [
     raw_ingest,
     gcs_download_to_incoming,
@@ -211,25 +200,8 @@ sensors = [
     video_frame_extract_sensor,
     *MOTHERDUCK_TABLE_SENSORS,
 ]
-if IS_STAGING:
-    jobs.append(dispatch_stage_job)
-    sensors.append(incoming_to_pending_sensor)
-    sensors.append(dispatch_sensor)
-    
 if ENABLE_YOLO_DETECTION:
-    jobs.append(yolo_detection_job)
-    if not IS_STAGING:
-        sensors.append(yolo_detection_sensor)
-
-if IS_STAGING:
-    # staging에서는 자동 backlog 처리 센서 배제
-    sensors = [
-        s for s in sensors 
-        if s.name not in (
-            "auto_labeling_sensor", "yolo_detection_sensor", 
-            "auto_bootstrap_manifest_sensor", "incoming_manifest_sensor"
-        )
-    ]
+    sensors.append(yolo_detection_sensor)
 
 defs = Definitions(
     assets=assets,
