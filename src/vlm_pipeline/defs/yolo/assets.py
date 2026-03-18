@@ -181,6 +181,29 @@ def yolo_image_detection(
     return summary
 
 
+@asset(
+    name="bbox_labeling",
+    deps=["clip_to_frame_routed"],
+    description="Staging spec flow: requested_outputs에 bbox 포함 시 frame_status=completed 대상 YOLO detection",
+    group_name="yolo",
+    config_schema={"limit": Field(int, default_value=500)},
+)
+def bbox_labeling(
+    context,
+    db: DuckDBResource,
+    minio: MinIOResource,
+) -> dict:
+    """run tag: spec_id, requested_outputs, resolved_config_id. bbox 요청 시 spec.classes × config.bbox.target_classes."""
+    tags = context.run.tags if context.run else {}
+    requested = (tags.get("requested_outputs") or "").strip().split("_")
+    if "bbox" not in requested:
+        context.log.info("bbox_labeling 스킵: requested_outputs에 bbox 없음")
+        return {"processed": 0, "failed": 0, "total_detections": 0, "skipped": True}
+    # TODO: spec_id·frame_status=completed 기준 백로그 조회, target_classes = intersection(spec.classes, config.bbox.target_classes)
+    context.log.info("bbox_labeling: 스펙/설정 연동 TODO")
+    return {"processed": 0, "failed": 0, "total_detections": 0}
+
+
 def _build_yolo_label_key(image_key: str) -> str:
     key_path = PurePosixPath(str(image_key or "").strip())
     stem = key_path.stem or "image"

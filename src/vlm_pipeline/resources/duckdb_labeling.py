@@ -68,6 +68,124 @@ class DuckDBLabelingMixin:
                 [status, error, label_key, labeled_at, asset_id],
             )
 
+    def update_timestamp_status(
+        self,
+        asset_id: str,
+        status: str,
+        *,
+        error: str | None = None,
+        label_key: str | None = None,
+        completed_at: datetime | None = None,
+    ) -> None:
+        """video_metadata stage column (staging spec flow). 컬럼 없으면 no-op."""
+        with self.connect() as conn:
+            if "timestamp_status" not in self._table_columns(conn, "video_metadata"):
+                return
+            conn.execute(
+                """
+                UPDATE video_metadata
+                SET timestamp_status = ?,
+                    timestamp_error = ?,
+                    timestamp_label_key = COALESCE(?, timestamp_label_key),
+                    timestamp_completed_at = COALESCE(?, timestamp_completed_at)
+                WHERE asset_id = ?
+                """,
+                [status, error, label_key, completed_at, asset_id],
+            )
+
+    def update_caption_status(
+        self,
+        asset_id: str,
+        status: str,
+        *,
+        error: str | None = None,
+        completed_at: datetime | None = None,
+    ) -> None:
+        with self.connect() as conn:
+            if "caption_status" not in self._table_columns(conn, "video_metadata"):
+                return
+            conn.execute(
+                """
+                UPDATE video_metadata
+                SET caption_status = ?, caption_error = ?, caption_completed_at = COALESCE(?, caption_completed_at)
+                WHERE asset_id = ?
+                """,
+                [status, error, completed_at, asset_id],
+            )
+
+    def update_frame_status(
+        self,
+        asset_id: str,
+        status: str,
+        *,
+        error: str | None = None,
+        completed_at: datetime | None = None,
+    ) -> None:
+        with self.connect() as conn:
+            if "frame_status" not in self._table_columns(conn, "video_metadata"):
+                return
+            conn.execute(
+                """
+                UPDATE video_metadata
+                SET frame_status = ?, frame_error = ?, frame_completed_at = COALESCE(?, frame_completed_at)
+                WHERE asset_id = ?
+                """,
+                [status, error, completed_at, asset_id],
+            )
+
+    def update_bbox_status(
+        self,
+        asset_id: str,
+        status: str,
+        *,
+        error: str | None = None,
+        completed_at: datetime | None = None,
+    ) -> None:
+        with self.connect() as conn:
+            if "bbox_status" not in self._table_columns(conn, "video_metadata"):
+                return
+            conn.execute(
+                """
+                UPDATE video_metadata
+                SET bbox_status = ?, bbox_error = ?, bbox_completed_at = COALESCE(?, bbox_completed_at)
+                WHERE asset_id = ?
+                """,
+                [status, error, completed_at, asset_id],
+            )
+
+    def find_ready_for_labeling_timestamp_backlog(
+        self, spec_id: str, limit: int = 50
+    ) -> list[dict]:
+        """Staging spec flow: ready_for_labeling + spec_id, timestamp 미완료 비디오."""
+        with self.connect() as conn:
+            cols = self._table_columns(conn, "raw_files")
+            if "spec_id" not in cols:
+                return []
+            vm_cols = self._table_columns(conn, "video_metadata")
+            if "timestamp_status" not in vm_cols:
+                return []
+            rows = conn.execute(
+                """
+                SELECT
+                    r.asset_id, r.raw_bucket, r.raw_key, r.archive_path, r.source_path,
+                    vm.duration_sec, vm.fps, vm.frame_count
+                FROM raw_files r
+                JOIN video_metadata vm ON vm.asset_id = r.asset_id
+                WHERE r.media_type = 'video'
+                  AND r.ingest_status = 'ready_for_labeling'
+                  AND r.spec_id = ?
+                  AND COALESCE(vm.timestamp_status, 'pending') = 'pending'
+                ORDER BY r.created_at
+                LIMIT ?
+                """,
+                [spec_id, max(1, int(limit))],
+            ).fetchall()
+            columns = [
+                "asset_id", "raw_bucket", "raw_key", "archive_path", "source_path",
+                "duration_sec", "fps", "frame_count",
+            ]
+            return [dict(zip(columns, row)) for row in rows]
+
     def find_captioning_pending_videos(self, limit: int = 100, folder_name: str | None = None) -> list[dict]:
         """Gemini JSON 생성 완료(generated) 후 아직 DB 정규화가 안 된 video."""
         with self.connect() as conn:

@@ -255,3 +255,51 @@ CREATE TABLE IF NOT EXISTS staging_pipeline_runs (
     error_message        TEXT,
     created_at           TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
+
+-- ============================================================
+-- Staging spec flow (auto_labeling_unified_spec): IS_STAGING 전용
+-- raw_files.spec_id, source_unit_name / video_metadata stage columns
+-- are added via duckdb_base ALTER for backward compatibility.
+-- ingest_status 허용값: pending, uploading, completed, failed, skipped,
+--   pending_spec, ready_for_labeling
+-- ============================================================
+
+-- 12. labeling_specs: spec 수신 → 라우팅/재시도/완료 추적
+CREATE TABLE IF NOT EXISTS labeling_specs (
+    spec_id              VARCHAR PRIMARY KEY,
+    requester_id         VARCHAR,
+    team_id              VARCHAR,
+    source_unit_name     VARCHAR,
+    categories           JSON,                     -- category array
+    classes              JSON,                     -- resolved class array (derived from categories)
+    labeling_method      JSON,                     -- ["timestamp","captioning","bbox"] or []
+    spec_status          VARCHAR DEFAULT 'pending', -- pending | pending_resolved | active | completed | failed
+    retry_count          INTEGER DEFAULT 0,
+    resolved_config_id   VARCHAR,
+    resolved_config_scope VARCHAR,                 -- personal | team | fallback
+    last_error           TEXT,
+    created_at           TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at           TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- 13. labeling_configs: config/parameters/*.json 동기화
+CREATE TABLE IF NOT EXISTS labeling_configs (
+    config_id            VARCHAR PRIMARY KEY,
+    config_json          JSON NOT NULL,
+    version              INTEGER DEFAULT 1,
+    is_active            BOOLEAN DEFAULT TRUE,
+    created_at           TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at           TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- 14. requester_config_map: requester/team → config 매핑 (personal → team → _fallback)
+CREATE TABLE IF NOT EXISTS requester_config_map (
+    map_id               VARCHAR PRIMARY KEY,
+    requester_id         VARCHAR,
+    team_id              VARCHAR,
+    scope                VARCHAR NOT NULL,          -- personal | team
+    config_id            VARCHAR NOT NULL,
+    is_active            BOOLEAN DEFAULT TRUE,
+    created_at           TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at           TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
