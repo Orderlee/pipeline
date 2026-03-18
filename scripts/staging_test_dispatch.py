@@ -75,6 +75,7 @@ def generate_trigger_json(
     test_idx: int,
     outputs: list[str] | None = None,
     image_params: dict | None = None,
+    request_id_override: str | None = None,
 ) -> dict:
     """랜덤 trigger JSON 생성."""
     if outputs is None:
@@ -83,7 +84,7 @@ def generate_trigger_json(
         image_params = random.choice(IMAGE_PARAM_PRESETS)
 
     now = datetime.now()
-    request_id = f"staging_r{round_num:02d}_t{test_idx:02d}_{now:%Y%m%d_%H%M%S}"
+    request_id = request_id_override or f"staging_r{round_num:02d}_t{test_idx:02d}_{now:%Y%m%d_%H%M%S}"
 
     trigger = {
         "request_id": request_id,
@@ -98,6 +99,20 @@ def generate_trigger_json(
         trigger.update(image_params)
 
     return trigger
+
+
+def wait_until_folder_in_archive_pending(folder_name: str, timeout_sec: int = 180, interval: float = 5.0) -> None:
+    """incoming_to_pending_sensor가 폴더를 옮길 때까지 대기."""
+    dest = ARCHIVE_PENDING_DIR / folder_name
+    print(f"  [WAIT] archive_pending/{folder_name} 생성 대기 (최대 {timeout_sec}s)...")
+    start = time.time()
+    while time.time() - start < timeout_sec:
+        if dest.is_dir():
+            elapsed = time.time() - start
+            print(f"  [OK] archive_pending 확인 ({elapsed:.0f}s)")
+            return
+        time.sleep(interval)
+    raise TimeoutError(f"archive_pending/{folder_name} 미생성 ({timeout_sec}s 초과)")
 
 
 def place_trigger(trigger: dict) -> Path:
@@ -334,6 +349,17 @@ def main():
     parser.add_argument("--auto-cycle", action="store_true", help="자동 사이클 모드")
     parser.add_argument("--rounds", type=int, default=3, help="자동 사이클 반복 횟수")
     parser.add_argument("--generate-only", action="store_true", help="trigger JSON만 생성 (대기 안함)")
+    parser.add_argument(
+        "--wait-archive-pending",
+        action="store_true",
+        help="복사 후 archive_pending 이동까지 대기 후 트리거 (센서 레이스 방지)",
+    )
+    parser.add_argument(
+        "--skip-copy",
+        action="store_true",
+        help="이미 incoming에 atomic 배치됨 — 복사 생략, archive_pending 대기만",
+    )
+    parser.add_argument("--request-id", type=str, default=None, help="고정 request_id (QA 보고용)")
     args = parser.parse_args()
 
     if args.auto_cycle:
@@ -349,11 +375,19 @@ def main():
         trigger = generate_trigger_json(
             args.folder, args.round, args.test_idx,
             outputs=args.outputs,
+            request_id_override=args.request_id,
         )
-        copy_test_data(args.folder)
+        if args.skip_copy:
+            if not args.wait_archive_pending:
+                print("  --skip-copy 는 --wait-archive-pending 와 함께 사용하세요.", file=sys.stderr)
+                sys.exit(1)
+        else:
+            copy_test_data(args.folder)
+        if args.wait_archive_pending:
+            wait_until_folder_in_archive_pending(args.folder)
         place_trigger(trigger)
         if not args.generate_only:
-            wait_for_dispatch_processing(trigger["request_id"])
+            wait_for_dispatch_processing(trigger["request_id"], timeout_sec=300)
             check_dagster_run_status(trigger["request_id"])
     else:
         parser.print_help()

@@ -161,6 +161,29 @@ def clip_captioning(
     return summary
 
 
+@asset(
+    name="clip_captioning_routed",
+    deps=["clip_timestamp_routed"],
+    description="Staging spec flow: requested_outputs에 captioning 포함 시 caption 생성",
+    group_name="auto_labeling",
+    config_schema={"limit": Field(int, default_value=200)},
+)
+def clip_captioning_routed(
+    context,
+    db: DuckDBResource,
+    minio: MinIOResource,
+) -> dict:
+    """run tag: spec_id, requested_outputs. requested_outputs에 captioning 있을 때만 실행."""
+    tags = context.run.tags if context.run else {}
+    requested = (tags.get("requested_outputs") or "").strip().split("_")
+    if "captioning" not in requested:
+        context.log.info("clip_captioning_routed 스킵: requested_outputs에 captioning 없음")
+        return {"processed": 0, "failed": 0, "labels_inserted": 0, "skipped": True}
+    # TODO: spec_id 기준 timestamp_status=completed 백로그 조회 후 기존 clip_captioning 로직 재사용
+    context.log.info("clip_captioning_routed: 스펙 백로그 연동 TODO")
+    return {"processed": 0, "failed": 0, "labels_inserted": 0}
+
+
 # ═══════════════════════════════════════════════════════════════
 # clip_to_frame — clip 생성 + ffprobe + 적응형 프레임 추출
 # ═══════════════════════════════════════════════════════════════
@@ -691,6 +714,33 @@ def _stable_clip_id(
         str(clip_start_sec), str(clip_end_sec), str(clip_key),
     ])
     return sha1(token.encode("utf-8")).hexdigest()
+
+
+# ═══════════════════════════════════════════════════════════════
+# Staging spec flow: clip_to_frame_routed
+# ═══════════════════════════════════════════════════════════════
+
+@asset(
+    name="clip_to_frame_routed",
+    deps=["clip_timestamp_routed"],
+    description="Staging spec flow: requested_outputs에 bbox 포함 시 clip+frame 추출",
+    group_name="auto_labeling",
+    config_schema={"limit": Field(int, default_value=1000)},
+)
+def clip_to_frame_routed(
+    context,
+    db: DuckDBResource,
+    minio: MinIOResource,
+) -> dict:
+    """run tag: spec_id, requested_outputs. bbox 요청 시 내부 stage로 frame 추출."""
+    tags = context.run.tags if context.run else {}
+    requested = (tags.get("requested_outputs") or "").strip().split("_")
+    if "bbox" not in requested:
+        context.log.info("clip_to_frame_routed 스킵: requested_outputs에 bbox 없음")
+        return {"processed": 0, "failed": 0, "frames_extracted": 0, "skipped": True}
+    # TODO: spec_id 기준 timestamp_status=completed 백로그 조회 후 clip 생성 + frame 추출, frame_status 갱신
+    context.log.info("clip_to_frame_routed: 스펙 백로그 연동 TODO")
+    return {"processed": 0, "failed": 0, "frames_extracted": 0}
 
 
 # ═══════════════════════════════════════════════════════════════

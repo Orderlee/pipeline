@@ -1,6 +1,8 @@
 # Data & Logs
 minio_data/
 scanner_output/
+docs/
+result/
 catalog/logs/
 catalog/*.duckdb
 catalog/*.duckdb.wal

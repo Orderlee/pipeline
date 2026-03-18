@@ -101,6 +101,8 @@ class DuckDBBaseMixin:
             self._ensure_staging_dispatch_columns(conn)
             self._ensure_staging_model_configs(conn)
             self._ensure_staging_pipeline_runs(conn)
+            self._ensure_raw_files_spec_columns(conn)
+            self._ensure_video_metadata_stage_columns(conn)
 
     @staticmethod
     def _table_exists(conn: duckdb.DuckDBPyConnection, table_name: str) -> bool:
@@ -505,3 +507,45 @@ class DuckDBBaseMixin:
             )
             """
         )
+
+    # ── Staging spec flow (labeling_specs / raw_files / video_metadata) ──
+
+    @classmethod
+    def _ensure_raw_files_spec_columns(cls, conn: duckdb.DuckDBPyConnection) -> None:
+        """raw_files에 spec_id, source_unit_name 컬럼이 없으면 추가."""
+        columns = cls._table_columns(conn, "raw_files")
+        if not columns:
+            return
+        for column_name, column_type in (
+            ("spec_id", "VARCHAR"),
+            ("source_unit_name", "VARCHAR"),
+        ):
+            if column_name in columns:
+                continue
+            conn.execute(f"ALTER TABLE raw_files ADD COLUMN {column_name} {column_type}")
+
+    @classmethod
+    def _ensure_video_metadata_stage_columns(cls, conn: duckdb.DuckDBPyConnection) -> None:
+        """video_metadata에 stage status 컬럼(timestamp/caption/frame/bbox)이 없으면 추가."""
+        columns = cls._table_columns(conn, "video_metadata")
+        if not columns:
+            return
+        alter_specs = {
+            "timestamp_status": "VARCHAR DEFAULT 'pending'",
+            "timestamp_error": "TEXT",
+            "timestamp_label_key": "VARCHAR",
+            "timestamp_completed_at": "TIMESTAMP",
+            "caption_status": "VARCHAR DEFAULT 'pending'",
+            "caption_error": "TEXT",
+            "caption_completed_at": "TIMESTAMP",
+            "frame_status": "VARCHAR DEFAULT 'pending'",
+            "frame_error": "TEXT",
+            "frame_completed_at": "TIMESTAMP",
+            "bbox_status": "VARCHAR DEFAULT 'pending'",
+            "bbox_error": "TEXT",
+            "bbox_completed_at": "TIMESTAMP",
+        }
+        for column_name, column_type in alter_specs.items():
+            if column_name in columns:
+                continue
+            conn.execute(f"ALTER TABLE video_metadata ADD COLUMN {column_name} {column_type}")
