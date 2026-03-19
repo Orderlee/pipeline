@@ -1,6 +1,7 @@
-"""Spec flow assets — labeling_spec_ingest, config_sync, ingest_router, pending_ingest.
+"""Staging 전용 spec flow assets — config_sync(version/삭제 반영), ingest_router(config 미조회), activate_labeling_spec.
 
-Staging-only (IS_STAGING). Run after raw_ingest for ingest_router.
+명세: 라우터는 pending/ready 분기만, config는 3-5(clip_timestamp_routed)에서 조회.
+definitions_staging에서만 import하여 사용.
 """
 
 from __future__ import annotations
@@ -24,26 +25,13 @@ def _normalize_labeling_method(method: list[str] | None) -> list[str]:
     return [m for m in method if str(m).strip().lower() in VALID_LABELING_METHODS]
 
 
-@asset(
-    name="labeling_spec_ingest",
-    description="외부 spec 수신 → labeling_specs upsert (staging spec flow)",
-    group_name="spec",
-    deps=[],
-)
-def labeling_spec_ingest(
-    context,
-    db: DuckDBResource,
-) -> dict:
-    """수동 또는 외부 트리거로 spec JSON 수신 시 upsert. UI/테스트용 — 실제 수신은 Flex/Slack 등."""
-    # 실제 구현에서는 run_config 또는 외부 페이로드에서 spec을 받음.
-    # 여기서는 빈 결과 반환 (수동 materialize 시 config만 동기화 등).
-    context.log.info("labeling_spec_ingest: spec 수신 없음(수동 materialize). spec은 외부에서 upsert.")
-    return {"specs_upserted": 0}
+def _canonicalize_config_json(config_json: object) -> str:
+    return json.dumps(config_json, ensure_ascii=False, sort_keys=True)
 
 
 @asset(
     name="config_sync",
-    description="config/parameters/*.json → labeling_configs 동기화. _fallback.json 필수.",
+    description="[Staging] config/parameters/*.json → labeling_configs 동기화. version+1, 삭제 시 is_active=false.",
     group_name="spec",
     deps=[],
 )
@@ -51,7 +39,7 @@ def config_sync(
     context,
     db: DuckDBResource,
 ) -> dict:
-    """Dagster UI 수동 materialize. config 디렉터리에서 JSON 로드 후 DB 반영."""
+    """Staging: 신규 INSERT, 변경 시 version+1, 삭제 시 is_active=false."""
     db.ensure_schema()
     config_dir = Path(CONFIG_PARAMETERS_DIR)
     if not config_dir.is_dir():
@@ -68,21 +56,73 @@ def config_sync(
         context.log.error("config_sync: _fallback.json 필수.")
         return {"synced": 0, "errors": ["_fallback_required"]}
 
+    existing_configs = {
+        cfg["config_id"]: cfg for cfg in db.list_labeling_configs(include_inactive=True)
+    }
     synced = 0
+    inserted = 0
+    updated = 0
+    reactivated = 0
+    unchanged = 0
+    deactivated = 0
+    errors: list[str] = []
+
     for f in files:
         try:
             raw = f.read_text(encoding="utf-8")
             data = json.loads(raw)
-            db.upsert_labeling_config(f.stem, data, version=1, is_active=True)
+            config_id = f.stem
+            existing = existing_configs.get(config_id)
+            if not existing:
+                db.upsert_labeling_config(config_id, data, version=1, is_active=True)
+                inserted += 1
+                synced += 1
+                continue
+
+            same_content = _canonicalize_config_json(data) == _canonicalize_config_json(
+                existing.get("config_json") or {}
+            )
+            version = int(existing.get("version") or 1)
+            is_active = bool(existing.get("is_active"))
+
+            if same_content:
+                if not is_active:
+                    db.upsert_labeling_config(config_id, data, version=version, is_active=True)
+                    reactivated += 1
+                else:
+                    unchanged += 1
+                synced += 1
+                continue
+
+            db.upsert_labeling_config(config_id, data, version=version + 1, is_active=True)
+            updated += 1
             synced += 1
         except Exception as e:
             context.log.error(f"config_sync: {f.name} 실패: {e}")
-    return {"synced": synced}
+            errors.append(f"{f.name}: {e}")
+
+    for config_id, existing in existing_configs.items():
+        if config_id in config_ids or not bool(existing.get("is_active")):
+            continue
+        db.set_labeling_config_active(config_id, False)
+        deactivated += 1
+
+    out = {
+        "synced": synced,
+        "inserted": inserted,
+        "updated": updated,
+        "reactivated": reactivated,
+        "unchanged": unchanged,
+        "deactivated": deactivated,
+    }
+    if errors:
+        out["errors"] = errors
+    return out
 
 
 @asset(
     name="ingest_router",
-    description="completed raw_files + labeling_specs 매칭 → pending_spec | ready_for_labeling",
+    description="[Staging] completed raw_files + labeling_specs 매칭 → pending_spec | ready_for_labeling (config 조회 없음)",
     group_name="spec",
     deps=[AssetKey("raw_ingest")],
 )
@@ -90,7 +130,7 @@ def ingest_router(
     context,
     db: DuckDBResource,
 ) -> dict:
-    """source_unit_name 기준 spec 매칭, config resolve, raw_files.ingest_status 전이 (운영: config 조회 포함)."""
+    """Staging: 라우터는 분기만. config는 clip_timestamp_routed(3-5)에서 조회."""
     db.ensure_schema()
     if not getattr(db, "_table_exists", None):
         return {"routed": 0, "pending_spec": 0, "ready": 0, "failed": 0}
@@ -106,7 +146,6 @@ def ingest_router(
     routed = 0
     pending_spec = 0
     ready = 0
-    failed = 0
 
     for source_unit_name, rows in by_unit.items():
         if not source_unit_name or source_unit_name == "_unknown_":
@@ -146,15 +185,6 @@ def ingest_router(
             routed += len(rows)
             continue
 
-        config_id, scope = db.resolve_config_for_requester(
-            spec.get("requester_id"), spec.get("team_id")
-        )
-        if not config_id:
-            db.update_spec_status(spec["spec_id"], "failed", last_error="config_not_found")
-            failed += len(rows)
-            continue
-
-        db.update_spec_resolved_config(spec["spec_id"], config_id, scope or "fallback")
         updates = [
             {
                 "asset_id": r["asset_id"],
@@ -167,39 +197,30 @@ def ingest_router(
         ready += len(rows)
         routed += len(rows)
 
-    return {"routed": routed, "pending_spec": pending_spec, "ready": ready, "failed": failed}
+    return {"routed": routed, "pending_spec": pending_spec, "ready": ready, "failed": 0}
 
 
 @asset(
-    name="pending_ingest",
-    description="ingest_status=pending_spec 집계",
+    name="activate_labeling_spec",
+    description="[Staging] routed job 전체 성공 시 spec_status를 active로 전환",
     group_name="spec",
-    deps=[AssetKey("ingest_router")],
+    deps=[AssetKey("bbox_labeling")],
 )
-def pending_ingest(
+def activate_labeling_spec(
     context,
     db: DuckDBResource,
 ) -> dict:
-    """pending_spec 건수·파일 수 출력."""
-    with db.connect() as conn:
-        if not db._table_exists(conn, "raw_files"):
-            return {"pending_spec_count": 0, "pending_file_count": 0}
-        cols = db._table_columns(conn, "raw_files")
-        if "ingest_status" not in cols:
-            return {"pending_spec_count": 0, "pending_file_count": 0}
-        row = conn.execute(
-            "SELECT COUNT(*) FROM raw_files WHERE ingest_status = 'pending_spec'"
-        ).fetchone()
-        file_count = int(row[0]) if row else 0
-        # spec 단위 집계는 labeling_specs + source_unit_name 매칭으로 가능하나 단순화
-        spec_row = conn.execute(
-            """
-            SELECT COUNT(DISTINCT COALESCE(source_unit_name, ''))
-            FROM raw_files
-            WHERE ingest_status = 'pending_spec' AND COALESCE(source_unit_name, '') <> ''
-            """
-        ).fetchone() if "source_unit_name" in cols else (0,)
-        spec_count = int(spec_row[0]) if spec_row else 0
-    out = {"pending_spec_count": spec_count, "pending_file_count": file_count}
-    context.log.info(f"pending_ingest: {out}")
-    return out
+    """auto_labeling_routed_job 성공 완료 시 spec_status='active' 반영."""
+    tags = context.run.tags if context.run else {}
+    spec_id = str(tags.get("spec_id") or "").strip()
+    if not spec_id:
+        return {"updated": False, "skipped": True}
+
+    spec = db.get_labeling_spec_by_id(spec_id)
+    if not spec:
+        context.log.warning(f"activate_labeling_spec: spec_id={spec_id} 없음")
+        return {"updated": False, "skipped": True}
+
+    db.update_spec_status(spec_id, "active", clear_last_error=True)
+    context.log.info(f"activate_labeling_spec: spec_id={spec_id} -> active")
+    return {"updated": True, "spec_id": spec_id}
