@@ -22,6 +22,11 @@ from PIL import Image
 from vlm_pipeline.lib.checksum import sha256_bytes
 from vlm_pipeline.lib.env_utils import should_run_output
 from vlm_pipeline.lib.gemini import extract_clean_json_text
+from vlm_pipeline.lib.spec_config import (
+    is_standard_spec_run,
+    load_persisted_spec_config,
+    parse_requested_outputs,
+)
 from vlm_pipeline.lib.video_frames import (
     describe_frame_bytes,
     extract_frame_jpeg_bytes,
@@ -173,15 +178,35 @@ def clip_captioning_routed(
     db: DuckDBResource,
     minio: MinIOResource,
 ) -> dict:
-    """run tag: spec_id, requested_outputs. requested_outputs에 captioning 있을 때만 실행."""
+    """run tag: requested_outputs (spec flow) 또는 outputs (dispatch flow). captioning 포함 시 실행."""
     tags = context.run.tags if context.run else {}
-    requested = (tags.get("requested_outputs") or "").strip().split("_")
-    if "captioning" not in requested:
-        context.log.info("clip_captioning_routed 스킵: requested_outputs에 captioning 없음")
+    requested = parse_requested_outputs(tags)
+    spec_id = str(tags.get("spec_id") or "").strip()
+    standard_spec_run = is_standard_spec_run(tags)
+    if "captioning" not in requested and not standard_spec_run:
+        context.log.info("clip_captioning_routed 스킵: outputs에 captioning 없음")
         return {"processed": 0, "failed": 0, "labels_inserted": 0, "skipped": True}
+
+    resolved_config_id = None
+    if spec_id:
+        config_bundle = load_persisted_spec_config(db, spec_id)
+        resolved_config_id = config_bundle["resolved_config_id"]
+        captioning_config = config_bundle["config_json"].get("captioning", {})
+        context.log.info(
+            "clip_captioning_routed: spec_id=%s resolved_config_id=%s captioning_keys=%s",
+            spec_id,
+            resolved_config_id,
+            sorted(captioning_config.keys()),
+        )
+
     # TODO: spec_id 기준 timestamp_status=completed 백로그 조회 후 기존 clip_captioning 로직 재사용
     context.log.info("clip_captioning_routed: 스펙 백로그 연동 TODO")
-    return {"processed": 0, "failed": 0, "labels_inserted": 0}
+    return {
+        "processed": 0,
+        "failed": 0,
+        "labels_inserted": 0,
+        "resolved_config_id": resolved_config_id,
+    }
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -347,11 +372,13 @@ def clip_to_frame(
                 }
             )
 
-            # 적응형 프레임 추출 (video clip만)
+            # 균등 프레임 추출 (video clip만): 1시간 미만 1초 간격, 1시간 이상 10초 간격
+            # 시점 계획은 lib.video_frames.plan_frame_timestamps (운영·스테이징 공통, sec < duration)
             frames_count = 0
             if media_type == "video":
                 if temp_clip_path is None or clip_duration is None or clip_duration <= 0:
                     raise RuntimeError("clip_meta_missing_or_invalid")
+                clip_interval = 10.0 if clip_duration >= 3600 else 1.0
                 db.update_clip_image_extract_status(clip_id, "processing")
                 frame_rows, uploaded_frame_keys = _extract_clip_frames(
                     minio,
@@ -365,6 +392,7 @@ def clip_to_frame(
                     max_frames=max_frames,
                     jpeg_quality=jpeg_quality,
                     image_profile=image_profile,
+                    frame_interval_sec=clip_interval,
                 )
                 db.replace_processed_clip_frame_metadata(asset_id, clip_id, frame_rows)
                 frames_count = len(frame_rows)
@@ -534,6 +562,7 @@ def _extract_clip_frames(
     max_frames: int,
     jpeg_quality: int,
     image_profile: str = "current",
+    frame_interval_sec: float | None = None,
 ) -> tuple[list[dict[str, Any]], list[str]]:
     """clip 비디오에서 적응형 프레임 추출 → vlm-processed 업로드용 row/keys 반환."""
     now = datetime.now()
@@ -543,6 +572,7 @@ def _extract_clip_frames(
         frame_count=frame_count,
         max_frames_per_video=max_frames,
         image_profile=image_profile,
+        frame_interval_sec=frame_interval_sec,
     )
 
     frame_rows: list[dict[str, Any]] = []
@@ -722,7 +752,7 @@ def _stable_clip_id(
 
 @asset(
     name="clip_to_frame_routed",
-    deps=["clip_timestamp_routed"],
+    deps=["clip_captioning_routed"],
     description="Staging spec flow: requested_outputs에 bbox 포함 시 clip+frame 추출",
     group_name="auto_labeling",
     config_schema={"limit": Field(int, default_value=1000)},
@@ -732,15 +762,34 @@ def clip_to_frame_routed(
     db: DuckDBResource,
     minio: MinIOResource,
 ) -> dict:
-    """run tag: spec_id, requested_outputs. bbox 요청 시 내부 stage로 frame 추출."""
+    """run tag: requested_outputs (spec flow) 또는 outputs (dispatch flow). bbox 포함 시 frame 추출."""
     tags = context.run.tags if context.run else {}
-    requested = (tags.get("requested_outputs") or "").strip().split("_")
+    requested = parse_requested_outputs(tags)
     if "bbox" not in requested:
-        context.log.info("clip_to_frame_routed 스킵: requested_outputs에 bbox 없음")
+        context.log.info("clip_to_frame_routed 스킵: outputs에 bbox 없음")
         return {"processed": 0, "failed": 0, "frames_extracted": 0, "skipped": True}
+
+    spec_id = str(tags.get("spec_id") or "").strip()
+    resolved_config_id = None
+    if spec_id:
+        config_bundle = load_persisted_spec_config(db, spec_id)
+        resolved_config_id = config_bundle["resolved_config_id"]
+        frame_config = config_bundle["config_json"].get("frame_extraction", {})
+        context.log.info(
+            "clip_to_frame_routed: spec_id=%s resolved_config_id=%s frame_keys=%s",
+            spec_id,
+            resolved_config_id,
+            sorted(frame_config.keys()),
+        )
+
     # TODO: spec_id 기준 timestamp_status=completed 백로그 조회 후 clip 생성 + frame 추출, frame_status 갱신
     context.log.info("clip_to_frame_routed: 스펙 백로그 연동 TODO")
-    return {"processed": 0, "failed": 0, "frames_extracted": 0}
+    return {
+        "processed": 0,
+        "failed": 0,
+        "frames_extracted": 0,
+        "resolved_config_id": resolved_config_id,
+    }
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -806,6 +855,9 @@ def raw_video_to_frame(
             failed += 1
             continue
 
+        # 1시간 미만 1초 간격, 1시간 이상 10초 간격 (시점은 plan_frame_timestamps, sec < duration)
+        frame_interval = 10.0 if duration_sec >= 3600 else 1.0
+
         try:
             db.update_video_frame_extract_status(asset_id, "processing")
             video_path, temp_video_path = _materialize_video_path(
@@ -824,6 +876,7 @@ def raw_video_to_frame(
                 max_frames=max_frames,
                 jpeg_quality=jpeg_quality,
                 image_profile=image_profile,
+                frame_interval_sec=frame_interval,
             )
 
             db.replace_video_frame_metadata(asset_id, frame_rows, image_role="raw_video_frame")
@@ -881,6 +934,7 @@ def _extract_raw_video_frames(
     max_frames: int,
     jpeg_quality: int,
     image_profile: str = "current",
+    frame_interval_sec: float | None = None,
 ) -> tuple[list[dict[str, Any]], list[str]]:
     now = datetime.now()
     timestamps = plan_frame_timestamps(
@@ -889,6 +943,7 @@ def _extract_raw_video_frames(
         frame_count=frame_count,
         max_frames_per_video=max_frames,
         image_profile=image_profile,
+        frame_interval_sec=frame_interval_sec,
     )
 
     frame_rows: list[dict[str, Any]] = []
