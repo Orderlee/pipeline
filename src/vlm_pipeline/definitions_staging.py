@@ -5,9 +5,12 @@ IS_STAGING 분기 없이 staging 전용 asset/job/sensor만 등록.
 
 파이프라인 흐름 (staging):
   incoming → dispatch_sensor → raw_ingest
-    → spec_resolve_sensor → ready_for_labeling_sensor
+    → spec_resolve_sensor
     → clip_timestamp_routed → clip_captioning_routed → clip_to_frame_routed
-    → bbox_labeling (YOLO)
+    → bbox_labeling (YOLO) → activate_labeling_spec
+
+프레임 추출 시점은 운영과 동일하게 `vlm_pipeline.lib.video_frames.plan_frame_timestamps` 를 사용한다
+(`raw_video_to_frame` 등).
 """
 
 from __future__ import annotations
@@ -26,13 +29,13 @@ from vlm_pipeline.defs.process.assets import (
     clip_to_frame_routed,
     raw_video_to_frame,
 )
-from vlm_pipeline.defs.spec.assets import (
+from vlm_pipeline.defs.spec.assets import labeling_spec_ingest, pending_ingest
+from vlm_pipeline.defs.spec.staging_assets import (
+    activate_labeling_spec,
     config_sync,
     ingest_router,
-    labeling_spec_ingest,
-    pending_ingest,
 )
-from vlm_pipeline.defs.spec.sensor import ready_for_labeling_sensor, spec_resolve_sensor
+from vlm_pipeline.defs.spec.staging_sensor import spec_resolve_sensor
 from vlm_pipeline.defs.yolo.assets import bbox_labeling, yolo_image_detection
 from vlm_pipeline.resources.duckdb import DuckDBResource
 from vlm_pipeline.resources.minio import MinIOResource
@@ -49,6 +52,7 @@ assets = [
     config_sync,
     ingest_router,
     pending_ingest,
+    activate_labeling_spec,
     clip_timestamp_routed,
     clip_captioning_routed,
     clip_to_frame_routed,
@@ -92,9 +96,10 @@ auto_labeling_routed_job = define_asset_job(
         clip_captioning_routed,
         clip_to_frame_routed,
         bbox_labeling,
+        activate_labeling_spec,
     ],
     tags={"duckdb_writer": "true"},
-    description="Staging spec: ready_for_labeling_sensor에서 트리거, requested_outputs에 따라 단계 실행",
+    description="Staging spec: spec_resolve_sensor에서 트리거, requested_outputs에 따라 단계 실행",
 )
 
 yolo_detection_job = define_asset_job(
@@ -127,7 +132,6 @@ sensors = [
     incoming_to_pending_sensor,
     dispatch_sensor,
     spec_resolve_sensor,
-    ready_for_labeling_sensor,
 ]
 
 # ── Definitions ──

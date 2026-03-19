@@ -1,4 +1,9 @@
-"""비디오 프레임 추출/계획 helper."""
+"""비디오 프레임 추출/계획 helper.
+
+운영(`clip_to_frame`)·스테이징(`raw_video_to_frame`) 모두 이 모듈을 공유한다.
+`frame_interval_sec` 균등 추출 시 타임스탬프는 `sec < duration` 만 포함하여
+클립 끝 시점에서 ffmpeg가 빈 출력을 내는 문제(empty_output)를 피한다.
+"""
 
 from __future__ import annotations
 
@@ -101,8 +106,25 @@ def plan_frame_timestamps(
     frame_count: int | None,
     max_frames_per_video: int = 12,
     image_profile: str = "current",
+    frame_interval_sec: float | None = None,
 ) -> list[float]:
+    """구간 내 추출 시점(초) 목록. frame_interval_sec이 주어지면 초당 N장(1/interval)으로 균등 추출."""
     duration = resolve_duration_sec(duration_sec, fps, frame_count)
+
+    if duration <= 0:
+        return [0.0]
+
+    if frame_interval_sec is not None and frame_interval_sec > 0:
+        timestamps: list[float] = []
+        sec = 0.0
+        # sec == duration 은 디코딩 가능한 마지막 프레임 이후이므로 제외 (empty_output 방지)
+        while sec < duration:
+            timestamps.append(round(sec, 3))
+            sec += frame_interval_sec
+        if not timestamps:
+            return [0.0]
+        return timestamps
+
     target = target_frame_count(
         duration_sec=duration_sec,
         fps=fps,
@@ -111,9 +133,6 @@ def plan_frame_timestamps(
         image_profile=image_profile,
     )
 
-    if duration <= 0:
-        return [0.0]
-
     start_ratio, end_ratio = (0.2, 0.8) if duration < 2 else (0.1, 0.9)
     start_sec = duration * start_ratio
     end_sec = duration * end_ratio
@@ -121,19 +140,22 @@ def plan_frame_timestamps(
         midpoint = max(0.0, duration * 0.5)
         return [round(midpoint, 3)]
 
-    timestamps: list[float] = []
+    result: list[float] = []
     dedupe_ms: set[int] = set()
     for idx in range(target):
         sec = start_sec + ((idx + 1) / (target + 1)) * (end_sec - start_sec)
         sec = min(max(0.0, sec), duration)
+        # interval 경로와 동일: t == duration 에는 보통 디코딩 가능 프레임이 없음
+        if duration > 0 and sec >= duration:
+            sec = max(0.0, duration - 1e-3)
         millis = max(0, int(round(sec * 1000)))
         if millis in dedupe_ms:
             continue
         dedupe_ms.add(millis)
-        timestamps.append(round(millis / 1000.0, 3))
+        result.append(round(millis / 1000.0, 3))
 
-    if timestamps:
-        return timestamps
+    if result:
+        return result
 
     midpoint = max(0.0, duration * 0.5)
     return [round(midpoint, 3)]

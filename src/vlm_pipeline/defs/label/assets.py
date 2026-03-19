@@ -19,6 +19,11 @@ from dagster import Field, asset
 from vlm_pipeline.lib.env_utils import should_run_output
 from vlm_pipeline.lib.gemini import GeminiAnalyzer, extract_clean_json_text
 from vlm_pipeline.lib.gemini_prompts import VIDEO_EVENT_PROMPT
+from vlm_pipeline.lib.spec_config import (
+    is_standard_spec_run,
+    parse_requested_outputs,
+    resolve_and_persist_spec_config,
+)
 from vlm_pipeline.resources.duckdb import DuckDBResource
 from vlm_pipeline.resources.minio import MinIOResource
 
@@ -143,16 +148,34 @@ def clip_timestamp_routed(
     db: DuckDBResource,
     minio: MinIOResource,
 ) -> dict:
-    """run tag: spec_id, requested_outputs, resolved_config_id. requested_outputs에 timestamp 있을 때만 실행."""
+    """run tag: spec_id/requested_outputs (spec flow) 또는 outputs (dispatch flow). timestamp 포함 시 실행."""
     tags = context.run.tags if context.run else {}
     spec_id = tags.get("spec_id")
-    requested = (tags.get("requested_outputs") or "").strip().split("_")
-    if not spec_id or "timestamp" not in requested:
-        context.log.info("clip_timestamp_routed 스킵: spec_id 또는 requested_outputs(timestamp) 없음")
+    requested = parse_requested_outputs(tags)
+    standard_spec_run = is_standard_spec_run(tags)
+    if "timestamp" not in requested and not standard_spec_run:
+        context.log.info("clip_timestamp_routed 스킵: outputs에 timestamp 없음")
         return {"processed": 0, "failed": 0, "skipped": True}
 
+    resolved_config_id = None
+    if spec_id:
+        config_bundle = resolve_and_persist_spec_config(db, spec_id)
+        resolved_config_id = config_bundle["resolved_config_id"]
+        context.log.info(
+            "clip_timestamp_routed: spec_id=%s resolved_config_id=%s scope=%s",
+            spec_id,
+            resolved_config_id,
+            config_bundle["resolved_config_scope"],
+        )
+
     limit = int(context.op_config.get("limit", 50))
-    candidates = db.find_ready_for_labeling_timestamp_backlog(spec_id, limit=limit)
+    folder_name = tags.get("folder_name") or tags.get("folder_name_original")
+    if spec_id:
+        candidates = db.find_ready_for_labeling_timestamp_backlog(spec_id, limit=limit)
+    elif folder_name:
+        candidates = db.find_timestamp_pending_by_folder(folder_name, limit=limit)
+    else:
+        candidates = []
     if not candidates:
         context.log.info("clip_timestamp_routed: 대상 없음")
         return {"processed": 0, "failed": 0}
@@ -200,7 +223,11 @@ def clip_timestamp_routed(
         finally:
             for path in reversed(temp_paths):
                 _cleanup_temp(path)
-    return {"processed": processed, "failed": failed}
+    return {
+        "processed": processed,
+        "failed": failed,
+        "resolved_config_id": resolved_config_id,
+    }
 
 
 # ── helpers ──
