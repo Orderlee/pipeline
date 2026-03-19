@@ -187,30 +187,25 @@ def dispatch_sensor(context: SensorEvaluationContext):
                 _move_dispatch_file(req_file, failed_dir)
                 continue
 
-        # archive_pending에서 파일 스캔 (이미 incoming_to_pending_sensor가 이동 완료)
+        # archive_pending에서 재귀 파일 스캔 (stat() 없이 scandir만 사용하여 NFS 비용 최소화)
         allowed_exts = {ext.lower() for ext in ALLOWED_EXTENSIONS}
         files = []
-        for root, dirs, names in os.walk(archive_pending_folder_path):
-            root_path = Path(root)
-            for name in names:
-                path_obj = root_path / name
-                if path_obj.suffix.lower() not in allowed_exts:
-                    continue
-                try:
-                    stat = path_obj.stat()
-                except OSError:
-                    continue
-                try:
-                    rel_path = str(path_obj.relative_to(archive_pending_folder_path))
-                except Exception:
-                    rel_path = path_obj.name
-                    
-                files.append({
-                    "path": str(path_obj),
-                    "size": int(stat.st_size),
-                    "rel_path": rel_path
-                })
-                
+
+        def _scandir_recursive(base: Path, rel_prefix: str = ""):
+            try:
+                for entry in os.scandir(base):
+                    if entry.is_dir(follow_symlinks=False):
+                        sub_rel = f"{rel_prefix}{entry.name}/" if rel_prefix else f"{entry.name}/"
+                        _scandir_recursive(Path(entry.path), sub_rel)
+                    elif entry.is_file(follow_symlinks=False):
+                        if Path(entry.name).suffix.lower() in allowed_exts:
+                            rel = f"{rel_prefix}{entry.name}" if rel_prefix else entry.name
+                            files.append({"path": entry.path, "size": 0, "rel_path": rel})
+            except OSError:
+                pass
+
+        _scandir_recursive(archive_pending_folder_path)
+
         if not files:
             _record_failed_request(db_resource, request_id, req_data, "no_media_files_in_archive_pending")
             _move_dispatch_file(req_file, failed_dir)

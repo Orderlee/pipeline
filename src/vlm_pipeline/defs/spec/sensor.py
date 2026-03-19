@@ -1,6 +1,7 @@
 """Spec flow sensors — spec_resolve_sensor, ready_for_labeling_sensor.
 
-Staging-only (IS_STAGING). 60초 주기.
+운영: spec_resolve는 config resolve + 상태 전이만, ready_for_labeling_sensor가 job 트리거.
+Staging 전용 신규 동작은 defs.spec.staging_sensor 사용.
 """
 
 from __future__ import annotations
@@ -19,7 +20,7 @@ def spec_resolve_sensor(
     context: SensorEvaluationContext,
     db: DuckDBResource,
 ) -> RunRequest | None:
-    """labeling_specs.spec_status='pending_resolved' 대상으로 config resolve 후 matching raw_files를 ready_for_labeling으로."""
+    """labeling_specs.spec_status='pending_resolved' 대상으로 config resolve 후 matching raw_files를 ready_for_labeling으로. (job 트리거는 ready_for_labeling_sensor.)"""
     db.ensure_schema()
     specs = db.list_specs_by_status("pending_resolved")
     if not specs:
@@ -49,7 +50,7 @@ def spec_resolve_sensor(
                 """
                 SELECT asset_id FROM raw_files
                 WHERE media_type = 'video'
-                  AND ingest_status = 'completed'
+                  AND ingest_status IN ('completed', 'pending_spec')
                   AND COALESCE(source_unit_name, '') = ?
                   AND (spec_id IS NULL OR spec_id = '')
                 """,
@@ -71,7 +72,6 @@ def spec_resolve_sensor(
 
 def _has_run_for_spec(instance: DagsterInstance, job_name: str, spec_id: str) -> bool:
     """동일 spec_id로 queued/running run이 있으면 True."""
-    # TODO: instance.get_runs with tags filter; 간단히 최근 1분 내 run만 확인
     runs = instance.get_runs(limit=20)
     for run in runs:
         if run.job_name != job_name:
@@ -85,6 +85,7 @@ def _has_run_for_spec(instance: DagsterInstance, job_name: str, spec_id: str) ->
     name="ready_for_labeling_sensor",
     minimum_interval_seconds=60,
     description="ready_for_labeling 그룹별 auto_labeling_routed_job 실행",
+    job_name="auto_labeling_routed_job",
 )
 def ready_for_labeling_sensor(
     context: SensorEvaluationContext,
