@@ -9,6 +9,8 @@ docker/app/dagster_defs.py의 MVP 파이프라인과 동일 구조.
     → motherduck_sync
 
 data_pipeline_job 제거됨 — mvp_stage_job으로 통합.
+
+`clip_to_frame` 프레임 시점은 `vlm_pipeline.lib.video_frames.plan_frame_timestamps` (스테이징과 공유).
 """
 
 from __future__ import annotations

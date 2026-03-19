@@ -192,9 +192,20 @@ class DuckDBSpecMixin:
         spec_id: str,
         spec_status: str,
         last_error: str | None = None,
+        *,
+        clear_last_error: bool = False,
     ) -> None:
         with self.connect() as conn:
-            if last_error is not None:
+            if clear_last_error:
+                conn.execute(
+                    """
+                    UPDATE labeling_specs
+                    SET spec_status = ?, last_error = NULL, updated_at = ?
+                    WHERE spec_id = ?
+                    """,
+                    [spec_status, datetime.now(), spec_id],
+                )
+            elif last_error is not None:
                 conn.execute(
                     """
                     UPDATE labeling_specs
@@ -222,7 +233,7 @@ class DuckDBSpecMixin:
             row = conn.execute("SELECT retry_count FROM labeling_specs WHERE spec_id = ?", [spec_id]).fetchone()
             return int(row[0]) if row else 0
 
-    def get_config(self, config_id: str) -> dict[str, Any] | None:
+    def get_labeling_config(self, config_id: str) -> dict[str, Any] | None:
         with self.connect() as conn:
             if not self._table_exists(conn, "labeling_configs"):
                 return None
@@ -243,21 +254,36 @@ class DuckDBSpecMixin:
                 "is_active": bool(row[3]),
             }
 
-    def list_active_configs(self) -> list[dict[str, Any]]:
+    def get_config(self, config_id: str) -> dict[str, Any] | None:
+        """Backward-compatible alias for legacy callers."""
+        return self.get_labeling_config(config_id)
+
+    def list_labeling_configs(self, include_inactive: bool = True) -> list[dict[str, Any]]:
         with self.connect() as conn:
             if not self._table_exists(conn, "labeling_configs"):
                 return []
-            rows = conn.execute(
-                "SELECT config_id, config_json, version FROM labeling_configs WHERE is_active = 1"
-            ).fetchall()
+            query = "SELECT config_id, config_json, version, is_active FROM labeling_configs"
+            if not include_inactive:
+                query += " WHERE is_active = 1"
+            rows = conn.execute(query).fetchall()
             result = []
             for row in rows:
                 try:
                     config_json = json.loads(row[1]) if isinstance(row[1], str) else row[1]
                 except (TypeError, json.JSONDecodeError):
                     config_json = {}
-                result.append({"config_id": row[0], "config_json": config_json, "version": row[2]})
+                result.append(
+                    {
+                        "config_id": row[0],
+                        "config_json": config_json,
+                        "version": row[2],
+                        "is_active": bool(row[3]),
+                    }
+                )
             return result
+
+    def list_active_configs(self) -> list[dict[str, Any]]:
+        return self.list_labeling_configs(include_inactive=False)
 
     def upsert_labeling_config(
         self,
@@ -279,6 +305,17 @@ class DuckDBSpecMixin:
                     updated_at = EXCLUDED.updated_at
                 """,
                 [config_id, _json_col(config_json), version, is_active, now, now],
+            )
+
+    def set_labeling_config_active(self, config_id: str, is_active: bool) -> None:
+        with self.connect() as conn:
+            conn.execute(
+                """
+                UPDATE labeling_configs
+                SET is_active = ?, updated_at = ?
+                WHERE config_id = ?
+                """,
+                [is_active, datetime.now(), config_id],
             )
 
     def get_spec_by_source_unit_name(

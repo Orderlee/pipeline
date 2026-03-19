@@ -186,6 +186,35 @@ class DuckDBLabelingMixin:
             ]
             return [dict(zip(columns, row)) for row in rows]
 
+    def find_timestamp_pending_by_folder(
+        self, folder_name: str, limit: int = 50
+    ) -> list[dict]:
+        """Dispatch flow: folder_name(source_unit_name) 기준 timestamp 미완료 비디오."""
+        with self.connect() as conn:
+            vm_cols = self._table_columns(conn, "video_metadata")
+            ts_filter = "AND COALESCE(vm.timestamp_status, 'pending') = 'pending'" if "timestamp_status" in vm_cols else ""
+            rows = conn.execute(
+                f"""
+                SELECT
+                    r.asset_id, r.raw_bucket, r.raw_key, r.archive_path, r.source_path,
+                    vm.duration_sec, vm.fps, vm.frame_count
+                FROM raw_files r
+                JOIN video_metadata vm ON vm.asset_id = r.asset_id
+                WHERE r.media_type = 'video'
+                  AND r.ingest_status = 'completed'
+                  AND r.source_unit_name = ?
+                  {ts_filter}
+                ORDER BY r.created_at
+                LIMIT ?
+                """,
+                [folder_name, max(1, int(limit))],
+            ).fetchall()
+            columns = [
+                "asset_id", "raw_bucket", "raw_key", "archive_path", "source_path",
+                "duration_sec", "fps", "frame_count",
+            ]
+            return [dict(zip(columns, row)) for row in rows]
+
     def find_captioning_pending_videos(self, limit: int = 100, folder_name: str | None = None) -> list[dict]:
         """Gemini JSON 생성 완료(generated) 후 아직 DB 정규화가 안 된 video."""
         with self.connect() as conn:

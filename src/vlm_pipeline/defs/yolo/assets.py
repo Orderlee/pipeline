@@ -17,6 +17,7 @@ from uuid import uuid4
 from dagster import Field, asset
 
 from vlm_pipeline.lib.env_utils import int_env, should_run_output
+from vlm_pipeline.lib.spec_config import load_persisted_spec_config, parse_requested_outputs
 from vlm_pipeline.lib.yolo_world import get_yolo_client
 from vlm_pipeline.resources.duckdb import DuckDBResource
 from vlm_pipeline.resources.minio import MinIOResource
@@ -195,13 +196,42 @@ def bbox_labeling(
 ) -> dict:
     """run tag: spec_id, requested_outputs, resolved_config_id. bbox 요청 시 spec.classes × config.bbox.target_classes."""
     tags = context.run.tags if context.run else {}
-    requested = (tags.get("requested_outputs") or "").strip().split("_")
+    requested = parse_requested_outputs(tags)
     if "bbox" not in requested:
         context.log.info("bbox_labeling 스킵: requested_outputs에 bbox 없음")
         return {"processed": 0, "failed": 0, "total_detections": 0, "skipped": True}
+
+    spec_id = str(tags.get("spec_id") or "").strip()
+    resolved_config_id = None
+    target_classes: list[str] = []
+    if spec_id:
+        config_bundle = load_persisted_spec_config(db, spec_id)
+        resolved_config_id = config_bundle["resolved_config_id"]
+        spec_classes = config_bundle["spec"].get("classes") or []
+        if not isinstance(spec_classes, list):
+            spec_classes = []
+        bbox_config = config_bundle["config_json"].get("bbox", {})
+        config_target_classes = bbox_config.get("target_classes") or []
+        if isinstance(config_target_classes, list) and config_target_classes:
+            target_classes = [c for c in spec_classes if c in set(config_target_classes)]
+        else:
+            target_classes = list(spec_classes)
+        context.log.info(
+            "bbox_labeling: spec_id=%s resolved_config_id=%s target_classes=%s",
+            spec_id,
+            resolved_config_id,
+            ",".join(target_classes) if target_classes else "(empty)",
+        )
+
     # TODO: spec_id·frame_status=completed 기준 백로그 조회, target_classes = intersection(spec.classes, config.bbox.target_classes)
     context.log.info("bbox_labeling: 스펙/설정 연동 TODO")
-    return {"processed": 0, "failed": 0, "total_detections": 0}
+    return {
+        "processed": 0,
+        "failed": 0,
+        "total_detections": 0,
+        "resolved_config_id": resolved_config_id,
+        "target_classes": target_classes,
+    }
 
 
 def _build_yolo_label_key(image_key: str) -> str:
