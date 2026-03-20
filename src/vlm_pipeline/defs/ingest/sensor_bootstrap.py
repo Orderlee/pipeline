@@ -15,32 +15,44 @@ from vlm_pipeline.lib.validator import ALLOWED_EXTENSIONS
 from vlm_pipeline.resources.config import PipelineConfig
 
 
-def _build_auto_bootstrap_cursor_payload(units: dict[str, dict], scan_offset: int = 0) -> dict:
+def _build_auto_bootstrap_cursor_payload(
+    units: dict[str, dict],
+    scan_offset: int = 0,
+    discovery_offset: int = 0,
+) -> dict:
     return {
-        "version": 3,
+        "version": 4,
         "scan_offset": max(scan_offset, 0),
+        "discovery_offset": max(discovery_offset, 0),
         "units": units,
     }
 
 
-def _parse_auto_bootstrap_cursor(raw_cursor: str | None) -> tuple[dict[str, dict], int]:
+def _parse_auto_bootstrap_cursor(
+    raw_cursor: str | None,
+) -> tuple[dict[str, dict], int, int]:
+    """Returns (previous_units, scan_offset, discovery_offset)."""
     if not raw_cursor:
-        return {}, 0
+        return {}, 0, 0
     try:
         data = json.loads(raw_cursor)
     except json.JSONDecodeError:
-        return {}, 0
+        return {}, 0, 0
     if not isinstance(data, dict):
-        return {}, 0
+        return {}, 0, 0
 
     try:
         scan_offset = int(data.get("scan_offset", 0))
     except (TypeError, ValueError):
         scan_offset = 0
+    try:
+        discovery_offset = int(data.get("discovery_offset", 0))
+    except (TypeError, ValueError):
+        discovery_offset = 0
 
     units = data.get("units")
     if not isinstance(units, dict):
-        return {}, max(scan_offset, 0)
+        return {}, max(scan_offset, 0), max(discovery_offset, 0)
 
     parsed: dict[str, dict] = {}
     for key, value in units.items():
@@ -57,7 +69,7 @@ def _parse_auto_bootstrap_cursor(raw_cursor: str | None) -> tuple[dict[str, dict
             "manifested_signature": manifested_signature,
             "stable_cycles": max(stable_cycles, 0),
         }
-    return parsed, max(scan_offset, 0)
+    return parsed, max(scan_offset, 0), max(discovery_offset, 0)
 
 
 def _iter_sorted_dir_entries(path: Path) -> list[Path]:
@@ -82,7 +94,21 @@ def _has_allowed_direct_file(dir_path: Path, allowed_exts: set[str]) -> bool:
     return False
 
 
-def _discover_source_units(incoming_dir: Path, allowed_exts: set[str], budget_sec: int) -> list[dict]:
+def _discover_source_units(
+    incoming_dir: Path,
+    allowed_exts: set[str],
+    budget_sec: int,
+    discovery_start_index: int = 0,
+    max_top_entries_per_tick: int = 0,
+) -> tuple[list[dict], int]:
+    """Discovery를 틱당 상한으로 나누어 NAS 지연 시 gRPC 타임아웃을 피한다.
+
+    max_top_entries_per_tick > 0 이면 상위 디렉터리에서 매 틱 최대 N개만 처리하고
+    다음 틱에서 이어서 처리한다. 0이면 기존처럼 예산(시간) 안에서 전부 처리한다.
+
+    Returns:
+        (discovered_units, next_discovery_offset)
+    """
     discovered: list[dict] = []
     seen_unit_keys: set[str] = set()
     started_at = time.perf_counter()
@@ -102,10 +128,24 @@ def _discover_source_units(incoming_dir: Path, allowed_exts: set[str], budget_se
             }
         )
 
-    for top_entry in _iter_sorted_dir_entries(incoming_dir):
+    top_entries = _iter_sorted_dir_entries(incoming_dir)
+    total_top = len(top_entries)
+    if max_top_entries_per_tick > 0 and total_top > 0:
+        end = min(discovery_start_index + max_top_entries_per_tick, total_top)
+        entries_to_process = top_entries[discovery_start_index:end]
+        next_discovery_offset = end if end < total_top else 0
+    else:
+        entries_to_process = top_entries
+        next_discovery_offset = 0
+
+    processed_in_slice = 0
+    for top_entry in entries_to_process:
         if time.perf_counter() - started_at > budget_sec:
+            if max_top_entries_per_tick > 0:
+                next_discovery_offset = discovery_start_index + processed_in_slice
             break
-            
+        processed_in_slice += 1
+
         top_name = top_entry.name
         if top_name.startswith("."):
             continue
@@ -173,7 +213,7 @@ def _discover_source_units(incoming_dir: Path, allowed_exts: set[str], budget_se
                 scan_recursive=True,
             )
 
-    return sorted(discovered, key=_source_unit_sort_key)
+    return sorted(discovered, key=_source_unit_sort_key), next_discovery_offset
 
 
 def _source_unit_sort_key(unit: dict) -> tuple[int, str]:
@@ -313,6 +353,7 @@ def _scan_discovered_units(
 
 
 def _effective_auto_bootstrap_scan_budget_sec() -> int:
+    """gRPC 타임아웃(기본 180초) 내에서 스캔 예산. NAS 지연 시 DAGSTER_SENSOR_GRPC_TIMEOUT_SECONDS=300 등으로 상향."""
     configured_timeout_sec = int_env("AUTO_BOOTSTRAP_UNIT_SCAN_TIMEOUT_SEC", 120, 15)
     grpc_timeout_sec = int_env("DAGSTER_SENSOR_GRPC_TIMEOUT_SECONDS", 180, 60)
     timeout_margin_sec = int_env("AUTO_BOOTSTRAP_SENSOR_TIMEOUT_MARGIN_SEC", 110, 5)
@@ -403,11 +444,20 @@ def auto_bootstrap_manifest_sensor(context):
     done_marker_name = os.getenv("AUTO_BOOTSTRAP_DONE_MARKER_NAME", "_DONE").strip() or "_DONE"
     max_files_per_manifest = max(1, int(os.getenv("AUTO_BOOTSTRAP_MAX_FILES_PER_MANIFEST", "100")))
     allowed_exts = {ext.lower() for ext in ALLOWED_EXTENSIONS}
-    previous_units, previous_scan_offset = _parse_auto_bootstrap_cursor(context.cursor)
+    previous_units, previous_scan_offset, previous_discovery_offset = _parse_auto_bootstrap_cursor(
+        context.cursor
+    )
+    # NAS 지연 시: 0=무제한(기존), 15~30 권장. discovery를 틱당 N개 상위 entry로 나누어 gRPC 타임아웃 방지
+    discovery_max_top_entries = max(
+        0, int(os.getenv("AUTO_BOOTSTRAP_DISCOVERY_MAX_TOP_ENTRIES", "0"))
+    )
 
     if not incoming_dir.exists():
         context.update_cursor(
-            json.dumps(_build_auto_bootstrap_cursor_payload({}, scan_offset=0), ensure_ascii=False)
+            json.dumps(
+                _build_auto_bootstrap_cursor_payload({}, scan_offset=0, discovery_offset=0),
+                ensure_ascii=False,
+            )
         )
         return SkipReason(f"incoming 디렉토리 없음: {incoming_dir}")
 
@@ -417,11 +467,15 @@ def auto_bootstrap_manifest_sensor(context):
     scan_completed_window = True
     try:
         discovery_started = time.perf_counter()
-        
-        # Discovery(디렉토리 스캔)에도 시간 제한을 둡니다 (전체 예산의 절반 혹은 최소 10초)
-        discovery_budget_sec = max(10, int(scan_budget_sec * 0.5))
-        discovered_units = _discover_source_units(incoming_dir, allowed_exts, discovery_budget_sec)
-        
+        # Discovery(디렉토리 스캔) 시간 제한. NAS 지연 시 60초 상한으로 gRPC 타임아웃 여유 확보
+        discovery_budget_sec = min(60, max(10, int(scan_budget_sec * 0.5)))
+        discovered_units, next_discovery_offset = _discover_source_units(
+            incoming_dir,
+            allowed_exts,
+            discovery_budget_sec,
+            discovery_start_index=previous_discovery_offset,
+            max_top_entries_per_tick=discovery_max_top_entries,
+        )
         discovery_elapsed_sec = time.perf_counter() - discovery_started
         
         # 파일 메타 정보 읽기 스캔에는 남은 예산을 사용합니다
@@ -445,7 +499,12 @@ def auto_bootstrap_manifest_sensor(context):
 
     if not discovered_units:
         context.update_cursor(
-            json.dumps(_build_auto_bootstrap_cursor_payload({}, scan_offset=0), ensure_ascii=False)
+            json.dumps(
+                _build_auto_bootstrap_cursor_payload(
+                    {}, scan_offset=0, discovery_offset=next_discovery_offset
+                ),
+                ensure_ascii=False,
+            )
         )
         return SkipReason("incoming에 처리 가능한 미디어 unit 없음")
 
@@ -535,7 +594,11 @@ def auto_bootstrap_manifest_sensor(context):
     if not ready_units:
         context.update_cursor(
             json.dumps(
-                _build_auto_bootstrap_cursor_payload(next_units, scan_offset=next_scan_offset),
+                _build_auto_bootstrap_cursor_payload(
+                    next_units,
+                    scan_offset=next_scan_offset,
+                    discovery_offset=next_discovery_offset,
+                ),
                 ensure_ascii=False,
             )
         )
@@ -619,7 +682,11 @@ def auto_bootstrap_manifest_sensor(context):
 
     context.update_cursor(
         json.dumps(
-            _build_auto_bootstrap_cursor_payload(next_units, scan_offset=next_scan_offset),
+            _build_auto_bootstrap_cursor_payload(
+                    next_units,
+                    scan_offset=next_scan_offset,
+                    discovery_offset=next_discovery_offset,
+                ),
             ensure_ascii=False,
         )
     )

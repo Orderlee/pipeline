@@ -144,10 +144,37 @@ class DuckDBDedupMixin:
                 ],
             )
 
-    def find_processable(self, folder_name: str | None = None) -> list[dict]:
+    def find_processable(
+        self,
+        folder_name: str | None = None,
+        *,
+        spec_id: str | None = None,
+    ) -> list[dict]:
         with self.connect() as conn:
-            query_cond = "AND r.raw_key LIKE ?" if folder_name else ""
-            params = [f"{folder_name}/%"] if folder_name else []
+            where_clauses = [
+                "r.ingest_status IN ('completed', 'ready_for_labeling')",
+                "l.label_status = 'completed'",
+                """
+                  NOT EXISTS (
+                      SELECT 1
+                      FROM processed_clips pc
+                      WHERE pc.source_label_id = l.label_id
+                        AND pc.process_status = 'completed'
+                  )
+                """.strip(),
+            ]
+            params: list[Any] = []
+            if folder_name:
+                where_clauses.append("r.raw_key LIKE ?")
+                params.append(f"{folder_name}/%")
+            if spec_id:
+                columns = self._table_columns(conn, "raw_files")
+                if "spec_id" not in columns:
+                    return []
+                where_clauses.append("r.spec_id = ?")
+                params.append(str(spec_id))
+
+            where_sql = "\n                  AND ".join(where_clauses)
             rows = conn.execute(
                 f"""
                 SELECT
@@ -173,15 +200,7 @@ class DuckDBDedupMixin:
                 FROM raw_files r
                 JOIN labels l ON r.asset_id = l.asset_id
                 LEFT JOIN video_metadata vm ON vm.asset_id = r.asset_id
-                WHERE r.ingest_status = 'completed'
-                  AND l.label_status = 'completed'
-                  AND NOT EXISTS (
-                      SELECT 1
-                      FROM processed_clips pc
-                      WHERE pc.source_label_id = l.label_id
-                        AND pc.process_status = 'completed'
-                  )
-                  {query_cond}
+                WHERE {where_sql}
                 """,
                 params,
             ).fetchall()
