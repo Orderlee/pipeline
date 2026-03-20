@@ -9,6 +9,10 @@ IS_STAGING 분기 없이 staging 전용 asset/job/sensor만 등록.
     → clip_timestamp_routed → clip_captioning_routed → clip_to_frame_routed
     → bbox_labeling (YOLO) → activate_labeling_spec
 
+운영과 동일한 NAS incoming 보조:
+  `incoming_manifest_sensor` + `auto_bootstrap_manifest_sensor` (ingest_job 연계).
+  NAS 지연 시 `AUTO_BOOTSTRAP_DISCOVERY_MAX_TOP_ENTRIES` 등은 운영과 동일 env로 조정.
+
 프레임 추출 시점은 운영과 동일하게 `vlm_pipeline.lib.video_frames.plan_frame_timestamps` 를 사용한다
 (`raw_video_to_frame` 등).
 """
@@ -19,7 +23,11 @@ from dagster import Definitions, EnvVar, define_asset_job
 
 from vlm_pipeline.defs.gcp.assets import gcs_download_to_incoming
 from vlm_pipeline.defs.ingest.assets import raw_ingest
-from vlm_pipeline.defs.ingest.sensor import stuck_run_guard_sensor
+from vlm_pipeline.defs.ingest.sensor import (
+    auto_bootstrap_manifest_sensor,
+    incoming_manifest_sensor,
+    stuck_run_guard_sensor,
+)
 from vlm_pipeline.defs.label.assets import clip_timestamp_routed
 from vlm_pipeline.defs.label.manual_import import manual_label_import
 from vlm_pipeline.defs.dispatch.sensor import dispatch_sensor
@@ -129,6 +137,8 @@ jobs = [
 
 sensors = [
     stuck_run_guard_sensor,
+    incoming_manifest_sensor,
+    auto_bootstrap_manifest_sensor,
     incoming_to_pending_sensor,
     dispatch_sensor,
     spec_resolve_sensor,
