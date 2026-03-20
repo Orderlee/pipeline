@@ -19,6 +19,12 @@ from dagster import Field, asset
 from vlm_pipeline.lib.env_utils import should_run_output
 from vlm_pipeline.lib.gemini import GeminiAnalyzer, extract_clean_json_text
 from vlm_pipeline.lib.gemini_prompts import VIDEO_EVENT_PROMPT
+from vlm_pipeline.lib.staging_vertex import (
+    merge_overlapping_events,
+    normalize_gemini_events,
+    offset_gemini_events,
+    plan_overlapping_video_chunks,
+)
 from vlm_pipeline.lib.spec_config import (
     is_standard_spec_run,
     parse_requested_outputs,
@@ -192,19 +198,15 @@ def clip_timestamp_routed(
             if temp_path:
                 temp_paths.append(temp_path)
             duration_val = cand.get("duration_sec")
-            gemini_video_path, gemini_temp_path = _prepare_gemini_video_for_request(
-                video_path, duration_sec=duration_val
-            )
-            if gemini_temp_path:
-                temp_paths.append(gemini_temp_path)
             label_key = _build_gemini_label_key(raw_key)
-            response_text = analyzer.analyze_video(
-                str(gemini_video_path),
-                prompt=VIDEO_EVENT_PROMPT,
-                mime_type="video/mp4" if gemini_temp_path else None,
+            events = _analyze_routed_video_events(
+                context,
+                analyzer,
+                video_path,
+                duration_sec=duration_val,
+                temp_paths=temp_paths,
             )
-            cleaned = extract_clean_json_text(response_text)
-            label_bytes = cleaned.encode("utf-8")
+            label_bytes = _serialize_gemini_events(events)
             minio.ensure_bucket("vlm-labels")
             minio.upload("vlm-labels", label_key, label_bytes, "application/json")
             db.update_timestamp_status(
@@ -376,6 +378,180 @@ def _prepare_gemini_video_for_request(
     )
 
 
+def _analyze_routed_video_events(
+    context,
+    analyzer: GeminiAnalyzer,
+    video_path: Path,
+    *,
+    duration_sec: float | int | None,
+    temp_paths: list[Path],
+) -> list[dict]:
+    threshold_sec = _int_env("STAGING_GEMINI_CHUNK_THRESHOLD_SEC", 3600, minimum=1)
+    duration_value = _coerce_float(duration_sec)
+    if duration_value < threshold_sec:
+        return _analyze_single_video_events(
+            analyzer,
+            video_path,
+            duration_sec=duration_sec,
+            temp_paths=temp_paths,
+        )
+
+    window_sec = _int_env("STAGING_GEMINI_CHUNK_WINDOW_SEC", 660, minimum=60)
+    stride_sec = _int_env("STAGING_GEMINI_CHUNK_STRIDE_SEC", 600, minimum=60)
+    chunk_plan = plan_overlapping_video_chunks(
+        duration_value,
+        window_sec=float(window_sec),
+        stride_sec=float(stride_sec),
+    )
+    if len(chunk_plan) <= 1:
+        return _analyze_single_video_events(
+            analyzer,
+            video_path,
+            duration_sec=duration_sec,
+            temp_paths=temp_paths,
+        )
+
+    context.log.info(
+        "clip_timestamp_routed: long video chunking 적용 path=%s duration=%.3fs chunks=%d",
+        video_path,
+        duration_value,
+        len(chunk_plan),
+    )
+    merged_events: list[dict] = []
+    for chunk in chunk_plan:
+        chunk_path = _extract_video_segment_path(
+            video_path,
+            start_sec=chunk.start_sec,
+            end_sec=chunk.end_sec,
+        )
+        temp_paths.append(chunk_path)
+        chunk_events = _analyze_single_video_events(
+            analyzer,
+            chunk_path,
+            duration_sec=chunk.duration_sec,
+            temp_paths=temp_paths,
+        )
+        merged_events.extend(
+            offset_gemini_events(
+                chunk_events,
+                offset_sec=chunk.start_sec,
+                chunk_end_sec=chunk.end_sec,
+            )
+        )
+        context.log.info(
+            "clip_timestamp_routed: chunk %d/%d start=%.3fs end=%.3fs events=%d",
+            chunk.chunk_index,
+            len(chunk_plan),
+            chunk.start_sec,
+            chunk.end_sec,
+            len(chunk_events),
+        )
+
+    return merge_overlapping_events(merged_events)
+
+
+def _analyze_single_video_events(
+    analyzer: GeminiAnalyzer,
+    video_path: Path,
+    *,
+    duration_sec: float | int | None,
+    temp_paths: list[Path],
+) -> list[dict]:
+    gemini_video_path, gemini_temp_path = _prepare_gemini_video_for_request(
+        video_path,
+        duration_sec=duration_sec,
+    )
+    if gemini_temp_path is not None:
+        temp_paths.append(gemini_temp_path)
+    response_text = analyzer.analyze_video(
+        str(gemini_video_path),
+        prompt=VIDEO_EVENT_PROMPT,
+        mime_type="video/mp4" if gemini_temp_path is not None else None,
+    )
+    return _parse_gemini_events_response(response_text)
+
+
+def _parse_gemini_events_response(response_text: str) -> list[dict]:
+    cleaned = extract_clean_json_text(response_text)
+    payload = json.loads(cleaned)
+    return normalize_gemini_events(payload)
+
+
+def _serialize_gemini_events(events: list[dict]) -> bytes:
+    normalized = normalize_gemini_events(events)
+    rendered = json.dumps(normalized, ensure_ascii=False, indent=2) + "\n"
+    return rendered.encode("utf-8")
+
+
+def _extract_video_segment_path(
+    video_path: Path,
+    *,
+    start_sec: float,
+    end_sec: float,
+) -> Path:
+    duration_value = max(0.05, float(end_sec) - float(start_sec))
+    output_path = _build_nonexistent_temp_path(".mp4")
+
+    copy_cmd = [
+        "ffmpeg",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-ss",
+        f"{float(start_sec):.3f}",
+        "-t",
+        f"{duration_value:.3f}",
+        "-i",
+        str(video_path),
+        "-map",
+        "0:v:0",
+        "-map",
+        "0:a?",
+        "-c",
+        "copy",
+        "-movflags",
+        "+faststart",
+        str(output_path),
+    ]
+    copy_proc = subprocess.run(copy_cmd, capture_output=True, check=False)
+    if copy_proc.returncode == 0 and output_path.exists() and output_path.stat().st_size > 0:
+        return output_path
+
+    _cleanup_temp(output_path)
+    output_path = _build_nonexistent_temp_path(".mp4")
+    reencode_cmd = [
+        "ffmpeg",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-ss",
+        f"{float(start_sec):.3f}",
+        "-t",
+        f"{duration_value:.3f}",
+        "-i",
+        str(video_path),
+        "-map",
+        "0:v:0",
+        "-map",
+        "0:a?",
+        "-c:v",
+        "libx264",
+        "-preset",
+        "veryfast",
+        "-c:a",
+        "aac",
+        "-movflags",
+        "+faststart",
+        str(output_path),
+    ]
+    reencode_proc = subprocess.run(reencode_cmd, capture_output=True, check=False)
+    if reencode_proc.returncode != 0 or not output_path.exists() or output_path.stat().st_size <= 0:
+        stderr = (reencode_proc.stderr or copy_proc.stderr or b"").decode("utf-8", errors="ignore").strip()
+        _cleanup_temp(output_path)
+        raise RuntimeError(f"ffmpeg_chunk_extract_failed:{stderr or 'empty_output'}")
+    return output_path
+
+
 def _build_nonexistent_temp_path(suffix: str) -> Path:
     return Path(gettempdir()) / f"vlm_gemini_{uuid4().hex}{suffix}"
 
@@ -404,6 +580,13 @@ def _int_env(name: str, default: int, *, minimum: int = 0) -> int:
     except (TypeError, ValueError):
         parsed = int(default)
     return max(int(minimum), parsed)
+
+
+def _coerce_float(value: float | int | str | None) -> float:
+    try:
+        return float(value or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def _cleanup_temp(path: Path | None) -> None:
