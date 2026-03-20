@@ -21,11 +21,16 @@ from PIL import Image
 
 from vlm_pipeline.lib.checksum import sha256_bytes
 from vlm_pipeline.lib.env_utils import should_run_output
-from vlm_pipeline.lib.gemini import extract_clean_json_text
+from vlm_pipeline.lib.gemini import GeminiAnalyzer, extract_clean_json_text
 from vlm_pipeline.lib.spec_config import (
     is_standard_spec_run,
     load_persisted_spec_config,
     parse_requested_outputs,
+)
+from vlm_pipeline.lib.staging_vertex import (
+    build_event_frame_image_prompt,
+    normalize_gemini_events,
+    parse_event_frame_image_caption_response,
 )
 from vlm_pipeline.lib.video_frames import (
     describe_frame_bytes,
@@ -199,12 +204,92 @@ def clip_captioning_routed(
             sorted(captioning_config.keys()),
         )
 
-    # TODO: spec_id 기준 timestamp_status=completed 백로그 조회 후 기존 clip_captioning 로직 재사용
-    context.log.info("clip_captioning_routed: 스펙 백로그 연동 TODO")
+    limit = int(context.op_config.get("limit", 200))
+    folder_name = tags.get("folder_name") or tags.get("folder_name_original")
+    if spec_id:
+        candidates = db.find_ready_for_labeling_caption_backlog(spec_id, limit=limit)
+    elif folder_name:
+        candidates = db.find_caption_pending_by_folder(folder_name, limit=limit)
+    else:
+        candidates = []
+    if not candidates:
+        context.log.info("clip_captioning_routed: 대상 없음")
+        return {
+            "processed": 0,
+            "failed": 0,
+            "labels_inserted": 0,
+            "resolved_config_id": resolved_config_id,
+        }
+
+    processed = 0
+    failed = 0
+    labels_inserted = 0
+    total_candidates = len(candidates)
+    for idx, cand in enumerate(candidates, start=1):
+        asset_id = cand["asset_id"]
+        label_key = str(cand.get("timestamp_label_key") or "").strip()
+        if not label_key:
+            failed += 1
+            db.update_caption_status(
+                asset_id,
+                "failed",
+                error="captioning_missing_timestamp_label_key",
+                completed_at=datetime.now(),
+            )
+            continue
+
+        try:
+            json_bytes = minio.download("vlm-labels", label_key)
+            cleaned = extract_clean_json_text(json_bytes.decode("utf-8", errors="replace"))
+            events = normalize_gemini_events(json.loads(cleaned))
+            label_rows = _build_gemini_label_rows(asset_id, label_key, events)
+            inserted = db.replace_gemini_labels(asset_id, label_key, label_rows)
+            labels_inserted += inserted
+            db.update_caption_status(asset_id, "completed", completed_at=datetime.now())
+            processed += 1
+            context.log.info(
+                "clip_captioning_routed 진행: [%d/%d] asset=%s events=%d labels=%d ✅",
+                idx,
+                total_candidates,
+                asset_id,
+                len(events),
+                inserted,
+            )
+        except json.JSONDecodeError as exc:
+            failed += 1
+            db.update_caption_status(
+                asset_id,
+                "failed",
+                error=f"json_parse_error: {exc}",
+                completed_at=datetime.now(),
+            )
+            context.log.error(
+                "clip_captioning_routed 진행: [%d/%d] asset=%s ❌ JSON 파싱 실패: %s",
+                idx,
+                total_candidates,
+                asset_id,
+                exc,
+            )
+        except Exception as exc:
+            failed += 1
+            db.update_caption_status(
+                asset_id,
+                "failed",
+                error=str(exc)[:500],
+                completed_at=datetime.now(),
+            )
+            context.log.error(
+                "clip_captioning_routed 진행: [%d/%d] asset=%s ❌ %s",
+                idx,
+                total_candidates,
+                asset_id,
+                exc,
+            )
+
     return {
-        "processed": 0,
-        "failed": 0,
-        "labels_inserted": 0,
+        "processed": processed,
+        "failed": failed,
+        "labels_inserted": labels_inserted,
         "resolved_config_id": resolved_config_id,
     }
 
@@ -481,6 +566,45 @@ def _filter_valid_events(events: list) -> list[dict]:
     return valid
 
 
+def _build_gemini_label_rows(
+    asset_id: str,
+    labels_key: str,
+    events: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    valid_events = normalize_gemini_events(events)
+    event_count = len(valid_events)
+    rows: list[dict[str, Any]] = []
+    for event_index, event in enumerate(valid_events):
+        start_sec = float(event["timestamp"][0])
+        end_sec = float(event["timestamp"][1])
+        if end_sec <= start_sec:
+            continue
+
+        ko_caption = str(event.get("ko_caption") or "").strip()
+        en_caption = str(event.get("en_caption") or "").strip()
+        caption_text = ko_caption or en_caption or None
+        rows.append(
+            {
+                "label_id": _stable_gemini_label_id(asset_id, event_index, start_sec, end_sec),
+                "asset_id": asset_id,
+                "labels_bucket": "vlm-labels",
+                "labels_key": labels_key,
+                "label_format": "gemini_event_json",
+                "label_tool": "gemini",
+                "label_source": "auto",
+                "review_status": "auto_generated",
+                "event_index": event_index,
+                "event_count": event_count,
+                "timestamp_start_sec": start_sec,
+                "timestamp_end_sec": end_sec,
+                "caption_text": caption_text,
+                "object_count": 0,
+                "label_status": "completed",
+            }
+        )
+    return rows
+
+
 def _stable_gemini_label_id(
     asset_id: str, event_index: int, start_sec: float | None, end_sec: float | None,
 ) -> str:
@@ -563,6 +687,10 @@ def _extract_clip_frames(
     jpeg_quality: int,
     image_profile: str = "current",
     frame_interval_sec: float | None = None,
+    image_caption_analyzer: GeminiAnalyzer | None = None,
+    image_caption_event_category: str | None = None,
+    image_caption_event_caption_text: str | None = None,
+    image_caption_log=None,
 ) -> tuple[list[dict[str, Any]], list[str]]:
     """clip 비디오에서 적응형 프레임 추출 → vlm-processed 업로드용 row/keys 반환."""
     now = datetime.now()
@@ -588,6 +716,26 @@ def _extract_clip_frames(
             uploaded_keys.append(image_key)
 
             frame_meta = describe_frame_bytes(frame_bytes)
+            caption_text = None
+            if image_caption_analyzer is not None and (
+                str(image_caption_event_category or "").strip()
+                or str(image_caption_event_caption_text or "").strip()
+            ):
+                try:
+                    caption_text = _generate_event_frame_image_caption(
+                        image_caption_analyzer,
+                        frame_bytes,
+                        event_category=image_caption_event_category,
+                        event_caption_text=image_caption_event_caption_text,
+                    )
+                except Exception as exc:
+                    if image_caption_log is not None:
+                        image_caption_log.warning(
+                            "frame image caption 실패: clip_id=%s frame_index=%s err=%s",
+                            clip_id,
+                            frame_index,
+                            exc,
+                        )
             frame_rows.append({
                 "image_id": str(uuid4()),
                 "source_clip_id": clip_id,
@@ -604,6 +752,7 @@ def _extract_clip_frames(
                 "bit_depth": frame_meta["bit_depth"],
                 "has_alpha": frame_meta["has_alpha"],
                 "orientation": frame_meta["orientation"],
+                "caption_text": caption_text,
                 "extracted_at": now,
             })
     except Exception:
@@ -649,6 +798,56 @@ def _cleanup_temp_path(path: Path | None) -> None:
 
 def _build_nonexistent_temp_path(suffix: str) -> Path:
     return Path(gettempdir()) / f"vlm_{uuid4().hex}{suffix}"
+
+
+def _generate_event_frame_image_caption(
+    analyzer: GeminiAnalyzer,
+    frame_bytes: bytes,
+    *,
+    event_category: str | None,
+    event_caption_text: str | None,
+) -> str | None:
+    if not str(event_category or "").strip() and not str(event_caption_text or "").strip():
+        return None
+
+    prompt = build_event_frame_image_prompt(
+        event_category=event_category,
+        event_caption_text=event_caption_text,
+    )
+    temp_path = _build_nonexistent_temp_path(".jpg")
+    temp_path.write_bytes(frame_bytes)
+    try:
+        response_text = analyzer.analyze_image(str(temp_path), prompt=prompt)
+        cleaned = extract_clean_json_text(response_text)
+        is_relevant, caption_text = parse_event_frame_image_caption_response(cleaned)
+        if not is_relevant:
+            return None
+        return caption_text
+    finally:
+        _cleanup_temp_path(temp_path)
+
+
+def _load_gemini_label_event(
+    minio: MinIOResource,
+    labels_key: str,
+    event_index: int,
+    *,
+    cache: dict[str, list[dict[str, Any]]],
+) -> dict[str, Any]:
+    normalized_key = str(labels_key or "").strip()
+    if not normalized_key:
+        return {}
+
+    cached = cache.get(normalized_key)
+    if cached is None:
+        raw_bytes = minio.download("vlm-labels", normalized_key)
+        cleaned = extract_clean_json_text(raw_bytes.decode("utf-8", errors="replace"))
+        cached = normalize_gemini_events(json.loads(cleaned))
+        cache[normalized_key] = cached
+
+    if 0 <= int(event_index) < len(cached):
+        return dict(cached[int(event_index)])
+    return {}
 
 
 def _delete_minio_keys(minio: MinIOResource, bucket: str, keys: list[str]) -> None:
@@ -765,8 +964,9 @@ def clip_to_frame_routed(
     """run tag: requested_outputs (spec flow) 또는 outputs (dispatch flow). bbox 포함 시 frame 추출."""
     tags = context.run.tags if context.run else {}
     requested = parse_requested_outputs(tags)
-    if "bbox" not in requested:
-        context.log.info("clip_to_frame_routed 스킵: outputs에 bbox 없음")
+    should_run = "captioning" in requested or "bbox" in requested
+    if not should_run:
+        context.log.info("clip_to_frame_routed 스킵: outputs에 captioning/bbox 없음")
         return {"processed": 0, "failed": 0, "frames_extracted": 0, "skipped": True}
 
     spec_id = str(tags.get("spec_id") or "").strip()
@@ -782,12 +982,291 @@ def clip_to_frame_routed(
             sorted(frame_config.keys()),
         )
 
-    # TODO: spec_id 기준 timestamp_status=completed 백로그 조회 후 clip 생성 + frame 추출, frame_status 갱신
-    context.log.info("clip_to_frame_routed: 스펙 백로그 연동 TODO")
+    folder_name = tags.get("folder_name") or tags.get("folder_name_original")
+    image_profile = tags.get("image_profile", "current")
+    limit = int(context.op_config.get("limit", 1000))
+    jpeg_quality = int(tags.get("jpeg_quality") or 90)
+    max_frames = int(tags.get("max_frames_per_video") or 12)
+
+    candidates = db.find_processable(folder_name=folder_name, spec_id=spec_id or None)
+    if not candidates:
+        context.log.info("clip_to_frame_routed: 대상 없음")
+        return {
+            "processed": 0,
+            "failed": 0,
+            "frames_extracted": 0,
+            "image_captions": 0,
+            "resolved_config_id": resolved_config_id,
+        }
+
+    candidates = candidates[:limit]
+    total_candidates = len(candidates)
+    enable_image_captioning = "captioning" in requested and any(
+        str(candidate.get("media_type") or "").strip().lower() == "video"
+        for candidate in candidates
+    )
+    image_caption_analyzer = GeminiAnalyzer() if enable_image_captioning else None
+    label_events_cache: dict[str, list[dict[str, Any]]] = {}
+    processed = 0
+    failed = 0
+    total_frames = 0
+    image_captions = 0
+    asset_errors: dict[str, str] = {}
+
+    asset_ids_in_order: list[str] = []
+    seen_asset_ids: set[str] = set()
+    for candidate in candidates:
+        asset_id = str(candidate.get("asset_id") or "").strip()
+        if asset_id and asset_id not in seen_asset_ids:
+            seen_asset_ids.add(asset_id)
+            asset_ids_in_order.append(asset_id)
+
+    for asset_id in asset_ids_in_order:
+        db.update_frame_status(asset_id, "processing")
+
+    context.log.info("clip_to_frame_routed 시작: 총 %d건 처리 예정", total_candidates)
+    for idx, cand in enumerate(candidates, start=1):
+        asset_id = cand["asset_id"]
+        raw_bucket = cand["raw_bucket"]
+        raw_key = cand["raw_key"]
+        media_type = cand["media_type"]
+        archive_path = cand.get("archive_path")
+        label_id = cand["label_id"]
+        labels_key = cand["labels_key"]
+        label_source = str(cand.get("label_source") or "manual")
+        event_index = int(cand.get("event_index") or 0)
+        clip_start_sec = _coerce_float(cand.get("timestamp_start_sec"))
+        clip_end_sec = _coerce_float(cand.get("timestamp_end_sec"))
+        caption_text = str(cand.get("caption_text") or "").strip() or None
+        temp_clip_path: Path | None = None
+        temp_video_path: Path | None = None
+        clip_id: str | None = None
+        clip_key: str | None = None
+        uploaded_clip_key: str | None = None
+        uploaded_frame_keys: list[str] = []
+        clip_created_at = datetime.now()
+
+        try:
+            event_context: dict[str, Any] = {}
+            if enable_image_captioning:
+                try:
+                    event_context = _load_gemini_label_event(
+                        minio,
+                        labels_key,
+                        event_index,
+                        cache=label_events_cache,
+                    )
+                except Exception as exc:
+                    context.log.warning(
+                        "clip_to_frame_routed: event context load 실패 asset=%s label_key=%s err=%s",
+                        asset_id,
+                        labels_key,
+                        exc,
+                    )
+            event_category = str(event_context.get("category") or "").strip() or None
+            event_caption = (
+                caption_text
+                or str(event_context.get("ko_caption") or "").strip()
+                or str(event_context.get("en_caption") or "").strip()
+                or None
+            )
+
+            clip_key = _build_processed_clip_key(
+                raw_key,
+                event_index=event_index,
+                clip_start_sec=clip_start_sec,
+                clip_end_sec=clip_end_sec,
+                media_type=media_type,
+            )
+            clip_id = _stable_clip_id(label_id, event_index, clip_start_sec, clip_end_sec, clip_key)
+            width, height, codec = None, None, None
+            file_bytes = None
+            clip_duration = None
+            clip_fps = None
+            clip_frame_count = None
+
+            db.insert_processed_clip(
+                {
+                    "clip_id": clip_id,
+                    "source_asset_id": asset_id,
+                    "source_label_id": label_id,
+                    "event_index": event_index,
+                    "clip_start_sec": clip_start_sec,
+                    "clip_end_sec": clip_end_sec,
+                    "processed_bucket": "vlm-processed",
+                    "clip_key": clip_key,
+                    "label_key": labels_key,
+                    "data_source": label_source,
+                    "caption_text": caption_text,
+                    "image_extract_status": "pending" if media_type == "video" else "completed",
+                    "image_extract_count": 0,
+                    "process_status": "processing",
+                    "created_at": clip_created_at,
+                }
+            )
+
+            if media_type == "image":
+                file_bytes = minio.download(raw_bucket, raw_key)
+                with Image.open(BytesIO(file_bytes)) as img:
+                    width, height = img.size
+                    codec = (img.format or "jpeg").lower()
+                minio.upload("vlm-processed", clip_key, file_bytes, f"image/{codec}")
+                uploaded_clip_key = clip_key
+            elif clip_start_sec is not None and clip_end_sec is not None and clip_end_sec > clip_start_sec:
+                video_path, temp_video_path = _materialize_video_path(
+                    minio,
+                    {"archive_path": archive_path, "raw_bucket": raw_bucket, "raw_key": raw_key},
+                )
+                temp_clip_path = _extract_video_clip_path(
+                    video_path,
+                    clip_start_sec=clip_start_sec,
+                    clip_end_sec=clip_end_sec,
+                )
+                file_bytes = temp_clip_path.read_bytes()
+                minio.upload("vlm-processed", clip_key, file_bytes, "video/mp4")
+                uploaded_clip_key = clip_key
+
+                clip_meta = _ffprobe_clip_meta(temp_clip_path)
+                clip_duration = clip_meta.get("duration_sec")
+                clip_fps = clip_meta.get("fps")
+                clip_frame_count = clip_meta.get("frame_count")
+                width = clip_meta.get("width") or cand.get("video_width")
+                height = clip_meta.get("height") or cand.get("video_height")
+                codec = clip_meta.get("codec") or cand.get("video_codec") or "mp4"
+            else:
+                raise RuntimeError("video_clip_range_missing")
+
+            checksum = sha256_bytes(file_bytes) if file_bytes else None
+            file_size = len(file_bytes) if file_bytes else None
+            db.insert_processed_clip(
+                {
+                    "clip_id": clip_id,
+                    "source_asset_id": asset_id,
+                    "source_label_id": label_id,
+                    "event_index": event_index,
+                    "clip_start_sec": clip_start_sec,
+                    "clip_end_sec": clip_end_sec,
+                    "checksum": checksum,
+                    "file_size": file_size,
+                    "processed_bucket": "vlm-processed",
+                    "clip_key": clip_key,
+                    "label_key": labels_key,
+                    "data_source": label_source,
+                    "caption_text": caption_text,
+                    "width": width,
+                    "height": height,
+                    "codec": codec,
+                    "duration_sec": clip_duration,
+                    "fps": clip_fps,
+                    "frame_count": clip_frame_count,
+                    "image_extract_status": "pending" if media_type == "video" else "completed",
+                    "image_extract_count": 0,
+                    "process_status": "processing",
+                    "created_at": clip_created_at,
+                }
+            )
+
+            frames_count = 0
+            if media_type == "video":
+                if temp_clip_path is None or clip_duration is None or clip_duration <= 0:
+                    raise RuntimeError("clip_meta_missing_or_invalid")
+                clip_interval = 10.0 if clip_duration >= 3600 else 1.0
+                db.update_clip_image_extract_status(clip_id, "processing")
+                frame_rows, uploaded_frame_keys = _extract_clip_frames(
+                    minio,
+                    clip_id=clip_id,
+                    source_asset_id=asset_id,
+                    clip_path=temp_clip_path,
+                    clip_key=clip_key,
+                    duration_sec=clip_duration,
+                    fps=clip_fps,
+                    frame_count=clip_frame_count,
+                    max_frames=max_frames,
+                    jpeg_quality=jpeg_quality,
+                    image_profile=image_profile,
+                    frame_interval_sec=clip_interval,
+                    image_caption_analyzer=image_caption_analyzer,
+                    image_caption_event_category=event_category,
+                    image_caption_event_caption_text=event_caption,
+                    image_caption_log=context.log if enable_image_captioning else None,
+                )
+                db.replace_processed_clip_frame_metadata(asset_id, clip_id, frame_rows)
+                frames_count = len(frame_rows)
+                total_frames += frames_count
+                image_captions += sum(1 for row in frame_rows if row.get("caption_text"))
+                db.update_clip_image_extract_status(
+                    clip_id,
+                    "completed",
+                    count=frames_count,
+                    error=None,
+                    extracted_at=datetime.now(),
+                )
+            else:
+                db.update_clip_image_extract_status(
+                    clip_id,
+                    "completed",
+                    count=0,
+                    error=None,
+                    extracted_at=datetime.now(),
+                )
+
+            db.update_processed_clip_status(clip_id, "completed")
+            processed += 1
+            context.log.info(
+                "clip_to_frame_routed 진행: [%d/%d] asset=%s frames=%d captions=%d ✅",
+                idx,
+                total_candidates,
+                asset_id,
+                frames_count,
+                image_captions,
+            )
+        except Exception as exc:
+            failed += 1
+            asset_errors[asset_id] = str(exc)[:500]
+            context.log.error(
+                "clip_to_frame_routed 진행: [%d/%d] asset=%s ❌ %s",
+                idx,
+                total_candidates,
+                asset_id,
+                exc,
+            )
+            if clip_id:
+                db.update_processed_clip_status(clip_id, "failed")
+                db.update_clip_image_extract_status(
+                    clip_id,
+                    "failed",
+                    count=0,
+                    error=str(exc)[:500],
+                    extracted_at=datetime.now(),
+                )
+                db.replace_processed_clip_frame_metadata(asset_id, clip_id, [])
+            cleanup_keys = list(uploaded_frame_keys)
+            if uploaded_clip_key:
+                cleanup_keys.append(uploaded_clip_key)
+            if cleanup_keys:
+                _delete_minio_keys(minio, "vlm-processed", cleanup_keys)
+        finally:
+            _cleanup_temp_path(temp_clip_path)
+            _cleanup_temp_path(temp_video_path)
+
+    completed_at = datetime.now()
+    for asset_id in asset_ids_in_order:
+        error_message = asset_errors.get(asset_id)
+        if error_message:
+            db.update_frame_status(
+                asset_id,
+                "failed",
+                error=error_message,
+                completed_at=completed_at,
+            )
+        else:
+            db.update_frame_status(asset_id, "completed", completed_at=completed_at)
+
     return {
-        "processed": 0,
-        "failed": 0,
-        "frames_extracted": 0,
+        "processed": processed,
+        "failed": failed,
+        "frames_extracted": total_frames,
+        "image_captions": image_captions,
         "resolved_config_id": resolved_config_id,
     }
 

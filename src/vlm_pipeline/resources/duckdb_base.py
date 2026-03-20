@@ -154,6 +154,7 @@ class DuckDBBaseMixin:
             "bit_depth",
             "has_alpha",
             "orientation",
+            "caption_text",
             "extracted_at",
         }
         if columns == desired_columns:
@@ -185,6 +186,7 @@ class DuckDBBaseMixin:
                 bit_depth        INTEGER DEFAULT 8,
                 has_alpha        BOOLEAN DEFAULT FALSE,
                 orientation      INTEGER DEFAULT 1,
+                caption_text     TEXT,
                 extracted_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 UNIQUE (image_bucket, image_key),
                 UNIQUE (source_asset_id, source_clip_id, image_role, frame_index)
@@ -210,6 +212,7 @@ class DuckDBBaseMixin:
                 bit_depth,
                 has_alpha,
                 orientation,
+                caption_text,
                 extracted_at
             )
             SELECT
@@ -229,11 +232,16 @@ class DuckDBBaseMixin:
                 {_col("bit_depth", "8")} AS bit_depth,
                 {_col("has_alpha", "FALSE")} AS has_alpha,
                 {_col("orientation", "1")} AS orientation,
+                {_col("caption_text")} AS caption_text,
                 {_col("extracted_at", "CURRENT_TIMESTAMP")} AS extracted_at
             FROM image_metadata im
             LEFT JOIN raw_files rf ON rf.asset_id = COALESCE({_col("source_asset_id")}, {_col("asset_id")})
             """
         )
+        if cls._table_exists(conn, "image_labels"):
+            conn.execute("DROP TABLE IF EXISTS image_labels__backup")
+            conn.execute("CREATE TABLE image_labels__backup AS SELECT * FROM image_labels")
+            conn.execute("DROP TABLE image_labels")
         conn.execute("DROP TABLE image_metadata")
         conn.execute("ALTER TABLE image_metadata__migrated RENAME TO image_metadata")
 
@@ -380,6 +388,14 @@ class DuckDBBaseMixin:
             )
             """
         )
+        if cls._table_exists(conn, "image_labels__backup"):
+            conn.execute(
+                """
+                INSERT INTO image_labels
+                SELECT * FROM image_labels__backup
+                """
+            )
+            conn.execute("DROP TABLE image_labels__backup")
 
     # ── Staging 전용 테이블 보장 ──
 

@@ -2,6 +2,7 @@
 minio_data/
 scanner_output/
 docs/
+doc_2/
 result/
 catalog/logs/
 catalog/*.duckdb
@@ -63,7 +64,7 @@ pyproject.toml
 
 # MCP 설정 (API 키 포함)
 .mcp.json
-.agent/
+.agent/*
 
 # 일일 작업 로그 자동 생성 로그
 .worklog_logs/

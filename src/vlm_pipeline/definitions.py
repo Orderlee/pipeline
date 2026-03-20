@@ -11,6 +11,9 @@ docker/app/dagster_defs.py의 MVP 파이프라인과 동일 구조.
 data_pipeline_job 제거됨 — mvp_stage_job으로 통합.
 
 `clip_to_frame` 프레임 시점은 `vlm_pipeline.lib.video_frames.plan_frame_timestamps` (스테이징과 공유).
+
+NAS 지연 시 `auto_bootstrap_manifest_sensor`: `AUTO_BOOTSTRAP_DISCOVERY_MAX_TOP_ENTRIES`(권장 20),
+`DAGSTER_SENSOR_GRPC_TIMEOUT_SECONDS`(권장 300) — 스테이징과 동일 env 키.
 """
 
 from __future__ import annotations
