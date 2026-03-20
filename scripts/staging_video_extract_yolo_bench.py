@@ -8,6 +8,7 @@ YOLO 서버가 있으면 샘플 이미지로 검출 수·소요 시간을 추가
   PYTHONPATH=src python3 scripts/staging_video_extract_yolo_bench.py
   PYTHONPATH=src python3 scripts/staging_video_extract_yolo_bench.py --video-dir /home/pia/mou/staging/tmp_data_2 --max-videos 5
   PYTHONPATH=src python3 scripts/staging_video_extract_yolo_bench.py --no-yolo
+  PYTHONPATH=src python3 scripts/staging_video_extract_yolo_bench.py --preset-names interval_0.5s_q90 interval_1s_q85 --workers 1 2 4
 """
 
 from __future__ import annotations
@@ -272,6 +273,13 @@ def main() -> None:
     ap.add_argument("--yolo-url", default=os.environ.get("YOLO_API_URL", "http://localhost:8001"), help="YOLO API URL")
     ap.add_argument("--out-dir", type=Path, default=None, help="추출 이미지 저장 (기본 임시)")
     ap.add_argument("--workers", type=int, nargs="+", default=[1], help="병렬 워커 수 (여러 개 시 비교용, 예: 1 2 4)")
+    ap.add_argument(
+        "--preset-names",
+        nargs="*",
+        default=None,
+        metavar="NAME",
+        help="지정 시 해당 이름의 프리셋만 실행 (예: interval_0.5s_q90 interval_1s_q85). 미지정 시 전체 PRESETS.",
+    )
     args = ap.parse_args()
 
     video_dir = args.video_dir
@@ -290,8 +298,19 @@ def main() -> None:
     out_root = args.out_dir or Path(tempfile.mkdtemp(prefix="staging_extract_"))
     print(f"영상 수: {len(videos)}, workers: {worker_list}, 추출 출력: {out_root}", file=sys.stderr)
 
+    presets_to_run = PRESETS
+    if args.preset_names:
+        wanted = set(args.preset_names)
+        presets_to_run = [p for p in PRESETS if p["name"] in wanted]
+        missing = wanted - {p["name"] for p in presets_to_run}
+        if missing:
+            print(f"알 수 없는 preset 이름 (무시): {sorted(missing)}", file=sys.stderr)
+        if not presets_to_run:
+            print("실행할 프리셋이 없습니다. --preset-names 와 PRESETS 이름을 확인하세요.", file=sys.stderr)
+            sys.exit(1)
+
     all_results: list[dict] = []
-    for preset in PRESETS:
+    for preset in presets_to_run:
         for w in worker_list:
             r = run_preset(preset, videos, out_root, run_yolo, args.yolo_url, workers=w)
             all_results.append(r)

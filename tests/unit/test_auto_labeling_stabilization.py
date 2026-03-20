@@ -8,12 +8,14 @@ import pytest
 
 from vlm_pipeline.resources.duckdb_base import DuckDBBaseMixin
 from vlm_pipeline.resources.duckdb_dedup import DuckDBDedupMixin
+from vlm_pipeline.resources.duckdb_ingest import DuckDBIngestMixin
 from vlm_pipeline.resources.duckdb_labeling import DuckDBLabelingMixin
 
 
 class _TestDuckDBResource(
     DuckDBBaseMixin,
     DuckDBDedupMixin,
+    DuckDBIngestMixin,
     DuckDBLabelingMixin,
 ):
     def __init__(self, db_path: str) -> None:
@@ -194,6 +196,10 @@ def test_ensure_schema_adds_runtime_auto_label_columns_and_image_labels(tmp_path
             row[0]
             for row in conn.execute("SELECT column_name FROM information_schema.columns WHERE table_name = 'video_metadata'").fetchall()
         }
+        image_columns = {
+            row[0]
+            for row in conn.execute("SELECT column_name FROM information_schema.columns WHERE table_name = 'image_metadata'").fetchall()
+        }
         processed_columns = {
             row[0]
             for row in conn.execute("SELECT column_name FROM information_schema.columns WHERE table_name = 'processed_clips'").fetchall()
@@ -217,6 +223,7 @@ def test_ensure_schema_adds_runtime_auto_label_columns_and_image_labels(tmp_path
         ).fetchone()
 
     assert {"auto_label_status", "auto_label_error", "auto_label_key", "auto_labeled_at"} <= video_columns
+    assert {"caption_text"} <= image_columns
     assert {
         "duration_sec",
         "fps",
@@ -416,6 +423,171 @@ def test_find_processable_keeps_failed_clips_reprocessable(tmp_path: Path) -> No
     )
 
     assert resource.find_processable() == []
+
+
+def test_find_processable_allows_ready_for_labeling_with_spec_id(tmp_path: Path) -> None:
+    resource = _resource(tmp_path)
+    resource.ensure_schema()
+    asset_id = _insert_raw_video(resource)
+
+    with resource.connect() as conn:
+        conn.execute(
+            """
+            UPDATE raw_files
+            SET ingest_status = 'ready_for_labeling',
+                spec_id = 'spec-1',
+                source_unit_name = 'unit-a'
+            WHERE asset_id = ?
+            """,
+            [asset_id],
+        )
+
+    resource.insert_label(
+        {
+            "label_id": "label-spec-1",
+            "asset_id": asset_id,
+            "labels_key": "adlib-hotel-202512/20251222/sample.json",
+            "label_format": "gemini_event_json",
+            "label_tool": "gemini",
+            "label_source": "auto",
+            "event_index": 0,
+            "event_count": 1,
+            "timestamp_start_sec": 0.0,
+            "timestamp_end_sec": 2.0,
+            "caption_text": "smoke",
+        }
+    )
+
+    rows = resource.find_processable(spec_id="spec-1")
+    assert [row["label_id"] for row in rows] == ["label-spec-1"]
+    assert resource.find_processable(spec_id="spec-2") == []
+
+
+def test_find_ready_for_labeling_caption_backlog_returns_timestamp_completed_rows(tmp_path: Path) -> None:
+    resource = _resource(tmp_path)
+    resource.ensure_schema()
+    asset_id = _insert_raw_video(resource)
+
+    with resource.connect() as conn:
+        conn.execute(
+            """
+            UPDATE raw_files
+            SET ingest_status = 'ready_for_labeling',
+                spec_id = 'spec-1',
+                source_unit_name = 'unit-a'
+            WHERE asset_id = ?
+            """,
+            [asset_id],
+        )
+
+    resource.update_timestamp_status(
+        asset_id,
+        "completed",
+        label_key="adlib-hotel-202512/20251222/events/sample.json",
+        completed_at=datetime(2026, 3, 11, 2, 0, 0),
+    )
+
+    rows = resource.find_ready_for_labeling_caption_backlog("spec-1", limit=10)
+    assert rows == [
+        {
+            "asset_id": asset_id,
+            "raw_bucket": "vlm-raw",
+            "raw_key": "adlib-hotel-202512/20251222/sample.mp4",
+            "timestamp_label_key": "adlib-hotel-202512/20251222/events/sample.json",
+            "duration_sec": 12.5,
+        }
+    ]
+
+
+def test_find_caption_pending_by_folder_returns_dispatch_rows(tmp_path: Path) -> None:
+    resource = _resource(tmp_path)
+    resource.ensure_schema()
+    asset_id = _insert_raw_video(resource)
+
+    with resource.connect() as conn:
+        conn.execute(
+            """
+            UPDATE raw_files
+            SET ingest_status = 'completed',
+                source_unit_name = 'unit-a'
+            WHERE asset_id = ?
+            """,
+            [asset_id],
+        )
+
+    resource.update_timestamp_status(
+        asset_id,
+        "completed",
+        label_key="adlib-hotel-202512/20251222/events/sample.json",
+        completed_at=datetime(2026, 3, 11, 2, 0, 0),
+    )
+
+    rows = resource.find_caption_pending_by_folder("unit-a", limit=10)
+    assert rows == [
+        {
+            "asset_id": asset_id,
+            "raw_bucket": "vlm-raw",
+            "raw_key": "adlib-hotel-202512/20251222/sample.mp4",
+            "timestamp_label_key": "adlib-hotel-202512/20251222/events/sample.json",
+            "duration_sec": 12.5,
+        }
+    ]
+
+
+def test_replace_processed_clip_frame_metadata_persists_image_caption_text(tmp_path: Path) -> None:
+    resource = _resource(tmp_path)
+    resource.ensure_schema()
+    asset_id = _insert_raw_video(resource)
+    resource.insert_label(
+        {
+            "label_id": "label-1",
+            "asset_id": asset_id,
+            "labels_key": "adlib-hotel-202512/20251222/events/sample.json",
+            "label_format": "gemini_event_json",
+            "label_tool": "gemini",
+            "label_source": "auto",
+            "event_index": 0,
+            "event_count": 1,
+            "timestamp_start_sec": 0.0,
+            "timestamp_end_sec": 2.0,
+            "caption_text": "smoke",
+        }
+    )
+    resource.insert_processed_clip(
+        {
+            "clip_id": "clip-1",
+            "source_asset_id": asset_id,
+            "source_label_id": "label-1",
+            "event_index": 0,
+            "clip_start_sec": 0.0,
+            "clip_end_sec": 2.0,
+            "clip_key": "adlib-hotel-202512/20251222/clips/sample_e000.mp4",
+            "label_key": "adlib-hotel-202512/20251222/events/sample.json",
+            "process_status": "completed",
+            "image_extract_status": "completed",
+        }
+    )
+
+    resource.replace_processed_clip_frame_metadata(
+        asset_id,
+        "clip-1",
+        [
+            {
+                "image_id": "frame-1",
+                "source_clip_id": "clip-1",
+                "image_bucket": "vlm-processed",
+                "image_key": "adlib-hotel-202512/20251222/image/sample_00000001.jpg",
+                "image_role": "processed_clip_frame",
+                "frame_index": 1,
+                "frame_sec": 0.5,
+                "caption_text": "연기가 보이는 프레임",
+            }
+        ],
+    )
+
+    rows = resource.list_processed_clip_frame_rows("clip-1")
+    assert len(rows) == 1
+    assert rows[0]["caption_text"] == "연기가 보이는 프레임"
 
 
 def test_processed_clip_image_key_uses_sibling_image_directory() -> None:

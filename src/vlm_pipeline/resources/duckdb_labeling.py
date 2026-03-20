@@ -215,6 +215,75 @@ class DuckDBLabelingMixin:
             ]
             return [dict(zip(columns, row)) for row in rows]
 
+    def find_ready_for_labeling_caption_backlog(
+        self, spec_id: str, limit: int = 100
+    ) -> list[dict]:
+        """Staging spec flow: timestamp 완료 후 caption 정규화가 남은 비디오."""
+        with self.connect() as conn:
+            cols = self._table_columns(conn, "raw_files")
+            if "spec_id" not in cols:
+                return []
+            vm_cols = self._table_columns(conn, "video_metadata")
+            required_vm_cols = {"timestamp_status", "timestamp_label_key", "caption_status"}
+            if not required_vm_cols.issubset(vm_cols):
+                return []
+            rows = conn.execute(
+                """
+                SELECT
+                    r.asset_id,
+                    r.raw_bucket,
+                    r.raw_key,
+                    vm.timestamp_label_key,
+                    vm.duration_sec
+                FROM raw_files r
+                JOIN video_metadata vm ON vm.asset_id = r.asset_id
+                WHERE r.media_type = 'video'
+                  AND r.ingest_status = 'ready_for_labeling'
+                  AND r.spec_id = ?
+                  AND COALESCE(vm.timestamp_status, 'pending') = 'completed'
+                  AND COALESCE(vm.caption_status, 'pending') = 'pending'
+                  AND COALESCE(vm.timestamp_label_key, '') <> ''
+                ORDER BY COALESCE(vm.timestamp_completed_at, r.created_at), r.asset_id
+                LIMIT ?
+                """,
+                [spec_id, max(1, int(limit))],
+            ).fetchall()
+            columns = ["asset_id", "raw_bucket", "raw_key", "timestamp_label_key", "duration_sec"]
+            return [dict(zip(columns, row)) for row in rows]
+
+    def find_caption_pending_by_folder(
+        self, folder_name: str, limit: int = 100
+    ) -> list[dict]:
+        """Dispatch flow: folder 기준 timestamp 완료 후 caption 정규화가 남은 비디오."""
+        with self.connect() as conn:
+            vm_cols = self._table_columns(conn, "video_metadata")
+            required_vm_cols = {"timestamp_status", "timestamp_label_key", "caption_status"}
+            if not required_vm_cols.issubset(vm_cols):
+                return []
+            rows = conn.execute(
+                """
+                SELECT
+                    r.asset_id,
+                    r.raw_bucket,
+                    r.raw_key,
+                    vm.timestamp_label_key,
+                    vm.duration_sec
+                FROM raw_files r
+                JOIN video_metadata vm ON vm.asset_id = r.asset_id
+                WHERE r.media_type = 'video'
+                  AND r.ingest_status = 'completed'
+                  AND r.source_unit_name = ?
+                  AND COALESCE(vm.timestamp_status, 'pending') = 'completed'
+                  AND COALESCE(vm.caption_status, 'pending') = 'pending'
+                  AND COALESCE(vm.timestamp_label_key, '') <> ''
+                ORDER BY COALESCE(vm.timestamp_completed_at, r.created_at), r.asset_id
+                LIMIT ?
+                """,
+                [folder_name, max(1, int(limit))],
+            ).fetchall()
+            columns = ["asset_id", "raw_bucket", "raw_key", "timestamp_label_key", "duration_sec"]
+            return [dict(zip(columns, row)) for row in rows]
+
     def find_captioning_pending_videos(self, limit: int = 100, folder_name: str | None = None) -> list[dict]:
         """Gemini JSON 생성 완료(generated) 후 아직 DB 정규화가 안 된 video."""
         with self.connect() as conn:
