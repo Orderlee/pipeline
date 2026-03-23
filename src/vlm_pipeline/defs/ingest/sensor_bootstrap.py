@@ -10,7 +10,7 @@ from pathlib import Path
 
 from dagster import DefaultSensorStatus, SkipReason, sensor
 
-from vlm_pipeline.lib.env_utils import bool_env, int_env
+from vlm_pipeline.lib.env_utils import IS_STAGING, bool_env, int_env
 from vlm_pipeline.lib.validator import ALLOWED_EXTENSIONS
 from vlm_pipeline.resources.config import PipelineConfig
 
@@ -80,6 +80,22 @@ def _iter_sorted_dir_entries(path: Path) -> list[Path]:
     return sorted(entries, key=lambda row: row.name)
 
 
+def _load_dispatch_requested_folders(dispatch_pending_dir: Path) -> set[str]:
+    requested_folders: set[str] = set()
+    if not dispatch_pending_dir.exists():
+        return requested_folders
+
+    for request_path in sorted(dispatch_pending_dir.glob("*.json")):
+        try:
+            payload = json.loads(request_path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        folder_name = str(payload.get("folder_name", "")).strip()
+        if folder_name:
+            requested_folders.add(folder_name)
+    return requested_folders
+
+
 def _has_allowed_direct_file(dir_path: Path, allowed_exts: set[str]) -> bool:
     for entry in _iter_sorted_dir_entries(dir_path):
         if entry.name.startswith("."):
@@ -100,6 +116,7 @@ def _discover_source_units(
     budget_sec: int,
     discovery_start_index: int = 0,
     max_top_entries_per_tick: int = 0,
+    excluded_top_level_names: set[str] | None = None,
 ) -> tuple[list[dict], int]:
     """Discovery를 틱당 상한으로 나누어 NAS 지연 시 gRPC 타임아웃을 피한다.
 
@@ -148,6 +165,8 @@ def _discover_source_units(
 
         top_name = top_entry.name
         if top_name.startswith("."):
+            continue
+        if excluded_top_level_names and top_name in excluded_top_level_names:
             continue
 
         try:
@@ -417,12 +436,16 @@ def auto_bootstrap_manifest_sensor(context):
       1) 동일 signature가 stable_cycles 이상 연속 관측
       2) 마지막 수정 시각이 stable_age_sec 이상 경과
     """
+    if IS_STAGING:
+        context.update_cursor("{}")
+        return SkipReason("staging에서는 trigger JSON 전까지 incoming에서 대기합니다")
+
     config = PipelineConfig()
     incoming_dir = Path(config.incoming_dir)
     pending_dir = Path(config.manifest_dir) / "pending"
     pending_dir.mkdir(parents=True, exist_ok=True)
-    max_pending_manifests = max(1, int(os.getenv("AUTO_BOOTSTRAP_MAX_PENDING_MANIFESTS", "200")))
-    max_new_manifests_per_tick = max(1, int(os.getenv("AUTO_BOOTSTRAP_MAX_NEW_MANIFESTS_PER_TICK", "20")))
+    max_pending_manifests = int_env("AUTO_BOOTSTRAP_MAX_PENDING_MANIFESTS", 200, 1)
+    max_new_manifests_per_tick = int_env("AUTO_BOOTSTRAP_MAX_NEW_MANIFESTS_PER_TICK", 20, 1)
 
     pending_manifests = sorted(pending_dir.glob("*.json"), key=lambda p: str(p))
     pending_count = len(pending_manifests)
@@ -432,25 +455,26 @@ def auto_bootstrap_manifest_sensor(context):
             f"(pending={pending_count}, limit={max_pending_manifests})"
         )
 
-    stable_cycles_required = max(1, int(os.getenv("AUTO_BOOTSTRAP_STABLE_CYCLES", "2")))
-    stable_age_sec = max(0, int(os.getenv("AUTO_BOOTSTRAP_STABLE_AGE_SEC", "120")))
+    stable_cycles_required = int_env("AUTO_BOOTSTRAP_STABLE_CYCLES", 2, 1)
+    stable_age_sec = int_env("AUTO_BOOTSTRAP_STABLE_AGE_SEC", 120, 0)
     stable_age_ns = stable_age_sec * 1_000_000_000
     max_units_per_tick = _effective_auto_bootstrap_max_units_per_tick()
-    max_ready_units_per_tick = max(1, int(os.getenv("AUTO_BOOTSTRAP_MAX_READY_UNITS_PER_TICK", "5")))
+    max_ready_units_per_tick = int_env("AUTO_BOOTSTRAP_MAX_READY_UNITS_PER_TICK", 5, 1)
     scan_budget_sec = _effective_auto_bootstrap_scan_budget_sec()
     skip_on_partial_scan = bool_env("AUTO_BOOTSTRAP_SKIP_ON_PARTIAL_SCAN", True)
     require_done_marker = bool_env("AUTO_BOOTSTRAP_REQUIRE_DONE_MARKER", True)
     done_marker_gcp_only = bool_env("AUTO_BOOTSTRAP_DONE_MARKER_GCP_ONLY", True)
     done_marker_name = os.getenv("AUTO_BOOTSTRAP_DONE_MARKER_NAME", "_DONE").strip() or "_DONE"
-    max_files_per_manifest = max(1, int(os.getenv("AUTO_BOOTSTRAP_MAX_FILES_PER_MANIFEST", "100")))
+    max_files_per_manifest = int_env("AUTO_BOOTSTRAP_MAX_FILES_PER_MANIFEST", 100, 1)
     allowed_exts = {ext.lower() for ext in ALLOWED_EXTENSIONS}
     previous_units, previous_scan_offset, previous_discovery_offset = _parse_auto_bootstrap_cursor(
         context.cursor
     )
-    # NAS 지연 시: 0=무제한(기존), 15~30 권장. discovery를 틱당 N개 상위 entry로 나누어 gRPC 타임아웃 방지
-    discovery_max_top_entries = max(
-        0, int(os.getenv("AUTO_BOOTSTRAP_DISCOVERY_MAX_TOP_ENTRIES", "0"))
+    dispatch_requested_folders = _load_dispatch_requested_folders(
+        incoming_dir / ".dispatch" / "pending"
     )
+    # NAS 지연 시: 0=무제한(기존), 15~30 권장. discovery를 틱당 N개 상위 entry로 나누어 gRPC 타임아웃 방지
+    discovery_max_top_entries = int_env("AUTO_BOOTSTRAP_DISCOVERY_MAX_TOP_ENTRIES", 0, 0)
 
     if not incoming_dir.exists():
         context.update_cursor(
@@ -475,6 +499,7 @@ def auto_bootstrap_manifest_sensor(context):
             discovery_budget_sec,
             discovery_start_index=previous_discovery_offset,
             max_top_entries_per_tick=discovery_max_top_entries,
+            excluded_top_level_names=dispatch_requested_folders,
         )
         discovery_elapsed_sec = time.perf_counter() - discovery_started
         
@@ -624,6 +649,10 @@ def auto_bootstrap_manifest_sensor(context):
     for index, (unit_key, unit) in enumerate(ready_units, start=1):
         signature = str(unit["signature"])
         unit_files = list(unit["files"])
+        manifest_unit_type = str(unit["unit_type"])
+        manifest_unit_name = str(unit["unit_name"])
+        manifest_unit_path = str(unit["unit_path"])
+
         unit_file_chunks = _chunk_files(unit_files, max_files_per_manifest)
         chunk_count = len(unit_file_chunks)
         if len(created_manifests) + chunk_count > max_new_manifests_per_tick:
@@ -635,25 +664,28 @@ def auto_bootstrap_manifest_sensor(context):
             now = datetime.now()
             manifest_id = f"auto_bootstrap_{now:%Y%m%d_%H%M%S_%f}_{index:03d}_{chunk_index:03d}"
             manifest_filename = f"{manifest_id}.json"
-            source_unit_dispatch_key = f"{unit['unit_path']}#chunk:{chunk_index:04d}/{chunk_count:04d}"
+            source_unit_dispatch_key = (
+                f"{manifest_unit_path}#chunk:{chunk_index:04d}/{chunk_count:04d}"
+            )
 
             manifest = {
                 "manifest_id": manifest_id,
                 "generated_at": now.isoformat(),
                 "source_dir": str(incoming_dir),
-                "source_unit_type": unit["unit_type"],
-                "source_unit_path": unit["unit_path"],
-                "source_unit_name": unit["unit_name"],
+                "source_unit_type": manifest_unit_type,
+                "source_unit_path": manifest_unit_path,
+                "source_unit_name": manifest_unit_name,
                 "source_unit_dispatch_key": source_unit_dispatch_key,
                 "source_unit_total_file_count": len(unit_files),
                 "source_unit_chunk_index": chunk_index,
                 "source_unit_chunk_count": chunk_count,
                 "stable_signature": signature,
                 "transfer_tool": "auto_bootstrap_sensor",
+                "archive_requested": False if IS_STAGING else True,
                 "file_count": len(chunk_files),
                 "files": [
                     {
-                        "path": row["path"],
+                        "path": str(row["path"]),
                         "size": row["size"],
                         "rel_path": row.get("rel_path", Path(row["path"]).name),
                     }
@@ -674,7 +706,7 @@ def auto_bootstrap_manifest_sensor(context):
             created_manifests.append(manifest_filename)
             context.log.info(
                 f"auto_bootstrap: manifest 생성 완료 — {manifest_filename} "
-                f"({len(chunk_files)} files, chunk={chunk_index}/{chunk_count}, unit={unit['unit_path']})"
+                f"({len(chunk_files)} files, chunk={chunk_index}/{chunk_count}, unit={manifest_unit_path})"
             )
 
         if not unit_manifest_failed:

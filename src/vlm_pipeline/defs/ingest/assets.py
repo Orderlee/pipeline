@@ -15,7 +15,13 @@ from vlm_pipeline.resources.config import PipelineConfig
 from vlm_pipeline.resources.duckdb import DuckDBResource
 from vlm_pipeline.resources.minio import MinIOResource
 
-from .archive import archive_uploaded_assets
+from .archive import (
+    archive_uploaded_assets,
+    complete_uploaded_assets_in_archive,
+    complete_uploaded_assets_without_archive,
+    prepare_manifest_for_archive_upload,
+    should_archive_manifest,
+)
 from .duplicate import collect_duplicate_asset_file_map
 from .manifest import (
     build_retry_manifest,
@@ -224,6 +230,21 @@ def raw_ingest(
             ).fetchone()[0]
         return {"total": int(total), "success": int(completed), "failed": 0, "skipped": 0}
 
+    archive_requested = should_archive_manifest(manifest, config=config)
+    archive_unit_dir_hint = None
+    archive_prepared_for_upload = False
+    if archive_requested:
+        manifest, archive_unit_dir_hint, archive_prepared_for_upload = prepare_manifest_for_archive_upload(
+            context,
+            manifest,
+            archive_dir=config.archive_dir,
+        )
+        if archive_prepared_for_upload and manifest_path:
+            Path(manifest_path).write_text(
+                json.dumps(manifest, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+
     ingest_rejections: list[dict] = []
     retry_candidates: list[dict] = []
 
@@ -240,11 +261,28 @@ def raw_ingest(
         retry_candidates=retry_candidates,
     )
 
-    archived, archive_unit_dir_hint = archive_uploaded_assets(
-        context=context, db=db, manifest=manifest,
-        uploaded=uploaded, archive_dir=target_archive_dir,
-        ingest_rejections=ingest_rejections,
-    )
+    if archive_requested:
+        if archive_prepared_for_upload:
+            archived = complete_uploaded_assets_in_archive(
+                context=context,
+                db=db,
+                manifest=manifest,
+                uploaded=uploaded,
+            )
+        else:
+            archived, archive_unit_dir_hint = archive_uploaded_assets(
+                context=context, db=db, manifest=manifest,
+                uploaded=uploaded, archive_dir=target_archive_dir,
+                ingest_rejections=ingest_rejections,
+            )
+    else:
+        archived = complete_uploaded_assets_without_archive(
+            context=context,
+            db=db,
+            manifest=manifest,
+            uploaded=uploaded,
+        )
+        archive_unit_dir_hint = None
 
     retry_manifest_path = build_retry_manifest(
         context=context, config=config,
@@ -289,6 +327,7 @@ def raw_ingest(
             "uploaded_count": uploaded_count,
             "archived_count": archived_count,
             "archive_missing_count": archive_missing_count,
+            "archive_requested": archive_requested,
             "ingest_rejection_count": len(ingest_rejections),
             "retry_candidate_count": len(retry_candidates),
             "retry_manifest_created": bool(retry_manifest_path),
@@ -302,6 +341,7 @@ def raw_ingest(
         "uploaded_count": uploaded_count,
         "archived_count": archived_count,
         "archive_missing_count": archive_missing_count,
+        "archive_requested": archive_requested,
         "ingest_rejection_count": len(ingest_rejections),
         "retry_candidate_count": len(retry_candidates),
         "retry_manifest_created": bool(retry_manifest_path),

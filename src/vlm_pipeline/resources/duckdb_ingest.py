@@ -70,8 +70,8 @@ class DuckDBIngestMixin:
                     image_id, source_asset_id, source_clip_id, image_bucket, image_key,
                     image_role, frame_index, frame_sec, checksum, file_size,
                     width, height, color_mode, bit_depth,
-                    has_alpha, orientation, caption_text, extracted_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    has_alpha, orientation, caption_text, image_caption_text, image_caption_score, extracted_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 [
                     meta.get("image_id") or asset_id,
@@ -91,6 +91,8 @@ class DuckDBIngestMixin:
                     meta.get("has_alpha", False),
                     meta.get("orientation", 1),
                     meta.get("caption_text"),
+                    meta.get("image_caption_text", meta.get("caption_text")),
+                    meta.get("image_caption_score"),
                     meta.get("extracted_at", datetime.now()),
                 ],
             )
@@ -375,7 +377,7 @@ class DuckDBIngestMixin:
                     image_id, source_asset_id, source_clip_id, image_bucket, image_key, image_role,
                     frame_index, frame_sec, checksum, file_size,
                     width, height, color_mode, bit_depth,
-                    has_alpha, orientation, caption_text, extracted_at
+                    has_alpha, orientation, caption_text, image_caption_text, image_caption_score, extracted_at
                 FROM image_metadata
                 WHERE source_asset_id = ?
                   AND image_role IN ('video_frame', 'video_event_frame')
@@ -398,7 +400,7 @@ class DuckDBIngestMixin:
                     image_id, source_asset_id, source_clip_id, image_bucket, image_key, image_role,
                     frame_index, frame_sec, checksum, file_size,
                     width, height, color_mode, bit_depth,
-                    has_alpha, orientation, caption_text, extracted_at
+                    has_alpha, orientation, caption_text, image_caption_text, image_caption_score, extracted_at
                 FROM image_metadata
                 WHERE source_clip_id = ?
                   AND image_role = 'processed_clip_frame'
@@ -607,6 +609,8 @@ class DuckDBIngestMixin:
                     frame.get("has_alpha", False),
                     frame.get("orientation", 1),
                     frame.get("caption_text"),
+                    frame.get("image_caption_text", frame.get("caption_text")),
+                    frame.get("image_caption_score"),
                     frame.get("extracted_at", datetime.now()),
                 ]
             )
@@ -642,8 +646,8 @@ class DuckDBIngestMixin:
                             image_id, source_asset_id, source_clip_id, image_bucket, image_key,
                             image_role, frame_index, frame_sec, checksum, file_size,
                             width, height, color_mode, bit_depth,
-                            has_alpha, orientation, caption_text, extracted_at
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            has_alpha, orientation, caption_text, image_caption_text, image_caption_score, extracted_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """,
                         rows,
                     )

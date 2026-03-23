@@ -3,8 +3,10 @@ from __future__ import annotations
 from vlm_pipeline.lib.staging_vertex import (
     merge_overlapping_events,
     offset_gemini_events,
+    parse_event_frame_relevance_response,
     parse_event_frame_image_caption_response,
     plan_overlapping_video_chunks,
+    select_top_relevance_index,
 )
 
 
@@ -64,3 +66,15 @@ def test_parse_event_frame_image_caption_response_handles_irrelevant_frame() -> 
 
     assert is_relevant is False
     assert caption_text is None
+
+
+def test_parse_event_frame_relevance_response_returns_clamped_score() -> None:
+    score = parse_event_frame_relevance_response('{"relevance_score": 1.2}')
+
+    assert score == 1.0
+
+
+def test_select_top_relevance_index_prefers_first_highest_score() -> None:
+    best_index = select_top_relevance_index([0.4, 0.8, 0.8, None, 0.3])
+
+    assert best_index == 1

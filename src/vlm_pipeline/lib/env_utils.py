@@ -82,6 +82,11 @@ VALID_OUTPUTS = frozenset([
     "video_classification",  # (향후) 비디오 분류
 ])
 
+YOLO_OUTPUTS = frozenset([
+    "bbox",
+    "image_classification",
+])
+
 # output 간 의존성: key를 요청하면 value도 자동 포함
 # (frame_extraction은 bbox 요청 시 내부 stage로만 추가, requested_outputs에는 미포함)
 _OUTPUT_DEPENDENCIES: dict[str, list[str]] = {
@@ -115,6 +120,46 @@ def derive_classes_from_categories(categories: list[str] | None) -> list[str]:
     return out
 
 
+def normalize_output_name(value: object) -> str:
+    """출력 키 표기를 내부 canonical snake_case로 정규화."""
+    rendered = str(value or "").strip().lower()
+    if not rendered:
+        return ""
+    rendered = rendered.replace("-", "_").replace(" ", "_")
+    rendered = re.sub(r"_+", "_", rendered)
+    return rendered.strip("_")
+
+
+def parse_outputs_raw(outputs_raw: str | None) -> list[str]:
+    """쉼표 구분 outputs 문자열을 정규화된 output 목록으로 파싱."""
+    if not outputs_raw:
+        return []
+
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for raw in str(outputs_raw).split(","):
+        output = normalize_output_name(raw)
+        if not output or output in seen:
+            continue
+        seen.add(output)
+        normalized.append(output)
+    return normalized
+
+
+def is_dispatch_yolo_only_requested(tags) -> bool:
+    """Staging dispatch run에서 YOLO 계열만 실행해야 하는지 판별."""
+    if not tags or str(tags.get("spec_id") or "").strip():
+        return False
+    outputs_raw = (
+        tags.get("requested_outputs")
+        or tags.get("outputs")
+        or tags.get("labeling_method")
+        or ""
+    )
+    requested = set(parse_outputs_raw(outputs_raw))
+    return bool(requested) and requested.issubset(YOLO_OUTPUTS)
+
+
 def resolve_outputs(run_mode: str | None, outputs_raw: str | None) -> list[str]:
     """run_mode 또는 outputs 문자열에서 실행할 산출물 목록을 반환.
 
@@ -122,7 +167,7 @@ def resolve_outputs(run_mode: str | None, outputs_raw: str | None) -> list[str]:
     의존성 자동 해석: captioning → timestamp 자동 포함
     """
     if outputs_raw:
-        parsed = [o.strip().lower() for o in outputs_raw.split(",") if o.strip()]
+        parsed = parse_outputs_raw(outputs_raw)
         valid = [o for o in parsed if o in VALID_OUTPUTS]
         if not valid:
             valid = list(_RUN_MODE_TO_OUTPUTS.get("both", []))
@@ -157,3 +202,22 @@ def should_run_output(context, required_output: str) -> bool:
     resolved = resolve_outputs(run_mode, outputs_raw)
     return required_output in resolved
 
+
+def should_run_any_output(context, required_outputs: set[str] | frozenset[str] | list[str] | tuple[str, ...]) -> bool:
+    """현재 run에서 주어진 output 후보 중 하나라도 요청되었는지 확인."""
+    outputs_raw = context.run.tags.get("outputs")
+    run_mode = context.run.tags.get("run_mode")
+
+    if not outputs_raw and not run_mode:
+        return True
+
+    required = {
+        normalize_output_name(output)
+        for output in required_outputs
+        if normalize_output_name(output)
+    }
+    if not required:
+        return False
+
+    resolved = set(resolve_outputs(run_mode, outputs_raw))
+    return bool(required & resolved)
