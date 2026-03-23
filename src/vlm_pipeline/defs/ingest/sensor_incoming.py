@@ -8,9 +8,10 @@ from pathlib import Path
 
 from dagster import DefaultSensorStatus, RunRequest, SkipReason, sensor
 
-from vlm_pipeline.lib.env_utils import int_env
+from vlm_pipeline.lib.env_utils import IS_STAGING, int_env
 from vlm_pipeline.resources.config import PipelineConfig
 
+from .archive import should_archive_manifest
 from .sensor_helpers import (
     build_source_unit_run_key,
     collect_in_flight_runs,
@@ -21,6 +22,25 @@ from .sensor_helpers import (
     parse_cursor,
     select_latest_per_source_unit,
 )
+
+
+def _move_staging_blocked_manifest(manifest_path: Path, processed_dir: Path, context) -> None:
+    destination = processed_dir / f"{manifest_path.stem}.staging_blocked.json"
+    suffix = 2
+    while destination.exists():
+        destination = processed_dir / f"{manifest_path.stem}.staging_blocked__{suffix}.json"
+        suffix += 1
+
+    try:
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        manifest_path.rename(destination)
+        context.log.info(
+            f"staging auto_bootstrap manifest 무시: {manifest_path.name} -> {destination.name}"
+        )
+    except OSError as exc:
+        context.log.warning(
+            f"staging auto_bootstrap manifest 이동 실패: {manifest_path} -> {destination}: {exc}"
+        )
 
 
 @sensor(
@@ -61,6 +81,22 @@ def incoming_manifest_sensor(context):
         return
 
     manifest_entries = load_pending_manifest_entries(manifests, context)
+    if IS_STAGING:
+        allowed_entries: list[dict] = []
+        blocked_entries = 0
+        for entry in manifest_entries:
+            payload = entry.get("payload") or {}
+            if should_archive_manifest(payload, config=config):
+                allowed_entries.append(entry)
+                continue
+            _move_staging_blocked_manifest(entry["path"], processed_dir, context)
+            blocked_entries += 1
+        manifest_entries = allowed_entries
+        if blocked_entries > 0:
+            context.log.info(
+                f"staging auto_bootstrap pending manifest 차단: {blocked_entries}개"
+            )
+
     context.log.info(f"pending manifest 발견: {len(manifests)}개, entries: {len(manifest_entries)}개")
 
     selected_entries, superseded_entries = select_latest_per_source_unit(manifest_entries)
@@ -170,6 +206,7 @@ def incoming_manifest_sensor(context):
             run_key = build_source_unit_run_key(
                 source_unit_path, stable_signature,
                 source_unit_dispatch_key=source_unit_dispatch_key,
+                manifest_id=manifest_id,
             )
             if should_retry_failed:
                 run_key = f"{run_key}-retry-{failed_run_count + 1}-{int(time.time())}"
