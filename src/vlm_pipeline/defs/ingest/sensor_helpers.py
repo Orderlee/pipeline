@@ -40,11 +40,20 @@ def build_source_unit_run_key(
     source_unit_path: str,
     stable_signature: str,
     source_unit_dispatch_key: str = "",
+    manifest_id: str = "",
 ) -> str:
-    """source unit + signature 기반 run_key 생성."""
-    source_value = source_unit_dispatch_key or source_unit_path or "<unknown_source_unit>"
-    signature_value = stable_signature or "<unknown_signature>"
-    base = f"{source_value}|{signature_value}"
+    """manifest 단위 중복 방지용 run_key 생성.
+
+    같은 source unit을 반복 테스트할 때도 manifest_id가 달라지면 새 run이 생성되어야 한다.
+    manifest_id가 비어 있는 legacy 상황만 source unit + signature 조합으로 fallback 한다.
+    """
+    manifest_value = str(manifest_id or "").strip()
+    if manifest_value:
+        base = manifest_value
+    else:
+        source_value = source_unit_dispatch_key or source_unit_path or "<unknown_source_unit>"
+        signature_value = stable_signature or "<unknown_signature>"
+        base = f"{source_value}|{signature_value}"
     source_hash = sha1(base.encode("utf-8")).hexdigest()[:20]
     return f"incoming-unit-{source_hash}"
 
