@@ -223,7 +223,7 @@ def test_ensure_schema_adds_runtime_auto_label_columns_and_image_labels(tmp_path
         ).fetchone()
 
     assert {"auto_label_status", "auto_label_error", "auto_label_key", "auto_labeled_at"} <= video_columns
-    assert {"caption_text"} <= image_columns
+    assert {"caption_text", "image_caption_text", "image_caption_score"} <= image_columns
     assert {
         "duration_sec",
         "fps",
@@ -236,6 +236,170 @@ def test_ensure_schema_adds_runtime_auto_label_columns_and_image_labels(tmp_path
     assert image_label_exists == 1
     assert video_defaults == "pending"
     assert clip_defaults == ("pending", 0)
+
+
+def test_ensure_schema_upgrades_asset_id_style_image_metadata_without_rebuild(tmp_path: Path) -> None:
+    resource = _resource(tmp_path)
+    with duckdb.connect(resource.db_path) as conn:
+        conn.execute(
+            """
+            CREATE TABLE raw_files (
+                asset_id VARCHAR PRIMARY KEY,
+                source_path VARCHAR,
+                original_name VARCHAR,
+                media_type VARCHAR,
+                file_size BIGINT,
+                checksum VARCHAR,
+                archive_path VARCHAR,
+                raw_bucket VARCHAR,
+                raw_key VARCHAR,
+                ingest_status VARCHAR,
+                created_at TIMESTAMP,
+                updated_at TIMESTAMP
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO raw_files (
+                asset_id, source_path, original_name, media_type, file_size, checksum,
+                archive_path, raw_bucket, raw_key, ingest_status, created_at, updated_at
+            ) VALUES (
+                'legacy-image', '/nas/archive/legacy.jpg', 'legacy.jpg', 'image', 1234, 'sum-1',
+                '/nas/archive/legacy.jpg', 'vlm-raw', 'legacy/legacy.jpg', 'completed',
+                CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE image_metadata (
+                asset_id VARCHAR PRIMARY KEY,
+                width INTEGER,
+                height INTEGER,
+                caption_text TEXT,
+                extracted_at TIMESTAMP
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO image_metadata (asset_id, width, height, caption_text, extracted_at)
+            VALUES ('legacy-image', 640, 480, 'legacy image caption', CURRENT_TIMESTAMP)
+            """
+        )
+
+    resource.ensure_schema()
+
+    with resource.connect() as conn:
+        columns = {
+            row[0]
+            for row in conn.execute(
+                "SELECT column_name FROM information_schema.columns WHERE table_name = 'image_metadata'"
+            ).fetchall()
+        }
+        row = conn.execute(
+            """
+            SELECT image_id, source_asset_id, image_bucket, image_key, color_mode, bit_depth, caption_text, image_caption_text, image_caption_score
+            FROM image_metadata
+            WHERE asset_id = 'legacy-image'
+            """
+        ).fetchone()
+        image_label_columns = {
+            row[0]
+            for row in conn.execute(
+                "SELECT column_name FROM information_schema.columns WHERE table_name = 'image_labels'"
+            ).fetchall()
+        }
+
+    assert {"image_id", "source_asset_id", "caption_text", "image_caption_text", "image_caption_score"} <= columns
+    assert row == ("legacy-image", "legacy-image", "vlm-raw", "legacy/legacy.jpg", "RGB", 8, "legacy image caption", "legacy image caption", None)
+    assert {"image_label_id", "image_id", "source_clip_id"} <= image_label_columns
+
+
+def test_repair_image_metadata_table_rebuilds_constraints_from_legacy_schema(tmp_path: Path) -> None:
+    resource = _resource(tmp_path)
+    with duckdb.connect(resource.db_path) as conn:
+        conn.execute(
+            """
+            CREATE TABLE raw_files (
+                asset_id VARCHAR PRIMARY KEY,
+                source_path VARCHAR,
+                original_name VARCHAR,
+                media_type VARCHAR,
+                file_size BIGINT,
+                checksum VARCHAR,
+                archive_path VARCHAR,
+                raw_bucket VARCHAR,
+                raw_key VARCHAR,
+                ingest_status VARCHAR,
+                created_at TIMESTAMP,
+                updated_at TIMESTAMP
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO raw_files (
+                asset_id, source_path, original_name, media_type, file_size, checksum,
+                archive_path, raw_bucket, raw_key, ingest_status, created_at, updated_at
+            ) VALUES (
+                'legacy-image', '/nas/archive/legacy.jpg', 'legacy.jpg', 'image', 1234, 'sum-1',
+                '/nas/archive/legacy.jpg', 'vlm-raw', 'legacy/legacy.jpg', 'completed',
+                CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE image_metadata (
+                asset_id VARCHAR PRIMARY KEY,
+                image_bucket VARCHAR,
+                image_key VARCHAR,
+                width INTEGER,
+                height INTEGER,
+                extracted_at TIMESTAMP
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO image_metadata (asset_id, image_bucket, image_key, width, height, extracted_at)
+            VALUES ('legacy-image', 'vlm-raw', 'legacy/legacy.jpg', 640, 480, CURRENT_TIMESTAMP)
+            """
+        )
+
+    resource.repair_image_metadata_table()
+
+    with resource.connect() as conn:
+        row = conn.execute(
+            """
+            SELECT image_id, source_asset_id, image_bucket, image_key
+            FROM image_metadata
+            WHERE image_id = 'legacy-image'
+            """
+        ).fetchone()
+        pk_count = conn.execute(
+            """
+            SELECT COUNT(*)
+            FROM duckdb_constraints()
+            WHERE table_name = 'image_metadata'
+              AND constraint_type = 'PRIMARY KEY'
+              AND array_length(constraint_column_names) = 1
+              AND constraint_column_names[1] = 'image_id'
+            """
+        ).fetchone()[0]
+        migrated_exists = conn.execute(
+            """
+            SELECT COUNT(*)
+            FROM information_schema.tables
+            WHERE table_name = 'image_metadata__migrated'
+            """
+        ).fetchone()[0]
+
+    assert row == ("legacy-image", "legacy-image", "vlm-raw", "legacy/legacy.jpg")
+    assert pk_count == 1
+    assert migrated_exists == 0
 
 
 def test_insert_label_single_row_succeeds(tmp_path: Path) -> None:
@@ -580,14 +744,105 @@ def test_replace_processed_clip_frame_metadata_persists_image_caption_text(tmp_p
                 "image_role": "processed_clip_frame",
                 "frame_index": 1,
                 "frame_sec": 0.5,
-                "caption_text": "연기가 보이는 프레임",
+                "image_caption_text": "연기가 보이는 프레임",
+                "image_caption_score": 0.91,
             }
         ],
     )
 
     rows = resource.list_processed_clip_frame_rows("clip-1")
     assert len(rows) == 1
-    assert rows[0]["caption_text"] == "연기가 보이는 프레임"
+    assert rows[0]["image_caption_text"] == "연기가 보이는 프레임"
+    assert rows[0]["image_caption_score"] == pytest.approx(0.91)
+    assert rows[0]["caption_text"] is None
+
+
+def test_extract_clip_frames_captions_only_highest_relevance_frame(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    pytest.importorskip("dagster")
+    from vlm_pipeline.defs.process import assets as process_assets
+
+    class _DummyMinIO:
+        def __init__(self) -> None:
+            self.uploaded: list[tuple[str, str]] = []
+
+        def upload(self, bucket: str, key: str, data: bytes, content_type: str) -> None:
+            self.uploaded.append((bucket, key))
+
+    dummy_minio = _DummyMinIO()
+    score_by_frame = {
+        b"frame-1": 0.2,
+        b"frame-2": 0.9,
+        b"frame-3": 0.5,
+    }
+    selected_frames: list[bytes] = []
+
+    monkeypatch.setattr(process_assets, "plan_frame_timestamps", lambda **_: [0.1, 0.5, 0.9])
+    monkeypatch.setattr(
+        process_assets,
+        "extract_frame_jpeg_bytes",
+        lambda clip_path, frame_sec, jpeg_quality: f"frame-{int(frame_sec * 10)}".encode("utf-8"),
+    )
+    monkeypatch.setattr(
+        process_assets,
+        "describe_frame_bytes",
+        lambda frame_bytes: {
+            "width": 640,
+            "height": 360,
+            "color_mode": "RGB",
+            "bit_depth": 8,
+            "has_alpha": False,
+            "orientation": 1,
+        },
+    )
+    monkeypatch.setattr(
+        process_assets,
+        "_score_event_frame_image_relevance",
+        lambda analyzer, frame_bytes, **kwargs: score_by_frame[frame_bytes],
+    )
+
+    def _fake_generate_caption(analyzer, frame_bytes, **kwargs):
+        selected_frames.append(frame_bytes)
+        return "가장 유사한 프레임 캡션"
+
+    monkeypatch.setattr(process_assets, "_generate_event_frame_image_caption", _fake_generate_caption)
+
+    clip_path = tmp_path / "clip.mp4"
+    clip_path.write_bytes(b"stub")
+
+    frame_rows, uploaded_keys = process_assets._extract_clip_frames(
+        dummy_minio,
+        clip_id="clip-1",
+        source_asset_id="asset-1",
+        clip_path=clip_path,
+        clip_key="unit/test/clips/sample.mp4",
+        duration_sec=1.0,
+        fps=30.0,
+        frame_count=30,
+        max_frames=3,
+        jpeg_quality=90,
+        image_profile="current",
+        frame_interval_sec=0.4,
+        image_caption_analyzer=object(),
+        image_caption_event_category="smoke",
+        image_caption_event_caption_text="연기가 퍼지는 이벤트",
+    )
+
+    assert len(frame_rows) == 3
+    assert len(uploaded_keys) == 3
+    assert [row["image_caption_text"] for row in frame_rows] == [
+        None,
+        "가장 유사한 프레임 캡션",
+        None,
+    ]
+    assert [row["image_caption_score"] for row in frame_rows] == [
+        pytest.approx(0.2),
+        pytest.approx(0.9),
+        pytest.approx(0.5),
+    ]
+    assert selected_frames == [b"frame-2"]
 
 
 def test_processed_clip_image_key_uses_sibling_image_directory() -> None:

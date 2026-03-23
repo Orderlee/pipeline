@@ -44,7 +44,8 @@ from vlm_pipeline.defs.spec.staging_assets import (
     ingest_router,
 )
 from vlm_pipeline.defs.spec.staging_sensor import spec_resolve_sensor
-from vlm_pipeline.defs.yolo.assets import bbox_labeling, yolo_image_detection
+from vlm_pipeline.defs.yolo.assets import bbox_labeling
+from vlm_pipeline.defs.yolo.staging_assets import staging_yolo_image_detection as yolo_image_detection
 from vlm_pipeline.resources.duckdb import DuckDBResource
 from vlm_pipeline.resources.minio import MinIOResource
 

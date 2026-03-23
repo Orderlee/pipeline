@@ -9,17 +9,12 @@ import os
 
 from dagster import RunRequest, SensorEvaluationContext, sensor
 
-from vlm_pipeline.lib.env_utils import IS_STAGING, VALID_OUTPUTS, resolve_outputs
+from vlm_pipeline.lib.env_utils import IS_STAGING
 from vlm_pipeline.lib.sanitizer import sanitize_path_component
+from vlm_pipeline.lib.staging_dispatch import parse_dispatch_request_payload
 from vlm_pipeline.lib.validator import ALLOWED_EXTENSIONS
+from vlm_pipeline.defs.ingest.archive import resolve_unique_directory
 from vlm_pipeline.resources.config import PipelineConfig
-
-# run_mode → outputs 변환 (하위 호환)
-_RUN_MODE_TO_OUTPUTS = {
-    "gemini": ["timestamp", "captioning"],
-    "yolo": ["bbox"],
-    "both": ["timestamp", "captioning", "bbox"],
-}
 
 # output → 파이프라인 단계 매핑
 _OUTPUT_TO_STEPS = {
@@ -48,6 +43,9 @@ def _create_dispatch_table_if_not_exists(db_conn) -> None:
             folder_name          VARCHAR,
             run_mode             VARCHAR,
             outputs              VARCHAR,
+            labeling_method      VARCHAR,
+            categories           VARCHAR,
+            classes              VARCHAR,
             image_profile        VARCHAR,
             status               VARCHAR DEFAULT 'pending',
             archive_pending_path VARCHAR,
@@ -131,31 +129,20 @@ def dispatch_sensor(context: SensorEvaluationContext):
         request_id = req_data.get("request_id")
         folder_name = req_data.get("folder_name")
 
-        # outputs 필드 우선, run_mode 하위 호환
-        outputs_list = req_data.get("outputs")
-        run_mode = req_data.get("run_mode")
-
-        if isinstance(outputs_list, list) and outputs_list:
-            # JSON 배열 → 유효한 것만 필터
-            valid_outputs = [o.strip().lower() for o in outputs_list if str(o).strip().lower() in VALID_OUTPUTS]
-            if not valid_outputs:
-                _record_failed_request(db_resource, request_id or str(req_file.stem), req_data, "invalid_outputs")
-                _move_dispatch_file(req_file, failed_dir)
-                continue
-            outputs_str = ",".join(valid_outputs)
-        elif run_mode:
-            # 기존 run_mode → outputs 변환
-            valid_outputs = _RUN_MODE_TO_OUTPUTS.get(run_mode, [])
-            if not valid_outputs:
-                _record_failed_request(db_resource, request_id or str(req_file.stem), req_data, f"invalid_run_mode:{run_mode}")
-                _move_dispatch_file(req_file, failed_dir)
-                continue
-            outputs_str = ",".join(valid_outputs)
-        else:
-            _record_failed_request(db_resource, request_id or str(req_file.stem), req_data, "missing_outputs_or_run_mode")
+        try:
+            dispatch_payload = parse_dispatch_request_payload(req_data)
+        except ValueError as exc:
+            _record_failed_request(db_resource, request_id or str(req_file.stem), req_data, str(exc))
             _move_dispatch_file(req_file, failed_dir)
             continue
 
+        valid_outputs = dispatch_payload["labeling_method"]
+        outputs_str = dispatch_payload["outputs_str"]
+        run_mode = dispatch_payload["run_mode"]
+        categories = dispatch_payload["categories"]
+        classes = dispatch_payload["classes"]
+        labeling_method = dispatch_payload["labeling_method"]
+        archive_only = bool(dispatch_payload.get("archive_only"))
         image_profile = req_data.get("image_profile", "current")
         requested_by = req_data.get("requested_by")
         requested_at_str = req_data.get("requested_at")
@@ -165,11 +152,9 @@ def dispatch_sensor(context: SensorEvaluationContext):
             _move_dispatch_file(req_file, failed_dir)
             continue
 
-        # archive_pending에서 폴더 확인 (incoming_to_pending_sensor가 이미 이동함)
-        archive_pending_dir = Path(config.archive_pending_dir)
-        archive_pending_folder_path = archive_pending_dir / folder_name
-        if not archive_pending_folder_path.is_dir():
-            _record_failed_request(db_resource, request_id, req_data, "folder_not_in_archive_pending")
+        incoming_folder_path = incoming_dir / folder_name
+        if not incoming_folder_path.is_dir():
+            _record_failed_request(db_resource, request_id, req_data, "folder_not_in_incoming")
             _move_dispatch_file(req_file, failed_dir)
             continue
         
@@ -187,7 +172,21 @@ def dispatch_sensor(context: SensorEvaluationContext):
                 _move_dispatch_file(req_file, failed_dir)
                 continue
 
-        # archive_pending에서 재귀 파일 스캔 (stat() 없이 scandir만 사용하여 NFS 비용 최소화)
+        archive_dir = Path(config.archive_dir)
+        archive_dir.mkdir(parents=True, exist_ok=True)
+        archive_dest = resolve_unique_directory(archive_dir / folder_name)
+        try:
+            try:
+                os.rename(str(incoming_folder_path), str(archive_dest))
+            except OSError:
+                shutil.move(str(incoming_folder_path), str(archive_dest))
+            context.log.info(f"dispatch archive 이동 완료: {incoming_folder_path} -> {archive_dest}")
+        except Exception as exc:
+            _record_failed_request(db_resource, request_id, req_data, f"archive_move_failed:{exc}")
+            _move_dispatch_file(req_file, failed_dir)
+            continue
+
+        # archive에서 재귀 파일 스캔 (stat() 없이 scandir만 사용하여 NFS 비용 최소화)
         allowed_exts = {ext.lower() for ext in ALLOWED_EXTENSIONS}
         files = []
 
@@ -204,10 +203,10 @@ def dispatch_sensor(context: SensorEvaluationContext):
             except OSError:
                 pass
 
-        _scandir_recursive(archive_pending_folder_path)
+        _scandir_recursive(archive_dest)
 
         if not files:
-            _record_failed_request(db_resource, request_id, req_data, "no_media_files_in_archive_pending")
+            _record_failed_request(db_resource, request_id, req_data, "no_media_files_in_archive")
             _move_dispatch_file(req_file, failed_dir)
             continue
 
@@ -218,13 +217,17 @@ def dispatch_sensor(context: SensorEvaluationContext):
         manifest = {
             "manifest_id": manifest_id,
             "generated_at": now.isoformat(),
-            "source_dir": str(archive_pending_dir),
+            "source_dir": str(archive_dir),
             "source_unit_type": "directory",
-            "source_unit_path": str(archive_pending_folder_path),
+            "source_unit_path": str(archive_dest),
             "source_unit_name": folder_name,
             "source_unit_total_file_count": len(files),
             "file_count": len(files),
             "transfer_tool": "dispatch_sensor",
+            "archive_requested": True,
+            "categories": categories,
+            "classes": classes,
+            "labeling_method": labeling_method,
             "files": files,
         }
         
@@ -238,8 +241,6 @@ def dispatch_sensor(context: SensorEvaluationContext):
             _record_failed_request(db_resource, request_id, req_data, f"failed_to_write_manifest:{e}")
             _move_dispatch_file(req_file, failed_dir)
             continue
-
-        archive_dest = Path(config.archive_dir) / folder_name
 
         # ── model_configs에서 기본 파라미터 조회 ──
         model_defaults = {}
@@ -286,15 +287,23 @@ def dispatch_sensor(context: SensorEvaluationContext):
             conn.execute(
                 """
                 INSERT INTO staging_dispatch_requests (
-                    request_id, folder_name, run_mode, outputs, image_profile,
+                    request_id, folder_name, run_mode, outputs, labeling_method,
+                    categories, classes, image_profile,
                     status, archive_pending_path, archive_path,
                     max_frames_per_video, jpeg_quality, confidence_threshold, iou_threshold,
                     requested_by, requested_at, processed_at
-                ) VALUES (?, ?, ?, ?, ?, 'running', ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'running', ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 [
-                    request_id, folder_name, run_mode, outputs_str, image_profile,
-                    str(archive_pending_folder_path), str(archive_dest),
+                    request_id,
+                    folder_name,
+                    run_mode,
+                    outputs_str,
+                    json.dumps(labeling_method, ensure_ascii=False),
+                    json.dumps(categories, ensure_ascii=False),
+                    json.dumps(classes, ensure_ascii=False),
+                    image_profile,
+                    None, str(archive_dest),
                     int(applied_max_frames) if applied_max_frames is not None else None,
                     int(applied_jpeg_quality) if applied_jpeg_quality is not None else None,
                     float(applied_confidence) if applied_confidence is not None else None,
@@ -330,6 +339,9 @@ def dispatch_sensor(context: SensorEvaluationContext):
                                 "jpeg_quality": applied_jpeg_quality,
                                 "confidence": applied_confidence,
                                 "iou": applied_iou,
+                                "categories": categories,
+                                "classes": classes,
+                                "labeling_method": labeling_method,
                             }, default=str) if step_name in ("frame_extract", "yolo_detect") else None,
                         ]
                     )
@@ -339,13 +351,36 @@ def dispatch_sensor(context: SensorEvaluationContext):
         # RunRequest tags 구성 — 이미지 추출 파라미터는 값이 있을 때만 전달
         # folder_name은 sanitize된 버전 사용 (raw_key가 sanitize_path_component로 정규화되므로)
         sanitized_folder = sanitize_path_component(folder_name)
-        run_tags = {
+        common_tags = {
             "folder_name": sanitized_folder,
             "folder_name_original": folder_name,
-            "outputs": outputs_str,
-            "run_mode": run_mode or "",
             "image_profile": image_profile,
             "manifest_path": str(manifest_path),
+        }
+        if categories:
+            common_tags["categories"] = json.dumps(categories, ensure_ascii=False)
+        if classes:
+            common_tags["classes"] = json.dumps(classes, ensure_ascii=False)
+
+        if archive_only:
+            context.log.info(
+                "dispatch archive-only 요청 감지: request_id=%s folder=%s -> ingest_job만 실행",
+                request_id,
+                folder_name,
+            )
+            yield RunRequest(
+                run_key=request_id,
+                job_name="ingest_job",
+                tags={**common_tags, "dispatch_archive_only": "true"},
+            )
+            continue
+
+        run_tags = {
+            **common_tags,
+            "outputs": outputs_str,
+            "requested_outputs": outputs_str,
+            "run_mode": run_mode or "",
+            "labeling_method": outputs_str,
         }
         # 선택적 이미지 추출 파라미터 (없으면 asset의 config 기본값 사용)
         if applied_max_frames is not None:
@@ -356,7 +391,7 @@ def dispatch_sensor(context: SensorEvaluationContext):
             run_tags["confidence_threshold"] = str(float(applied_confidence))
         if applied_iou is not None:
             run_tags["iou_threshold"] = str(float(applied_iou))
-        
+
         yield RunRequest(
             run_key=request_id,
             job_name="dispatch_stage_job",
@@ -372,23 +407,42 @@ def _move_dispatch_file(file_path: Path, target_dir: Path):
 
 def _record_failed_request(db, request_id: str, data: dict, error_msg: str):
     try:
-        outputs_list = data.get("outputs")
-        outputs_str = ",".join(outputs_list) if isinstance(outputs_list, list) else ""
+        try:
+            dispatch_payload = parse_dispatch_request_payload(data)
+            outputs_str = dispatch_payload["outputs_str"]
+            labeling_method = dispatch_payload["labeling_method"]
+            categories = dispatch_payload["categories"]
+            classes = dispatch_payload["classes"]
+            run_mode = dispatch_payload["run_mode"] or data.get("run_mode")
+        except ValueError:
+            outputs_list = data.get("outputs")
+            outputs_str = ",".join(outputs_list) if isinstance(outputs_list, list) else ""
+            labeling_method = data.get("labeling_method") if isinstance(data.get("labeling_method"), list) else []
+            categories = data.get("categories") if isinstance(data.get("categories"), list) else []
+            classes = data.get("classes") if isinstance(data.get("classes"), list) else []
+            run_mode = data.get("run_mode")
         with db.connect() as conn:
             conn.execute(
                 """
                 INSERT INTO staging_dispatch_requests (
-                    request_id, folder_name, run_mode, outputs, image_profile,
+                    request_id, folder_name, run_mode, outputs, labeling_method,
+                    categories, classes, image_profile,
                     max_frames_per_video, jpeg_quality,
                     confidence_threshold, iou_threshold,
                     status, error_message, processed_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'failed', ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'failed', ?, ?)
                 ON CONFLICT (request_id) DO UPDATE SET 
                     status = 'failed', error_message = excluded.error_message
                 """,
                 [
-                    request_id, data.get("folder_name"), data.get("run_mode"),
-                    outputs_str, data.get("image_profile"),
+                    request_id,
+                    data.get("folder_name"),
+                    run_mode,
+                    outputs_str,
+                    json.dumps(labeling_method, ensure_ascii=False),
+                    json.dumps(categories, ensure_ascii=False),
+                    json.dumps(classes, ensure_ascii=False),
+                    data.get("image_profile"),
                     data.get("max_frames_per_video"),
                     data.get("jpeg_quality"),
                     data.get("confidence_threshold"),

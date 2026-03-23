@@ -183,6 +183,30 @@ def merge_overlapping_events(events: list[dict[str, Any]]) -> list[dict[str, Any
     return merged
 
 
+def build_event_frame_relevance_prompt(
+    *,
+    event_category: str | None,
+    event_caption_text: str | None,
+) -> str:
+    """Build a strict JSON prompt for frame-to-event relevance scoring."""
+    category_text = str(event_category or "unknown").strip() or "unknown"
+    caption_text = str(event_caption_text or "").strip() or "N/A"
+    return (
+        "You are ranking how visually similar a CCTV frame is to a parent abnormal event.\n\n"
+        f'Parent event category: "{category_text}"\n'
+        f'Parent event description: "{caption_text}"\n\n'
+        "Task:\n"
+        "Return one relevance score between 0.0 and 1.0 based only on visible evidence in the frame.\n\n"
+        "Return JSON only in this shape:\n"
+        '{"relevance_score": 0.0}\n\n'
+        "Rules:\n"
+        "- 1.0 means the frame strongly matches the parent event.\n"
+        "- 0.0 means the frame is unrelated to the parent event.\n"
+        "- Use only the visible frame, not guesses.\n"
+        "- Do not include markdown fences or extra explanation."
+    )
+
+
 def build_event_frame_image_prompt(
     *,
     event_category: str | None,
@@ -209,6 +233,28 @@ def build_event_frame_image_prompt(
     )
 
 
+def parse_event_frame_relevance_response(payload_text: str) -> float:
+    """Parse strict JSON response for frame-to-event relevance score."""
+    payload = json.loads(str(payload_text or "").strip())
+    if not isinstance(payload, dict):
+        raise ValueError("image_relevance_response_not_object")
+
+    score_value = payload.get("relevance_score")
+    if isinstance(score_value, bool) or score_value is None:
+        raise ValueError("image_relevance_response_missing_numeric_score")
+
+    try:
+        score = float(score_value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("image_relevance_response_invalid_score") from exc
+
+    if score < 0.0:
+        return 0.0
+    if score > 1.0:
+        return 1.0
+    return score
+
+
 def parse_event_frame_image_caption_response(payload_text: str) -> tuple[bool, str | None]:
     """Parse strict JSON response for event-frame relevance + caption."""
     payload = json.loads(str(payload_text or "").strip())
@@ -226,6 +272,20 @@ def parse_event_frame_image_caption_response(payload_text: str) -> tuple[bool, s
     if caption_text is None:
         raise ValueError("image_caption_response_missing_caption")
     return True, caption_text
+
+
+def select_top_relevance_index(scores: list[float | None]) -> int | None:
+    """Return the first index with the highest valid relevance score."""
+    best_index: int | None = None
+    best_score: float | None = None
+    for index, score in enumerate(scores):
+        if score is None:
+            continue
+        normalized_score = float(score)
+        if best_index is None or normalized_score > float(best_score):
+            best_index = index
+            best_score = normalized_score
+    return best_index
 
 
 def _prefer_longer_text(left: Any, right: Any) -> str | None:

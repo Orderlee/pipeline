@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
+from vlm_pipeline.lib.env_utils import parse_outputs_raw
 from vlm_pipeline.resources.duckdb import DuckDBResource
 
 
@@ -12,12 +13,13 @@ def parse_requested_outputs(tags: Mapping[str, str] | None) -> list[str]:
     """Parse requested outputs from run tags for routed staging jobs."""
     if not tags:
         return []
-    outputs_raw = tags.get("requested_outputs") or tags.get("outputs") or ""
-    return [
-        output.strip().lower()
-        for output in outputs_raw.replace("_", ",").split(",")
-        if output.strip()
-    ]
+    outputs_raw = (
+        tags.get("requested_outputs")
+        or tags.get("outputs")
+        or tags.get("labeling_method")
+        or ""
+    )
+    return parse_outputs_raw(outputs_raw)
 
 
 def is_standard_spec_run(tags: Mapping[str, str] | None) -> bool:

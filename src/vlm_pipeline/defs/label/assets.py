@@ -16,7 +16,7 @@ from uuid import uuid4
 
 from dagster import Field, asset
 
-from vlm_pipeline.lib.env_utils import should_run_output
+from vlm_pipeline.lib.env_utils import is_dispatch_yolo_only_requested, should_run_output
 from vlm_pipeline.lib.gemini import GeminiAnalyzer, extract_clean_json_text
 from vlm_pipeline.lib.gemini_prompts import VIDEO_EVENT_PROMPT
 from vlm_pipeline.lib.staging_vertex import (
@@ -51,6 +51,7 @@ def clip_timestamp(
         context.log.info("clip_timestamp 스킵: outputs에 timestamp가 없습니다.")
         return {"processed": 0, "skipped": True}
 
+    db.ensure_schema()
     folder_name = context.run.tags.get("folder_name")
     limit = int(context.op_config.get("limit", 50))
     candidates = db.find_auto_label_pending_videos(limit=limit, folder_name=folder_name)
@@ -159,10 +160,14 @@ def clip_timestamp_routed(
     spec_id = tags.get("spec_id")
     requested = parse_requested_outputs(tags)
     standard_spec_run = is_standard_spec_run(tags)
+    if is_dispatch_yolo_only_requested(tags):
+        context.log.info("clip_timestamp_routed 스킵: dispatch labeling_method가 YOLO 전용입니다.")
+        return {"processed": 0, "failed": 0, "skipped": True}
     if "timestamp" not in requested and not standard_spec_run:
         context.log.info("clip_timestamp_routed 스킵: outputs에 timestamp 없음")
         return {"processed": 0, "failed": 0, "skipped": True}
 
+    db.ensure_schema()
     resolved_config_id = None
     if spec_id:
         config_bundle = resolve_and_persist_spec_config(db, spec_id)

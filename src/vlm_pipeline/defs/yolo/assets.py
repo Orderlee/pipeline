@@ -16,7 +16,7 @@ from uuid import uuid4
 
 from dagster import Field, asset
 
-from vlm_pipeline.lib.env_utils import int_env, should_run_output
+from vlm_pipeline.lib.env_utils import YOLO_OUTPUTS, int_env, should_run_any_output
 from vlm_pipeline.lib.spec_config import load_persisted_spec_config, parse_requested_outputs
 from vlm_pipeline.lib.yolo_world import get_yolo_client
 from vlm_pipeline.resources.duckdb import DuckDBResource
@@ -41,8 +41,17 @@ def yolo_image_detection(
     minio: MinIOResource,
 ) -> dict:
     """processed_clip_frame 이미지에 YOLO-World-L detection 실행."""
-    if not should_run_output(context, "bbox"):
-        context.log.info("yolo_image_detection 스킵: outputs에 bbox가 없습니다.")
+    return _run_yolo_image_detection(context, db, minio)
+
+
+def _run_yolo_image_detection(
+    context,
+    db: DuckDBResource,
+    minio: MinIOResource,
+) -> dict:
+    """processed_clip_frame 이미지에 YOLO-World-L detection 실행."""
+    if not should_run_any_output(context, YOLO_OUTPUTS):
+        context.log.info("yolo_image_detection 스킵: outputs에 YOLO 계열 요청이 없습니다.")
         return {"processed": 0, "failed": 0, "total_detections": 0, "skipped": True}
 
     limit = int(context.op_config.get("limit", 500))
