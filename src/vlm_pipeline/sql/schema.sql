@@ -130,6 +130,8 @@ CREATE TABLE IF NOT EXISTS image_metadata (
     has_alpha        BOOLEAN DEFAULT FALSE,
     orientation      INTEGER DEFAULT 1,
     caption_text     TEXT,
+    image_caption_text TEXT,
+    image_caption_score DOUBLE,
     extracted_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     UNIQUE (image_bucket, image_key),
     UNIQUE (source_asset_id, source_clip_id, image_role, frame_index)

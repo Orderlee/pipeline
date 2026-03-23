@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import time
 from contextlib import contextmanager
 from itertools import combinations
@@ -17,6 +18,22 @@ class DuckDBBaseMixin:
     """DuckDB 커넥션 관리 기반 mixin."""
 
     db_path: str
+
+    @classmethod
+    def _load_schema_ddl(cls, *, include_image_labels: bool) -> str:
+        schema_path = Path(__file__).resolve().parents[1] / "sql" / "schema.sql"
+        if not schema_path.exists():
+            raise FileNotFoundError(f"schema.sql not found: {schema_path}")
+
+        ddl = schema_path.read_text(encoding="utf-8")
+        if include_image_labels:
+            return ddl
+        return re.sub(
+            r"CREATE TABLE IF NOT EXISTS image_labels \([\s\S]*?\);\n",
+            "",
+            ddl,
+            count=1,
+        )
 
     @staticmethod
     def _is_lock_conflict(exc: Exception) -> bool:
@@ -85,14 +102,10 @@ class DuckDBBaseMixin:
 
     def ensure_schema(self) -> None:
         """필수 스키마(raw_files 포함)를 보장한다."""
-        schema_path = Path(__file__).resolve().parents[1] / "sql" / "schema.sql"
-        if not schema_path.exists():
-            raise FileNotFoundError(f"schema.sql not found: {schema_path}")
-
-        ddl = schema_path.read_text(encoding="utf-8")
+        ddl = self._load_schema_ddl(include_image_labels=False)
         with self.connect() as conn:
             conn.execute(ddl)
-            self._migrate_image_metadata_table(conn)
+            self._ensure_image_metadata_columns(conn)
             self._ensure_image_metadata_indexes(conn)
             self._ensure_video_metadata_frame_columns(conn)
             self._ensure_labels_columns(conn)
@@ -103,6 +116,15 @@ class DuckDBBaseMixin:
             self._ensure_staging_pipeline_runs(conn)
             self._ensure_raw_files_spec_columns(conn)
             self._ensure_video_metadata_stage_columns(conn)
+
+    def repair_image_metadata_table(self) -> None:
+        """운영 중단 상태에서 image_metadata를 명시적으로 재구성한다."""
+        ddl = self._load_schema_ddl(include_image_labels=False)
+        with self.connect() as conn:
+            conn.execute(ddl)
+            self._rebuild_image_metadata_table(conn)
+            self._ensure_image_metadata_indexes(conn)
+            self._ensure_image_labels_table(conn)
 
     @staticmethod
     def _table_exists(conn: duckdb.DuckDBPyConnection, table_name: str) -> bool:
@@ -133,43 +155,106 @@ class DuckDBBaseMixin:
         return {str(row[0]) for row in rows}
 
     @classmethod
-    def _migrate_image_metadata_table(cls, conn: duckdb.DuckDBPyConnection) -> None:
+    def _ensure_image_metadata_columns(cls, conn: duckdb.DuckDBPyConnection) -> None:
         columns = cls._table_columns(conn, "image_metadata")
         if not columns:
             return
-        desired_columns = {
-            "image_id",
-            "source_asset_id",
-            "source_clip_id",
-            "image_bucket",
-            "image_key",
-            "image_role",
-            "frame_index",
-            "frame_sec",
-            "checksum",
-            "file_size",
-            "width",
-            "height",
-            "color_mode",
-            "bit_depth",
-            "has_alpha",
-            "orientation",
-            "caption_text",
-            "extracted_at",
+        alter_specs = {
+            "image_id": "VARCHAR",
+            "source_asset_id": "VARCHAR",
+            "source_clip_id": "VARCHAR",
+            "image_bucket": "VARCHAR DEFAULT 'vlm-raw'",
+            "image_key": "VARCHAR",
+            "image_role": "VARCHAR DEFAULT 'source_image'",
+            "frame_index": "INTEGER",
+            "frame_sec": "DOUBLE",
+            "checksum": "VARCHAR",
+            "file_size": "BIGINT",
+            "width": "INTEGER",
+            "height": "INTEGER",
+            "color_mode": "VARCHAR DEFAULT 'RGB'",
+            "bit_depth": "INTEGER DEFAULT 8",
+            "has_alpha": "BOOLEAN DEFAULT FALSE",
+            "orientation": "INTEGER DEFAULT 1",
+            "caption_text": "TEXT",
+            "image_caption_text": "TEXT",
+            "image_caption_score": "DOUBLE",
+            "extracted_at": "TIMESTAMP",
         }
-        if columns == desired_columns:
-            return
-        if "asset_id" not in columns:
-            if "image_id" not in columns or "source_asset_id" not in columns:
-                return
+        for column_name, column_type in alter_specs.items():
+            if column_name in columns:
+                continue
+            conn.execute(f"ALTER TABLE image_metadata ADD COLUMN {column_name} {column_type}")
 
-        def _col(name: str, fallback_sql: str = "NULL") -> str:
-            return f"im.{name}" if name in columns else fallback_sql
+        columns = cls._table_columns(conn, "image_metadata")
+        image_id_sources = [name for name in ("image_id", "source_asset_id", "asset_id") if name in columns]
+        source_asset_sources = [name for name in ("source_asset_id", "asset_id", "image_id") if name in columns]
+        image_id_expr = "COALESCE(" + ", ".join(image_id_sources) + ")"
+        source_asset_expr = "COALESCE(" + ", ".join(source_asset_sources) + ")"
 
-        conn.execute("DROP TABLE IF EXISTS image_metadata__migrated")
+        conn.execute(
+            f"""
+            UPDATE image_metadata
+            SET image_id = {image_id_expr},
+                source_asset_id = {source_asset_expr}
+            WHERE image_id IS NULL
+               OR source_asset_id IS NULL
+            """
+        )
         conn.execute(
             """
-            CREATE TABLE image_metadata__migrated (
+            UPDATE image_metadata AS im
+            SET image_bucket = COALESCE(NULLIF(im.image_bucket, ''), NULLIF(rf.raw_bucket, ''), 'vlm-raw'),
+                image_key = COALESCE(im.image_key, rf.raw_key),
+                checksum = COALESCE(im.checksum, rf.checksum),
+                file_size = COALESCE(im.file_size, rf.file_size)
+            FROM raw_files AS rf
+            WHERE rf.asset_id = im.source_asset_id
+              AND (
+                  im.image_bucket IS NULL
+                  OR im.image_bucket = ''
+                  OR im.image_key IS NULL
+                  OR im.checksum IS NULL
+                  OR im.file_size IS NULL
+              )
+            """
+        )
+        conn.execute(
+            """
+            UPDATE image_metadata
+            SET image_bucket = COALESCE(NULLIF(image_bucket, ''), 'vlm-raw'),
+                image_role = COALESCE(NULLIF(image_role, ''), 'source_image'),
+                color_mode = COALESCE(color_mode, 'RGB'),
+                bit_depth = COALESCE(bit_depth, 8),
+                has_alpha = COALESCE(has_alpha, FALSE),
+                orientation = COALESCE(orientation, 1),
+                extracted_at = COALESCE(extracted_at, CURRENT_TIMESTAMP)
+            WHERE image_bucket IS NULL
+               OR image_bucket = ''
+               OR image_role IS NULL
+               OR image_role = ''
+               OR color_mode IS NULL
+               OR bit_depth IS NULL
+               OR has_alpha IS NULL
+               OR orientation IS NULL
+               OR extracted_at IS NULL
+            """
+        )
+        if {"caption_text", "image_caption_text"}.issubset(columns):
+            conn.execute(
+                """
+                UPDATE image_metadata
+                SET image_caption_text = COALESCE(image_caption_text, caption_text)
+                WHERE image_caption_text IS NULL
+                  AND caption_text IS NOT NULL
+                """
+            )
+
+    @classmethod
+    def _create_image_metadata_table(cls, conn: duckdb.DuckDBPyConnection, table_name: str) -> None:
+        conn.execute(
+            f"""
+            CREATE TABLE {table_name} (
                 image_id         VARCHAR PRIMARY KEY,
                 source_asset_id  VARCHAR NOT NULL REFERENCES raw_files(asset_id),
                 source_clip_id   VARCHAR REFERENCES processed_clips(clip_id),
@@ -187,15 +272,106 @@ class DuckDBBaseMixin:
                 has_alpha        BOOLEAN DEFAULT FALSE,
                 orientation      INTEGER DEFAULT 1,
                 caption_text     TEXT,
+                image_caption_text TEXT,
+                image_caption_score DOUBLE,
                 extracted_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 UNIQUE (image_bucket, image_key),
                 UNIQUE (source_asset_id, source_clip_id, image_role, frame_index)
             )
             """
         )
+
+    @classmethod
+    def _image_metadata_col(
+        cls,
+        columns: set[str],
+        name: str,
+        *,
+        alias: str = "im",
+        fallback_sql: str = "NULL",
+    ) -> str:
+        if name not in columns:
+            return fallback_sql
+        return f"{alias}.{name}"
+
+    @classmethod
+    def _image_metadata_copy_select_sql(
+        cls,
+        columns: set[str],
+        *,
+        source_table: str,
+        alias: str = "im",
+    ) -> str:
+        image_id_sources = [name for name in ("image_id", "source_asset_id", "asset_id") if name in columns]
+        source_asset_sources = [name for name in ("source_asset_id", "asset_id", "image_id") if name in columns]
+        if not image_id_sources or not source_asset_sources:
+            raise RuntimeError(
+                f"image_metadata repair failed: usable key columns not found in {source_table}"
+            )
+
+        image_id_expr = "COALESCE(" + ", ".join(f"{alias}.{name}" for name in image_id_sources) + ")"
+        source_asset_expr = "COALESCE(" + ", ".join(f"{alias}.{name}" for name in source_asset_sources) + ")"
+        return f"""
+            SELECT
+                {image_id_expr} AS image_id,
+                {source_asset_expr} AS source_asset_id,
+                {cls._image_metadata_col(columns, "source_clip_id", alias=alias)} AS source_clip_id,
+                COALESCE(NULLIF({cls._image_metadata_col(columns, "image_bucket", alias=alias)}, ''), NULLIF(rf.raw_bucket, ''), 'vlm-raw') AS image_bucket,
+                COALESCE({cls._image_metadata_col(columns, "image_key", alias=alias)}, rf.raw_key) AS image_key,
+                COALESCE(NULLIF({cls._image_metadata_col(columns, "image_role", alias=alias)}, ''), 'source_image') AS image_role,
+                {cls._image_metadata_col(columns, "frame_index", alias=alias)} AS frame_index,
+                {cls._image_metadata_col(columns, "frame_sec", alias=alias)} AS frame_sec,
+                COALESCE({cls._image_metadata_col(columns, "checksum", alias=alias)}, rf.checksum) AS checksum,
+                COALESCE({cls._image_metadata_col(columns, "file_size", alias=alias)}, rf.file_size) AS file_size,
+                {cls._image_metadata_col(columns, "width", alias=alias)} AS width,
+                {cls._image_metadata_col(columns, "height", alias=alias)} AS height,
+                COALESCE({cls._image_metadata_col(columns, "color_mode", alias=alias, fallback_sql="'RGB'")}, 'RGB') AS color_mode,
+                COALESCE({cls._image_metadata_col(columns, "bit_depth", alias=alias, fallback_sql="8")}, 8) AS bit_depth,
+                COALESCE({cls._image_metadata_col(columns, "has_alpha", alias=alias, fallback_sql="FALSE")}, FALSE) AS has_alpha,
+                COALESCE({cls._image_metadata_col(columns, "orientation", alias=alias, fallback_sql="1")}, 1) AS orientation,
+                {cls._image_metadata_col(columns, "caption_text", alias=alias)} AS caption_text,
+                COALESCE(
+                    {cls._image_metadata_col(columns, "image_caption_text", alias=alias)},
+                    {cls._image_metadata_col(columns, "caption_text", alias=alias)}
+                ) AS image_caption_text,
+                {cls._image_metadata_col(columns, "image_caption_score", alias=alias)} AS image_caption_score,
+                COALESCE({cls._image_metadata_col(columns, "extracted_at", alias=alias, fallback_sql="CURRENT_TIMESTAMP")}, CURRENT_TIMESTAMP) AS extracted_at
+            FROM {source_table} AS {alias}
+            LEFT JOIN raw_files AS rf ON rf.asset_id = {source_asset_expr}
+        """
+
+    @classmethod
+    def _select_image_metadata_source_table(cls, conn: duckdb.DuckDBPyConnection) -> str | None:
+        unreadable: list[str] = []
+        for table_name in ("image_metadata", "image_metadata__migrated"):
+            if not cls._table_exists(conn, table_name):
+                continue
+            try:
+                conn.execute(f"SELECT 1 FROM {table_name} LIMIT 1").fetchall()
+            except Exception:  # noqa: BLE001
+                unreadable.append(table_name)
+                continue
+            return table_name
+        if unreadable:
+            joined = ", ".join(unreadable)
+            raise RuntimeError(f"image_metadata repair failed: unreadable source table(s): {joined}")
+        return None
+
+    @classmethod
+    def _rebuild_image_metadata_table(cls, conn: duckdb.DuckDBPyConnection) -> None:
+        source_table = cls._select_image_metadata_source_table(conn)
+        if source_table is None:
+            if not cls._table_exists(conn, "image_metadata"):
+                cls._create_image_metadata_table(conn, "image_metadata")
+            return
+
+        columns = cls._table_columns(conn, source_table)
+        conn.execute("DROP TABLE IF EXISTS image_metadata__repair")
+        cls._create_image_metadata_table(conn, "image_metadata__repair")
+        select_sql = cls._image_metadata_copy_select_sql(columns, source_table=source_table)
         conn.execute(
             f"""
-            INSERT INTO image_metadata__migrated (
+            INSERT INTO image_metadata__repair (
                 image_id,
                 source_asset_id,
                 source_clip_id,
@@ -213,37 +389,34 @@ class DuckDBBaseMixin:
                 has_alpha,
                 orientation,
                 caption_text,
+                image_caption_text,
+                image_caption_score,
                 extracted_at
             )
-            SELECT
-                COALESCE({_col("image_id")}, {_col("asset_id")}) AS image_id,
-                COALESCE({_col("source_asset_id")}, {_col("asset_id")}) AS source_asset_id,
-                {_col("source_clip_id")} AS source_clip_id,
-                COALESCE(NULLIF({_col("image_bucket", "NULL")}, ''), NULLIF(rf.raw_bucket, ''), 'vlm-raw') AS image_bucket,
-                COALESCE({_col("image_key")}, rf.raw_key) AS image_key,
-                COALESCE(NULLIF({_col("image_role", "NULL")}, ''), 'source_image') AS image_role,
-                {_col("frame_index")} AS frame_index,
-                {_col("frame_sec")} AS frame_sec,
-                COALESCE({_col("checksum")}, rf.checksum) AS checksum,
-                COALESCE({_col("file_size")}, rf.file_size) AS file_size,
-                {_col("width")} AS width,
-                {_col("height")} AS height,
-                {_col("color_mode", "'RGB'")} AS color_mode,
-                {_col("bit_depth", "8")} AS bit_depth,
-                {_col("has_alpha", "FALSE")} AS has_alpha,
-                {_col("orientation", "1")} AS orientation,
-                {_col("caption_text")} AS caption_text,
-                {_col("extracted_at", "CURRENT_TIMESTAMP")} AS extracted_at
-            FROM image_metadata im
-            LEFT JOIN raw_files rf ON rf.asset_id = COALESCE({_col("source_asset_id")}, {_col("asset_id")})
+            {select_sql}
             """
         )
+
         if cls._table_exists(conn, "image_labels"):
             conn.execute("DROP TABLE IF EXISTS image_labels__backup")
             conn.execute("CREATE TABLE image_labels__backup AS SELECT * FROM image_labels")
             conn.execute("DROP TABLE image_labels")
-        conn.execute("DROP TABLE image_metadata")
-        conn.execute("ALTER TABLE image_metadata__migrated RENAME TO image_metadata")
+
+        if cls._table_exists(conn, "image_metadata"):
+            conn.execute("DROP TABLE image_metadata")
+        if source_table != "image_metadata__migrated" and cls._table_exists(conn, "image_metadata__migrated"):
+            conn.execute("DROP TABLE image_metadata__migrated")
+
+        cls._create_image_metadata_table(conn, "image_metadata")
+        conn.execute(
+            """
+            INSERT INTO image_metadata
+            SELECT * FROM image_metadata__repair
+            """
+        )
+        conn.execute("DROP TABLE image_metadata__repair")
+        if cls._table_exists(conn, "image_metadata__migrated"):
+            conn.execute("DROP TABLE image_metadata__migrated")
 
     @classmethod
     def _ensure_image_metadata_indexes(cls, conn: duckdb.DuckDBPyConnection) -> None:
@@ -370,24 +543,28 @@ class DuckDBBaseMixin:
 
     @classmethod
     def _ensure_image_labels_table(cls, conn: duckdb.DuckDBPyConnection) -> None:
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS image_labels (
-                image_label_id   VARCHAR PRIMARY KEY,
-                image_id         VARCHAR REFERENCES image_metadata(image_id),
-                source_clip_id   VARCHAR REFERENCES processed_clips(clip_id),
-                labels_bucket    VARCHAR DEFAULT 'vlm-labels',
-                labels_key       VARCHAR,
-                label_format     VARCHAR,
-                label_tool       VARCHAR,
-                label_source     VARCHAR,
-                review_status    VARCHAR DEFAULT 'pending',
-                label_status     VARCHAR DEFAULT 'pending',
-                object_count     INTEGER DEFAULT 0,
-                created_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        if not cls._table_exists(conn, "image_labels"):
+            image_ref_sql = "VARCHAR"
+            if cls._image_metadata_has_image_id_constraint(conn):
+                image_ref_sql = "VARCHAR REFERENCES image_metadata(image_id)"
+            conn.execute(
+                f"""
+                CREATE TABLE image_labels (
+                    image_label_id   VARCHAR PRIMARY KEY,
+                    image_id         {image_ref_sql},
+                    source_clip_id   VARCHAR REFERENCES processed_clips(clip_id),
+                    labels_bucket    VARCHAR DEFAULT 'vlm-labels',
+                    labels_key       VARCHAR,
+                    label_format     VARCHAR,
+                    label_tool       VARCHAR,
+                    label_source     VARCHAR,
+                    review_status    VARCHAR DEFAULT 'pending',
+                    label_status     VARCHAR DEFAULT 'pending',
+                    object_count     INTEGER DEFAULT 0,
+                    created_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+                """
             )
-            """
-        )
         if cls._table_exists(conn, "image_labels__backup"):
             conn.execute(
                 """
@@ -396,6 +573,20 @@ class DuckDBBaseMixin:
                 """
             )
             conn.execute("DROP TABLE image_labels__backup")
+
+    @classmethod
+    def _image_metadata_has_image_id_constraint(cls, conn: duckdb.DuckDBPyConnection) -> bool:
+        row = conn.execute(
+            """
+            SELECT COUNT(*)
+            FROM duckdb_constraints()
+            WHERE table_name = 'image_metadata'
+              AND constraint_type IN ('PRIMARY KEY', 'UNIQUE')
+              AND array_length(constraint_column_names) = 1
+              AND constraint_column_names[1] = 'image_id'
+            """
+        ).fetchone()
+        return bool(row and row[0] > 0)
 
     # ── Staging 전용 테이블 보장 ──
 
@@ -407,6 +598,9 @@ class DuckDBBaseMixin:
             return  # 테이블 자체가 없으면 schema.sql의 CREATE TABLE이 처리
 
         alter_specs = {
+            "labeling_method": "VARCHAR",
+            "categories": "VARCHAR",
+            "classes": "VARCHAR",
             "max_frames_per_video": "INTEGER",
             "jpeg_quality": "INTEGER",
             "confidence_threshold": "DOUBLE",

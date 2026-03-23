@@ -277,6 +277,8 @@ def build_retry_manifest(
         "retry_attempt": next_attempt,
         "retry_reason": "transient_db_lock",
     }
+    if "archive_requested" in manifest:
+        payload["archive_requested"] = manifest.get("archive_requested")
 
     retry_manifest_path.write_text(
         json.dumps(payload, ensure_ascii=False, indent=2),

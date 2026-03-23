@@ -20,7 +20,10 @@ from dagster import Field, asset
 from PIL import Image
 
 from vlm_pipeline.lib.checksum import sha256_bytes
-from vlm_pipeline.lib.env_utils import should_run_output
+from vlm_pipeline.lib.env_utils import (
+    is_dispatch_yolo_only_requested,
+    should_run_output,
+)
 from vlm_pipeline.lib.gemini import GeminiAnalyzer, extract_clean_json_text
 from vlm_pipeline.lib.spec_config import (
     is_standard_spec_run,
@@ -28,9 +31,12 @@ from vlm_pipeline.lib.spec_config import (
     parse_requested_outputs,
 )
 from vlm_pipeline.lib.staging_vertex import (
+    build_event_frame_relevance_prompt,
     build_event_frame_image_prompt,
     normalize_gemini_events,
+    parse_event_frame_relevance_response,
     parse_event_frame_image_caption_response,
+    select_top_relevance_index,
 )
 from vlm_pipeline.lib.video_frames import (
     describe_frame_bytes,
@@ -62,6 +68,7 @@ def clip_captioning(
         context.log.info("clip_captioning 스킵: outputs에 captioning이 없습니다.")
         return {"processed": 0, "failed": 0, "labels_inserted": 0, "skipped": True}
 
+    db.ensure_schema()
     folder_name = context.run.tags.get("folder_name")
     limit = int(context.op_config.get("limit", 200))
     candidates = db.find_captioning_pending_videos(limit=limit, folder_name=folder_name)
@@ -188,10 +195,14 @@ def clip_captioning_routed(
     requested = parse_requested_outputs(tags)
     spec_id = str(tags.get("spec_id") or "").strip()
     standard_spec_run = is_standard_spec_run(tags)
+    if is_dispatch_yolo_only_requested(tags):
+        context.log.info("clip_captioning_routed 스킵: dispatch labeling_method가 YOLO 전용입니다.")
+        return {"processed": 0, "failed": 0, "labels_inserted": 0, "skipped": True}
     if "captioning" not in requested and not standard_spec_run:
         context.log.info("clip_captioning_routed 스킵: outputs에 captioning 없음")
         return {"processed": 0, "failed": 0, "labels_inserted": 0, "skipped": True}
 
+    db.ensure_schema()
     resolved_config_id = None
     if spec_id:
         config_bundle = load_persisted_spec_config(db, spec_id)
@@ -319,6 +330,7 @@ def clip_to_frame(
         context.log.info("clip_to_frame 스킵: outputs에 captioning이 없습니다.")
         return {"processed": 0, "failed": 0, "frames_extracted": 0, "skipped": True}
 
+    db.ensure_schema()
     folder_name = context.run.tags.get("folder_name")
     image_profile = context.run.tags.get("image_profile", "current")
 
@@ -692,7 +704,7 @@ def _extract_clip_frames(
     image_caption_event_caption_text: str | None = None,
     image_caption_log=None,
 ) -> tuple[list[dict[str, Any]], list[str]]:
-    """clip 비디오에서 적응형 프레임 추출 → vlm-processed 업로드용 row/keys 반환."""
+    """clip 비디오에서 프레임 추출 후, 최고 관련도 1개 프레임만 이미지 캡션 생성."""
     now = datetime.now()
     timestamps = plan_frame_timestamps(
         duration_sec=duration_sec,
@@ -705,6 +717,7 @@ def _extract_clip_frames(
 
     frame_rows: list[dict[str, Any]] = []
     uploaded_keys: list[str] = []
+    caption_candidates: list[dict[str, Any]] = []
 
     try:
         for frame_index, frame_sec in enumerate(timestamps, start=1):
@@ -716,13 +729,14 @@ def _extract_clip_frames(
             uploaded_keys.append(image_key)
 
             frame_meta = describe_frame_bytes(frame_bytes)
-            caption_text = None
+            row_index = len(frame_rows)
+            relevance_score = None
             if image_caption_analyzer is not None and (
                 str(image_caption_event_category or "").strip()
                 or str(image_caption_event_caption_text or "").strip()
             ):
                 try:
-                    caption_text = _generate_event_frame_image_caption(
+                    relevance_score = _score_event_frame_image_relevance(
                         image_caption_analyzer,
                         frame_bytes,
                         event_category=image_caption_event_category,
@@ -731,11 +745,20 @@ def _extract_clip_frames(
                 except Exception as exc:
                     if image_caption_log is not None:
                         image_caption_log.warning(
-                            "frame image caption 실패: clip_id=%s frame_index=%s err=%s",
+                            "frame image relevance 실패: clip_id=%s frame_index=%s err=%s",
                             clip_id,
                             frame_index,
                             exc,
                         )
+                else:
+                    caption_candidates.append(
+                        {
+                            "row_index": row_index,
+                            "frame_index": frame_index,
+                            "frame_bytes": frame_bytes,
+                            "relevance_score": relevance_score,
+                        }
+                    )
             frame_rows.append({
                 "image_id": str(uuid4()),
                 "source_clip_id": clip_id,
@@ -752,15 +775,71 @@ def _extract_clip_frames(
                 "bit_depth": frame_meta["bit_depth"],
                 "has_alpha": frame_meta["has_alpha"],
                 "orientation": frame_meta["orientation"],
-                "caption_text": caption_text,
+                "image_caption_text": None,
+                "image_caption_score": relevance_score,
                 "extracted_at": now,
             })
+
+        best_candidate_index = select_top_relevance_index(
+            [candidate.get("relevance_score") for candidate in caption_candidates]
+        )
+        if best_candidate_index is not None and image_caption_analyzer is not None:
+            best_candidate = caption_candidates[best_candidate_index]
+            if image_caption_log is not None:
+                image_caption_log.info(
+                    "frame image caption top-1 선택: clip_id=%s frame_index=%s score=%.3f",
+                    clip_id,
+                    best_candidate["frame_index"],
+                    float(best_candidate["relevance_score"]),
+                )
+            try:
+                image_caption_text = _generate_event_frame_image_caption(
+                    image_caption_analyzer,
+                    best_candidate["frame_bytes"],
+                    event_category=image_caption_event_category,
+                    event_caption_text=image_caption_event_caption_text,
+                )
+            except Exception as exc:
+                if image_caption_log is not None:
+                    image_caption_log.warning(
+                        "selected frame image caption 실패: clip_id=%s frame_index=%s err=%s",
+                        clip_id,
+                        best_candidate["frame_index"],
+                        exc,
+                    )
+            else:
+                if image_caption_text is not None:
+                    frame_rows[best_candidate["row_index"]]["image_caption_text"] = image_caption_text
     except Exception:
         if uploaded_keys:
             _delete_minio_keys(minio, "vlm-processed", uploaded_keys)
         raise
 
     return frame_rows, uploaded_keys
+
+
+def _score_event_frame_image_relevance(
+    analyzer: GeminiAnalyzer,
+    frame_bytes: bytes,
+    *,
+    event_category: str | None,
+    event_caption_text: str | None,
+) -> float:
+    if not str(event_category or "").strip() and not str(event_caption_text or "").strip():
+        return 0.0
+
+    prompt = build_event_frame_relevance_prompt(
+        event_category=event_category,
+        event_caption_text=event_caption_text,
+    )
+    temp_path = _build_nonexistent_temp_path(".jpg")
+    temp_path.write_bytes(frame_bytes)
+    try:
+        response_text = analyzer.analyze_image(str(temp_path), prompt=prompt)
+        cleaned = extract_clean_json_text(response_text)
+        return parse_event_frame_relevance_response(cleaned)
+    finally:
+        _cleanup_temp_path(temp_path)
 
 
 def _materialize_object_path(
@@ -964,11 +1043,15 @@ def clip_to_frame_routed(
     """run tag: requested_outputs (spec flow) 또는 outputs (dispatch flow). bbox 포함 시 frame 추출."""
     tags = context.run.tags if context.run else {}
     requested = parse_requested_outputs(tags)
+    if is_dispatch_yolo_only_requested(tags):
+        context.log.info("clip_to_frame_routed 스킵: dispatch labeling_method가 YOLO 전용입니다.")
+        return {"processed": 0, "failed": 0, "frames_extracted": 0, "skipped": True}
     should_run = "captioning" in requested or "bbox" in requested
     if not should_run:
         context.log.info("clip_to_frame_routed 스킵: outputs에 captioning/bbox 없음")
         return {"processed": 0, "failed": 0, "frames_extracted": 0, "skipped": True}
 
+    db.ensure_schema()
     spec_id = str(tags.get("spec_id") or "").strip()
     resolved_config_id = None
     if spec_id:
@@ -1193,7 +1276,7 @@ def clip_to_frame_routed(
                 db.replace_processed_clip_frame_metadata(asset_id, clip_id, frame_rows)
                 frames_count = len(frame_rows)
                 total_frames += frames_count
-                image_captions += sum(1 for row in frame_rows if row.get("caption_text"))
+                image_captions += sum(1 for row in frame_rows if row.get("image_caption_text"))
                 db.update_clip_image_extract_status(
                     clip_id,
                     "completed",
@@ -1291,8 +1374,8 @@ def raw_video_to_frame(
     db: DuckDBResource,
     minio: MinIOResource,
 ) -> dict:
-    if not should_run_output(context, "bbox"):
-        context.log.info("raw_video_to_frame 스킵: outputs에 bbox가 없습니다.")
+    if not is_dispatch_yolo_only_requested(context.run.tags if context.run else {}):
+        context.log.info("raw_video_to_frame 스킵: dispatch YOLO 전용 요청이 아닙니다.")
         return {"processed": 0, "failed": 0, "frames_extracted": 0, "skipped": True}
 
     folder_name = context.run.tags.get("folder_name")
