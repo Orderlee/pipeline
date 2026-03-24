@@ -4,6 +4,7 @@ Layer 4: Dagster @asset, 같은 도메인의 ops.py만 import.
 """
 
 import json
+import os
 import shutil
 from datetime import datetime
 from pathlib import Path
@@ -11,6 +12,7 @@ from pathlib import Path
 from dagster import AssetKey, asset
 
 from vlm_pipeline.lib.phash import compute_phash
+from vlm_pipeline.lib.validator import ALLOWED_EXTENSIONS
 from vlm_pipeline.resources.config import PipelineConfig
 from vlm_pipeline.resources.duckdb import DuckDBResource
 from vlm_pipeline.resources.minio import MinIOResource
@@ -29,6 +31,43 @@ from .manifest import (
     write_ingest_failure_logs,
 )
 from .ops import ingest_summary, normalize_and_archive, register_incoming
+
+
+def _hydrate_manifest_files(context, manifest: dict) -> dict:
+    """files가 비어 있으면 source_unit_path를 기준으로 실제 파일 목록을 지연 생성한다."""
+    if manifest.get("files"):
+        return manifest
+
+    source_unit_path_raw = str(manifest.get("source_unit_path", "")).strip()
+    source_unit_path = Path(source_unit_path_raw) if source_unit_path_raw else None
+    if source_unit_path is None or not source_unit_path.exists():
+        return manifest
+
+    allowed_exts = {ext.lower() for ext in ALLOWED_EXTENSIONS}
+    files: list[dict] = []
+
+    def _scan_recursive(base: Path, rel_prefix: str = "") -> None:
+        try:
+            for entry in os.scandir(base):
+                if entry.is_dir(follow_symlinks=False):
+                    sub_rel = f"{rel_prefix}{entry.name}/" if rel_prefix else f"{entry.name}/"
+                    _scan_recursive(Path(entry.path), sub_rel)
+                elif entry.is_file(follow_symlinks=False):
+                    if Path(entry.name).suffix.lower() in allowed_exts:
+                        rel = f"{rel_prefix}{entry.name}" if rel_prefix else entry.name
+                        files.append({"path": entry.path, "size": 0, "rel_path": rel})
+        except OSError:
+            return
+
+    _scan_recursive(source_unit_path)
+    manifest["files"] = files
+    manifest["file_count"] = len(files)
+    manifest["source_unit_total_file_count"] = len(files)
+    context.log.info(
+        "manifest 파일 인덱싱 완료: "
+        f"source_unit_path={source_unit_path}, file_count={len(files)}"
+    )
+    return manifest
 
 
 def _resolve_dedup_image_bytes(target: dict, minio: MinIOResource) -> tuple[bytes, str]:
@@ -244,6 +283,13 @@ def raw_ingest(
                 json.dumps(manifest, ensure_ascii=False, indent=2),
                 encoding="utf-8",
             )
+
+    manifest = _hydrate_manifest_files(context, manifest)
+    if manifest_path:
+        Path(manifest_path).write_text(
+            json.dumps(manifest, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
 
     ingest_rejections: list[dict] = []
     retry_candidates: list[dict] = []

@@ -14,9 +14,9 @@ from vlm_pipeline.resources.minio import MinIOResource
 
 
 @asset(
-    name="yolo_image_detection",
-    deps=["clip_to_frame_routed", "raw_video_to_frame"],
-    description="Staging dispatch: frame 추출 완료 후 YOLO-World-L object detection 실행",
+    name="staging_yolo_image_detection",
+    deps=["clip_to_frame", "raw_video_to_frame"],
+    description="Dispatch 라인: frame 추출 완료 후 YOLO-World-L object detection (clip_to_frame과 deps 분리)",
     group_name="yolo",
     config_schema={
         "limit": Field(int, default_value=500),

@@ -16,7 +16,12 @@ from uuid import uuid4
 
 from dagster import Field, asset
 
-from vlm_pipeline.lib.env_utils import YOLO_OUTPUTS, int_env, should_run_any_output
+from vlm_pipeline.lib.env_utils import (
+    YOLO_OUTPUTS,
+    dispatch_raw_key_prefix_folder,
+    int_env,
+    should_run_any_output,
+)
 from vlm_pipeline.lib.spec_config import load_persisted_spec_config, parse_requested_outputs
 from vlm_pipeline.lib.yolo_world import get_yolo_client
 from vlm_pipeline.resources.duckdb import DuckDBResource
@@ -58,7 +63,7 @@ def _run_yolo_image_detection(
     conf = float(context.op_config.get("confidence_threshold", 0.25))
     iou = float(context.op_config.get("iou_threshold", 0.45))
     batch_size = int(context.op_config.get("batch_size", 4))
-    folder_name = context.run.tags.get("folder_name")
+    folder_name = dispatch_raw_key_prefix_folder(context.run.tags if context.run else None)
 
     candidates = db.find_yolo_pending_images(limit=limit, folder_name=folder_name)
     if not candidates:
@@ -193,7 +198,7 @@ def _run_yolo_image_detection(
 
 @asset(
     name="bbox_labeling",
-    deps=["clip_to_frame_routed"],
+    deps=["clip_to_frame"],
     description="Staging spec flow: requested_outputs에 bbox 포함 시 frame_status=completed 대상 YOLO detection",
     group_name="yolo",
     config_schema={"limit": Field(int, default_value=500)},

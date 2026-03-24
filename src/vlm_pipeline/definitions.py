@@ -1,19 +1,18 @@
-"""Dagster Definitions — Production 전용 진입점.
+"""Dagster Definitions — Production 진입점 (`docker/app/dagster_defs.py`).
 
-Layer 5: 모든 assets + resources + sensors를 import하여 조립.
-docker/app/dagster_defs.py의 MVP 파이프라인과 동일 구조.
+운영 라벨링 정책:
+  - **자동 라벨링(Gemini·clip·dispatch YOLO)** 은 `.dispatch/pending` 트리거 JSON만 허용
+    → `dispatch_sensor` → `dispatch_stage_job` (run 태그에 folder/outputs 등 전달).
+  - **manifest / auto_bootstrap** → `incoming_manifest_sensor` → `ingest_job` (**수집만**, 라벨링 없음).
+    단, auto_bootstrap은 운영에서 `incoming/gcp/**` 만 허용되고 일반 `incoming/<folder>` 는
+    `.dispatch/pending` 트리거 JSON이 있어야 처리된다.
+  - `mvp_stage_job` 은 동일하게 수집만(구 스케줄·수동 실행 호환용).
 
-파이프라인 흐름 (일직선):
-  incoming_nas → raw_ingest(DEDUP 내장)
-    → [auto_labeling_sensor] clip_timestamp → clip_captioning → clip_to_frame → build_dataset
-    → motherduck_sync
+`clip_*` 에셋은 `dispatch_stage_job` 없이는 **자동** 실행되지 않는다.
+예외: UI에서 에셋/잡을 직접 머티리얼라이즈하면 실행 가능하며,
+`ENABLE_MANUAL_LABEL_IMPORT` / `ENABLE_YOLO_DETECTION` 을 켠 경우 해당 잡은 정책에서 제외된다(기본 false).
 
-data_pipeline_job 제거됨 — mvp_stage_job으로 통합.
-
-`clip_to_frame` 프레임 시점은 `vlm_pipeline.lib.video_frames.plan_frame_timestamps` (스테이징과 공유).
-
-NAS 지연 시 `auto_bootstrap_manifest_sensor`: `AUTO_BOOTSTRAP_DISCOVERY_MAX_TOP_ENTRIES`(권장 20),
-`DAGSTER_SENSOR_GRPC_TIMEOUT_SECONDS`(권장 300) — 스테이징과 동일 env 키.
+spec 자동 해석(`spec_resolve_sensor`)·`auto_labeling_routed_job` 등은 staging(`definitions_staging.py`) 전용이다.
 """
 
 from __future__ import annotations
@@ -28,19 +27,25 @@ from vlm_pipeline.defs.ingest.sensor import (
     incoming_manifest_sensor,
     stuck_run_guard_sensor,
 )
+from vlm_pipeline.defs.dispatch.sensor import dispatch_sensor
+from vlm_pipeline.defs.dispatch.sensor_incoming_mover import incoming_to_pending_sensor
 from vlm_pipeline.defs.label.assets import clip_timestamp
 from vlm_pipeline.defs.label.manual_import import manual_label_import
-from vlm_pipeline.defs.label.sensor import auto_labeling_sensor
 from vlm_pipeline.defs.process.assets import (
     clip_captioning,
     clip_to_frame,
     raw_video_to_frame,
 )
-from vlm_pipeline.defs.process.sensor import video_frame_extract_sensor
+from vlm_pipeline.defs.spec.assets import labeling_spec_ingest, pending_ingest
+from vlm_pipeline.defs.spec.staging_assets import (
+    activate_labeling_spec,
+    config_sync,
+    ingest_router,
+)
 from vlm_pipeline.defs.sync.assets import motherduck_sync
 from vlm_pipeline.defs.sync.sensor import MOTHERDUCK_TABLE_SENSORS
-from vlm_pipeline.defs.yolo.assets import yolo_image_detection
-from vlm_pipeline.defs.yolo.sensor import yolo_detection_sensor
+from vlm_pipeline.defs.yolo.assets import bbox_labeling, yolo_image_detection
+from vlm_pipeline.defs.yolo.staging_assets import staging_yolo_image_detection
 from vlm_pipeline.lib.env_utils import bool_env
 from vlm_pipeline.resources.duckdb import DuckDBResource
 from vlm_pipeline.resources.minio import MinIOResource
@@ -48,19 +53,20 @@ from vlm_pipeline.resources.minio import MinIOResource
 ENABLE_MANUAL_LABEL_IMPORT = bool_env("ENABLE_MANUAL_LABEL_IMPORT", False)
 ENABLE_YOLO_DETECTION = bool_env("ENABLE_YOLO_DETECTION", False)
 
-# ── Jobs ──
+# Gemini 이벤트 → labels → clip/프레임 (여러 job에서 동일 순서로 재사용)
+CLIP_AUTO_LABEL_ASSETS = (
+    clip_timestamp,
+    clip_captioning,
+    clip_to_frame,
+)
+
+# ── Jobs: MVP · 부분 실행 ──
 
 mvp_stage_job = define_asset_job(
     "mvp_stage_job",
-    selection=[
-        raw_ingest,
-        clip_timestamp,
-        clip_captioning,
-        clip_to_frame,
-        build_dataset,
-    ],
+    selection=[raw_ingest],
     tags={"duckdb_writer": "true"},
-    description="전체 파이프라인 — 수집 → timestamp → captioning → clip절단 → 데이터셋 조립",
+    description="[운영] 수집만 — 라벨링은 dispatch 트리거 JSON + dispatch_stage_job",
 )
 
 ingest_job = define_asset_job(
@@ -70,56 +76,12 @@ ingest_job = define_asset_job(
     description="원본 미디어 수집 + inline 중복 검출",
 )
 
-label_job = define_asset_job(
-    "label_job",
-    selection=[clip_timestamp],
-    tags={"duckdb_writer": "true"},
-    description="이벤트 구간 timestamp 식별 + 라벨 등록",
-)
-
-auto_labeling_job = define_asset_job(
-    "auto_labeling_job",
-    selection=[clip_timestamp, clip_captioning, clip_to_frame],
-    tags={"duckdb_writer": "true"},
-    description="timestamp → captioning → clip 절단",
-)
-
-process_build_job = define_asset_job(
-    "process_build_job",
-    selection=[clip_to_frame, build_dataset],
-    tags={"duckdb_writer": "true"},
-    description="clip 절단 → 학습 데이터셋 조립",
-)
-
-video_frame_extract_job = define_asset_job(
-    "video_frame_extract_job",
-    selection=[clip_captioning],
-    tags={"duckdb_writer": "true"},
-    description="이벤트 구간 captioning (단독)",
-)
-
-# Future activation checklist for alternative frame extraction paths:
-# 1. Uncomment extracted_processed_clip_frames import in this file.
-# 2. Uncomment processed_clip_frame_extract_sensor import in this file.
-# 3. Register the job/sensor below only when processed_clips should become the auto-extraction trigger.
-# 4. If that switch happens, disable or remove video_frame_extract_sensor to avoid dual-trigger behavior.
-#
-# from vlm_pipeline.defs.process.assets import extracted_processed_clip_frames
-# from vlm_pipeline.defs.process.sensor import processed_clip_frame_extract_sensor
-#
-# processed_clip_frame_extract_job = define_asset_job(
-#     "processed_clip_frame_extract_job",
-#     selection=[extracted_processed_clip_frames],
-#     tags={"duckdb_writer": "true"},
-#     description="PROCESS — processed_clips completed video → frame extraction",
-# )
-
 if ENABLE_YOLO_DETECTION:
-    yolo_detection_job = define_asset_job(
-        "yolo_detection_job",
+    yolo_standard_detection_job = define_asset_job(
+        "yolo_standard_detection_job",
         selection=[yolo_image_detection],
         tags={"duckdb_writer": "true"},
-        description="YOLO-World-L object detection (processed_clip_frame → image_labels)",
+        description="YOLO (clip_to_frame deps) — ENABLE_YOLO_DETECTION 시에만 등록",
     )
 
 if ENABLE_MANUAL_LABEL_IMPORT:
@@ -143,6 +105,20 @@ motherduck_sync_job = define_asset_job(
     description="클라우드 동기화 — DuckDB → MotherDuck",
 )
 
+# ── Jobs: dispatch 트리거(JSON) 전용 라벨링 파이프라인 ──
+
+dispatch_stage_job = define_asset_job(
+    "dispatch_stage_job",
+    selection=[
+        raw_ingest,
+        *CLIP_AUTO_LABEL_ASSETS,
+        raw_video_to_frame,
+        staging_yolo_image_detection,
+    ],
+    tags={"duckdb_writer": "true"},
+    description="[운영 유일 자동 라벨링] `.dispatch/pending` 트리거 JSON → ingest + clip_* + YOLO",
+)
+
 gcs_download_schedule = ScheduleDefinition(
     name="gcs_download_schedule",
     job=gcs_download_job,
@@ -153,7 +129,7 @@ gcs_download_schedule = ScheduleDefinition(
             "pipeline__incoming_nas": {
                 "config": {
                     "mode": "date-folders",
-                    "download_dir": "/nas/incoming",
+                    "download_dir": "/nas/incoming/gcp",
                     "backend": "gcloud",
                     "skip_existing": True,
                     "dry_run": False,
@@ -170,12 +146,17 @@ gcs_download_schedule = ScheduleDefinition(
 assets = [
     raw_ingest,
     gcs_download_to_incoming,
-    clip_timestamp,
-    clip_captioning,
-    clip_to_frame,
+    *CLIP_AUTO_LABEL_ASSETS,
     raw_video_to_frame,
     build_dataset,
     motherduck_sync,
+    labeling_spec_ingest,
+    config_sync,
+    ingest_router,
+    pending_ingest,
+    activate_labeling_spec,
+    bbox_labeling,
+    staging_yolo_image_detection,
 ]
 if ENABLE_MANUAL_LABEL_IMPORT:
     assets.append(manual_label_import)
@@ -186,27 +167,22 @@ jobs = [
     mvp_stage_job,
     ingest_job,
     gcs_download_job,
-    label_job,
-    auto_labeling_job,
-    process_build_job,
-    video_frame_extract_job,
     motherduck_sync_job,
+    dispatch_stage_job,
 ]
 if ENABLE_MANUAL_LABEL_IMPORT:
     jobs.append(manual_label_import_job)
 if ENABLE_YOLO_DETECTION:
-    jobs.append(yolo_detection_job)
+    jobs.append(yolo_standard_detection_job)
 
 sensors = [
     incoming_manifest_sensor,
     auto_bootstrap_manifest_sensor,
     stuck_run_guard_sensor,
-    auto_labeling_sensor,
-    video_frame_extract_sensor,
+    incoming_to_pending_sensor,
+    dispatch_sensor,
     *MOTHERDUCK_TABLE_SENSORS,
 ]
-if ENABLE_YOLO_DETECTION:
-    sensors.append(yolo_detection_sensor)
 
 defs = Definitions(
     assets=assets,
