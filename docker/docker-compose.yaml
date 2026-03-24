@@ -128,7 +128,6 @@ services:
       DUCKDB_PATH: /data/staging.duckdb
       INCOMING_DIR: /nas/staging/incoming
       ARCHIVE_DIR: /nas/staging/archive
-      ARCHIVE_PENDING_DIR: /nas/staging/archive_pending
       MANIFEST_DIR: /nas/staging/incoming/.manifests
       MINIO_ENDPOINT: http://172.168.47.36:9002
       DATAOPS_MINIO__ENDPOINT: http://172.168.47.36:9002

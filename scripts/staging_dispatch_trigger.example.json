@@ -1,0 +1,14 @@
+{
+  "request_id": "req_UNIQUE_ID_CHANGE_ME",
+  "folder_name": "tmp_data_2",
+  "labeling_method": ["timestamp", "captioning", "bbox"],
+  "categories": ["falldown", "fire"],
+  "classes": ["person_fallen", "fire", "flame"],
+  "image_profile": "current",
+  "requested_by": "local_test",
+  "requested_at": "2026-03-24T12:00:00",
+  "max_frames_per_video": 12,
+  "jpeg_quality": 90,
+  "confidence_threshold": 0.25,
+  "iou_threshold": 0.45
+}

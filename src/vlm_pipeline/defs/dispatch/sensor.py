@@ -1,18 +1,14 @@
-"""STAGING-only dispatch sensor."""
+"""Dispatch JSON 센서 — `.dispatch/pending` 처리 후 dispatch_stage_job 트리거."""
 
 import json
-import shutil
 from datetime import datetime
 from pathlib import Path
 from uuid import uuid4
-import os
 
 from dagster import RunRequest, SensorEvaluationContext, sensor
 
-from vlm_pipeline.lib.env_utils import IS_STAGING
 from vlm_pipeline.lib.sanitizer import sanitize_path_component
 from vlm_pipeline.lib.staging_dispatch import parse_dispatch_request_payload
-from vlm_pipeline.lib.validator import ALLOWED_EXTENSIONS
 from vlm_pipeline.defs.ingest.archive import resolve_unique_directory
 from vlm_pipeline.resources.config import PipelineConfig
 
@@ -85,15 +81,12 @@ def _create_dispatch_table_if_not_exists(db_conn) -> None:
 
 @sensor(
     name="dispatch_sensor",
-    description="Staging-only dispatch JSON 처리 및 archive 이동 후 파이프라인 트리거",
+    description="dispatch JSON 처리 후 dispatch_stage_job 트리거 (archive 이동은 raw_ingest에서 수행)",
     minimum_interval_seconds=30,
     required_resource_keys={"db"},
     job_name="dispatch_stage_job",
 )
 def dispatch_sensor(context: SensorEvaluationContext):
-    if not IS_STAGING:
-        return
-
     config = PipelineConfig()
     incoming_dir = Path(config.incoming_dir)
     pending_dir = incoming_dir / ".dispatch" / "pending"
@@ -123,7 +116,7 @@ def dispatch_sensor(context: SensorEvaluationContext):
         try:
             req_data = json.loads(req_file.read_text())
         except json.JSONDecodeError:
-            _move_dispatch_file(req_file, failed_dir)
+            _move_dispatch_file(req_file, failed_dir, context=context)
             continue
 
         request_id = req_data.get("request_id")
@@ -133,7 +126,7 @@ def dispatch_sensor(context: SensorEvaluationContext):
             dispatch_payload = parse_dispatch_request_payload(req_data)
         except ValueError as exc:
             _record_failed_request(db_resource, request_id or str(req_file.stem), req_data, str(exc))
-            _move_dispatch_file(req_file, failed_dir)
+            _move_dispatch_file(req_file, failed_dir, context=context)
             continue
 
         valid_outputs = dispatch_payload["labeling_method"]
@@ -149,13 +142,13 @@ def dispatch_sensor(context: SensorEvaluationContext):
         
         if not request_id or not folder_name:
             _record_failed_request(db_resource, request_id or str(req_file.stem), req_data, "missing_request_id_or_folder")
-            _move_dispatch_file(req_file, failed_dir)
+            _move_dispatch_file(req_file, failed_dir, context=context)
             continue
 
         incoming_folder_path = incoming_dir / folder_name
         if not incoming_folder_path.is_dir():
             _record_failed_request(db_resource, request_id, req_data, "folder_not_in_incoming")
-            _move_dispatch_file(req_file, failed_dir)
+            _move_dispatch_file(req_file, failed_dir, context=context)
             continue
         
         # Check DB to prevent dups
@@ -163,52 +156,18 @@ def dispatch_sensor(context: SensorEvaluationContext):
             existing = conn.execute("SELECT status FROM staging_dispatch_requests WHERE folder_name = ? AND status IN ('running', 'archive_moved')", [folder_name]).fetchone()
             if existing:
                 _record_failed_request(db_resource, request_id, req_data, "folder_dispatch_in_flight")
-                _move_dispatch_file(req_file, failed_dir)
+                _move_dispatch_file(req_file, failed_dir, context=context)
                 continue
 
             existing_req = conn.execute("SELECT status FROM staging_dispatch_requests WHERE request_id = ?", [request_id]).fetchone()
             if existing_req:
                 _record_failed_request(db_resource, request_id, req_data, "duplicate_request_id")
-                _move_dispatch_file(req_file, failed_dir)
+                _move_dispatch_file(req_file, failed_dir, context=context)
                 continue
 
         archive_dir = Path(config.archive_dir)
         archive_dir.mkdir(parents=True, exist_ok=True)
         archive_dest = resolve_unique_directory(archive_dir / folder_name)
-        try:
-            try:
-                os.rename(str(incoming_folder_path), str(archive_dest))
-            except OSError:
-                shutil.move(str(incoming_folder_path), str(archive_dest))
-            context.log.info(f"dispatch archive 이동 완료: {incoming_folder_path} -> {archive_dest}")
-        except Exception as exc:
-            _record_failed_request(db_resource, request_id, req_data, f"archive_move_failed:{exc}")
-            _move_dispatch_file(req_file, failed_dir)
-            continue
-
-        # archive에서 재귀 파일 스캔 (stat() 없이 scandir만 사용하여 NFS 비용 최소화)
-        allowed_exts = {ext.lower() for ext in ALLOWED_EXTENSIONS}
-        files = []
-
-        def _scandir_recursive(base: Path, rel_prefix: str = ""):
-            try:
-                for entry in os.scandir(base):
-                    if entry.is_dir(follow_symlinks=False):
-                        sub_rel = f"{rel_prefix}{entry.name}/" if rel_prefix else f"{entry.name}/"
-                        _scandir_recursive(Path(entry.path), sub_rel)
-                    elif entry.is_file(follow_symlinks=False):
-                        if Path(entry.name).suffix.lower() in allowed_exts:
-                            rel = f"{rel_prefix}{entry.name}" if rel_prefix else entry.name
-                            files.append({"path": entry.path, "size": 0, "rel_path": rel})
-            except OSError:
-                pass
-
-        _scandir_recursive(archive_dest)
-
-        if not files:
-            _record_failed_request(db_resource, request_id, req_data, "no_media_files_in_archive")
-            _move_dispatch_file(req_file, failed_dir)
-            continue
 
         now = datetime.now()
         manifest_id = f"dispatch_{request_id}_{now:%Y%m%d_%H%M%S}"
@@ -217,18 +176,18 @@ def dispatch_sensor(context: SensorEvaluationContext):
         manifest = {
             "manifest_id": manifest_id,
             "generated_at": now.isoformat(),
-            "source_dir": str(archive_dir),
+            "source_dir": str(incoming_dir),
             "source_unit_type": "directory",
-            "source_unit_path": str(archive_dest),
+            "source_unit_path": str(incoming_folder_path),
             "source_unit_name": folder_name,
-            "source_unit_total_file_count": len(files),
-            "file_count": len(files),
+            "source_unit_total_file_count": 0,
+            "file_count": 0,
             "transfer_tool": "dispatch_sensor",
             "archive_requested": True,
             "categories": categories,
             "classes": classes,
             "labeling_method": labeling_method,
-            "files": files,
+            "files": [],
         }
         
         manifest_dir = Path(config.manifest_dir) / "dispatch"
@@ -239,8 +198,13 @@ def dispatch_sensor(context: SensorEvaluationContext):
             manifest_path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
         except Exception as e:
             _record_failed_request(db_resource, request_id, req_data, f"failed_to_write_manifest:{e}")
-            _move_dispatch_file(req_file, failed_dir)
+            _move_dispatch_file(req_file, failed_dir, context=context)
             continue
+
+        context.log.info(
+            "dispatch manifest 생성 완료(archive 이동/파일 인덱싱은 raw_ingest에서 수행): "
+            f"request_id={request_id} folder={folder_name} manifest={manifest_path.name}"
+        )
 
         # ── model_configs에서 기본 파라미터 조회 ──
         model_defaults = {}
@@ -346,7 +310,7 @@ def dispatch_sensor(context: SensorEvaluationContext):
                         ]
                     )
 
-        _move_dispatch_file(req_file, processed_dir)
+        _move_dispatch_file(req_file, processed_dir, context=context)
 
         # RunRequest tags 구성 — 이미지 추출 파라미터는 값이 있을 때만 전달
         # folder_name은 sanitize된 버전 사용 (raw_key가 sanitize_path_component로 정규화되므로)
@@ -398,12 +362,33 @@ def dispatch_sensor(context: SensorEvaluationContext):
             tags=run_tags,
         )
 
-def _move_dispatch_file(file_path: Path, target_dir: Path):
+def _move_dispatch_file(file_path: Path, target_dir: Path, *, context=None) -> bool:
     target_dir.mkdir(parents=True, exist_ok=True)
+    destination = target_dir / file_path.name
+    suffix = 2
+    while destination.exists():
+        destination = target_dir / f"{file_path.stem}__{suffix}{file_path.suffix}"
+        suffix += 1
     try:
-        shutil.move(str(file_path), str(target_dir / file_path.name))
-    except Exception:
-        pass
+        file_path.replace(destination)
+        if context is not None:
+            context.log.info(f"dispatch JSON 이동 완료: {file_path} -> {destination}")
+        return True
+    except Exception as primary_exc:
+        try:
+            shutil.copy2(str(file_path), str(destination))
+            file_path.unlink(missing_ok=True)
+            if context is not None:
+                context.log.info(f"dispatch JSON 복사+삭제 완료: {file_path} -> {destination}")
+            return True
+        except Exception as fallback_exc:
+            if context is not None:
+                context.log.warning(
+                    "dispatch JSON 이동 실패: "
+                    f"{file_path} -> {destination} "
+                    f"(rename_err={primary_exc}, fallback_err={fallback_exc})"
+                )
+            return False
 
 def _record_failed_request(db, request_id: str, data: dict, error_msg: str):
     try:

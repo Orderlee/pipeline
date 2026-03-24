@@ -1,6 +1,6 @@
 """GCP download asset.
 
-GCS -> /nas/incoming 다운로드를 Dagster 자산으로 실행한다.
+GCS -> /nas/incoming/gcp 다운로드 (auto_bootstrap·staging 허용 경로와 일치).
 """
 
 from __future__ import annotations
@@ -14,13 +14,13 @@ from dagster import AssetKey, Field, asset
 from vlm_pipeline.lib.env_utils import as_int
 
 DEFAULT_GCP_SCRIPT_PATH = "/gcp/download_from_gcs_rclone.py"
-DEFAULT_GCP_DOWNLOAD_DIR = "/nas/incoming"
+DEFAULT_GCP_DOWNLOAD_DIR = "/nas/incoming/gcp"
 DEFAULT_GCP_BUCKETS = ["adlibhotel-event-bucket", "kkpolice-event-bucket"]
 
 
 @asset(
     key=AssetKey(["pipeline", "incoming_nas"]),
-    description="GCS 버킷 → /nas/incoming 미디어 다운로드",
+    description="GCS 버킷 → /nas/incoming/gcp 미디어 다운로드",
     group_name="gcp",
     config_schema={
         "script_path": Field(str, default_value=DEFAULT_GCP_SCRIPT_PATH),
