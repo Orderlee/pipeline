@@ -1,6 +1,6 @@
 """Staging 전용 spec flow assets — config_sync(version/삭제 반영), ingest_router(config 미조회), activate_labeling_spec.
 
-명세: 라우터는 pending/ready 분기만, config는 3-5(clip_timestamp_routed)에서 조회.
+명세: 라우터는 pending/ready 분기만, config는 3-5(clip_timestamp)에서 조회.
 definitions_staging에서만 import하여 사용.
 """
 
@@ -130,7 +130,7 @@ def ingest_router(
     context,
     db: DuckDBResource,
 ) -> dict:
-    """Staging: 라우터는 분기만. config는 clip_timestamp_routed(3-5)에서 조회."""
+    """Staging: 라우터는 분기만. config는 clip_timestamp(3-5)에서 조회."""
     db.ensure_schema()
     if not getattr(db, "_table_exists", None):
         return {"routed": 0, "pending_spec": 0, "ready": 0, "failed": 0}

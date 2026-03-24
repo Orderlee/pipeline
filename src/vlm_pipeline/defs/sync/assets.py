@@ -48,7 +48,7 @@ def _resolve_script_path(configured_path: str) -> Path:
         "dry_run": Field(bool, default_value=False),
         "ensure_org_share": Field(bool, default_value=True),
         "share_name": Field(str, default_value=""),
-        "share_update": Field(str, default_value="MANUAL"),
+        "share_update": Field(str, default_value="AUTOMATIC"),
         "timeout_sec": Field(int, default_value=600),
         "tables": Field([str], default_value=[]),
         "trigger_table": Field(str, default_value=""),
@@ -89,7 +89,7 @@ def motherduck_sync(context):
         ),
     )
     share_update = (
-        (cfg.get("share_update") or os.getenv("MOTHERDUCK_SHARE_UPDATE") or "MANUAL")
+        (cfg.get("share_update") or os.getenv("MOTHERDUCK_SHARE_UPDATE") or "AUTOMATIC")
         .strip()
         .upper()
     )

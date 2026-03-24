@@ -10,6 +10,7 @@ from pathlib import Path
 
 from dagster import DefaultSensorStatus, SkipReason, sensor
 
+from vlm_pipeline.defs.ingest.archive import manifest_allows_auto_bootstrap_without_dispatch
 from vlm_pipeline.lib.env_utils import IS_STAGING, bool_env, int_env
 from vlm_pipeline.lib.validator import ALLOWED_EXTENSIONS
 from vlm_pipeline.resources.config import PipelineConfig
@@ -435,11 +436,12 @@ def auto_bootstrap_manifest_sensor(context):
     조건:
       1) 동일 signature가 stable_cycles 이상 연속 관측
       2) 마지막 수정 시각이 stable_age_sec 이상 경과
-    """
-    if IS_STAGING:
-        context.update_cursor("{}")
-        return SkipReason("staging에서는 trigger JSON 전까지 incoming에서 대기합니다")
 
+    staging(IS_STAGING): **incoming/gcp** 트리만 스캔 (트리거 JSON 없이 GCS 경로만).
+
+    production: auto_bootstrap도 **incoming/gcp/** 만 스캔한다.
+    `incoming/tmp_data_2` 같은 직접 드롭 폴더는 `.dispatch/pending` 트리거 JSON 없이는 처리하지 않는다.
+    """
     config = PipelineConfig()
     incoming_dir = Path(config.incoming_dir)
     pending_dir = Path(config.manifest_dir) / "pending"
@@ -501,6 +503,21 @@ def auto_bootstrap_manifest_sensor(context):
             max_top_entries_per_tick=discovery_max_top_entries,
             excluded_top_level_names=dispatch_requested_folders,
         )
+        if IS_STAGING:
+            discovered_units = [
+                u
+                for u in discovered_units
+                if _is_gcp_unit_path(str(u.get("unit_path", "")), incoming_dir)
+            ]
+        else:
+            discovered_units = [
+                u
+                for u in discovered_units
+                if manifest_allows_auto_bootstrap_without_dispatch(
+                    {"source_unit_path": str(u.get("unit_path", ""))},
+                    config=config,
+                )
+            ]
         discovery_elapsed_sec = time.perf_counter() - discovery_started
         
         # 파일 메타 정보 읽기 스캔에는 남은 예산을 사용합니다
@@ -681,7 +698,10 @@ def auto_bootstrap_manifest_sensor(context):
                 "source_unit_chunk_count": chunk_count,
                 "stable_signature": signature,
                 "transfer_tool": "auto_bootstrap_sensor",
-                "archive_requested": False if IS_STAGING else True,
+                "archive_requested": manifest_allows_auto_bootstrap_without_dispatch(
+                    {"source_unit_path": manifest_unit_path},
+                    config=config,
+                ),
                 "file_count": len(chunk_files),
                 "files": [
                     {

@@ -167,108 +167,89 @@ def cleanup_residual_source_file(context, source_path: str) -> None:
         context.log.warning(f"incoming 잔존 정리 실패(수동 확인 필요): {src} ({exc})")
 
 
-def stage_source_unit_in_archive_pending(
-    context,
+def manifest_source_under_gcp(manifest: dict, config: PipelineConfig | None = None) -> bool:
+    """source_unit_path가 <incoming_dir>/gcp 하위인지 (GCS 다운로드 표준 경로)."""
+    raw = str(manifest.get("source_unit_path", "")).strip()
+    if not raw:
+        return False
+    if config is None:
+        from vlm_pipeline.resources.config import PipelineConfig
+
+        config = PipelineConfig()
+    incoming = Path(str(config.incoming_dir).strip()).resolve()
+    gcp_root = (incoming / "gcp").resolve()
+    try:
+        Path(raw).resolve().relative_to(gcp_root)
+        return True
+    except Exception:
+        return False
+
+
+def manifest_allows_auto_bootstrap_without_dispatch(
+    manifest: dict, config: PipelineConfig | None = None
+) -> bool:
+    """dispatch 트리거 JSON 없이 auto_bootstrap·ingest 허용: production/staging 모두 gcp 트리만."""
+    return manifest_source_under_gcp(manifest, config)
+
+
+def _staging_transfer_allows_archive(
+    manifest: dict,
+    transfer_tool: str,
     *,
-    source_unit_type: str,
-    source_unit_path: str,
-    source_unit_name: str,
-    archive_pending_dir: str,
-) -> tuple[Path, str]:
-    """source unit을 archive_pending으로 옮기고, 최종 경로/이름을 반환한다."""
-    source_path = Path(str(source_unit_path).strip())
-    archive_pending_root = Path(str(archive_pending_dir).strip())
-    archive_pending_root.mkdir(parents=True, exist_ok=True)
-
-    normalized_unit_name = str(source_unit_name or source_path.name).strip() or source_path.name
-    base_dest = archive_pending_root / normalized_unit_name
-
-    try:
-        resolved_source = source_path.resolve()
-        resolved_pending_root = archive_pending_root.resolve()
-        resolved_source.relative_to(resolved_pending_root)
-        final_path = source_path
-    except Exception:
-        if not source_path.exists():
-            existing = (
-                find_existing_archive_directory(base_dest)
-                if str(source_unit_type).strip().lower() == "directory"
-                else find_existing_archive_candidate(base_dest)
-            )
-            if existing is None:
-                raise FileNotFoundError(source_path)
-            final_path = existing
-        else:
-            if str(source_unit_type).strip().lower() == "directory":
-                final_path = resolve_unique_directory(base_dest)
-            else:
-                final_path = resolve_unique_file(base_dest)
-            final_path.parent.mkdir(parents=True, exist_ok=True)
-            try:
-                os.rename(str(source_path), str(final_path))
-            except OSError:
-                shutil.move(str(source_path), str(final_path))
-            context.log.info(
-                f"staging auto_bootstrap 선이동: {source_path} -> {final_path}"
-            )
-
-    try:
-        final_unit_name = str(final_path.resolve().relative_to(archive_pending_root.resolve()))
-    except Exception:
-        final_unit_name = final_path.name
-    return final_path, final_unit_name
+    config: PipelineConfig | None,
+) -> bool:
+    """staging에서 archive+ingest 허용 transfer: dispatch·retry·또는 incoming/gcp auto_bootstrap."""
+    if transfer_tool in {"dispatch_sensor", "ingest_retry_manifest"}:
+        return True
+    if transfer_tool == "auto_bootstrap_sensor" and manifest_source_under_gcp(manifest, config):
+        return True
+    return False
 
 
 def should_archive_manifest(manifest: dict, *, config: PipelineConfig | None = None) -> bool:
     """manifest 정책에 따라 archive 이동 여부를 결정한다.
 
-    staging에서는 dispatch JSON 기반 요청(및 그 재시도 manifest)만
-    archive -> MinIO 업로드 흐름을 허용한다.
-    legacy manifest 호환을 위해 archive_requested가 없으면 source_unit_path가
-    archive_pending 하위인지와 transfer_tool을 함께 fallback 판단한다.
+    staging: dispatch·ingest_retry 또는 **incoming/gcp** auto_bootstrap만 (트리거 JSON 없이 gcp만).
+
+    production: dispatch 트리거 JSON이 없는 auto_bootstrap은 **incoming/gcp/** 경로만 허용.
+    `incoming/tmp_data_2` 같은 직접 드롭 폴더는 dispatch JSON 없이 archive 이동하지 않는다.
+    legacy manifest 호환을 위해 archive_requested가 없으면 transfer_tool 기준으로 fallback 판단한다.
     """
     transfer_tool = str(manifest.get("transfer_tool", "")).strip().lower()
-    staging_archive_allowed_tools = {"dispatch_sensor", "ingest_retry_manifest"}
+
+    def _production_auto_bootstrap_gate() -> bool:
+        if transfer_tool != "auto_bootstrap_sensor":
+            return True
+        return manifest_allows_auto_bootstrap_without_dispatch(manifest, config)
 
     archive_requested = manifest.get("archive_requested")
     if archive_requested is not None:
         if isinstance(archive_requested, str):
             normalized = archive_requested.strip().lower()
             if normalized in {"1", "true", "t", "yes", "y", "on"}:
-                if IS_STAGING and transfer_tool not in staging_archive_allowed_tools:
+                if IS_STAGING and not _staging_transfer_allows_archive(manifest, transfer_tool, config=config):
+                    return False
+                if not IS_STAGING and not _production_auto_bootstrap_gate():
                     return False
                 return True
             if normalized in {"0", "false", "f", "no", "n", "off", ""}:
                 return False
         if not bool(archive_requested):
             return False
-        if IS_STAGING and transfer_tool not in staging_archive_allowed_tools:
+        if IS_STAGING and not _staging_transfer_allows_archive(manifest, transfer_tool, config=config):
+            return False
+        if not IS_STAGING and not _production_auto_bootstrap_gate():
             return False
         return True
 
     if not IS_STAGING:
+        if not _production_auto_bootstrap_gate():
+            return False
         return True
 
-    source_unit_path_raw = str(manifest.get("source_unit_path", "")).strip()
-    if source_unit_path_raw:
-        try:
-            if config is not None:
-                archive_pending_dir_raw = str(config.archive_pending_dir).strip()
-            else:
-                archive_pending_dir_raw = str(os.getenv("ARCHIVE_PENDING_DIR", "")).strip()
-            if not archive_pending_dir_raw:
-                from vlm_pipeline.resources.config import PipelineConfig
-
-                config = PipelineConfig()
-                archive_pending_dir_raw = str(config.archive_pending_dir).strip()
-            resolved_source = Path(source_unit_path_raw).resolve()
-            resolved_archive_pending = Path(archive_pending_dir_raw).resolve()
-            resolved_source.relative_to(resolved_archive_pending)
-            return transfer_tool in staging_archive_allowed_tools
-        except Exception:
-            pass
-
-    return transfer_tool == "dispatch_sensor"
+    if transfer_tool == "dispatch_sensor":
+        return True
+    return transfer_tool == "auto_bootstrap_sensor" and manifest_source_under_gcp(manifest, config)
 
 
 def prepare_manifest_for_archive_upload(
@@ -277,7 +258,7 @@ def prepare_manifest_for_archive_upload(
     *,
     archive_dir: str,
 ) -> tuple[dict, Path | None, bool]:
-    """archive_pending source unit을 먼저 archive로 옮기고 manifest 경로를 재작성한다.
+    """source unit을 archive 기준 경로로 맞추고 manifest 경로를 재작성한다.
 
     dispatch/staging archive_requested manifest는 archive 경로에서 MinIO 업로드되게 만든다.
     """

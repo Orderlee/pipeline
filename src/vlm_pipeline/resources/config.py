@@ -19,7 +19,6 @@ class PipelineConfig(BaseSettings):
     # NAS 마운트 (컨테이너 내부 경로)
     incoming_dir: str = "/nas/incoming"
     archive_dir: str = "/nas/archive"
-    archive_pending_dir: str = "/nas/staging/archive_pending"
     manifest_dir: str = "/nas/incoming/.manifests"
     scratch_dir: Optional[str] = None
 

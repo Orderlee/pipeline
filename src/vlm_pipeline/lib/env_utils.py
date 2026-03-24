@@ -8,6 +8,9 @@ from __future__ import annotations
 
 import os
 import re
+from collections.abc import Mapping
+
+from vlm_pipeline.lib.sanitizer import sanitize_path_component
 
 
 def as_int(value: object, default: int) -> int:
@@ -62,6 +65,35 @@ def default_duckdb_path() -> str:
     )
 
 IS_STAGING = bool_env("IS_STAGING", False)
+
+
+def dispatch_folder_for_source_unit(tags: Mapping[str, str] | None) -> str | None:
+    """staging dispatch run 태그에서 `raw_files.source_unit_name` 조회용 문자열.
+
+    manifest의 원본 폴더명(`folder_name_original`)이 DB에 그대로 저장되므로,
+    sanitize된 `folder_name`보다 이쪽을 우선한다.
+    """
+    if not tags:
+        return None
+    s = str(tags.get("folder_name_original") or tags.get("folder_name") or "").strip()
+    return s or None
+
+
+def dispatch_raw_key_prefix_folder(tags: Mapping[str, str] | None) -> str | None:
+    """staging dispatch run 태그에서 `raw_key LIKE '<prefix>/%'` 용 첫 경로 세그먼트.
+
+    INGEST의 `raw_key`는 `sanitize_path_component` 기준이므로, 태그의 sanitize된
+    `folder_name`을 우선하고 없으면 원본을 동일 규칙으로 정규화한다.
+    """
+    if not tags:
+        return None
+    direct = str(tags.get("folder_name") or "").strip()
+    if direct:
+        return direct
+    orig = str(tags.get("folder_name_original") or "").strip()
+    if not orig:
+        return None
+    return sanitize_path_component(orig) or None
 
 
 # ── Dispatch outputs 분기 유틸 ──

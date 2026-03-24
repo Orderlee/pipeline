@@ -123,6 +123,40 @@ def _bootstrap_database_from_local(
         con.close()
 
 
+def _fetch_share_update_mode(con: duckdb.DuckDBPyConnection, share_name: str) -> str | None:
+    """OWNED_SHARES / LIST SHARES에서 공유 UPDATE 모드(MANUAL|AUTOMATIC) 조회. 없으면 None."""
+    try:
+        row = con.execute(
+            """
+            SELECT "UPDATE"
+            FROM MD_INFORMATION_SCHEMA.OWNED_SHARES
+            WHERE lower(name) = lower(?)
+            LIMIT 1
+            """,
+            [share_name],
+        ).fetchone()
+        if row and row[0] is not None:
+            return str(row[0]).strip().upper()
+    except (duckdb.Error, TypeError, ValueError):
+        pass
+
+    try:
+        rel = con.execute("LIST SHARES")
+        desc = rel.description or ()
+        colnames = [c[0] for c in desc]
+        for tup in rel.fetchall():
+            rowmap = {colnames[i]: tup[i] for i in range(len(colnames))}
+            n = rowmap.get("name") or rowmap.get("NAME")
+            if n is not None and str(n).lower() == share_name.lower():
+                u = rowmap.get("update") or rowmap.get("UPDATE")
+                if u is not None:
+                    return str(u).strip().upper()
+    except (duckdb.Error, TypeError, ValueError, IndexError):
+        pass
+
+    return None
+
+
 def _ensure_org_share(
     token: str,
     database: str,
@@ -132,28 +166,69 @@ def _ensure_org_share(
 ) -> None:
     """
     MotherDuck 데이터베이스 공유를 Organization + Discoverable로 보장.
+
+    기존 공유가 있으면 CREATE SHARE IF NOT EXISTS는 UPDATE 옵션을 바꾸지 않는다.
+    MD_INFORMATION_SCHEMA.OWNED_SHARES로 현재 UPDATE 모드를 읽고, 목표와 다를 때만
+    CREATE OR REPLACE SHARE를 실행한다(이 경우 MotherDuck이 새 share URL을 줄 수 있음).
     """
-    create_share_sql = (
-        f"CREATE SHARE IF NOT EXISTS {quote_identifier(share_name)} "
-        f"FROM {quote_identifier(database)} "
-        f"(ACCESS ORGANIZATION, VISIBILITY DISCOVERABLE, UPDATE {share_update_mode})"
+    desired = str(share_update_mode or "AUTOMATIC").strip().upper()
+    if desired not in {"MANUAL", "AUTOMATIC"}:
+        desired = "AUTOMATIC"
+
+    share_ident = quote_identifier(share_name)
+    db_ident = quote_identifier(database)
+    options = (
+        "ACCESS ORGANIZATION, VISIBILITY DISCOVERABLE, "
+        f"UPDATE {desired}"
     )
 
     if dry_run:
         print(
             f"[DRY-RUN] Would ensure organization share: "
-            f"db='{database}' share='{share_name}'"
+            f"db='{database}' share='{share_name}' UPDATE={desired}"
         )
-        print(f"[DRY-RUN] SQL: {create_share_sql}")
+        print(
+            f"[DRY-RUN] SQL (new share): CREATE SHARE IF NOT EXISTS {share_ident} "
+            f"FROM {db_ident} ({options})"
+        )
+        print(
+            f"[DRY-RUN] SQL (mode mismatch): CREATE OR REPLACE SHARE {share_ident} "
+            f"FROM {db_ident} ({options})"
+        )
         return
 
     con = connect_motherduck(database, token)
     try:
-        row = con.execute(create_share_sql).fetchone()
+        current = _fetch_share_update_mode(con, share_name)
+        if current == desired:
+            print(
+                f"[SHARE] Share '{share_name}' already has UPDATE {desired}; "
+                "no SQL change."
+            )
+            return
+
+        if current is None:
+            sql = (
+                f"CREATE SHARE IF NOT EXISTS {share_ident} FROM {db_ident} ({options})"
+            )
+            action = "created_or_if_not_exists"
+        else:
+            print(
+                "[SHARE] Share UPDATE mode mismatch "
+                f"(current={current}, desired={desired}). "
+                "Running CREATE OR REPLACE SHARE — "
+                "MotherDuck may return a new share URL; "
+                "consumers may need to re-attach.",
+                file=sys.stderr,
+            )
+            sql = f"CREATE OR REPLACE SHARE {share_ident} FROM {db_ident} ({options})"
+            action = "replaced"
+
+        row = con.execute(sql).fetchone()
         share_url = row[0] if row and len(row) > 0 else None
         print(
-            f"[SHARE] Ensured organization share: db='{database}' "
-            f"share='{share_name}'"
+            f"[SHARE] Ensured organization share ({action}): db='{database}' "
+            f"share='{share_name}' UPDATE={desired}"
         )
         if share_url:
             print(f"[SHARE] URL: {share_url}")
@@ -290,8 +365,8 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--share-update",
         choices=["MANUAL", "AUTOMATIC"],
-        default="MANUAL",
-        help="MotherDuck share update mode (default: MANUAL)",
+        default="AUTOMATIC",
+        help="MotherDuck share update mode (default: AUTOMATIC)",
     )
     parser.add_argument(
         "--tables",
