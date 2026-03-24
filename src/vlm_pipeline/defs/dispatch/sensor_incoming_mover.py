@@ -1,7 +1,6 @@
-"""Dispatch JSON 존재 여부만 점검하는 staging sensor.
+"""Dispatch JSON 존재 여부만 점검하는 센서.
 
-archive_pending 단계는 사용하지 않고, dispatch_sensor가 incoming 폴더를
-직접 읽도록 유지한다.
+dispatch_sensor가 incoming 폴더를 직접 읽도록 유지한다.
 """
 
 import json
@@ -9,7 +8,6 @@ from pathlib import Path
 
 from dagster import SensorEvaluationContext, SkipReason, sensor
 
-from vlm_pipeline.lib.env_utils import IS_STAGING
 from vlm_pipeline.resources.config import PipelineConfig
 
 
@@ -35,14 +33,11 @@ def _load_requested_folders(dispatch_pending_dir: Path) -> set[str]:
 
 @sensor(
     name="incoming_to_pending_sensor",
-    description="dispatch JSON 존재 여부만 점검하고 archive_pending 단계는 건너뜀",
+    description="dispatch JSON 존재 여부만 점검하고 dispatch_sensor가 incoming을 직접 처리",
     minimum_interval_seconds=15,
 )
 def incoming_to_pending_sensor(context: SensorEvaluationContext):
     """dispatch JSON은 dispatch_sensor가 incoming을 직접 읽도록 남겨둔다."""
-    if not IS_STAGING:
-        return
-
     config = PipelineConfig()
     incoming_dir = Path(config.incoming_dir)
     dispatch_pending_dir = incoming_dir / ".dispatch" / "pending"
@@ -70,6 +65,6 @@ def incoming_to_pending_sensor(context: SensorEvaluationContext):
         return
 
     context.log.info(
-        "dispatch JSON 감지: archive_pending 단계 없이 incoming 직접 처리 "
+        "dispatch JSON 감지: incoming 직접 처리 "
         f"({', '.join(matched)})"
     )
