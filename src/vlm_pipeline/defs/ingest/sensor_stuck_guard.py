@@ -26,7 +26,7 @@ def stuck_run_guard_sensor(context):
     max_requeues = int_env("STUCK_RUN_GUARD_MAX_REQUEUES_PER_TICK", 1, 1)
     target_jobs_raw = os.getenv(
         "STUCK_RUN_GUARD_TARGET_JOBS",
-        "mvp_stage_job,ingest_job,label_job,auto_labeling_job,process_build_job,video_frame_extract_job,motherduck_sync_job",
+        "mvp_stage_job,ingest_job,dispatch_stage_job,motherduck_sync_job",
     )
     target_jobs = {item.strip() for item in target_jobs_raw.split(",") if item.strip()}
     now_ts = time.time()

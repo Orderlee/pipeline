@@ -6,7 +6,7 @@ IS_STAGING 분기 없이 staging 전용 asset/job/sensor만 등록.
 파이프라인 흐름 (staging):
   incoming → dispatch_sensor → raw_ingest
     → spec_resolve_sensor
-    → clip_timestamp_routed → clip_captioning_routed → clip_to_frame_routed
+    → clip_timestamp → clip_captioning → clip_to_frame (run 태그별 routed 분기)
     → bbox_labeling (YOLO) → activate_labeling_spec
 
 운영과 동일한 NAS incoming 보조:
@@ -28,13 +28,13 @@ from vlm_pipeline.defs.ingest.sensor import (
     incoming_manifest_sensor,
     stuck_run_guard_sensor,
 )
-from vlm_pipeline.defs.label.assets import clip_timestamp_routed
+from vlm_pipeline.defs.label.assets import clip_timestamp
 from vlm_pipeline.defs.label.manual_import import manual_label_import
 from vlm_pipeline.defs.dispatch.sensor import dispatch_sensor
 from vlm_pipeline.defs.dispatch.sensor_incoming_mover import incoming_to_pending_sensor
 from vlm_pipeline.defs.process.assets import (
-    clip_captioning_routed,
-    clip_to_frame_routed,
+    clip_captioning,
+    clip_to_frame,
     raw_video_to_frame,
 )
 from vlm_pipeline.defs.spec.assets import labeling_spec_ingest, pending_ingest
@@ -45,7 +45,7 @@ from vlm_pipeline.defs.spec.staging_assets import (
 )
 from vlm_pipeline.defs.spec.staging_sensor import spec_resolve_sensor
 from vlm_pipeline.defs.yolo.assets import bbox_labeling
-from vlm_pipeline.defs.yolo.staging_assets import staging_yolo_image_detection as yolo_image_detection
+from vlm_pipeline.defs.yolo.staging_assets import staging_yolo_image_detection
 from vlm_pipeline.resources.duckdb import DuckDBResource
 from vlm_pipeline.resources.minio import MinIOResource
 
@@ -56,15 +56,15 @@ assets = [
     gcs_download_to_incoming,
     raw_video_to_frame,
     manual_label_import,
-    yolo_image_detection,
+    staging_yolo_image_detection,
     labeling_spec_ingest,
     config_sync,
     ingest_router,
     pending_ingest,
     activate_labeling_spec,
-    clip_timestamp_routed,
-    clip_captioning_routed,
-    clip_to_frame_routed,
+    clip_timestamp,
+    clip_captioning,
+    clip_to_frame,
     bbox_labeling,
 ]
 
@@ -88,11 +88,11 @@ dispatch_stage_job = define_asset_job(
     "dispatch_stage_job",
     selection=[
         raw_ingest,
-        clip_timestamp_routed,
-        clip_captioning_routed,
-        clip_to_frame_routed,
+        clip_timestamp,
+        clip_captioning,
+        clip_to_frame,
         raw_video_to_frame,
-        yolo_image_detection,
+        staging_yolo_image_detection,
     ],
     tags={"duckdb_writer": "true"},
     description="Staging dispatch — run_mode에 따라 처리 분기",
@@ -101,9 +101,9 @@ dispatch_stage_job = define_asset_job(
 auto_labeling_routed_job = define_asset_job(
     "auto_labeling_routed_job",
     selection=[
-        clip_timestamp_routed,
-        clip_captioning_routed,
-        clip_to_frame_routed,
+        clip_timestamp,
+        clip_captioning,
+        clip_to_frame,
         bbox_labeling,
         activate_labeling_spec,
     ],
@@ -113,7 +113,7 @@ auto_labeling_routed_job = define_asset_job(
 
 yolo_detection_job = define_asset_job(
     "yolo_detection_job",
-    selection=[yolo_image_detection],
+    selection=[staging_yolo_image_detection],
     tags={"duckdb_writer": "true"},
     description="YOLO-World-L object detection (processed_clip_frame → image_labels)",
 )

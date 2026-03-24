@@ -23,6 +23,8 @@ CREATE TABLE IF NOT EXISTS raw_files (
     transfer_tool   VARCHAR DEFAULT 'manual',
     ingest_status   VARCHAR DEFAULT 'pending',
     error_message   TEXT,
+    spec_id         VARCHAR,
+    source_unit_name VARCHAR,
     created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
@@ -53,7 +55,20 @@ CREATE TABLE IF NOT EXISTS video_metadata (
     auto_label_status    VARCHAR DEFAULT 'pending',
     auto_label_error     TEXT,
     auto_label_key       VARCHAR,
-    auto_labeled_at      TIMESTAMP
+    auto_labeled_at      TIMESTAMP,
+    timestamp_status     VARCHAR DEFAULT 'pending',
+    timestamp_error      TEXT,
+    timestamp_label_key  VARCHAR,
+    timestamp_completed_at TIMESTAMP,
+    caption_status       VARCHAR DEFAULT 'pending',
+    caption_error        TEXT,
+    caption_completed_at TIMESTAMP,
+    frame_status         VARCHAR DEFAULT 'pending',
+    frame_error          TEXT,
+    frame_completed_at   TIMESTAMP,
+    bbox_status          VARCHAR DEFAULT 'pending',
+    bbox_error           TEXT,
+    bbox_completed_at    TIMESTAMP
 );
 
 -- ============================================================
@@ -182,14 +197,17 @@ CREATE TABLE IF NOT EXISTS image_labels (
 );
 
 -- ============================================================
--- 9. staging_dispatch_requests: Staging 전용 Dispatch 요청 추적
---    trigger JSON → archive_pending → archive 이동 + 파이프라인 실행
+-- 9. staging_dispatch_requests: Dispatch 요청 추적 (dispatch_sensor DDL과 동일)
+--    trigger JSON → archive 이동 + 파이프라인 실행
 -- ============================================================
 CREATE TABLE IF NOT EXISTS staging_dispatch_requests (
     request_id           VARCHAR PRIMARY KEY,
     folder_name          VARCHAR,
     run_mode             VARCHAR,
     outputs              VARCHAR,          -- 쉼표 구분: bbox, timestamp, captioning
+    labeling_method      VARCHAR,
+    categories           VARCHAR,
+    classes              VARCHAR,
     image_profile        VARCHAR,
     status               VARCHAR DEFAULT 'pending',
     archive_pending_path VARCHAR,
@@ -233,11 +251,11 @@ CREATE TABLE IF NOT EXISTS staging_model_configs (
 
 -- ============================================================
 -- 11. staging_pipeline_runs: Dispatch 요청별 파이프라인 단계 진행 추적
---     archive_pending → archive 이동 → 모델 실행 → 완료 전 과정 기록
+--     archive 이동 → 모델 실행 → 완료 전 과정 기록
 -- ============================================================
 CREATE TABLE IF NOT EXISTS staging_pipeline_runs (
     run_id               VARCHAR PRIMARY KEY,
-    request_id           VARCHAR REFERENCES staging_dispatch_requests(request_id),
+    request_id           VARCHAR,
     folder_name          VARCHAR,
     -- 단계 상태
     step_name            VARCHAR NOT NULL,         -- archive_move | frame_extract | yolo_detect | gemini_timestamp | gemini_caption | build_dataset
@@ -260,9 +278,8 @@ CREATE TABLE IF NOT EXISTS staging_pipeline_runs (
 );
 
 -- ============================================================
--- Staging spec flow (auto_labeling_unified_spec): IS_STAGING 전용
--- raw_files.spec_id, source_unit_name / video_metadata stage columns
--- are added via duckdb_base ALTER for backward compatibility.
+-- Spec flow (labeling_specs 등): greenfield는 위 CREATE에 컬럼 포함.
+-- 기존 DB는 duckdb_base.ensure_schema() ALTER로 동일 스키마로 수렴.
 -- ingest_status 허용값: pending, uploading, completed, failed, skipped,
 --   pending_spec, ready_for_labeling
 -- ============================================================
