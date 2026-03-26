@@ -16,6 +16,7 @@ from vlm_pipeline.lib.file_loader import load_image_once
 from vlm_pipeline.lib.sanitizer import sanitize_filename, sanitize_path_component
 from vlm_pipeline.lib.validator import detect_media_type, validate_incoming
 from vlm_pipeline.lib.video_loader import load_video_once
+from vlm_pipeline.lib.video_reencode import STANDARD_PRESET_NAME, needs_reencode, reencode_to_tmp
 from vlm_pipeline.resources.duckdb import DuckDBResource
 from vlm_pipeline.resources.minio import MinIOResource
 
@@ -202,6 +203,7 @@ def normalize_and_archive(
     archive_dir: str,
     ingest_rejections: list[dict] | None = None,
     retry_candidates: list[dict] | None = None,
+    defer_video_env_classification: bool = False,
 ) -> list[dict]:
     """1-pass 로딩 → checksum → verify → image/video_metadata → MinIO 업로드.
 
@@ -216,6 +218,15 @@ def normalize_and_archive(
     except ValueError:
         max_workers = 4
     max_workers = max(1, min(16, max_workers))
+    try:
+        reencode_workers = max(1, min(16, int(os.getenv("INGEST_REENCODE_WORKERS", "3"))))
+        reencode_threads = max(1, int(os.getenv("INGEST_REENCODE_THREADS", "4")))
+    except ValueError:
+        reencode_workers = 3
+        reencode_threads = 4
+    candidate_records = [rec for rec in records if rec.get("status") == "registered"]
+    total_candidates = len(candidate_records)
+    processed_candidates = 0
 
     def _close_video_stream(meta: dict) -> None:
         stream = meta.get("file_stream")
@@ -262,7 +273,16 @@ def normalize_and_archive(
             else:
                 # 대용량 파일 복사로 인한 로컬 디스크/메모리 I/O 병목 해소
                 # boto3의 멀티파트 네이티브 병렬 읽기(upload_file) 활용을 위해 Spooled stream을 비활성
-                meta = load_video_once(filepath, include_file_stream=False)
+                meta = load_video_once(
+                    filepath,
+                    include_file_stream=False,
+                    include_env_metadata=not defer_video_env_classification,
+                )
+                reencode_required, reencode_reason = needs_reencode(meta["video_metadata"], Path(filepath))
+                meta["video_metadata"]["reencode_required"] = reencode_required
+                meta["video_metadata"]["reencode_reason"] = reencode_reason
+                if reencode_required:
+                    context.log.info(f"reencode_required: {filepath} reason={reencode_reason}")
 
             stage_hint = "db"
             # 정확 중복 검출
@@ -317,11 +337,16 @@ def normalize_and_archive(
             upload_tasks.append(
                 {
                     "filepath": filepath,
+                    "source_path": filepath,
                     "asset_id": asset_id,
                     "media_type": media_type,
                     "raw_key": raw_key,
                     "db_record": db_record,
                     "meta": meta,
+                    "reencode_required": (
+                        meta["video_metadata"].get("reencode_required", False) if media_type == "video" else False
+                    ),
+                    "reencode_threads": reencode_threads,
                 }
             )
         except Exception as e:
@@ -364,6 +389,16 @@ def normalize_and_archive(
                 retryable=is_transient,
                 error_code="duckdb_lock_conflict" if is_transient else None,
             )
+        finally:
+            processed_candidates += 1
+            context.log.info(
+                "video_meta_extract progress="
+                f"{processed_candidates}/{total_candidates} "
+                f"media_type={media_type} path={filepath}"
+            )
+
+    context.log.info(f"upload_prepare:done tasks={len(upload_tasks)}")
+    context.log.info("upload_execute:start")
 
     def _upload_single(task: dict[str, Any]) -> None:
         media_type = task["media_type"]
@@ -385,18 +420,32 @@ def normalize_and_archive(
         # SpooledTemporaryFile stream 대신 NAS에 위치한 원본 파일 경로를 직접 넘겨 병렬 업로드 최적화
         minio.upload_file("vlm-raw", raw_key, filepath, content_type=content_type)
 
+    has_reencode_tasks = any(t.get("reencode_required") for t in upload_tasks)
+    effective_workers = reencode_workers if has_reencode_tasks else max_workers
+
     # 2) MinIO 업로드 (병렬)
     def _execute_upload(task: dict) -> dict:
         """단일 업로드 실행 후 결과 dict 반환."""
+        tmp_path = None
         try:
+            if task["media_type"] == "video" and task.get("reencode_required"):
+                tmp_path = reencode_to_tmp(Path(task["filepath"]), threads=task.get("reencode_threads", 4))
+                task["filepath"] = str(tmp_path)
+                task["reencode_info"] = {"reencode_preset": STANDARD_PRESET_NAME}
             _upload_single(task)
             return {"success": True, "task": task}
         except Exception as exc:
             return {"success": False, "task": task, "error": exc}
         finally:
             _close_video_stream(task["meta"])
+            if tmp_path is not None:
+                tmp_path.unlink(missing_ok=True)
 
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+    completed_uploads = 0
+    successful_uploads = 0
+    first_upload_logged = False
+
+    with ThreadPoolExecutor(max_workers=effective_workers) as executor:
         futures = {executor.submit(_execute_upload, t): t for t in upload_tasks}
         for future in as_completed(futures):
             result = future.result()
@@ -409,10 +458,23 @@ def normalize_and_archive(
 
             if result["success"]:
                 context.log.info(f"MinIO 업로드 완료: vlm-raw/{raw_key}")
+                successful_uploads += 1
+                if not first_upload_logged:
+                    context.log.info(f"first_upload_complete raw_key={raw_key}")
+                    first_upload_logged = True
+                reencode_info = task.get("reencode_info")
+                if reencode_info and media_type == "video":
+                    try:
+                        db.update_video_reencode_applied(
+                            asset_id,
+                            reencode_preset=reencode_info.get("reencode_preset", STANDARD_PRESET_NAME),
+                        )
+                    except Exception as re_exc:  # noqa: BLE001
+                        context.log.warning(f"reencode_applied 업데이트 실패: {asset_id}: {re_exc}")
                 uploaded.append(
                     {
                         "asset_id": asset_id,
-                        "source_path": filepath,
+                        "source_path": task.get("source_path") or filepath,
                         "raw_key": raw_key,
                         "media_type": media_type,
                         "checksum": meta["checksum"],
@@ -427,6 +489,13 @@ def normalize_and_archive(
                         rec["status"] = "failed"
                         break
                 db.update_raw_file_status(asset_id, "failed", str(exc))
+
+            completed_uploads += 1
+            context.log.info(
+                "upload progress="
+                f"{completed_uploads}/{len(upload_tasks)} "
+                f"success={successful_uploads}"
+            )
 
     return uploaded
 

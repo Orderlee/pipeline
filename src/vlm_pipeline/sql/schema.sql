@@ -68,7 +68,15 @@ CREATE TABLE IF NOT EXISTS video_metadata (
     frame_completed_at   TIMESTAMP,
     bbox_status          VARCHAR DEFAULT 'pending',
     bbox_error           TEXT,
-    bbox_completed_at    TIMESTAMP
+    bbox_completed_at    TIMESTAMP,
+    original_codec        VARCHAR,
+    original_profile      VARCHAR,
+    original_has_b_frames BOOLEAN,
+    original_level_int    INTEGER,
+    reencode_required     BOOLEAN DEFAULT FALSE,
+    reencode_reason       VARCHAR,
+    reencode_applied      BOOLEAN DEFAULT FALSE,
+    reencode_preset       VARCHAR
 );
 
 -- ============================================================
@@ -144,9 +152,11 @@ CREATE TABLE IF NOT EXISTS image_metadata (
     bit_depth        INTEGER DEFAULT 8,
     has_alpha        BOOLEAN DEFAULT FALSE,
     orientation      INTEGER DEFAULT 1,
-    caption_text     TEXT,
     image_caption_text TEXT,
     image_caption_score DOUBLE,
+    image_caption_bucket VARCHAR,
+    image_caption_key VARCHAR,
+    image_caption_generated_at TIMESTAMP,
     extracted_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     UNIQUE (image_bucket, image_key),
     UNIQUE (source_asset_id, source_clip_id, image_role, frame_index)

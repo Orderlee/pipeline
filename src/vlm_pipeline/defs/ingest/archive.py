@@ -147,6 +147,41 @@ def cleanup_empty_tree(root: Path, max_depth: int = 5) -> None:
     _cleanup_recursive(root, 0)
 
 
+def cleanup_empty_parent_chain(start: Path | None, *, stop_at: Path | None = None, max_levels: int = 8) -> None:
+    """비어 있는 부모 디렉토리를 상향식으로 정리한다.
+
+    `stop_at` 디렉토리는 경계로 취급하고 삭제하지 않는다.
+    """
+    current = start
+    boundary: Path | None = None
+    if stop_at is not None:
+        try:
+            boundary = stop_at.resolve()
+        except OSError:
+            boundary = stop_at
+
+    for _ in range(max_levels):
+        if current is None:
+            return
+        try:
+            resolved_current = current.resolve()
+        except OSError:
+            resolved_current = current
+
+        if boundary is not None and resolved_current == boundary:
+            return
+
+        try:
+            current.rmdir()
+            current = current.parent
+            continue
+        except FileNotFoundError:
+            current = current.parent
+            continue
+        except OSError:
+            return
+
+
 def cleanup_residual_source_file(context, source_path: str) -> None:
     """archive 완료 후 source 파일이 남아있으면 정리한다."""
     src = Path(source_path)
@@ -247,9 +282,7 @@ def should_archive_manifest(manifest: dict, *, config: PipelineConfig | None = N
             return False
         return True
 
-    if transfer_tool == "dispatch_sensor":
-        return True
-    return transfer_tool == "auto_bootstrap_sensor" and manifest_source_under_gcp(manifest, config)
+    return _staging_transfer_allows_archive(manifest, transfer_tool, config=config)
 
 
 def prepare_manifest_for_archive_upload(
@@ -265,6 +298,7 @@ def prepare_manifest_for_archive_upload(
     source_unit_type = str(manifest.get("source_unit_type", "")).strip().lower()
     source_unit_name = str(manifest.get("source_unit_name", "")).strip()
     source_unit_path_raw = str(manifest.get("source_unit_path", "")).strip()
+    source_dir_raw = str(manifest.get("source_dir", "")).strip()
     if source_unit_type != "directory" or not source_unit_name or not source_unit_path_raw:
         return manifest, None, False
 
@@ -324,6 +358,10 @@ def prepare_manifest_for_archive_upload(
 
     final_archive_unit_dir = resolve_unique_directory(base_archive_unit_dir)
     shutil.move(str(source_unit_path), str(final_archive_unit_dir))
+    cleanup_empty_parent_chain(
+        source_unit_path.parent,
+        stop_at=Path(source_dir_raw) if source_dir_raw else None,
+    )
     context.log.info(
         f"archive 선이동 완료(업로드는 archive 기준): {source_unit_path} -> {final_archive_unit_dir}"
     )
@@ -420,7 +458,9 @@ def archive_uploaded_assets(
     source_unit_type = str(manifest.get("source_unit_type", "")).strip().lower()
     source_unit_name = str(manifest.get("source_unit_name", "")).strip()
     source_unit_path_raw = str(manifest.get("source_unit_path", "")).strip()
+    source_dir_raw = str(manifest.get("source_dir", "")).strip()
     source_unit_path = Path(source_unit_path_raw) if source_unit_path_raw else None
+    source_root_dir = Path(source_dir_raw) if source_dir_raw else None
     manifest_file_count = int(manifest.get("file_count") or len(files) or len(uploaded))
     source_unit_total_file_count = int(
         manifest.get("source_unit_total_file_count") or manifest_file_count
@@ -447,6 +487,7 @@ def archive_uploaded_assets(
             sp = str(item.get("source_path", "")).strip()
             if sp:
                 cleanup_residual_source_file(context, sp)
+                cleanup_empty_parent_chain(Path(sp).parent, stop_at=source_root_dir)
             db.update_raw_file_status(
                 asset_id, "completed",
                 archive_path=str(archive_path),

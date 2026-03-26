@@ -22,7 +22,7 @@ def spec_resolve_sensor(
     db: DuckDBResource,
 ) -> RunRequest | None:
     """Staging: config 미조회, retry_count 증가, spec_status 유지, RunRequest 반환."""
-    db.ensure_schema()
+    db.ensure_runtime_schema()
     specs = db.list_specs_by_status("pending_resolved")
     if not specs:
         return None

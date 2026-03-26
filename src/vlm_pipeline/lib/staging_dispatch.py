@@ -40,6 +40,22 @@ _NO_LABELING_MARKERS = frozenset(
 )
 
 
+def format_dispatch_storage_list(values: list[str] | None) -> str:
+    """DB 저장용 dispatch list를 사람이 읽기 쉬운 쉼표 문자열로 변환."""
+    if not values:
+        return ""
+
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for item in values:
+        rendered = str(item or "").strip()
+        if not rendered or rendered in seen:
+            continue
+        seen.add(rendered)
+        normalized.append(rendered)
+    return ", ".join(normalized)
+
+
 def _normalize_string_list(value: Any, *, lowercase: bool = True) -> list[str]:
     if not isinstance(value, list):
         return []

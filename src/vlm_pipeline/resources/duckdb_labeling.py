@@ -482,13 +482,28 @@ class DuckDBLabelingMixin:
 
     # ── YOLO detection 대상 이미지 조회 ──
 
-    def find_yolo_pending_images(self, limit: int = 500, folder_name: str | None = None) -> list[dict[str, Any]]:
+    def find_yolo_pending_images(
+        self,
+        limit: int = 500,
+        folder_name: str | None = None,
+        spec_id: str | None = None,
+    ) -> list[dict[str, Any]]:
         """image_labels에 아직 YOLO detection 결과가 없는 processed_clip_frame/raw_video_frame 조회."""
         with self.connect() as conn:
-            query_cond = "AND r.raw_key LIKE ?" if folder_name else ""
-            params = [max(1, int(limit))]
-            if folder_name:
-                params.insert(0, f"{folder_name}/%")
+            raw_file_columns = self._table_columns(conn, "raw_files")
+            query_filters: list[str] = []
+            params: list[Any] = []
+
+            if spec_id:
+                if "spec_id" not in raw_file_columns:
+                    return []
+                query_filters.append("AND r.spec_id = ?")
+                params.append(spec_id)
+            elif folder_name:
+                query_filters.append("AND r.raw_key LIKE ?")
+                params.append(f"{folder_name}/%")
+            query_cond = "\n".join(query_filters)
+            params.append(max(1, int(limit)))
 
             rows = conn.execute(
                 f"""

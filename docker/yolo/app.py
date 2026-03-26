@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import threading
 import time
 from contextlib import asynccontextmanager
 from io import BytesIO
@@ -22,7 +23,7 @@ from typing import Any
 import numpy as np
 import torch
 import uvicorn
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import JSONResponse
 from PIL import Image
 from pydantic import BaseModel
@@ -64,9 +65,51 @@ def _load_default_classes() -> list[str]:
     classes = [part.strip() for part in raw_value.replace("\n", ",").split(",") if part.strip()]
     return classes or list(DEFAULT_SAFETY_CLASSES)
 
+def _normalize_classes(values: list[str] | tuple[str, ...] | None) -> list[str]:
+    seen: set[str] = set()
+    normalized: list[str] = []
+    for value in values or []:
+        rendered = str(value or "").strip().lower()
+        if not rendered or rendered in seen:
+            continue
+        seen.add(rendered)
+        normalized.append(rendered)
+    return normalized
+
+
+def _parse_request_classes(raw_value: str | None) -> list[str] | None:
+    rendered = str(raw_value or "").strip()
+    if not rendered:
+        return None
+    try:
+        if rendered.startswith("["):
+            parsed = json.loads(rendered)
+            if isinstance(parsed, list):
+                classes = _normalize_classes([str(item) for item in parsed])
+                return classes or None
+    except Exception:
+        logger.warning("YOLO request classes_json 파싱 실패, comma-separated 형식으로 재시도합니다")
+
+    classes = _normalize_classes(rendered.replace("\n", ",").split(","))
+    return classes or None
+
+
 _model: YOLOWorld | None = None
-_classes: list[str] = _load_default_classes()
+_classes: list[str] = _normalize_classes(_load_default_classes())
 _model_loaded_at: float | None = None
+_model_lock = threading.Lock()
+_applied_classes_signature: tuple[str, ...] | None = None
+
+
+def _apply_model_classes(classes: list[str]) -> list[str]:
+    global _applied_classes_signature
+
+    normalized = _normalize_classes(classes) or list(DEFAULT_SAFETY_CLASSES)
+    signature = tuple(normalized)
+    if _model is not None and _applied_classes_signature != signature:
+        _model.set_classes(normalized)
+        _applied_classes_signature = signature
+    return normalized
 
 
 def _load_model() -> None:
@@ -80,7 +123,7 @@ def _load_model() -> None:
     logger.info(f"YOLO-World 모델 로딩: {path} → {DEVICE}")
     _model = YOLOWorld(str(path))
     _model.to(DEVICE)
-    _model.set_classes(_classes)
+    _apply_model_classes(_classes)
     _model_loaded_at = time.time()
     logger.info(f"YOLO-World 모델 로드 완료: classes={len(_classes)} device={DEVICE}")
 
@@ -110,28 +153,33 @@ def _run_detection(
     conf: float,
     iou: float,
     max_det: int,
-) -> list[dict[str, Any]]:
+    *,
+    requested_classes: list[str] | None = None,
+) -> tuple[list[dict[str, Any]], list[str]]:
     if _model is None:
         raise RuntimeError("모델이 로드되지 않았습니다")
 
     img_w, img_h = img.size
-    results = _model.predict(
-        source=img, imgsz=IMGSZ, conf=conf, iou=iou,
-        max_det=max_det, verbose=False,
-    )
+    effective_classes = _normalize_classes(requested_classes) or list(_classes)
+    with _model_lock:
+        applied_classes = _apply_model_classes(effective_classes)
+        results = _model.predict(
+            source=img, imgsz=IMGSZ, conf=conf, iou=iou,
+            max_det=max_det, verbose=False,
+        )
     detections: list[dict[str, Any]] = []
     if not results:
-        return detections
+        return detections, applied_classes
 
     boxes = results[0].boxes
     if boxes is None or len(boxes) == 0:
-        return detections
+        return detections, applied_classes
 
     for i in range(len(boxes)):
         cls_id = int(boxes.cls[i].item())
         confidence = float(boxes.conf[i].item())
         x1, y1, x2, y2 = boxes.xyxy[i].tolist()
-        class_name = _classes[cls_id] if cls_id < len(_classes) else f"class_{cls_id}"
+        class_name = applied_classes[cls_id] if cls_id < len(applied_classes) else f"class_{cls_id}"
         detections.append({
             "class": class_name,
             "confidence": round(confidence, 4),
@@ -141,7 +189,7 @@ def _run_detection(
                 round(x2 / img_w, 4), round(y2 / img_h, 4),
             ],
         })
-    return detections
+    return detections, applied_classes
 
 
 class DetectParams(BaseModel):
@@ -153,6 +201,7 @@ class DetectParams(BaseModel):
 @app.post("/detect")
 async def detect(
     file: UploadFile = File(...),
+    classes_json: str | None = Form(None),
     conf: float = 0.25,
     iou: float = 0.45,
     max_det: int = 300,
@@ -165,7 +214,13 @@ async def detect(
         raise HTTPException(status_code=400, detail=f"이미지 읽기 실패: {exc}")
 
     t0 = time.time()
-    detections = _run_detection(img, conf=conf, iou=iou, max_det=max_det)
+    detections, applied_classes = _run_detection(
+        img,
+        conf=conf,
+        iou=iou,
+        max_det=max_det,
+        requested_classes=_parse_request_classes(classes_json),
+    )
     elapsed_ms = round((time.time() - t0) * 1000, 1)
 
     return {
@@ -179,6 +234,7 @@ async def detect(
 @app.post("/detect/batch")
 async def detect_batch(
     files: list[UploadFile] = File(...),
+    classes_json: str | None = Form(None),
     conf: float = 0.25,
     iou: float = 0.45,
     max_det: int = 300,
@@ -201,11 +257,14 @@ async def detect_batch(
     if _model is None:
         raise HTTPException(status_code=503, detail="모델이 로드되지 않았습니다")
 
+    requested_classes = _parse_request_classes(classes_json)
     t0 = time.time()
-    results = _model.predict(
-        source=images, imgsz=IMGSZ, conf=conf, iou=iou,
-        max_det=max_det, verbose=False,
-    )
+    with _model_lock:
+        applied_classes = _apply_model_classes(requested_classes or list(_classes))
+        results = _model.predict(
+            source=images, imgsz=IMGSZ, conf=conf, iou=iou,
+            max_det=max_det, verbose=False,
+        )
     elapsed_ms = round((time.time() - t0) * 1000, 1)
 
     batch_results = []
@@ -218,7 +277,7 @@ async def detect_batch(
                 cls_id = int(boxes.cls[i].item())
                 confidence = float(boxes.conf[i].item())
                 x1, y1, x2, y2 = boxes.xyxy[i].tolist()
-                class_name = _classes[cls_id] if cls_id < len(_classes) else f"class_{cls_id}"
+                class_name = applied_classes[cls_id] if cls_id < len(applied_classes) else f"class_{cls_id}"
                 detections.append({
                     "class": class_name,
                     "confidence": round(confidence, 4),
@@ -238,6 +297,8 @@ async def detect_batch(
         "results": batch_results,
         "total_images": len(batch_results),
         "elapsed_ms": elapsed_ms,
+        "requested_classes": applied_classes,
+        "requested_classes_count": len(applied_classes),
     }
 
 
@@ -249,11 +310,12 @@ class ClassesRequest(BaseModel):
 async def set_classes(req: ClassesRequest):
     """detection 클래스 변경."""
     global _classes
-    if not req.classes:
+    requested = _normalize_classes(req.classes)
+    if not requested:
         raise HTTPException(status_code=400, detail="classes 리스트가 비어있습니다")
-    _classes = list(req.classes)
-    if _model is not None:
-        _model.set_classes(_classes)
+    _classes = requested
+    with _model_lock:
+        _apply_model_classes(_classes)
     return {"classes": _classes, "count": len(_classes)}
 
 
