@@ -12,11 +12,21 @@ import logging
 import os
 import subprocess
 import time
+from collections.abc import Iterable
+from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
 from PIL import Image
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class FrameSamplingDecision:
+    sampling_mode: str
+    effective_max_frames: int
+    frame_interval_sec: float
+    policy_source: str
 
 
 def resolve_duration_sec(duration_sec: float | int | None, fps: float | int | None, frame_count: int | None) -> float:
@@ -46,7 +56,7 @@ def target_frame_count(
     duration_sec: float | int | None,
     fps: float | int | None,
     frame_count: int | None,
-    max_frames_per_video: int = 12,
+    max_frames_per_video: int | None = None,
     image_profile: str = "current",
 ) -> int:
     duration = resolve_duration_sec(duration_sec, fps, frame_count)
@@ -70,7 +80,7 @@ def target_frame_count(
                 target = min(target, 4)
             elif fps_value < 10:
                 target = min(target, 12)
-        upper_bound = 24
+        upper_bound = max_frames_per_video or 24
     else:
         if duration < 10:
             target = 3
@@ -104,7 +114,7 @@ def plan_frame_timestamps(
     duration_sec: float | int | None,
     fps: float | int | None,
     frame_count: int | None,
-    max_frames_per_video: int = 12,
+    max_frames_per_video: int | None = None,
     image_profile: str = "current",
     frame_interval_sec: float | None = None,
 ) -> list[float]:
@@ -123,6 +133,8 @@ def plan_frame_timestamps(
             sec += frame_interval_sec
         if not timestamps:
             return [0.0]
+        if max_frames_per_video is not None and max_frames_per_video > 0 and len(timestamps) > max_frames_per_video:
+            return _downsample_timestamps_evenly(timestamps, max_frames_per_video)
         return timestamps
 
     target = target_frame_count(
@@ -161,6 +173,87 @@ def plan_frame_timestamps(
     return [round(midpoint, 3)]
 
 
+def resolve_frame_sampling_policy(
+    *,
+    sampling_mode: str,
+    requested_outputs: Iterable[str] | None,
+    image_profile: str,
+    duration_sec: float | int | None,
+    fps: float | int | None,
+    frame_count: int | None,
+    spec_max_frames_per_video: int | None = None,
+) -> FrameSamplingDecision:
+    normalized_mode = str(sampling_mode or "").strip().lower() or "clip_event"
+    normalized_profile = "dense" if str(image_profile or "").strip().lower() == "dense" else "current"
+    normalized_outputs = {
+        str(value or "").strip().lower()
+        for value in (requested_outputs or [])
+        if str(value or "").strip()
+    }
+    bbox_only = "bbox" in normalized_outputs and "captioning" not in normalized_outputs
+
+    base_target = target_frame_count(
+        duration_sec=duration_sec,
+        fps=fps,
+        frame_count=frame_count,
+        max_frames_per_video=24 if normalized_profile == "dense" else 12,
+        image_profile=normalized_profile,
+    )
+
+    if normalized_mode == "raw_video":
+        dynamic_upper_bound = 36 if normalized_profile == "dense" else 24
+        dynamic_floor = 10 if normalized_profile == "dense" else 6
+        multiplier = 2 if bbox_only else 1
+        effective_max_frames = min(dynamic_upper_bound, max(dynamic_floor, base_target * multiplier))
+    else:
+        effective_max_frames = base_target
+        if bbox_only:
+            clip_bbox_cap = 24 if normalized_profile == "dense" else 16
+            effective_max_frames = min(clip_bbox_cap, max(effective_max_frames, base_target + 2))
+
+    policy_source = "dynamic_default"
+    if spec_max_frames_per_video is not None:
+        try:
+            cap_value = max(1, int(spec_max_frames_per_video))
+        except (TypeError, ValueError):
+            cap_value = None
+        if cap_value is not None:
+            effective_max_frames = min(effective_max_frames, cap_value)
+            policy_source = "spec_override"
+
+    duration = resolve_duration_sec(duration_sec, fps, frame_count)
+    frame_interval_sec = 10.0 if duration >= 3600 else 1.0
+
+    return FrameSamplingDecision(
+        sampling_mode=normalized_mode,
+        effective_max_frames=max(1, int(effective_max_frames)),
+        frame_interval_sec=frame_interval_sec,
+        policy_source=policy_source,
+    )
+
+
+def _downsample_timestamps_evenly(timestamps: list[float], target_count: int) -> list[float]:
+    if target_count <= 0 or len(timestamps) <= target_count:
+        return timestamps
+
+    if target_count == 1:
+        return [timestamps[0]]
+
+    last_index = len(timestamps) - 1
+    selected_indices: list[int] = []
+    previous_index = -1
+    for offset in range(target_count):
+        remaining_slots = target_count - offset - 1
+        ideal_index = int(round((offset * last_index) / (target_count - 1)))
+        next_index = max(previous_index + 1, ideal_index)
+        max_index = last_index - remaining_slots
+        next_index = min(next_index, max_index)
+        selected_indices.append(next_index)
+        previous_index = next_index
+
+    return [timestamps[index] for index in selected_indices]
+
+
 def build_frame_key(raw_key: str, frame_index: int, frame_sec: float) -> str:
     key_path = PurePosixPath(str(raw_key or "").strip())
     stem = key_path.stem or "video"
@@ -170,6 +263,41 @@ def build_frame_key(raw_key: str, frame_index: int, frame_sec: float) -> str:
     return str(parent / stem / frame_name) if str(parent) != "." else str(
         PurePosixPath(stem) / frame_name
     )
+
+
+def _build_extract_frame_cmd(video_path: str | Path, sec: float, q_v: int) -> list[str]:
+    return [
+        "ffmpeg",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-ss",
+        f"{float(sec):.3f}",
+        "-i",
+        str(video_path),
+        "-frames:v",
+        "1",
+        "-f",
+        "image2pipe",
+        "-vcodec",
+        "mjpeg",
+        "-q:v",
+        str(q_v),
+        "pipe:1",
+    ]
+
+
+def _fallback_seek_seconds(sec: float) -> list[float]:
+    base_sec = max(0.0, float(sec))
+    candidates: list[float] = [round(base_sec, 3)]
+    seen = {candidates[0]}
+    for delta in (0.1, 0.25, 0.5):
+        fallback_sec = round(max(0.0, base_sec - delta), 3)
+        if fallback_sec in seen:
+            continue
+        seen.add(fallback_sec)
+        candidates.append(fallback_sec)
+    return candidates
 
 
 def extract_frame_jpeg_bytes(
@@ -201,36 +329,56 @@ def extract_frame_jpeg_bytes(
     retries = max(0, retries)
     # ffmpeg mjpeg -q:v 2~31 (lower = better). PIL quality 90 → -q:v 4 근사.
     q_v = max(2, min(31, round(2 + (100 - max(1, min(100, int(jpeg_quality)))) * 29 / 100)))
-
-    cmd = [
-        "ffmpeg",
-        "-hide_banner",
-        "-loglevel",
-        "error",
-        "-ss",
-        f"{float(sec):.3f}",
-        "-i",
-        str(video_path),
-        "-frames:v",
-        "1",
-        "-f",
-        "image2pipe",
-        "-vcodec",
-        "mjpeg",
-        "-q:v",
-        str(q_v),
-        "pipe:1",
-    ]
+    requested_sec = round(float(sec), 3)
+    seek_candidates = _fallback_seek_seconds(requested_sec)
 
     last_error: Exception | None = None
     for attempt in range(retries + 1):
         current_timeout = timeout * (attempt + 1)  # 재시도마다 타임아웃 증가
-        try:
-            proc = subprocess.run(
-                cmd, capture_output=True, timeout=current_timeout, check=False,
+        timeout_error: subprocess.TimeoutExpired | None = None
+        frame_error: RuntimeError | None = None
+
+        for seek_index, seek_sec in enumerate(seek_candidates, start=1):
+            cmd = _build_extract_frame_cmd(video_path, seek_sec, q_v)
+            try:
+                proc = subprocess.run(
+                    cmd, capture_output=True, timeout=current_timeout, check=False,
+                )
+            except subprocess.TimeoutExpired as exc:
+                timeout_error = exc
+                last_error = exc
+                break
+
+            stderr = (proc.stderr or b"").decode("utf-8", errors="ignore").strip()
+            if proc.returncode == 0 and proc.stdout:
+                if seek_sec != requested_sec:
+                    logger.info(
+                        "ffmpeg 프레임 추출 fallback 성공: %s requested=%.3fs actual=%.3fs",
+                        video_path,
+                        requested_sec,
+                        seek_sec,
+                    )
+                return proc.stdout
+
+            is_empty_output = not proc.stdout and not stderr
+            if is_empty_output and seek_index < len(seek_candidates):
+                logger.warning(
+                    "ffmpeg empty_output fallback: %s requested=%.3fs retry=%.3fs (%d/%d)",
+                    video_path,
+                    requested_sec,
+                    seek_sec,
+                    seek_index,
+                    len(seek_candidates),
+                )
+                continue
+
+            frame_error = RuntimeError(
+                f"ffmpeg_frame_extract_failed:{stderr or 'empty_output'}"
             )
-        except subprocess.TimeoutExpired as exc:
-            last_error = exc
+            last_error = frame_error
+            break
+
+        if timeout_error is not None:
             if attempt < retries:
                 wait_sec = 2 ** attempt  # 1s, 2s, 4s ...
                 logger.warning(
@@ -244,26 +392,19 @@ def extract_frame_jpeg_bytes(
                 f"ffmpeg_frame_extract_timeout:{current_timeout}s "
                 f"path={video_path} sec={sec:.3f} "
                 f"(retries={retries} exhausted)"
-            ) from exc
+            ) from timeout_error
 
-        if proc.returncode != 0 or not proc.stdout:
-            stderr = (proc.stderr or b"").decode("utf-8", errors="ignore").strip()
-            last_error = RuntimeError(
-                f"ffmpeg_frame_extract_failed:{stderr or 'empty_output'}"
-            )
+        if frame_error is not None:
             if attempt < retries:
                 wait_sec = 2 ** attempt
                 logger.warning(
-                    "ffmpeg 프레임 추출 실패 (attempt %d/%d, rc=%d): %s @ %.3fs — %ds 후 재시도",
-                    attempt + 1, retries + 1, proc.returncode,
-                    video_path, sec, wait_sec,
+                    "ffmpeg 프레임 추출 실패 (attempt %d/%d): %s @ %.3fs — %ds 후 재시도",
+                    attempt + 1, retries + 1,
+                    video_path, requested_sec, wait_sec,
                 )
                 time.sleep(wait_sec)
                 continue
-            raise last_error
-
-        # 성공 — mjpeg로 직접 JPEG 출력하므로 PIL 변환 없이 반환 (I/O·CPU 절감)
-        return proc.stdout
+            raise frame_error
 
     # 방어 코드 (실제 도달하지 않음)
     raise last_error or RuntimeError("ffmpeg_frame_extract_unexpected_state")

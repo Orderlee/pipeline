@@ -123,7 +123,11 @@ def _probe_frame_count_fallback(file_path: Path) -> int:
     return 0
 
 
-def load_video_once(path: str | Path, include_file_stream: bool = False) -> dict:
+def load_video_once(
+    path: str | Path,
+    include_file_stream: bool = False,
+    include_env_metadata: bool = True,
+) -> dict:
     """ffprobe 1회 호출로 비디오 메타데이터 + checksum 추출.
 
     Returns:
@@ -167,6 +171,12 @@ def load_video_once(path: str | Path, include_file_stream: bool = False) -> dict
     width = int(video_stream.get("width") or 0)
     height = int(video_stream.get("height") or 0)
     codec = str(video_stream.get("codec_name") or "")
+    original_profile = str(video_stream.get("profile") or "")
+    original_has_b_frames = bool(int(video_stream.get("has_b_frames") or 0))
+    try:
+        original_level_int = int(video_stream.get("level") or 0)
+    except (TypeError, ValueError):
+        original_level_int = 0
 
     # fps 파싱 (예: "30000/1001" → 29.97)
     fps_raw = str(video_stream.get("avg_frame_rate") or "0/1")
@@ -185,17 +195,26 @@ def load_video_once(path: str | Path, include_file_stream: bool = False) -> dict
     if frame_count <= 0:
         frame_count = _probe_frame_count_fallback(file_path)
 
-    # data_in_out_check.py + data_in_out_check_2.py 로직 결합:
-    # Places365(CUDA 우선) 시도 후 실패 시 heuristic voting fallback
-    try:
-        env_meta = classify_video_environment(file_path, duration_sec)
-    except Exception:
+    if include_env_metadata:
+        # data_in_out_check.py + data_in_out_check_2.py 로직 결합:
+        # Places365(CUDA 우선) 시도 후 실패 시 heuristic voting fallback
+        try:
+            env_meta = classify_video_environment(file_path, duration_sec)
+        except Exception:
+            env_meta = {
+                "environment_type": None,
+                "daynight_type": None,
+                "outdoor_score": None,
+                "avg_brightness": None,
+                "env_method": None,
+            }
+    else:
         env_meta = {
             "environment_type": None,
             "daynight_type": None,
             "outdoor_score": None,
             "avg_brightness": None,
-            "env_method": None,
+            "env_method": "deferred",
         }
 
     result = {
@@ -207,6 +226,10 @@ def load_video_once(path: str | Path, include_file_stream: bool = False) -> dict
             "duration_sec": duration_sec,
             "fps": fps,
             "codec": codec,
+            "original_codec": codec,
+            "original_profile": original_profile,
+            "original_has_b_frames": original_has_b_frames,
+            "original_level_int": original_level_int,
             "bitrate": bitrate,
             "frame_count": frame_count,
             "has_audio": has_audio,

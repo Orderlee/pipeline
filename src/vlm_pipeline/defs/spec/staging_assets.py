@@ -40,7 +40,7 @@ def config_sync(
     db: DuckDBResource,
 ) -> dict:
     """Staging: 신규 INSERT, 변경 시 version+1, 삭제 시 is_active=false."""
-    db.ensure_schema()
+    db.ensure_runtime_schema()
     config_dir = Path(CONFIG_PARAMETERS_DIR)
     if not config_dir.is_dir():
         context.log.warning(f"config_sync: 디렉터리 없음 {config_dir}. 스킵.")
@@ -131,7 +131,7 @@ def ingest_router(
     db: DuckDBResource,
 ) -> dict:
     """Staging: 라우터는 분기만. config는 clip_timestamp(3-5)에서 조회."""
-    db.ensure_schema()
+    db.ensure_runtime_schema()
     if not getattr(db, "_table_exists", None):
         return {"routed": 0, "pending_spec": 0, "ready": 0, "failed": 0}
 

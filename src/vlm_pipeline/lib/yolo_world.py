@@ -10,10 +10,10 @@ YOLO-World-L 모델은 별도 Docker 컨테이너(yolo 서비스)에서 GPU 1 �
 from __future__ import annotations
 
 import io
+import json
 import os
 import time
 from typing import Any
-from urllib.parse import urljoin
 
 import requests
 
@@ -68,13 +68,16 @@ class YOLOWorldClient:
         iou: float = 0.45,
         max_det: int = 300,
         filename: str = "image.jpg",
+        classes: list[str] | None = None,
     ) -> dict[str, Any]:
         """단일 이미지 detection."""
         files = {"file": (filename, io.BytesIO(image_bytes), "image/jpeg")}
         params = {"conf": conf, "iou": iou, "max_det": max_det}
+        data = {"classes_json": json.dumps(classes, ensure_ascii=False)} if classes else None
         resp = self.session.post(
             f"{self.api_url}/detect",
             files=files,
+            data=data,
             params=params,
             timeout=self.timeout,
         )
@@ -88,6 +91,7 @@ class YOLOWorldClient:
         conf: float = 0.25,
         iou: float = 0.45,
         max_det: int = 300,
+        classes: list[str] | None = None,
     ) -> list[dict[str, Any]]:
         """배치 이미지 detection."""
         if not image_bytes_list:
@@ -98,9 +102,11 @@ class YOLOWorldClient:
             files.append(("files", (f"image_{idx}.jpg", io.BytesIO(img_bytes), "image/jpeg")))
 
         params = {"conf": conf, "iou": iou, "max_det": max_det}
+        data = {"classes_json": json.dumps(classes, ensure_ascii=False)} if classes else None
         resp = self.session.post(
             f"{self.api_url}/detect/batch",
             files=files,
+            data=data,
             params=params,
             timeout=self.timeout,
         )
