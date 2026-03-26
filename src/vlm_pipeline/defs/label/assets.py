@@ -434,7 +434,7 @@ def clip_timestamp_mvp(
         context.log.info("clip_timestamp 스킵: outputs에 timestamp가 없습니다.")
         return {"processed": 0, "skipped": True}
 
-    db.ensure_schema()
+    db.ensure_runtime_schema()
     folder_name = dispatch_raw_key_prefix_folder(context.run.tags if context.run else None)
     limit = int(context.op_config.get("limit", 50))
     candidates = db.find_auto_label_pending_videos(limit=limit, folder_name=folder_name)
@@ -543,7 +543,7 @@ def clip_timestamp_routed_impl(
         context.log.info("clip_timestamp 스킵: outputs에 timestamp 없음")
         return {"processed": 0, "failed": 0, "skipped": True}
 
-    db.ensure_schema()
+    db.ensure_runtime_schema()
     resolved_config_id = None
     if spec_id:
         config_bundle = resolve_and_persist_spec_config(db, spec_id)

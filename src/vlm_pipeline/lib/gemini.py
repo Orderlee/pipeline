@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import json
+import logging
 import mimetypes
 import os
 import re
 import stat
+import time
 from pathlib import Path
 from typing import Any
 
@@ -21,6 +23,8 @@ REQUIRED_GEMINI_SERVICE_ACCOUNT_FIELDS = (
     "client_email",
     "token_uri",
 )
+
+logger = logging.getLogger(__name__)
 
 
 def _collect_text_from_parts(parts: Any) -> list[str]:
@@ -194,6 +198,29 @@ def _load_vertex_ai() -> tuple[Any, Any, Any]:
     return vertexai, GenerativeModel, Part
 
 
+def _int_env(name: str, default: int, minimum: int = 0) -> int:
+    raw_value = os.getenv(name)
+    try:
+        parsed = int(raw_value) if raw_value is not None else int(default)
+    except (TypeError, ValueError):
+        parsed = int(default)
+    return max(minimum, parsed)
+
+
+def _float_env(name: str, default: float, minimum: float = 0.0) -> float:
+    raw_value = os.getenv(name)
+    try:
+        parsed = float(raw_value) if raw_value is not None else float(default)
+    except (TypeError, ValueError):
+        parsed = float(default)
+    return max(minimum, parsed)
+
+
+def _is_vertex_rate_limit_error(exc: BaseException) -> bool:
+    message = str(exc).lower()
+    return "429" in message or "resource exhausted" in message
+
+
 class GeminiAnalyzer:
     """Thin wrapper around Vertex AI Gemini for image/video analysis."""
 
@@ -219,12 +246,52 @@ class GeminiAnalyzer:
         self.location = location_value
         self.credentials_path = credentials_value
         self._part_cls = part_cls
+        self._rate_limit_max_retries = _int_env("GEMINI_RATE_LIMIT_MAX_RETRIES", 2, 0)
+        self._rate_limit_base_delay_sec = _float_env("GEMINI_RATE_LIMIT_BASE_DELAY_SEC", 2.0, 0.0)
+        self._rate_limit_backoff = _float_env("GEMINI_RATE_LIMIT_BACKOFF", 2.0, 1.0)
+        self._rate_limit_max_delay_sec = _float_env("GEMINI_RATE_LIMIT_MAX_DELAY_SEC", 15.0, 0.0)
+
+    def _generate_content_with_retry(
+        self,
+        parts: list[Any],
+        *,
+        content_type: str,
+        source_name: str,
+    ) -> Any:
+        attempts = self._rate_limit_max_retries + 1
+        for attempt in range(1, attempts + 1):
+            try:
+                return self.model.generate_content(parts)
+            except Exception as exc:
+                if not _is_vertex_rate_limit_error(exc) or attempt >= attempts:
+                    raise
+
+                delay_sec = min(
+                    self._rate_limit_max_delay_sec,
+                    self._rate_limit_base_delay_sec * (self._rate_limit_backoff ** (attempt - 1)),
+                )
+                logger.warning(
+                    "Gemini Vertex 429 retry: type=%s source=%s attempt=%d/%d delay=%.2fs err=%s",
+                    content_type,
+                    source_name,
+                    attempt,
+                    attempts,
+                    delay_sec,
+                    exc,
+                )
+                if delay_sec > 0:
+                    time.sleep(delay_sec)
+        raise RuntimeError("gemini_retry_unexpected_state")
 
     def analyze_image(self, image_path: str, prompt: str | None = None) -> str:
         path = Path(image_path)
         image_bytes = path.read_bytes()
         image_part = self._part_cls.from_data(data=image_bytes, mime_type="image/jpeg")
-        response = self.model.generate_content([image_part, prompt or IMAGE_PROMPT])
+        response = self._generate_content_with_retry(
+            [image_part, prompt or IMAGE_PROMPT],
+            content_type="image",
+            source_name=path.name,
+        )
         return _extract_response_text(response)
 
     def analyze_video(
@@ -240,7 +307,11 @@ class GeminiAnalyzer:
             guessed_mime, _ = mimetypes.guess_type(str(path))
             resolved_mime_type = guessed_mime or "video/mp4"
         video_part = self._part_cls.from_data(data=video_bytes, mime_type=resolved_mime_type)
-        response = self.model.generate_content([video_part, prompt or VIDEO_PROMPT])
+        response = self._generate_content_with_retry(
+            [video_part, prompt or VIDEO_PROMPT],
+            content_type="video",
+            source_name=path.name,
+        )
         return _extract_response_text(response)
 
     def change_model(self, model_name: str) -> None:

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import time
 from datetime import datetime
 from hashlib import sha1
 from io import BytesIO
@@ -45,9 +46,13 @@ from vlm_pipeline.lib.video_frames import (
     describe_frame_bytes,
     extract_frame_jpeg_bytes,
     plan_frame_timestamps,
+    resolve_frame_sampling_policy,
 )
 from vlm_pipeline.resources.duckdb import DuckDBResource
 from vlm_pipeline.resources.minio import MinIOResource
+
+_MAX_CONSECUTIVE_EMPTY_OUTPUT_FAILURES_PER_ASSET = 3
+_VERTEX_RELEVANCE_RETRY_DELAY_SEC = 2.0
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -250,8 +255,11 @@ def _extract_clip_frames(
     image_caption_analyzer: GeminiAnalyzer | None = None,
     image_caption_event_category: str | None = None,
     image_caption_event_caption_text: str | None = None,
+    image_caption_parent_label_key: str | None = None,
+    store_image_caption_json: bool = False,
     image_caption_log=None,
-) -> tuple[list[dict[str, Any]], list[str]]:
+    progress_log=None,
+) -> tuple[list[dict[str, Any]], list[str], list[str]]:
     """clip 비디오에서 프레임 추출 후, 최고 관련도 1개 프레임만 이미지 캡션 생성."""
     now = datetime.now()
     timestamps = plan_frame_timestamps(
@@ -265,16 +273,34 @@ def _extract_clip_frames(
 
     frame_rows: list[dict[str, Any]] = []
     uploaded_keys: list[str] = []
+    uploaded_caption_keys: list[str] = []
     caption_candidates: list[dict[str, Any]] = []
+    total_timestamps = len(timestamps)
 
     try:
         for frame_index, frame_sec in enumerate(timestamps, start=1):
+            if progress_log is not None and _should_log_clip_frame_progress(frame_index, total_timestamps):
+                progress_log.info(
+                    "clip frame progress: clip_id=%s frame=%d/%d sec=%.3f",
+                    clip_id,
+                    frame_index,
+                    total_timestamps,
+                    float(frame_sec),
+                )
             frame_bytes = extract_frame_jpeg_bytes(
                 clip_path, frame_sec, jpeg_quality=jpeg_quality,
             )
             image_key = _build_processed_clip_image_key(clip_key, frame_index)
             minio.upload("vlm-processed", image_key, frame_bytes, "image/jpeg")
             uploaded_keys.append(image_key)
+            if progress_log is not None and _should_log_clip_frame_progress(frame_index, total_timestamps):
+                progress_log.info(
+                    "clip frame upload progress: clip_id=%s uploaded=%d/%d image_key=%s",
+                    clip_id,
+                    frame_index,
+                    total_timestamps,
+                    image_key,
+                )
 
             frame_meta = describe_frame_bytes(frame_bytes)
             row_index = len(frame_rows)
@@ -284,11 +310,14 @@ def _extract_clip_frames(
                 or str(image_caption_event_caption_text or "").strip()
             ):
                 try:
-                    relevance_score = _score_event_frame_image_relevance(
+                    relevance_score = _score_event_frame_image_relevance_with_retry(
                         image_caption_analyzer,
                         frame_bytes,
+                        clip_id=clip_id,
+                        frame_index=frame_index,
                         event_category=image_caption_event_category,
                         event_caption_text=image_caption_event_caption_text,
+                        image_caption_log=image_caption_log,
                     )
                 except Exception as exc:
                     if image_caption_log is not None:
@@ -325,6 +354,9 @@ def _extract_clip_frames(
                 "orientation": frame_meta["orientation"],
                 "image_caption_text": None,
                 "image_caption_score": relevance_score,
+                "image_caption_bucket": None,
+                "image_caption_key": None,
+                "image_caption_generated_at": None,
                 "extracted_at": now,
             })
 
@@ -357,13 +389,127 @@ def _extract_clip_frames(
                     )
             else:
                 if image_caption_text is not None:
-                    frame_rows[best_candidate["row_index"]]["image_caption_text"] = image_caption_text
+                    caption_generated_at = datetime.now()
+                    selected_row = frame_rows[best_candidate["row_index"]]
+                    selected_row["image_caption_text"] = image_caption_text
+                    if store_image_caption_json:
+                        caption_key = _build_image_caption_key(selected_row["image_key"])
+                        caption_payload = _build_image_caption_payload(
+                            image_id=selected_row["image_id"],
+                            source_asset_id=source_asset_id,
+                            source_clip_id=clip_id,
+                            image_bucket=selected_row["image_bucket"],
+                            image_key=selected_row["image_key"],
+                            frame_index=selected_row["frame_index"],
+                            frame_sec=selected_row["frame_sec"],
+                            caption_text=image_caption_text,
+                            relevance_score=selected_row["image_caption_score"],
+                            model=getattr(image_caption_analyzer, "model_name", None),
+                            generated_at=caption_generated_at,
+                            event_category=image_caption_event_category,
+                            event_caption_text=image_caption_event_caption_text,
+                            parent_label_key=image_caption_parent_label_key,
+                        )
+                        minio.upload(
+                            "vlm-labels",
+                            caption_key,
+                            json.dumps(caption_payload, ensure_ascii=False, indent=2).encode("utf-8"),
+                            "application/json",
+                        )
+                        uploaded_caption_keys.append(caption_key)
+                        selected_row["image_caption_bucket"] = "vlm-labels"
+                        selected_row["image_caption_key"] = caption_key
+                        selected_row["image_caption_generated_at"] = caption_generated_at
     except Exception:
         if uploaded_keys:
             _delete_minio_keys(minio, "vlm-processed", uploaded_keys)
+        if uploaded_caption_keys:
+            _delete_minio_keys(minio, "vlm-labels", uploaded_caption_keys)
         raise
 
-    return frame_rows, uploaded_keys
+    return frame_rows, uploaded_keys, uploaded_caption_keys
+
+
+def _should_log_clip_frame_progress(frame_index: int, total_frames: int) -> bool:
+    if total_frames <= 0:
+        return frame_index == 1
+    return frame_index == 1 or frame_index == total_frames or frame_index % 5 == 0
+
+
+def _is_empty_output_frame_error(message: str) -> bool:
+    normalized = str(message or "")
+    return "ffmpeg_frame_extract_failed:empty_output" in normalized
+
+
+def _track_empty_output_failure(
+    asset_id: str,
+    error_message: str,
+    *,
+    consecutive_failures: dict[str, int],
+    suppressed_asset_ids: set[str],
+) -> bool:
+    if not _is_empty_output_frame_error(error_message):
+        consecutive_failures[asset_id] = 0
+        return False
+
+    next_count = consecutive_failures.get(asset_id, 0) + 1
+    consecutive_failures[asset_id] = next_count
+    if next_count >= _MAX_CONSECUTIVE_EMPTY_OUTPUT_FAILURES_PER_ASSET:
+        suppressed_asset_ids.add(asset_id)
+        return True
+    return False
+
+
+def _reset_empty_output_failure(asset_id: str, *, consecutive_failures: dict[str, int]) -> None:
+    consecutive_failures[asset_id] = 0
+
+
+def _is_vertex_rate_limit_error(exc: BaseException) -> bool:
+    message = str(exc).lower()
+    return "429" in message or "resource exhausted" in message
+
+
+def _score_event_frame_image_relevance_with_retry(
+    analyzer: GeminiAnalyzer,
+    frame_bytes: bytes,
+    *,
+    clip_id: str,
+    frame_index: int,
+    event_category: str | None,
+    event_caption_text: str | None,
+    image_caption_log=None,
+) -> float | None:
+    attempts = 2
+    for attempt in range(1, attempts + 1):
+        try:
+            return _score_event_frame_image_relevance(
+                analyzer,
+                frame_bytes,
+                event_category=event_category,
+                event_caption_text=event_caption_text,
+            )
+        except Exception as exc:
+            if not _is_vertex_rate_limit_error(exc):
+                raise
+            if image_caption_log is not None:
+                image_caption_log.warning(
+                    "frame image relevance 429: clip_id=%s frame_index=%s attempt=%d/%d err=%s",
+                    clip_id,
+                    frame_index,
+                    attempt,
+                    attempts,
+                    exc,
+                )
+            if attempt >= attempts:
+                if image_caption_log is not None:
+                    image_caption_log.warning(
+                        "frame image relevance skip: clip_id=%s frame_index=%s reason=vertex_429_exhausted",
+                        clip_id,
+                        frame_index,
+                    )
+                return None
+            time.sleep(_VERTEX_RELEVANCE_RETRY_DELAY_SEC)
+    return None
 
 
 def _score_event_frame_image_relevance(
@@ -519,6 +665,55 @@ def _build_processed_clip_image_key(clip_key: str, frame_index: int) -> str:
     return str(image_parent / f"{clip_stem}_{int(frame_index):08d}.jpg")
 
 
+def _build_image_caption_key(image_key: str) -> str:
+    key_path = PurePosixPath(str(image_key or "").strip())
+    stem = key_path.stem or "image"
+    parent = key_path.parent
+    if parent.name == "image":
+        caption_parent = parent.parent / "image_captions"
+    elif str(parent) and str(parent) != ".":
+        caption_parent = parent / "image_captions"
+    else:
+        caption_parent = PurePosixPath("image_captions")
+    return str(caption_parent / f"{stem}.json")
+
+
+def _build_image_caption_payload(
+    *,
+    image_id: str,
+    source_asset_id: str,
+    source_clip_id: str | None,
+    image_bucket: str,
+    image_key: str,
+    frame_index: int | None,
+    frame_sec: float | None,
+    caption_text: str,
+    relevance_score: float | None,
+    model: str | None,
+    generated_at: datetime,
+    event_category: str | None,
+    event_caption_text: str | None,
+    parent_label_key: str | None,
+) -> dict[str, Any]:
+    return {
+        "image_id": image_id,
+        "source_asset_id": source_asset_id,
+        "source_clip_id": source_clip_id,
+        "image_bucket": image_bucket,
+        "image_key": image_key,
+        "frame_index": frame_index,
+        "frame_sec": frame_sec,
+        "caption_text": caption_text,
+        "relevance_score": relevance_score,
+        "model": model,
+        "generated_at": generated_at.isoformat(),
+        "event_category": event_category,
+        "event_caption_text": event_caption_text,
+        "parent_label_key": parent_label_key,
+        "selection_method": "top1_relevance",
+    }
+
+
 def _extract_video_clip_path(
     video_path: Path, *, clip_start_sec: float, clip_end_sec: float,
 ) -> Path:
@@ -561,6 +756,15 @@ def _coerce_float(value: Any) -> float | None:
         return None
 
 
+def _coerce_int(value: Any) -> int | None:
+    if value in (None, ""):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def _stable_clip_id(
     label_id: str, event_index: int,
     clip_start_sec: float | None, clip_end_sec: float | None, clip_key: str,
@@ -592,20 +796,19 @@ def raw_video_to_frame(
     db: DuckDBResource,
     minio: MinIOResource,
 ) -> dict:
+    tags = context.run.tags if context.run else {}
     if not is_dispatch_yolo_only_requested(context.run.tags if context.run else {}):
         context.log.info("raw_video_to_frame 스킵: dispatch YOLO 전용 요청이 아닙니다.")
         return {"processed": 0, "failed": 0, "frames_extracted": 0, "skipped": True}
 
-    folder_name = dispatch_raw_key_prefix_folder(context.run.tags if context.run else None)
-    image_profile = context.run.tags.get("image_profile", "current")
+    folder_name = dispatch_raw_key_prefix_folder(tags)
+    image_profile = tags.get("image_profile", "current")
+    requested_outputs = parse_requested_outputs(tags) or ["bbox"]
     limit = int(context.op_config.get("limit", 1000))
 
     # dispatch JSON에서 파라미터가 있으면 우선 사용, 없으면 config 기본값
     jpeg_quality_tag = context.run.tags.get("jpeg_quality")
     jpeg_quality = int(jpeg_quality_tag) if jpeg_quality_tag else int(context.op_config.get("jpeg_quality", 90))
-
-    max_frames_tag = context.run.tags.get("max_frames_per_video")
-    max_frames = int(max_frames_tag) if max_frames_tag else int(context.op_config.get("max_frames_per_video", 24))
 
     candidates = db.find_raw_video_extract_pending(limit=limit, folder_name=folder_name)
     if not candidates:
@@ -635,14 +838,31 @@ def raw_video_to_frame(
             failed += 1
             continue
 
-        # 1시간 미만 1초 간격, 1시간 이상 10초 간격 (시점은 plan_frame_timestamps, sec < duration)
-        frame_interval = 10.0 if duration_sec >= 3600 else 1.0
-
         try:
             db.update_video_frame_extract_status(asset_id, "processing")
             video_path, temp_video_path = _materialize_video_path(
                 minio,
                 {"archive_path": archive_path, "raw_bucket": raw_bucket, "raw_key": raw_key},
+            )
+
+            sampling = resolve_frame_sampling_policy(
+                sampling_mode="raw_video",
+                requested_outputs=requested_outputs,
+                image_profile=image_profile,
+                duration_sec=duration_sec,
+                fps=fps,
+                frame_count=frame_count,
+            )
+            context.log.info(
+                "raw_video_to_frame sampling: asset=%s mode=%s outputs=%s image_profile=%s "
+                "effective_max_frames=%d frame_interval_sec=%.3f source=%s",
+                asset_id,
+                sampling.sampling_mode,
+                ",".join(requested_outputs) if requested_outputs else "-",
+                image_profile,
+                sampling.effective_max_frames,
+                float(sampling.frame_interval_sec),
+                sampling.policy_source,
             )
 
             frame_rows, uploaded_frame_keys = _extract_raw_video_frames(
@@ -653,10 +873,10 @@ def raw_video_to_frame(
                 duration_sec=duration_sec,
                 fps=fps,
                 frame_count=frame_count,
-                max_frames=max_frames,
+                max_frames=sampling.effective_max_frames,
                 jpeg_quality=jpeg_quality,
                 image_profile=image_profile,
-                frame_interval_sec=frame_interval,
+                frame_interval_sec=sampling.frame_interval_sec,
             )
 
             db.replace_video_frame_metadata(asset_id, frame_rows, image_role="raw_video_frame")
@@ -793,7 +1013,7 @@ def clip_captioning_mvp(
         context.log.info("clip_captioning 스킵: outputs에 captioning이 없습니다.")
         return {"processed": 0, "failed": 0, "labels_inserted": 0, "skipped": True}
 
-    db.ensure_schema()
+    db.ensure_runtime_schema()
     folder_name = dispatch_raw_key_prefix_folder(context.run.tags if context.run else None)
     limit = int(context.op_config.get("limit", 200))
     candidates = db.find_captioning_pending_videos(limit=limit, folder_name=folder_name)
@@ -920,7 +1140,7 @@ def clip_captioning_routed_impl(
         context.log.info("clip_captioning 스킵: outputs에 captioning 없음")
         return {"processed": 0, "failed": 0, "labels_inserted": 0, "skipped": True}
 
-    db.ensure_schema()
+    db.ensure_runtime_schema()
     resolved_config_id = None
     if spec_id:
         config_bundle = load_persisted_spec_config(db, spec_id)
@@ -1033,9 +1253,10 @@ def clip_to_frame_mvp(
         context.log.info("clip_to_frame 스킵: outputs에 captioning이 없습니다.")
         return {"processed": 0, "failed": 0, "frames_extracted": 0, "skipped": True}
 
-    db.ensure_schema()
+    db.ensure_runtime_schema()
     folder_name = dispatch_raw_key_prefix_folder(context.run.tags if context.run else None)
     image_profile = context.run.tags.get("image_profile", "current")
+    requested_outputs = ["captioning"]
 
     candidates = db.find_processable(folder_name=folder_name)
     if not candidates:
@@ -1044,7 +1265,6 @@ def clip_to_frame_mvp(
 
     limit = int(context.op_config.get("limit", 1000))
     jpeg_quality = int(context.op_config.get("jpeg_quality", 90))
-    max_frames = int(context.op_config.get("max_frames_per_video", 12))
     candidates = candidates[:limit]
     total_candidates = len(candidates)
     context.log.info(f"clip_to_frame 시작: 총 {total_candidates}건 처리 예정")
@@ -1072,6 +1292,7 @@ def clip_to_frame_mvp(
         clip_key: str | None = None
         uploaded_clip_key: str | None = None
         uploaded_frame_keys: list[str] = []
+        uploaded_caption_keys: list[str] = []
         clip_created_at = datetime.now()
 
         try:
@@ -1176,9 +1397,27 @@ def clip_to_frame_mvp(
             if media_type == "video":
                 if temp_clip_path is None or clip_duration is None or clip_duration <= 0:
                     raise RuntimeError("clip_meta_missing_or_invalid")
-                clip_interval = 10.0 if clip_duration >= 3600 else 1.0
+                sampling = resolve_frame_sampling_policy(
+                    sampling_mode="clip_event",
+                    requested_outputs=requested_outputs,
+                    image_profile=image_profile,
+                    duration_sec=clip_duration,
+                    fps=clip_fps,
+                    frame_count=clip_frame_count,
+                )
+                context.log.info(
+                    "clip_to_frame sampling: asset=%s mode=%s outputs=%s image_profile=%s "
+                    "effective_max_frames=%d frame_interval_sec=%.3f source=%s",
+                    asset_id,
+                    sampling.sampling_mode,
+                    ",".join(requested_outputs),
+                    image_profile,
+                    sampling.effective_max_frames,
+                    float(sampling.frame_interval_sec),
+                    sampling.policy_source,
+                )
                 db.update_clip_image_extract_status(clip_id, "processing")
-                frame_rows, uploaded_frame_keys = _extract_clip_frames(
+                frame_rows, uploaded_frame_keys, uploaded_caption_keys = _extract_clip_frames(
                     minio,
                     clip_id=clip_id,
                     source_asset_id=asset_id,
@@ -1187,10 +1426,10 @@ def clip_to_frame_mvp(
                     duration_sec=clip_duration,
                     fps=clip_fps,
                     frame_count=clip_frame_count,
-                    max_frames=max_frames,
+                    max_frames=sampling.effective_max_frames,
                     jpeg_quality=jpeg_quality,
                     image_profile=image_profile,
-                    frame_interval_sec=clip_interval,
+                    frame_interval_sec=sampling.frame_interval_sec,
                 )
                 db.replace_processed_clip_frame_metadata(asset_id, clip_id, frame_rows)
                 frames_count = len(frame_rows)
@@ -1240,6 +1479,8 @@ def clip_to_frame_mvp(
                 cleanup_keys.append(uploaded_clip_key)
             if cleanup_keys:
                 _delete_minio_keys(minio, "vlm-processed", cleanup_keys)
+            if uploaded_caption_keys:
+                _delete_minio_keys(minio, "vlm-labels", uploaded_caption_keys)
             failed += 1
         finally:
             _cleanup_temp_path(temp_clip_path)
@@ -1267,25 +1508,27 @@ def clip_to_frame_routed_impl(
         context.log.info("clip_to_frame 스킵: outputs에 captioning/bbox 없음")
         return {"processed": 0, "failed": 0, "frames_extracted": 0, "skipped": True}
 
-    db.ensure_schema()
+    db.ensure_runtime_schema()
     spec_id = str(tags.get("spec_id") or "").strip()
     resolved_config_id = None
+    spec_max_frames_per_video: int | None = None
     if spec_id:
         config_bundle = load_persisted_spec_config(db, spec_id)
         resolved_config_id = config_bundle["resolved_config_id"]
         frame_config = config_bundle["config_json"].get("frame_extraction", {})
+        spec_max_frames_per_video = _coerce_int(frame_config.get("max_frames_per_video"))
         context.log.info(
-            "clip_to_frame: spec_id=%s resolved_config_id=%s frame_keys=%s",
+            "clip_to_frame: spec_id=%s resolved_config_id=%s frame_keys=%s spec_max_frames_per_video=%s",
             spec_id,
             resolved_config_id,
             sorted(frame_config.keys()),
+            spec_max_frames_per_video,
         )
 
     folder_name = dispatch_raw_key_prefix_folder(tags)
     image_profile = tags.get("image_profile", "current")
     limit = int(context.op_config.get("limit", 1000))
     jpeg_quality = int(tags.get("jpeg_quality") or 90)
-    max_frames = int(tags.get("max_frames_per_video") or 12)
 
     candidates = db.find_processable(folder_name=folder_name, spec_id=spec_id or None)
     if not candidates:
@@ -1311,6 +1554,8 @@ def clip_to_frame_routed_impl(
     total_frames = 0
     image_captions = 0
     asset_errors: dict[str, str] = {}
+    consecutive_empty_output_failures: dict[str, int] = {}
+    suppressed_asset_ids: set[str] = set()
 
     asset_ids_in_order: list[str] = []
     seen_asset_ids: set[str] = set()
@@ -1326,6 +1571,20 @@ def clip_to_frame_routed_impl(
     context.log.info("clip_to_frame 시작: 총 %d건 처리 예정", total_candidates)
     for idx, cand in enumerate(candidates, start=1):
         asset_id = cand["asset_id"]
+        if asset_id in suppressed_asset_ids:
+            failed += 1
+            asset_errors.setdefault(
+                asset_id,
+                "ffmpeg_frame_extract_failed:empty_output (repeated>=3)",
+            )
+            context.log.warning(
+                "clip_to_frame skip: [%d/%d] asset=%s repeated_empty_output>=%d",
+                idx,
+                total_candidates,
+                asset_id,
+                _MAX_CONSECUTIVE_EMPTY_OUTPUT_FAILURES_PER_ASSET,
+            )
+            continue
         raw_bucket = cand["raw_bucket"]
         raw_key = cand["raw_key"]
         media_type = cand["media_type"]
@@ -1343,9 +1602,19 @@ def clip_to_frame_routed_impl(
         clip_key: str | None = None
         uploaded_clip_key: str | None = None
         uploaded_frame_keys: list[str] = []
+        uploaded_caption_keys: list[str] = []
         clip_created_at = datetime.now()
 
         try:
+            context.log.info(
+                "clip_to_frame start: [%d/%d] asset=%s media_type=%s label_id=%s event_index=%s",
+                idx,
+                total_candidates,
+                asset_id,
+                media_type,
+                cand["label_id"],
+                int(cand.get("event_index") or 0),
+            )
             event_context: dict[str, Any] = {}
             if enable_image_captioning:
                 try:
@@ -1469,9 +1738,28 @@ def clip_to_frame_routed_impl(
             if media_type == "video":
                 if temp_clip_path is None or clip_duration is None or clip_duration <= 0:
                     raise RuntimeError("clip_meta_missing_or_invalid")
-                clip_interval = 10.0 if clip_duration >= 3600 else 1.0
+                sampling = resolve_frame_sampling_policy(
+                    sampling_mode="clip_event",
+                    requested_outputs=requested,
+                    image_profile=image_profile,
+                    duration_sec=clip_duration,
+                    fps=clip_fps,
+                    frame_count=clip_frame_count,
+                    spec_max_frames_per_video=spec_max_frames_per_video,
+                )
+                context.log.info(
+                    "clip_to_frame sampling: asset=%s mode=%s outputs=%s image_profile=%s "
+                    "effective_max_frames=%d frame_interval_sec=%.3f source=%s",
+                    asset_id,
+                    sampling.sampling_mode,
+                    ",".join(requested) if requested else "-",
+                    image_profile,
+                    sampling.effective_max_frames,
+                    float(sampling.frame_interval_sec),
+                    sampling.policy_source,
+                )
                 db.update_clip_image_extract_status(clip_id, "processing")
-                frame_rows, uploaded_frame_keys = _extract_clip_frames(
+                frame_rows, uploaded_frame_keys, uploaded_caption_keys = _extract_clip_frames(
                     minio,
                     clip_id=clip_id,
                     source_asset_id=asset_id,
@@ -1480,14 +1768,17 @@ def clip_to_frame_routed_impl(
                     duration_sec=clip_duration,
                     fps=clip_fps,
                     frame_count=clip_frame_count,
-                    max_frames=max_frames,
+                    max_frames=sampling.effective_max_frames,
                     jpeg_quality=jpeg_quality,
                     image_profile=image_profile,
-                    frame_interval_sec=clip_interval,
+                    frame_interval_sec=sampling.frame_interval_sec,
                     image_caption_analyzer=image_caption_analyzer,
                     image_caption_event_category=event_category,
                     image_caption_event_caption_text=event_caption,
+                    image_caption_parent_label_key=labels_key,
+                    store_image_caption_json=bool(tags.get("request_id")) and enable_image_captioning,
                     image_caption_log=context.log if enable_image_captioning else None,
+                    progress_log=context.log,
                 )
                 db.replace_processed_clip_frame_metadata(asset_id, clip_id, frame_rows)
                 frames_count = len(frame_rows)
@@ -1511,6 +1802,7 @@ def clip_to_frame_routed_impl(
 
             db.update_processed_clip_status(clip_id, "completed")
             processed += 1
+            _reset_empty_output_failure(asset_id, consecutive_failures=consecutive_empty_output_failures)
             context.log.info(
                 "clip_to_frame 진행: [%d/%d] asset=%s frames=%d captions=%d ✅",
                 idx,
@@ -1521,7 +1813,14 @@ def clip_to_frame_routed_impl(
             )
         except Exception as exc:
             failed += 1
-            asset_errors[asset_id] = str(exc)[:500]
+            error_message = str(exc)[:500]
+            asset_errors[asset_id] = error_message
+            suppress_after_failure = _track_empty_output_failure(
+                asset_id,
+                error_message,
+                consecutive_failures=consecutive_empty_output_failures,
+                suppressed_asset_ids=suppressed_asset_ids,
+            )
             context.log.error(
                 "clip_to_frame 진행: [%d/%d] asset=%s ❌ %s",
                 idx,
@@ -1529,13 +1828,19 @@ def clip_to_frame_routed_impl(
                 asset_id,
                 exc,
             )
+            if suppress_after_failure:
+                context.log.warning(
+                    "clip_to_frame repeated empty_output 억제: asset=%s threshold=%d",
+                    asset_id,
+                    _MAX_CONSECUTIVE_EMPTY_OUTPUT_FAILURES_PER_ASSET,
+                )
             if clip_id:
                 db.update_processed_clip_status(clip_id, "failed")
                 db.update_clip_image_extract_status(
                     clip_id,
                     "failed",
                     count=0,
-                    error=str(exc)[:500],
+                    error=error_message,
                     extracted_at=datetime.now(),
                 )
                 db.replace_processed_clip_frame_metadata(asset_id, clip_id, [])
@@ -1544,6 +1849,8 @@ def clip_to_frame_routed_impl(
                 cleanup_keys.append(uploaded_clip_key)
             if cleanup_keys:
                 _delete_minio_keys(minio, "vlm-processed", cleanup_keys)
+            if uploaded_caption_keys:
+                _delete_minio_keys(minio, "vlm-labels", uploaded_caption_keys)
         finally:
             _cleanup_temp_path(temp_clip_path)
             _cleanup_temp_path(temp_video_path)
