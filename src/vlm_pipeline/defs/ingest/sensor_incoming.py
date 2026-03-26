@@ -8,10 +8,10 @@ from pathlib import Path
 
 from dagster import DefaultSensorStatus, RunRequest, SkipReason, sensor
 
-from vlm_pipeline.lib.env_utils import IS_STAGING, int_env
+from vlm_pipeline.lib.env_utils import int_env
 from vlm_pipeline.resources.config import PipelineConfig
 
-from .archive import should_archive_manifest
+from .runtime_policy import pending_manifest_allowed
 from .sensor_helpers import (
     build_source_unit_run_key,
     collect_in_flight_runs,
@@ -81,12 +81,12 @@ def incoming_manifest_sensor(context):
         return
 
     manifest_entries = load_pending_manifest_entries(manifests, context)
-    if IS_STAGING:
+    if manifest_entries:
         allowed_entries: list[dict] = []
         blocked_entries = 0
         for entry in manifest_entries:
             payload = entry.get("payload") or {}
-            if should_archive_manifest(payload, config=config):
+            if pending_manifest_allowed(payload, config=config):
                 allowed_entries.append(entry)
                 continue
             _move_staging_blocked_manifest(entry["path"], processed_dir, context)
@@ -94,7 +94,7 @@ def incoming_manifest_sensor(context):
         manifest_entries = allowed_entries
         if blocked_entries > 0:
             context.log.info(
-                f"staging auto_bootstrap pending manifest 차단: {blocked_entries}개"
+                f"runtime policy pending manifest 차단: {blocked_entries}개"
             )
 
     context.log.info(f"pending manifest 발견: {len(manifests)}개, entries: {len(manifest_entries)}개")

@@ -21,7 +21,7 @@ def spec_resolve_sensor(
     db: DuckDBResource,
 ) -> RunRequest | None:
     """labeling_specs.spec_status='pending_resolved' 대상으로 config resolve 후 matching raw_files를 ready_for_labeling으로. (job 트리거는 ready_for_labeling_sensor.)"""
-    db.ensure_schema()
+    db.ensure_runtime_schema()
     specs = db.list_specs_by_status("pending_resolved")
     if not specs:
         return None
@@ -92,7 +92,7 @@ def ready_for_labeling_sensor(
     db: DuckDBResource,
 ) -> RunRequest | None:
     """raw_files.ingest_status='ready_for_labeling' spec 단위로 auto_labeling_routed_job 실행."""
-    db.ensure_schema()
+    db.ensure_runtime_schema()
     with db.connect() as conn:
         if not db._table_exists(conn, "raw_files") or "spec_id" not in db._table_columns(
             conn, "raw_files"

@@ -11,19 +11,11 @@ import duckdb
 from dagster import DefaultSensorStatus, RunRequest, SkipReason, sensor
 from dagster._core.storage.dagster_run import DagsterRunStatus, RunsFilter
 
-
 from vlm_pipeline.lib.env_utils import default_duckdb_path, int_env, is_duckdb_lock_conflict
+from vlm_pipeline.resources.runtime_settings import load_motherduck_sensor_settings
 
-WATCHED_TABLES = [
-    "raw_files",
-    "image_metadata",
-    "video_metadata",
-    "labels",
-    "processed_clips",
-    "datasets",
-    "dataset_clips",
-    "image_labels",
-]
+_SENSOR_SETTINGS = load_motherduck_sensor_settings()
+WATCHED_TABLES = list(_SENSOR_SETTINGS.watched_tables)
 
 
 def _parse_cursor_state(raw_cursor: str | None) -> tuple[int | None, str | None, int]:
@@ -105,14 +97,33 @@ def _build_table_sensor(table_name: str):
         else f"{table_name} row count 증가 시 MotherDuck 부분 동기화 트리거"
     )
 
+    def _has_inflight_duckdb_writer(context) -> bool:
+        if not _SENSOR_SETTINGS.skip_during_duckdb_writer:
+            return False
+        runs = context.instance.get_runs(
+            filters=RunsFilter(statuses=[DagsterRunStatus.STARTED]),
+            limit=50,
+        )
+        for run in runs:
+            if run.job_name == "motherduck_sync_job":
+                continue
+            tags = getattr(run, "tags", {}) or {}
+            if str(tags.get("duckdb_writer", "")).lower() == "true":
+                return True
+        return False
+
     @sensor(
         name=sensor_name,
         job_name="motherduck_sync_job",
-        minimum_interval_seconds=30,
+        minimum_interval_seconds=_SENSOR_SETTINGS.interval_sec,
         default_status=DefaultSensorStatus.RUNNING,
         description=description,
     )
     def _table_sensor(context):
+        if _has_inflight_duckdb_writer(context):
+            yield SkipReason("duckdb_writer run in progress: motherduck sensor skipped")
+            return
+
         in_flight = context.instance.get_runs(
             filters=RunsFilter(
                 job_name="motherduck_sync_job",
@@ -249,23 +260,15 @@ def _build_table_sensor(table_name: str):
 
 (
     motherduck_raw_files_sensor,
-    motherduck_image_metadata_sensor,
     motherduck_video_metadata_sensor,
     motherduck_labels_sensor,
     motherduck_processed_clips_sensor,
-    motherduck_datasets_sensor,
-    motherduck_dataset_clips_sensor,
-    motherduck_image_labels_sensor,
 ) = [_build_table_sensor(table_name) for table_name in WATCHED_TABLES]
 
 
 MOTHERDUCK_TABLE_SENSORS = [
     motherduck_raw_files_sensor,
-    motherduck_image_metadata_sensor,
     motherduck_video_metadata_sensor,
     motherduck_labels_sensor,
     motherduck_processed_clips_sensor,
-    motherduck_datasets_sensor,
-    motherduck_dataset_clips_sensor,
-    motherduck_image_labels_sensor,
 ]
