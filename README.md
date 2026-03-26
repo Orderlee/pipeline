@@ -1,186 +1,142 @@
 # VLM DataOps Pipeline
 
 VLM(Vision-Language Model) 학습 데이터를 구축하기 위한 데이터 파이프라인입니다.
-NAS에 있는 이미지/비디오 미디어를 수집 → inline 중복 제거 → 자동 라벨링/수동 검수 반영 → 전처리 데이터 생성 → 학습 데이터셋 조립까지의 전 과정을 **Dagster** 기반으로 자동화합니다.
+NAS에 있는 이미지/비디오 미디어를 수집하고, 중복을 정리한 뒤, Gemini(Vertex) 기반 이벤트 라벨링과 YOLO-World 검출을 수행하고, 최종적으로 학습 데이터셋을 조립합니다. 전체 파이프라인은 **Dagster + DuckDB + MinIO** 기반으로 운영됩니다.
+
+현재 기준으로 이 저장소는 **production**과 **staging**을 분리해 운영합니다.
+
+- **production**: `/nas/incoming` 기반 수집, `.dispatch/pending/*.json` 기반 자동 라벨링
+- **staging**: `/nas/staging/incoming` 기반 검증, `agent:8080` polling 기반 dispatch
 
 ## Architecture
 
-```
-┌───────────────────────────────────────────────────────────┐
-│  NAS (Network Attached Storage)                           │
-│    /nas/incoming --- media files                          │
-│    /nas/archive  --- archived originals                   │
-└─────────┬─────────────────────────────────────────────────┘
-          |
-          v
-┌───────────────────────────────────────────────────────────┐
-│  Dagster (Orchestrator)                                   │
-│                                                           │
-│ Sensor --> INGEST+DEDUP --> AUTO_LABEL --> BUILD          │
-│  manifest   validate       frames/labels   processed data │
-│  detect     upload/phash   captions/clips  dataset        │
-└──┬──────────┬──────────────────┬──────────────┬───────────┘
-   |          |                  |              |
-   v          v                  v              v
-┌───────────────────────────────────────────────────────────┐
-│  Storage                                                  │
-│                                                           │
-│  MinIO (S3)          DuckDB           PostgreSQL  Grafana │
-│  |- vlm-raw          data catalog     NAS folder     ^    │
-│  |- vlm-labels         |              tree           |    │
-│  |- vlm-processed      v              '--------------'    │
-│  '- vlm-dataset      MotherDuck (optional)                │
-│                                                           │
-│  GCS (Google Cloud Storage) --- external data source      │
-└───────────────────────────────────────────────────────────┘
+```text
+┌──────────────────────────────────────────────────────────────────────────────┐
+│ NAS                                                                          │
+│  Production: /nas/incoming, /nas/archive                                     │
+│  Staging:    /nas/staging/incoming, /nas/staging/archive                     │
+└───────────────────────────────┬──────────────────────────────────────────────┘
+                                │
+                                v
+┌──────────────────────────────────────────────────────────────────────────────┐
+│ Dagster                                                                      │
+│                                                                              │
+│ Production                                                                   │
+│   incoming/manifest sensors -> ingest_job                                    │
+│   .dispatch/pending/*.json -> dispatch_sensor -> dispatch_stage_job          │
+│                                                                              │
+│ Staging                                                                      │
+│   agent polling -> staging_agent_dispatch_sensor                    │
+│   -> dispatch_stage_job / auto_labeling_routed_job / import jobs            │
+└───────────────┬───────────────────────────────┬──────────────────────────────┘
+                │                               │
+                v                               v
+┌──────────────────────────────┐    ┌─────────────────────────────────────────┐
+│ MinIO                        │    │ DuckDB / MotherDuck                     │
+│  vlm-raw                     │    │ raw_files                               │
+│  vlm-labels                  │    │ video_metadata / image_metadata         │
+│  vlm-processed               │    │ labels / processed_clips / image_labels │
+│  vlm-dataset                 │    │ datasets / dataset_clips                │
+└──────────────────────────────┘    │ staging_* tracking / spec tables        │
+                                    └─────────────────────────────────────────┘
 ```
 
-- **NAS**: 네트워크 스토리지. `/nas/incoming`으로 미디어가 수신되고, 처리 완료 후 `/nas/archive`로 이동
-- **Dagster**: 파이프라인 오케스트레이터. Sensor가 manifest를 감지하면 `INGEST+DEDUP → AUTO LABELING → BUILD` 흐름을 자동 실행
-- **MinIO**: S3 호환 오브젝트 스토리지. 단계별로 4개 버킷(`vlm-raw`, `vlm-labels`, `vlm-processed`, `vlm-dataset`)에 저장
-- **DuckDB**: 데이터 카탈로그. 파일 메타데이터·라벨·데이터셋 정보를 관리 (선택적으로 MotherDuck 클라우드 동기화)
-- **PostgreSQL + Grafana**: NAS 폴더 트리 데이터를 저장하고 대시보드로 시각화
-- **GCS**: Google Cloud Storage에서 외부 데이터를 `/nas/incoming`으로 자동 다운로드 (스케줄 기반)
+- **NAS**: 원본 미디어가 들어오는 파일 시스템입니다.
+- **Dagster**: 수집, 라벨링, 전처리, 동기화를 오케스트레이션합니다.
+- **MinIO**: 단계별 산출물을 저장하는 S3 호환 스토리지입니다.
+- **DuckDB**: 메타데이터와 라벨링 결과의 source of truth입니다.
+- **MotherDuck**: 운영 DuckDB의 선택적 클라우드 동기화 대상입니다.
+
+## Production vs Staging
+
+| 항목 | Production | Staging |
+|------|------------|---------|
+| Dagster UI | `http://<host>:3030` | `http://<host>:3031` |
+| DuckDB | `/data/pipeline.duckdb` | `/data/staging.duckdb` |
+| Incoming | `/nas/incoming` | `/nas/staging/incoming` |
+| Archive | `/nas/archive` | `/nas/staging/archive` |
+| MinIO endpoint | `http://172.168.47.36:9000` | `http://172.168.47.36:9002` |
+| Dagster home | `/app/dagster_home` | `/app/dagster_home_staging` |
+| Main entrypoint | `src/vlm_pipeline/definitions.py` | `src/vlm_pipeline/definitions_staging.py` |
+| Dispatch ingress | `.dispatch/pending/*.json` | `agent` polling |
+
+핵심 차이:
+
+- **production**은 자동 라벨링을 `.dispatch/pending/*.json` 요청 파일로만 시작합니다.
+- **staging**은 `staging_agent_dispatch_sensor`가 `agent:8080`에서 pending 요청을 polling해서 시작합니다.
+- staging은 `manual_label_import_job`, `prelabeled_import_job`, spec 기반 라우팅 등 검증용 흐름을 더 포함합니다.
 
 ## Data Flow
 
-파이프라인은 4단계로 구성되며, 각 단계는 Dagster Asset으로 정의되어 있습니다.
+### Production
 
-```
-Data Sources
-  |
-  |--- NAS /incoming (direct upload)
-  |--- GCS buckets  (gcs_download_schedule, every minute)
-  |
-  v
-┌───────────────────────────────────────────────────────────┐
-│ Phase 1 — Auto (Dagster Sensor trigger)                   │
-│                                                           │
-│ 1. INGEST+DEDUP (ingested_raw_files)                      │
-│    parse manifest -> validate -> normalize -> upload      │
-│    |- DuckDB: raw_files, image/video_metadata INSERT      │
-│    |- MinIO:  upload to vlm-raw bucket                    │
-│    |- DuckDB: raw_files.phash / dup_group_id UPDATE       │
-│    '- NAS:    move originals to /nas/archive              │
-└─────────────────────┬─────────────────────────────────────┘
-                      |
-                      v  read media from vlm-raw bucket
-┌───────────────────────────────────────────────────────────┐
-│ External / Auto Labeling                                  │
-│                                                           │
-│  raw video -> external model inference                    │
-│            |- timestamp                                   │
-│            |- caption                                     │
-│            '- object detection json                       │
-│                     |                                     │
-│                     v                                     │
-│  labeled_files -> labels table / vlm-labels 등록          │
-│                     |                                     │
-│                     v                                     │
-│  extracted_video_frames -> timestamp 기반 대표 frame 추출 │
-│  manual review tool (optional) -> reviewed label JSON     │
-└─────────────────────┬─────────────────────────────────────┘
-                      |
-                      v
-┌───────────────────────────────────────────────────────────┐
-│ Phase 2 — Auto (Dagster Sensor trigger)                   │
-│                                                           │
-│ 2. AUTO LABEL (labeled_files, extracted_video_frames)     │
-│    register labels -> extract event frames               │
-│    |- DuckDB: labels, image_metadata INSERT               │
-│    '- MinIO:  upload to vlm-labels / vlm-processed        │
-├───────────────────────────────────────────────────────────┤
-│ 3. PROCESS (processed_data / processed_clips table)       │
-│    raw media + labels -> generate processed data          │
-│    |- DuckDB: processed_clips INSERT                      │
-│    '- MinIO:  upload to vlm-processed bucket              │
-├───────────────────────────────────────────────────────────┤
-│ 4. BUILD (build_dataset)                                  │
-│    split train/val/test 80:10:10 -> assemble dataset      │
-│    |- DuckDB: datasets, dataset_clips INSERT              │
-│    '- MinIO:  upload to vlm-dataset bucket                │
-└───────────────────────────────────────────────────────────┘
-  |
-  v  (optional)
-MotherDuck sync: local DuckDB -> cloud
+```text
+/nas/incoming
+  ├─ auto_bootstrap / manifest sensor
+  │    -> ingest_job (수집 전용)
+  └─ .dispatch/pending/*.json
+       -> dispatch_sensor
+       -> dispatch_stage_job
+       -> raw_ingest
+       -> clip_timestamp
+       -> clip_captioning
+       -> clip_to_frame
+       -> staging_yolo_image_detection
 ```
 
-### 단계별 요약
+production 정책은 다음과 같습니다.
 
-| 단계 | Asset | 설명 | DuckDB 테이블 | MinIO 버킷 |
-|------|-------|------|---------------|------------|
-| 0. GCS | `gcs_download_to_incoming` | GCS 버킷에서 `/nas/incoming`으로 미디어 다운로드 | — | — |
-| 1. INGEST+DEDUP | `raw_ingest` | manifest 파싱 → 파일 검증 → 정규화 → MinIO 업로드 → 메타데이터 추출 → pHash 기반 중복 그룹 반영 | `raw_files`, `image_metadata`, `video_metadata` | `vlm-raw` |
-| 2a. TIMESTAMP | `clip_timestamp` | Gemini 호출 → 이벤트 구간 JSON 생성 → vlm-labels 업로드 | `video_metadata` | `vlm-labels` |
-| 2b. CAPTIONING | `clip_captioning` | Gemini JSON 정규화 → 이벤트별 labels 테이블 upsert | `labels` | `vlm-labels` |
-| 2c. PROCESS | `clip_to_frame` | label 기반 clip 절단 + ffprobe 메타 추출 + 적응형 프레임 추출 | `processed_clips`, `image_metadata` | `vlm-processed` |
-| 2d. YOLO | `yolo_image_detection` | YOLO-World-L object detection (선택, `ENABLE_YOLO_DETECTION=true`) | `image_labels` | `vlm-labels` |
-| 3. BUILD | `build_dataset` | train/val/test 80:10:10 분할 → 학습 데이터셋 조립 | `datasets`, `dataset_clips` | `vlm-dataset` |
-| — | `motherduck_sync` | 로컬 DuckDB 테이블을 MotherDuck 클라우드로 동기화 (선택) | — | — |
+- `ingest_job` / `mvp_stage_job`는 **수집 전용**입니다.
+- Gemini / clip / YOLO가 포함된 자동 라벨링은 **오직 `dispatch_stage_job`** 에서만 자동으로 실행됩니다.
+- `incoming/gcp/**`는 GCS 수집 스케줄로 들어오고, 일반 incoming 폴더는 dispatch 요청이 있어야 자동 라벨링으로 이어집니다.
 
-### 파이프라인 트리거 방식
+### Staging
 
-- **자동**: `auto_bootstrap_manifest_sensor`가 `/nas/incoming` 감시 → manifest JSON 생성 → `incoming_manifest_sensor`가 `mvp_stage_job` 트리거
-- **수동**: `scripts/bootstrap_manifest.sh`로 manifest 생성 후 sensor가 감지
-
-### Auto Labeling 상세
-
-Auto Labeling은 3개 단계의 Dagster Asset으로 구성되며, `auto_labeling_sensor`가 backlog(Gemini 미처리, captioning 미완료, clip 미생성)을 감지하면 자동으로 `auto_labeling_job`을 트리거합니다.
-
-```
-raw_ingest (완료)
-     │
-     v  auto_labeling_sensor (backlog 감지)
-┌────────────────────────────────────────────────────────────────┐
-│ Step 1. clip_timestamp                                        │
-│   Gemini 1회 호출 → 이벤트 JSON 생성                            │
-│   ├─ 비디오 파일 확보 (archive_path 또는 MinIO vlm-raw fallback)  │
-│   ├─ 대용량 비디오 자동 리사이즈 (ffmpeg preview, 아래 참조)        │
-│   ├─ Gemini에 VIDEO_EVENT_PROMPT 전송                           │
-│   │   → [{category, timestamp, ko_caption, en_caption}] 반환    │
-│   ├─ vlm-labels/<raw_parent>/events/<video_stem>.json 업로드     │
-│   └─ video_metadata.auto_label_status = 'generated' 갱신        │
-│                                                                │
-│ Step 2. clip_captioning                                        │
-│   Gemini JSON 정규화 → labels 테이블 upsert                      │
-│   ├─ vlm-labels에서 이벤트 JSON 다운로드 + JSON 정리               │
-│   ├─ 이벤트별 label row 생성 (timestamp 구간 + caption 포함)       │
-│   ├─ DuckDB labels 테이블에 upsert (stable label_id 사용)         │
-│   └─ video_metadata.auto_label_status = 'completed' 갱신         │
-│                                                                │
-│ Step 3. clip_to_frame                                          │
-│   label 기반 clip 절단 → 적응형 프레임 추출                         │
-│   ├─ labels + raw_files 조인하여 processable 후보 조회             │
-│   ├─ ffmpeg로 이벤트 구간별 clip 절단                              │
-│   ├─ clip별 ffprobe로 메타데이터 추출 (width, height, fps 등)       │
-│   ├─ 적응형 규칙으로 대표 프레임 JPEG 추출 (아래 규칙표 참조)         │
-│   ├─ MinIO vlm-processed에 clip 영상 + 프레임 이미지 업로드         │
-│   └─ DuckDB processed_clips + image_metadata INSERT              │
-└────────────────────────────────────────────────────────────────┘
+```text
+agent:8080
+  -> staging_agent_dispatch_sensor
+  -> dispatch_stage_job
+  -> raw_ingest
+  -> spec_resolve_sensor
+  -> clip_timestamp / clip_captioning / clip_to_frame
+  -> bbox_labeling / activate_labeling_spec
 ```
 
-#### Gemini 설정
+staging의 주요 특징:
 
-| 항목 | 값 |
-|------|-----|
-| 모델 | `gemini-2.5-flash` (Vertex AI) |
-| 프로젝트 | `GEMINI_PROJECT` 환경변수 (기본: `gmail-361002`) |
-| 리전 | `GEMINI_LOCATION` 환경변수 (기본: `us-central1`) |
-| 인증 | `GOOGLE_APPLICATION_CREDENTIALS` 또는 `GEMINI_SERVICE_ACCOUNT_JSON` |
+- 요청 ingress는 파일이 아니라 **API polling** 입니다.
+- fully-empty 요청은 waiting으로 남기고, 실행 메타가 채워질 때까지 run을 만들지 않습니다.
+- `필요없음` 계열 요청은 raw ingest를 수행하고, 같은 폴더 안에 라벨 결과가 있으면 자동 import까지 수행합니다.
+- `prelabeled_import_job`으로 완료된 라벨 데이터를 별도 수동 적재할 수도 있습니다.
 
-#### 대용량 비디오 자동 리사이즈
+## 단계별 요약
 
-Gemini API에 전송 전 비디오 크기가 `GEMINI_SAFE_VIDEO_BYTES`(기본 450MB)를 초과하면 ffmpeg으로 preview를 자동 생성합니다. 3단계로 시도하며, 성공하면 해당 preview를 Gemini에 전송합니다.
+| 단계 | Asset / Job | 설명 | 주요 저장 위치 |
+|------|-------------|------|----------------|
+| GCS 수집 | `gcs_download_to_incoming` | GCS 버킷에서 incoming으로 다운로드 | NAS |
+| INGEST | `raw_ingest` | 파일 검증, checksum, MinIO 업로드, 메타데이터 추출, archive 이동 | `vlm-raw`, `raw_files`, `video_metadata`, `image_metadata` |
+| TIMESTAMP | `clip_timestamp` | Gemini로 이벤트 구간 JSON 생성 | `vlm-labels`, `video_metadata` |
+| CAPTIONING | `clip_captioning` | Gemini 이벤트 JSON을 labels row로 정규화 | `labels` |
+| FRAME | `clip_to_frame` | clip 기반 프레임 추출 및 top-1 이미지 caption 저장 | `vlm-processed`, `processed_clips`, `image_metadata` |
+| RAW FRAME | `raw_video_to_frame` | YOLO 전용 요청 시 raw video에서 직접 frame 추출 | `vlm-processed`, `image_metadata` |
+| YOLO | `staging_yolo_image_detection`, `yolo_image_detection`, `bbox_labeling` | YOLO-World detection 및 bbox JSON 저장 | `vlm-labels`, `image_labels` |
+| BUILD | `build_dataset` | 학습 데이터셋 조립 | `vlm-dataset`, `datasets`, `dataset_clips` |
+| SYNC | `motherduck_sync` | DuckDB -> MotherDuck 동기화 | MotherDuck |
 
-| 시도 | 해상도 | FPS | 목표 크기 |
-|------|--------|-----|----------|
-| 1차 | 960px | 6fps | 120MB |
-| 2차 | 640px | 4fps | 80MB |
-| 3차 | 480px | 3fps | 48MB |
+## Auto Labeling 상세
 
-#### Gemini 이벤트 JSON 형식
+### 1. Gemini Timestamp / Caption
 
-`clip_timestamp`가 Gemini에서 받아오는 이벤트 JSON 예시입니다.
+`clip_timestamp`는 Gemini(Vertex)를 사용해 비디오 이벤트를 분석합니다.
+
+- 프롬프트 정의: `src/vlm_pipeline/lib/gemini_prompts.py`
+- 호출 래퍼: `src/vlm_pipeline/lib/gemini.py`
+- 429 `Resource exhausted`에는 공용 backoff/retry가 적용됩니다.
+- 대형 비디오는 preview를 생성한 뒤 Gemini에 전달합니다.
+
+반환된 이벤트 JSON은 `vlm-labels/.../events/*.json`에 저장되고, 이어서 `clip_captioning`이 이를 `labels` 테이블에 정규화합니다.
+
+예시:
 
 ```json
 [
@@ -194,246 +150,170 @@ Gemini API에 전송 전 비디오 크기가 `GEMINI_SAFE_VIDEO_BYTES`(기본 45
 ]
 ```
 
-지원 카테고리 예시: `fire`, `smoke`, `fall`, `intrusion`, `fight`, `normal_activity`, `vehicle_accident`, `loitering`, `vandalism`, `abandoned_object` 등
+### 2. Frame Extraction
 
-#### 적응형 프레임 추출 규칙
+`clip_to_frame`와 `raw_video_to_frame`은 공통으로 `src/vlm_pipeline/lib/video_frames.py`의 정책을 사용합니다.
 
-`clip_to_frame`은 비디오 길이와 FPS에 따라 추출 프레임 수를 자동 조절합니다.
+현재는 고정 `12 / 24` 상수가 아니라 아래 값을 보고 동적으로 결정합니다.
 
-| 비디오 길이 | 추출 프레임 수 | FPS 보정 |
-|------------|--------------|----------|
-| < 10초 | 3 | fps < 3 → max 3 |
-| 10 ~ 30초 | 5 | fps 3~10 → max 6 |
-| 30 ~ 120초 | 8 | |
-| ≥ 120초 | 12 | |
+- `sampling_mode`: `clip_event` / `raw_video`
+- `requested_outputs`
+- `image_profile`: `current` / `dense`
+- `duration_sec`, `fps`, `frame_count`
+- staging spec의 `frame_extraction.max_frames_per_video` hard cap
 
-- 전체 상한: `max_frames_per_video = 12`
-- JPEG 품질: 90 (config으로 변경 가능)
-- 프레임 위치: 비디오 구간의 10%~90% 범위 내 균등 배치 (2초 미만 영상은 20%~80%)
+기본 규칙:
 
-### YOLO Object Detection
+- `duration < 3600s`이면 `1초` 간격
+- `duration >= 3600s`이면 `10초` 간격
+- interval로 뽑은 timestamp가 너무 많으면 균등 downsampling으로 상한을 맞춥니다.
+- `sec < duration` 규칙으로 clip 끝 경계의 `empty_output`을 피합니다.
 
-`clip_to_frame`에서 추출된 이미지(`processed_clip_frame`)에 대해 YOLO-World-L 모델로 object detection을 수행합니다. `ENABLE_YOLO_DETECTION=true`로 활성화하며, `yolo_detection_sensor`가 backlog을 감지하면 자동으로 `yolo_detection_job`을 트리거합니다.
+또한 `clip_to_frame`은 top-1 relevance frame에 대해 이미지 caption을 생성하고, 이를 `image_metadata.image_caption_text`와 `vlm-labels/.../image_captions/*.json`에 저장합니다.
 
-```
-clip_to_frame (완료)
-     │
-     v  yolo_detection_sensor (backlog 감지)
-┌────────────────────────────────────────────────────────────────┐
-│ yolo_image_detection                                           │
-│   ├─ processed_clip_frame 중 YOLO 미처리 이미지 조회              │
-│   ├─ MinIO vlm-processed에서 이미지 다운로드                      │
-│   ├─ 배치 단위 추론 (기본 batch_size=4)                           │
-│   ├─ 결과 JSON: vlm-labels/<raw_parent>/detections/<stem>.json   │
-│   └─ DuckDB image_labels INSERT                                │
-└────────────────────────────────────────────────────────────────┘
-```
+### 3. YOLO-World Detection
 
-| 설정 | 기본값 | 설명 |
-|------|--------|------|
-| `confidence_threshold` | 0.25 | 검출 신뢰도 임계값 |
-| `iou_threshold` | 0.45 | NMS IoU 임계값 |
-| `batch_size` | 4 | 배치 추론 크기 |
-| YOLO 서버 | `docker/yolo/` | GPU 1 전용, 모델 상주 Docker 서비스 (포트 8001) |
-| 모델 | `yolov8l-worldv2` | YOLO-World Large |
+YOLO 서버는 `docker/yolo/` 아래 별도 서비스로 동작합니다.
 
-기본 검출 클래스: `person`, `car`, `truck`, `bus`, `motorcycle`, `bicycle`, `fire`, `smoke`, `flame`, `knife`, `gun`, `bag`, `backpack`, `suitcase`, `helmet`, `safety vest`, `hard hat`, `traffic cone`, `barricade`, `dog`, `cat`
+- 모델: `yolov8l-worldv2`
+- 기본 디바이스: `cuda:1`
+- health endpoint: `http://<host>:8001/health`
+
+현재 YOLO 호출 방식의 특징:
+
+- dispatch의 `classes`가 실제 YOLO 요청에 연결됩니다.
+- 요청마다 `classes`를 전달하는 **request-scoped classes** 방식입니다.
+- production/staging가 같은 YOLO 서버를 써도 lock으로 전역 class 충돌을 막습니다.
+- 결과 JSON에는 `requested_classes`, `requested_classes_count`, `class_source`를 함께 저장합니다.
+
+지원 클래스가 비어 있으면:
+
+1. dispatch `classes`
+2. 없으면 `categories -> derive_classes_from_categories()`
+3. staging spec이면 `spec.classes`와 bbox config 교집합
+4. 그래도 없으면 서버 기본 classes
 
 ## Database Schema
 
-DuckDB에 9개 운영 테이블이 정의되어 있습니다. (`src/vlm_pipeline/sql/schema.sql`)
+주요 테이블은 `src/vlm_pipeline/sql/schema.sql`에 정의되어 있습니다.
 
-### 테이블 관계도
+### 운영 핵심 테이블
 
-```
-raw_files
-  |
-  |---- 1:1 ---- image_metadata
-  |
-  |---- 1:1 ---- video_metadata
-  |
-  |---- 1:N ---- labels
-  |                |
-  |                '---- 1:N ---- processed_clips
-  |                                  |
-  '---- 1:N -------------------------'
-                                     |
-                                     '---- M:N ---- datasets
-                                        (via dataset_clips join table)
-```
+| 테이블 | 설명 |
+|--------|------|
+| `raw_files` | 원본 미디어 메타, checksum, MinIO raw 위치 |
+| `video_metadata` | ffprobe 기반 비디오 메타, Gemini 상태, 재인코딩 추적 |
+| `image_metadata` | 이미지/프레임 메타, `image_caption_text`, `image_caption_score` |
+| `labels` | 이벤트 단위 timestamp / caption 라벨 |
+| `processed_clips` | clip 기반 전처리 산출물 |
+| `image_labels` | YOLO detection 결과 |
+| `datasets` | 데이터셋 정의 |
+| `dataset_clips` | dataset ↔ clip 연결 |
 
-- `raw_files` → `image_metadata` / `video_metadata`: 1:1 관계. INGEST 시 미디어 타입에 따라 이미지 또는 비디오 메타데이터가 생성됩니다.
-- `raw_files` → `labels`: 1:N 관계. 하나의 미디어 파일에 자동 라벨/수동 검수 라벨 등 여러 이벤트 라벨이 매칭될 수 있습니다.
-- `raw_files` + `labels` → `processed_clips`: 원본과 라벨(timestamp, caption, detection 결과 등)을 조합하여 전처리 결과물을 생성합니다.
-- `processed_clips` ↔ `datasets`: M:N 관계. `dataset_clips` 연결 테이블을 통해 하나의 클립이 여러 데이터셋에, 하나의 데이터셋이 여러 클립을 포함할 수 있습니다.
+### staging 전용 추적 / spec 테이블
 
-### 테이블 상세
+| 테이블 | 설명 |
+|--------|------|
+| `staging_dispatch_requests` | staging dispatch 요청 추적 |
+| `staging_pipeline_runs` | staging run 상태 추적 |
+| `staging_model_configs` | staging 기본 설정 저장 |
+| `labeling_specs` | spec 요청 정의 |
+| `labeling_configs` | spec 설정 스냅샷 |
+| `requester_config_map` | requester 별 config 연결 |
 
-**`raw_files`** — NAS 파일 스캔 및 수집 상태 관리 (INGEST 단계)
+현재 스키마에서 중요한 점:
 
-| 컬럼 | 타입 | 설명 |
-|------|------|------|
-| `asset_id` | VARCHAR (PK) | 고유 식별자 |
-| `source_path` | VARCHAR | NAS 원본 경로 |
-| `media_type` | VARCHAR | image / video |
-| `file_size` | BIGINT | 파일 크기 (bytes) |
-| `checksum` | VARCHAR (UNIQUE) | SHA-256 해시 |
-| `phash` | VARCHAR | perceptual hash (DEDUP용) |
-| `dup_group_id` | VARCHAR | 중복 그룹 ID |
-| `raw_bucket` / `raw_key` | VARCHAR | MinIO 저장 위치 |
-| `ingest_status` | VARCHAR | pending / ingested / failed |
-
-**`image_metadata`** — 이미지 메타데이터 (INGEST 1-pass 추출)
-
-| 컬럼 | 타입 | 설명 |
-|------|------|------|
-| `asset_id` | VARCHAR (PK, FK) | raw_files 참조 |
-| `width` / `height` | INTEGER | 해상도 |
-| `color_mode` | VARCHAR | RGB / RGBA 등 |
-| `codec` | VARCHAR | 이미지 코덱 |
-
-**`video_metadata`** — 비디오 메타데이터 (ffprobe 추출)
-
-| 컬럼 | 타입 | 설명 |
-|------|------|------|
-| `asset_id` | VARCHAR (PK, FK) | raw_files 참조 |
-| `width` / `height` | INTEGER | 해상도 |
-| `duration_sec` | DOUBLE | 길이 (초) |
-| `fps` | DOUBLE | 프레임 레이트 |
-| `codec` | VARCHAR | 비디오 코덱 |
-| `environment_type` | VARCHAR | indoor / outdoor (Places365) |
-| `daynight_type` | VARCHAR | day / night (밝기 분석) |
-
-**`labels`** — 자동/수동 라벨 데이터 (AUTO LABEL 단계)
-
-| 컬럼 | 타입 | 설명 |
-|------|------|------|
-| `label_id` | VARCHAR (PK) | 라벨 고유 ID |
-| `asset_id` | VARCHAR (FK) | raw_files 참조 |
-| `labels_key` | VARCHAR | MinIO 라벨 경로 |
-| `label_format` | VARCHAR | 라벨 포맷 (JSON 등) |
-| `label_source` / `review_status` | VARCHAR | auto / manual_review / manual, reviewed 여부 |
-| `timestamp_start_sec` / `timestamp_end_sec` | DOUBLE | 이벤트 구간 시작/종료 시각 |
-| `caption_text` | TEXT | 자동 생성 설명 문장 |
-| `object_count` | INTEGER | object detection 결과 개수 |
-
-**`processed_clips`** — 전처리 결과물 (`processed_data` asset이 기록, PROCESS 단계)
-
-| 컬럼 | 타입 | 설명 |
-|------|------|------|
-| `clip_id` | VARCHAR (PK) | 클립 고유 ID |
-| `source_asset_id` | VARCHAR (FK) | raw_files 참조 |
-| `source_label_id` | VARCHAR (FK) | labels 참조 |
-| `clip_start_sec` / `clip_end_sec` | DOUBLE | 잘라낸 구간 시작/종료 시각 |
-| `clip_key` | VARCHAR | MinIO 저장 경로 |
-| `data_source` | VARCHAR | auto / manual_review / manual |
-| `caption_text` | TEXT | clip과 연결된 설명 문장 |
-| `process_status` | VARCHAR | pending / completed / failed |
-
-**`datasets`** — 데이터셋 정의 (BUILD 단계)
-
-| 컬럼 | 타입 | 설명 |
-|------|------|------|
-| `dataset_id` | VARCHAR (PK) | 데이터셋 고유 ID |
-| `name` / `version` | VARCHAR | 이름, 버전 |
-| `split_ratio` | JSON | `{"train":0.8,"val":0.1,"test":0.1}` |
-| `build_status` | VARCHAR | pending / completed / failed |
-
-**`dataset_clips`** — 데이터셋↔클립 연결 (M:N, BUILD 단계)
-
-| 컬럼 | 타입 | 설명 |
-|------|------|------|
-| `dataset_id` | VARCHAR (PK, FK) | datasets 참조 |
-| `clip_id` | VARCHAR (PK, FK) | processed_clips 참조 |
-| `split` | VARCHAR | train / val / test |
-
-**`image_labels`** — 이미지 단위 라벨 결과 (YOLO detection 등)
-
-| 컬럼 | 타입 | 설명 |
-|------|------|------|
-| `image_label_id` | VARCHAR (PK) | 라벨 고유 ID |
-| `image_id` | VARCHAR (FK) | image_metadata 참조 |
-| `source_clip_id` | VARCHAR (FK) | processed_clips 참조 |
-| `labels_key` | VARCHAR | MinIO 라벨 JSON 경로 |
-| `label_format` | VARCHAR | `yolo_detection_json` 등 |
-| `label_tool` | VARCHAR | `yolo-world` 등 |
-| `label_source` | VARCHAR | auto / manual |
-| `review_status` | VARCHAR | auto_generated / pending / reviewed |
-| `object_count` | INTEGER | detection 결과 개수 |
+- `image_metadata`는 `caption_text` 대신 **`image_caption_text`** 를 canonical 컬럼으로 사용합니다.
+- bbox JSON과 image caption JSON의 source of truth는 모두 **`vlm-labels`** 입니다.
 
 ## Project Structure
 
 ```text
-dataops/
+.
 ├── src/
-│   ├── vlm_pipeline/              # Dagster 기반 VLM 파이프라인 (핵심)
-│   │   ├── definitions.py         #   Dagster Definitions 진입점
-│   │   ├── defs/                   #   Asset 정의
-│   │   │   ├── ingest/            #     INGEST (검증, MinIO 업로드, 메타 추출)
-│   │   │   ├── dedup/             #     DEDUP helper (inline ingest에서 재사용)
-│   │   │   ├── label/             #     AUTO LABEL (자동/수동 라벨 등록)
-│   │   │   ├── process/           #     AUTO LABEL + PROCESS (프레임 추출, processed_data)
-│   │   │   ├── build/             #     BUILD (데이터셋 조립)
-│   │   │   ├── gcp/               #     GCS 다운로드
-│   │   │   └── sync/              #     MotherDuck 동기화
-│   │   ├── lib/                    #   유틸리티 (phash, checksum, video_env 등)
-│   │   ├── resources/              #   DuckDB, MinIO 리소스
-│   │   └── sql/                    #   스키마 DDL, 마이그레이션
-│   └── python/common/              # 공통 모듈 (설정, MinIO 클라이언트 등)
-├── gcp/                            # GCS 다운로드 스크립트 (rclone 기반)
-├── docker/                         # Docker Compose 인프라
+│   └── vlm_pipeline/
+│       ├── definitions.py              # production entrypoint
+│       ├── definitions_staging.py      # staging entrypoint
+│       ├── definitions_common.py       # 공통 job/sensor 조립
+│       ├── defs/
+│       │   ├── dispatch/               # dispatch sensor / service / staging agent sensor
+│       │   ├── ingest/                 # raw ingest, archive, manifest
+│       │   ├── label/                  # Gemini label, manual/prelabeled import
+│       │   ├── process/                # frame extraction, image captioning
+│       │   ├── yolo/                   # YOLO assets / staging YOLO assets
+│       │   ├── spec/                   # staging spec assets / sensors
+│       │   ├── build/                  # dataset build
+│       │   ├── gcp/                    # GCS download
+│       │   └── sync/                   # MotherDuck sync
+│       ├── lib/                        # prompts, frame planning, yolo client, env helpers
+│       ├── resources/                  # DuckDB / MinIO / runtime settings
+│       └── sql/                        # schema.sql, migration.sql
+├── docker/
 │   ├── docker-compose.yaml
-│   ├── app/                        #   Dagster 앱 (dagster_defs.py, workspace.yaml)
-│   └── grafana/                    #   Grafana 대시보드 프로비저닝
-├── scripts/                        # 유틸리티 스크립트
-└── split_dataset/                  # 데이터셋 분할 도구 (YOLO 등)
+│   ├── .env
+│   ├── .env.staging
+│   ├── app/
+│   └── yolo/
+├── scripts/
+├── docs/
+├── gcp/
+└── tests/
 ```
 
 ## Infrastructure
 
-Docker Compose(`docker/docker-compose.yaml`)로 아래 서비스를 실행합니다.
+Docker Compose(`docker/docker-compose.yaml`)로 주요 서비스를 실행합니다.
 
-| 서비스 | 포트 | 역할 |
+| 서비스 | 포트 | 설명 |
 |--------|------|------|
-| **dagster** | `3030` | Dagster dev 서버 — 파이프라인 실행/모니터링 UI |
-| **app** | — | GPU 지원 메인 컨테이너 (docker exec로 스크립트 실행) |
-| **minio** | `9000` (API) / `9001` (Console) | S3 호환 오브젝트 스토리지 |
-| **postgres** | `5432` | NAS 폴더 트리 데이터 저장, Grafana 데이터소스 |
-| **grafana** | `3000` | NAS 사용량 대시보드 |
+| `dagster` | `3030` | production Dagster webserver |
+| `dagster-staging` | `3031` | staging Dagster dev server |
+| `app` | - | production code/runtime container |
+| `dagster-daemon` | - | production sensor / schedule daemon |
+| `dagster-code-server` | - | production code server |
+| `yolo` | `8001` | YOLO-World inference server |
+| `minio` | `9000` / `9001` | production MinIO API / Console |
+| `postgres` | `5432` | Grafana datasource / metadata 보조 |
+| `grafana` | `3000` | 대시보드 |
 
 ### MinIO 버킷
 
-| 버킷 | 용도 | 파이프라인 단계 |
-|-------|------|----------------|
-| `vlm-raw` | 원본 미디어 | INGEST |
-| `vlm-labels` | 자동/수동 라벨 JSON | AUTO LABEL |
-| `vlm-processed` | 추출 프레임 및 전처리 결과물 | AUTO LABEL / PROCESS |
-| `vlm-dataset` | 최종 학습 데이터셋 | BUILD |
+| 버킷 | 용도 |
+|------|------|
+| `vlm-raw` | 원본 미디어 |
+| `vlm-labels` | 이벤트 JSON, bbox JSON, image caption JSON |
+| `vlm-processed` | clip, frame 이미지 |
+| `vlm-dataset` | 최종 데이터셋 |
 
-### NAS 볼륨 마운트
+### 운영 규칙
 
-| 컨테이너 경로 | 용도 |
-|---------------|------|
-| `/nas/incoming` | 미디어 파일 수신 (읽기/쓰기) |
-| `/nas/archive` | 처리 완료 원본 보관 (읽기/쓰기) |
-| `/nas/datasets` | 데이터셋 저장소 |
-| `/nas/datasets/projects` | 프로젝트별 데이터 (읽기 전용) |
+- `raw_key`는 `<source_unit>/<rel_path>` 규칙을 사용합니다.
+- `vlm-labels`만 라벨 JSON의 source of truth로 사용합니다.
+- 파일 단위 오류는 fail-forward로 처리하고, failure JSONL로 남깁니다.
+- archive 이동 후 source 폴더가 비면 incoming 쪽 빈 부모 폴더도 정리합니다.
+- DuckDB writer job은 `tags={"duckdb_writer": "true"}` 로 단일 writer를 강제합니다.
 
 ## Getting Started
 
 ### 1. Requirements
 
 - Python 3.10+
-- Docker & Docker Compose
-- NVIDIA GPU + CUDA 12.4 (비디오 환경 분류에 사용)
-- NAS 마운트 (CIFS/NFS)
+- Docker / Docker Compose
+- NVIDIA GPU + CUDA
+- NAS mount
 
 ### 2. 환경 설정
 
-`.env.example`을 복사하여 본인 환경에 맞게 수정합니다.
+production:
 
 ```bash
 cp .env.example docker/.env
+```
+
+staging:
+
+```bash
+cp docker/.env docker/.env.staging
 ```
 
 주요 환경변수:
@@ -441,90 +321,134 @@ cp .env.example docker/.env
 | 변수 | 설명 |
 |------|------|
 | `DATAOPS_DUCKDB_PATH` | DuckDB 파일 경로 |
-| `MINIO_ENDPOINT` | MinIO 접속 주소 |
-| `INCOMING_DIR` | 미디어 수신 디렉터리 (컨테이너 내부) |
-| `DATASETS_HOST_PATH` | NAS 데이터셋 호스트 경로 |
-| `INCOMING_HOST_PATH` | NAS incoming 호스트 경로 |
-| `DATAOPS_ASSET_PATH_PREFIX_FROM/TO` | 호스트↔컨테이너 경로 매핑 |
-| `MOTHERDUCK_TOKEN` | MotherDuck 동기화 토큰 (선택) |
+| `MINIO_ENDPOINT` | MinIO endpoint |
+| `INCOMING_DIR` | incoming 경로 |
+| `GOOGLE_APPLICATION_CREDENTIALS` | Vertex 인증 |
+| `MOTHERDUCK_TOKEN` | MotherDuck 토큰 |
+| `STAGING_AGENT_POLLING_ENABLED` | staging agent polling 활성화 |
+| `STAGING_AGENT_BASE_URL` | staging agent base URL |
 
 ### 3. 인프라 실행
+
+production:
 
 ```bash
 cd docker
 docker compose up -d
 ```
 
+staging:
+
+```bash
+cd docker
+docker compose --profile staging up -d dagster-staging
+```
+
 ### 4. 환경 검증
 
 ```bash
-./scripts/verify_mvp.sh
+python3 scripts/query_local_duckdb.py --sql "SELECT COUNT(*) FROM raw_files;"
+curl -fsS http://127.0.0.1:3030/server_info
+curl -fsS http://127.0.0.1:3031/server_info
+curl -fsS http://127.0.0.1:8001/health
 ```
 
-Docker 상태, MinIO 연결, DuckDB 스키마, NAS 마운트를 확인합니다.
+### 5. 테스트
 
-### 5. 파이프라인 실행
-
-Dagster UI에 접속하여 파이프라인을 실행합니다.
-
+```bash
+pip install -e ".[dev]"
+pytest tests/unit -q
+pytest tests/integration -q
 ```
-http://(Workstation_IP):3030
-```
-
-- **자동 실행**: Sensor를 활성화하면 `/nas/incoming`에 파일이 들어올 때 자동으로 파이프라인이 실행됩니다.
-- **수동 실행**: Dagster UI에서 `mvp_stage_job`을 Launchpad로 직접 실행할 수 있습니다.
-- **manifest 수동 생성**: `./scripts/bootstrap_manifest.sh <디렉터리>` 로 manifest를 만들면 sensor가 감지하여 실행합니다.
 
 ## Dagster Jobs & Sensors
 
-### Jobs
+### Production Jobs
 
 | Job | 설명 |
 |-----|------|
-| `mvp_stage_job` | 전체 파이프라인 (INGEST+DEDUP → AUTO LABELING → BUILD) |
-| `ingest_job` | INGEST + inline DEDUP 단독 |
-| `label_job` | 자동/수동 라벨 등록 단독 |
-| `auto_labeling_job` | 프레임 추출 → 라벨 등록 → processed_data 생성 |
-| `process_build_job` | processed_data → BUILD |
-| `gcs_download_job` | GCS 버킷 → `/nas/incoming` 다운로드 |
-| `video_frame_extract_job` | 비디오 프레임 추출 단독 |
-| `motherduck_sync_job` | DuckDB → MotherDuck 동기화 |
+| `mvp_stage_job` | 수집 전용 호환 job |
+| `ingest_job` | raw ingest 단독 |
+| `dispatch_stage_job` | 운영 자동 라벨링의 유일한 진입점 |
+| `gcs_download_job` | GCS -> incoming |
+| `motherduck_sync_job` | DuckDB -> MotherDuck |
+| `manual_label_import_job` | 수동 라벨 import, env로 선택 등록 |
+| `yolo_standard_detection_job` | 표준 YOLO detection, env로 선택 등록 |
 
-### Sensors
+### Staging Jobs
 
-| Sensor | 설명 |
-|--------|------|
-| `incoming_manifest_sensor` | `/nas/incoming/.manifests/pending/*.json` 감지 → `mvp_stage_job` 트리거 |
-| `auto_bootstrap_manifest_sensor` | `/nas/incoming` 미디어 감시 → manifest 자동 생성 |
-| `stuck_run_guard_sensor` | 오래 정체된 STARTED run 자동 cancel / requeue |
-| `video_frame_extract_sensor` | 비디오 프레임 추출 backlog 감지 → `video_frame_extract_job` 트리거 |
-| `motherduck_*_sensor` (7개) | DuckDB 테이블별 row count 변경 감지 → `motherduck_sync_job` 트리거 |
+| Job | 설명 |
+|-----|------|
+| `dispatch_stage_job` | staging dispatch run_mode 분기 |
+| `auto_labeling_routed_job` | spec 기반 auto labeling |
+| `yolo_detection_job` | staging YOLO detection |
+| `manual_label_import_job` | incoming 수동 라벨 import |
+| `prelabeled_import_job` | raw + 완료 라벨 세트 수동 적재 |
+| `ingest_job` | 수집 전용 |
 
-### Schedules
+### Sensors / Schedules
 
-| Schedule | Cron | 설명 |
-|----------|------|------|
-| `gcs_download_schedule` | `* * * * *` | 매분 GCS 버킷에서 새 미디어 다운로드 |
+| 이름 | 환경 | 설명 |
+|------|------|------|
+| `dispatch_sensor` | production | `.dispatch/pending/*.json` -> `dispatch_stage_job` |
+| `staging_agent_dispatch_sensor` | staging | `agent` polling -> `dispatch_stage_job` |
+| `incoming_manifest_sensor` | both | pending manifest -> ingest |
+| `auto_bootstrap_manifest_sensor` | both | incoming 스캔 후 manifest 생성 |
+| `spec_resolve_sensor` | staging | spec 요청 -> routed job |
+| `dispatch_run_*_sensor` | both | dispatch run status finalizer |
+| `stuck_run_guard_sensor` | both | stuck / orphan run 정리 |
+| `motherduck_*_sensor` | production | 핵심 4개 테이블 증분 sync |
+| `gcs_download_schedule` | production | 매일 04:00 KST GCS 수집 |
+| `motherduck_daily_schedule` | production | 매일 05:00 KST full sync |
 
-## Data Catalog Query
+MotherDuck sensor 기본 watched tables:
 
-DuckDB를 사용하여 파이프라인 데이터를 조회할 수 있습니다.
+- `raw_files`
+- `video_metadata`
+- `labels`
+- `processed_clips`
+
+## Query Examples
 
 ```sql
--- 파일 수집 현황
-SELECT ingest_status, COUNT(*) as cnt
+-- INGEST 상태 집계
+SELECT ingest_status, COUNT(*) AS cnt
 FROM raw_files
-GROUP BY ingest_status;
+GROUP BY ingest_status
+ORDER BY ingest_status;
 
--- 미디어 타입별 파일 수 및 용량
-SELECT media_type, COUNT(*) as cnt, SUM(file_size)/1024/1024 as size_mb
-FROM raw_files
-GROUP BY media_type
-ORDER BY size_mb DESC;
+-- 자동 라벨링 완료된 비디오 수
+SELECT auto_label_status, COUNT(*) AS cnt
+FROM video_metadata
+GROUP BY auto_label_status
+ORDER BY auto_label_status;
 
--- 데이터셋 빌드 현황
-SELECT d.name, d.build_status, COUNT(dc.clip_id) as clip_count, dc.split
-FROM datasets d
-JOIN dataset_clips dc ON d.dataset_id = dc.dataset_id
-GROUP BY d.name, d.build_status, dc.split;
+-- bbox 결과가 있는 이미지 수
+SELECT COUNT(*) AS labeled_images
+FROM image_labels;
+
+-- image caption이 저장된 frame 수
+SELECT COUNT(*) AS captioned_frames
+FROM image_metadata
+WHERE image_caption_text IS NOT NULL;
 ```
+
+## 운영 팁
+
+- production에서 자동 라벨링을 시작하려면 `.dispatch/pending/*.json`을 사용합니다.
+- staging은 `agent` 연결 상태와 `STAGING_AGENT_POLLING_ENABLED=true` 여부를 먼저 확인합니다.
+- `필요없음` 요청은 staging에서 raw ingest 후, 같은 폴더 안의 기존 라벨 결과를 best-effort로 자동 import 할 수 있습니다.
+- `tmp_data_2` 같은 재테스트 전에는 DB / MinIO / `.dispatch` 상태를 정리한 뒤 다시 시작하는 것이 안전합니다.
+
+## 참고 문서
+
+- `AGENTS.md`
+- `CLAUDE.md`
+- `CLAUDE2.md`
+- `docs/PRODUCTION_VS_STAGING.md`
+- `docs/staging_agent_api_dispatch_plan.md`
+- `docs/staging_agent_waiting_dispatch_plan.md`
+
+---
+
+이 README는 현재 `definitions.py`, `definitions_staging.py`, `definitions_common.py`, `runtime_settings.py` 기준의 운영 흐름을 요약합니다. 세부 스키마나 플레이북은 `CLAUDE2.md`와 `src/vlm_pipeline/sql/schema.sql`을 함께 참고하세요.

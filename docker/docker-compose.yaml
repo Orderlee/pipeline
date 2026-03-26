@@ -25,8 +25,8 @@ x-common-env: &common-env
   DATAOPS_ASSET_PATH_PREFIX_FROM: /home/pia/mou/nas_192tb;/home/pia/mou/archive;/home/pia/mou/incoming
   DATAOPS_ASSET_PATH_PREFIX_TO: /nas
 
-x-common-volumes: &common-volumes
-  - ./app:/app
+x-prod-volumes: &prod-volumes
+  - ./app/dagster_home:/app/dagster_home
   - ./data:/data
   - type: bind
     source: ${DATASETS_HOST_PATH:-/home/pia/mou/nas_192tb/datasets}
@@ -45,6 +45,35 @@ x-common-volumes: &common-volumes
     target: /nas/incoming
     read_only: false
   - /home/pia/test_data:/test_data
+  - type: bind
+    source: ${GCLOUD_CONFIG_HOST_PATH:-/home/pia/.config/gcloud}
+    target: /root/.config/gcloud
+    read_only: false
+
+x-staging-volumes: &staging-volumes
+  - ./app:/app
+  - ./data:/data
+  - type: bind
+    source: /home/pia/mou/nas_192tb/datasets
+    target: /nas/datasets
+    read_only: false
+  - type: bind
+    source: /home/pia/mou/nas_192tb/datasets/projects
+    target: /nas/datasets/projects
+    read_only: true
+  - type: bind
+    source: /home/pia/mou/archive
+    target: /nas/archive
+    read_only: false
+  - type: bind
+    source: /home/pia/mou/incoming
+    target: /nas/incoming
+    read_only: false
+  - type: bind
+    source: /home/pia/mou/staging
+    target: /nas/staging
+    read_only: false
+  - /home/pia/test_data:/test_data
   - ../src/python:/src/python:ro
   - ../src:/src/vlm:ro
   - ../configs:/configs:ro
@@ -56,12 +85,29 @@ x-common-volumes: &common-volumes
     target: /root/.config/gcloud
     read_only: false
 
+x-prod-dagster-env: &prod-dagster-env
+  <<: *common-env
+  DATAOPS_MINIO__ENDPOINT: ${MINIO_ENDPOINT:-http://172.168.47.36:9000}
+  DATAOPS_MINIO__ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
+  DATAOPS_MINIO__SECRET_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin}
+  DATAOPS_MINIO__BUCKET: raw-data
+
+x-prod-dagster-common: &prod-dagster-common
+  image: datapipeline:gpu-cu124
+  user: root
+  env_file:
+    - .env
+  environment: *prod-dagster-env
+  volumes: *prod-volumes
+  gpus: all
+  restart: unless-stopped
+
 services:
   # ===== 메인 앱 (GPU 지원) =====
   app:
     build:
-      context: .
-      dockerfile: Dockerfile
+      context: ..
+      dockerfile: docker/Dockerfile
     image: datapipeline:gpu-cu124
     user: root
     command: ["sleep", "infinity"]
@@ -71,7 +117,7 @@ services:
       - .env
     environment:
       <<: *common-env
-    volumes: *common-volumes
+    volumes: *prod-volumes
     deploy:
       resources:
         reservations:
@@ -84,28 +130,51 @@ services:
       - minio
     restart: unless-stopped
 
-  # ===== Dagster (Web + Daemon) =====
+  # ===== Dagster Webserver (운영) =====
   dagster:
-    image: datapipeline:gpu-cu124
-    user: root
+    <<: *prod-dagster-common
     working_dir: /app/dagster_home
-    command: ["/bin/bash", "-c", "DAGSTER_HOME=/app/dagster_home /app/dg dev -w /app/workspace.yaml -h 0.0.0.0 -p 3030"]
+    command:
+      [
+        "/bin/bash",
+        "-c",
+        "DAGSTER_HOME=/app/dagster_home dagster-webserver -h 0.0.0.0 -p 3030 -w /app/workspace_prod.yaml",
+      ]
     ports:
       - "${DAGSTER_PORT:-3030}:3030"
-    env_file:
-      - .env
-    environment:
-      <<: *common-env
-      DATAOPS_MINIO__ENDPOINT: ${MINIO_ENDPOINT:-http://172.168.47.36:9000}
-      DATAOPS_MINIO__ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
-      DATAOPS_MINIO__SECRET_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin}
-      DATAOPS_MINIO__BUCKET: raw-data
-    volumes: *common-volumes
+    depends_on:
+      - dagster-code-server
+      - postgres
+      - minio
+
+  # ===== Dagster Daemon (운영) =====
+  dagster-daemon:
+    <<: *prod-dagster-common
+    working_dir: /app/dagster_home
+    command:
+      [
+        "/bin/bash",
+        "-c",
+        "DAGSTER_HOME=/app/dagster_home dagster-daemon run -w /app/workspace_prod.yaml",
+      ]
+    depends_on:
+      - dagster-code-server
+      - postgres
+      - minio
+
+  # ===== Dagster Code Server (운영) =====
+  dagster-code-server:
+    <<: *prod-dagster-common
+    working_dir: /app
+    command:
+      [
+        "/bin/bash",
+        "-c",
+        "DAGSTER_HOME=/app/dagster_home dagster api grpc -h 0.0.0.0 -p 4000 -f /app/dagster_defs.py -d /app -a defs",
+      ]
     depends_on:
       - postgres
       - minio
-    gpus: all
-    restart: unless-stopped
 
   # ===== Staging Dagster (dev 브랜치 검증용) =====
   dagster-staging:
@@ -118,6 +187,8 @@ services:
       - "3031:3030"
     env_file:
       - .env.staging
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     environment:
       <<: *common-env
       IS_STAGING: "true"
@@ -134,40 +205,7 @@ services:
       DATAOPS_MINIO__ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
       DATAOPS_MINIO__SECRET_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin}
       DATAOPS_MINIO__BUCKET: raw-data
-    volumes:
-      - ./app:/app
-      - ./data:/data
-      - type: bind
-        source: /home/pia/mou/nas_192tb/datasets
-        target: /nas/datasets
-        read_only: false
-      - type: bind
-        source: /home/pia/mou/nas_192tb/datasets/projects
-        target: /nas/datasets/projects
-        read_only: true
-      - type: bind
-        source: /home/pia/mou/archive
-        target: /nas/archive
-        read_only: false
-      - type: bind
-        source: /home/pia/mou/incoming
-        target: /nas/incoming
-        read_only: false
-      - type: bind
-        source: /home/pia/mou/staging
-        target: /nas/staging
-        read_only: false
-      - /home/pia/test_data:/test_data
-      - ../src/python:/src/python:ro
-      - ../src:/src/vlm:ro
-      - ../configs:/configs:ro
-      - ../split_dataset:/split_dataset:ro
-      - ../gcp:/gcp:ro
-      - ../scripts:/scripts:ro
-      - type: bind
-        source: ${GCLOUD_CONFIG_HOST_PATH:-/home/pia/.config/gcloud}
-        target: /root/.config/gcloud
-        read_only: false
+    volumes: *staging-volumes
     depends_on:
       - postgres
     gpus: all
@@ -249,7 +287,7 @@ services:
       YOLO_PORT: "8001"
       YOLO_MAX_BATCH: "8"
       YOLO_DEFAULT_CLASSES: ${YOLO_DEFAULT_CLASSES:-person,car,truck,bus,motorcycle,bicycle,fire,smoke,flame,knife,gun,bag,backpack,suitcase,helmet,safety vest,hard hat,traffic cone,barricade,dog,cat}
-      NVIDIA_VISIBLE_DEVICES: "1"
+      NVIDIA_VISIBLE_DEVICES: "all"
     volumes:
       - ./data/models:/data/models:ro
     deploy:
@@ -257,7 +295,7 @@ services:
         reservations:
           devices:
             - driver: nvidia
-              device_ids: ["1"]
+              count: all
               capabilities: [gpu]
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8001/health"]

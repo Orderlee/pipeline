@@ -52,7 +52,7 @@ def config_sync(
     db: DuckDBResource,
 ) -> dict:
     """Dagster UI 수동 materialize. config 디렉터리에서 JSON 로드 후 DB 반영."""
-    db.ensure_schema()
+    db.ensure_runtime_schema()
     config_dir = Path(CONFIG_PARAMETERS_DIR)
     if not config_dir.is_dir():
         context.log.warning(f"config_sync: 디렉터리 없음 {config_dir}. 스킵.")
@@ -91,7 +91,7 @@ def ingest_router(
     db: DuckDBResource,
 ) -> dict:
     """source_unit_name 기준 spec 매칭, config resolve, raw_files.ingest_status 전이 (운영: config 조회 포함)."""
-    db.ensure_schema()
+    db.ensure_runtime_schema()
     if not getattr(db, "_table_exists", None):
         return {"routed": 0, "pending_spec": 0, "ready": 0, "failed": 0}
 

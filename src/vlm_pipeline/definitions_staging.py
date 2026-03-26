@@ -4,7 +4,7 @@ Production definitions.py와 완전 분리된 staging 파이프라인.
 IS_STAGING 분기 없이 staging 전용 asset/job/sensor만 등록.
 
 파이프라인 흐름 (staging):
-  incoming → dispatch_sensor → raw_ingest
+  piaspace-agent polling → staging_agent_dispatch_sensor → raw_ingest
     → spec_resolve_sensor
     → clip_timestamp → clip_captioning → clip_to_frame (run 태그별 routed 분기)
     → bbox_labeling (YOLO) → activate_labeling_spec
@@ -19,110 +19,56 @@ IS_STAGING 분기 없이 staging 전용 asset/job/sensor만 등록.
 
 from __future__ import annotations
 
-from dagster import Definitions, EnvVar, define_asset_job
+from dagster import Definitions
 
-from vlm_pipeline.defs.gcp.assets import gcs_download_to_incoming
-from vlm_pipeline.defs.ingest.assets import raw_ingest
-from vlm_pipeline.defs.ingest.sensor import (
-    auto_bootstrap_manifest_sensor,
-    incoming_manifest_sensor,
-    stuck_run_guard_sensor,
+from vlm_pipeline.definitions_common import (
+    build_auto_labeling_routed_job,
+    build_common_resources,
+    build_dispatch_stage_job,
+    build_gcs_download_job,
+    build_ingest_job,
+    build_manual_label_import_job,
+    build_prelabeled_import_job,
+    build_staging_assets,
+    build_staging_sensors,
+    build_staging_yolo_detection_job,
 )
-from vlm_pipeline.defs.label.assets import clip_timestamp
-from vlm_pipeline.defs.label.manual_import import manual_label_import
-from vlm_pipeline.defs.dispatch.sensor import dispatch_sensor
-from vlm_pipeline.defs.dispatch.sensor_incoming_mover import incoming_to_pending_sensor
-from vlm_pipeline.defs.process.assets import (
-    clip_captioning,
-    clip_to_frame,
-    raw_video_to_frame,
-)
-from vlm_pipeline.defs.spec.assets import labeling_spec_ingest, pending_ingest
-from vlm_pipeline.defs.spec.staging_assets import (
-    activate_labeling_spec,
-    config_sync,
-    ingest_router,
-)
+from vlm_pipeline.defs.dispatch.staging_agent_sensor import staging_agent_dispatch_sensor
 from vlm_pipeline.defs.spec.staging_sensor import spec_resolve_sensor
-from vlm_pipeline.defs.yolo.assets import bbox_labeling
-from vlm_pipeline.defs.yolo.staging_assets import staging_yolo_image_detection
-from vlm_pipeline.resources.duckdb import DuckDBResource
-from vlm_pipeline.resources.minio import MinIOResource
 
 # ── Assets ──
 
-assets = [
-    raw_ingest,
-    gcs_download_to_incoming,
-    raw_video_to_frame,
-    manual_label_import,
-    staging_yolo_image_detection,
-    labeling_spec_ingest,
-    config_sync,
-    ingest_router,
-    pending_ingest,
-    activate_labeling_spec,
-    clip_timestamp,
-    clip_captioning,
-    clip_to_frame,
-    bbox_labeling,
-]
+assets = build_staging_assets()
 
 # ── Jobs ──
 
-ingest_job = define_asset_job(
-    "ingest_job",
-    selection=[raw_ingest],
-    tags={"duckdb_writer": "true"},
+ingest_job = build_ingest_job(
     description="원본 미디어 수집 + inline 중복 검출",
 )
 
-gcs_download_job = define_asset_job(
-    "gcs_download_job",
-    selection=[gcs_download_to_incoming],
+gcs_download_job = build_gcs_download_job(
     tags={"duckdb_writer": "true"},
     description="GCS 외부 데이터 수집",
 )
 
-dispatch_stage_job = define_asset_job(
-    "dispatch_stage_job",
-    selection=[
-        raw_ingest,
-        clip_timestamp,
-        clip_captioning,
-        clip_to_frame,
-        raw_video_to_frame,
-        staging_yolo_image_detection,
-    ],
-    tags={"duckdb_writer": "true"},
+dispatch_stage_job = build_dispatch_stage_job(
     description="Staging dispatch — run_mode에 따라 처리 분기",
 )
 
-auto_labeling_routed_job = define_asset_job(
-    "auto_labeling_routed_job",
-    selection=[
-        clip_timestamp,
-        clip_captioning,
-        clip_to_frame,
-        bbox_labeling,
-        activate_labeling_spec,
-    ],
-    tags={"duckdb_writer": "true"},
+auto_labeling_routed_job = build_auto_labeling_routed_job(
     description="Staging spec: spec_resolve_sensor에서 트리거, requested_outputs에 따라 단계 실행",
 )
 
-yolo_detection_job = define_asset_job(
-    "yolo_detection_job",
-    selection=[staging_yolo_image_detection],
-    tags={"duckdb_writer": "true"},
+yolo_detection_job = build_staging_yolo_detection_job(
     description="YOLO-World-L object detection (processed_clip_frame → image_labels)",
 )
 
-manual_label_import_job = define_asset_job(
-    "manual_label_import_job",
-    selection=[manual_label_import],
-    tags={"duckdb_writer": "true"},
+manual_label_import_job = build_manual_label_import_job(
     description="수동 라벨 JSON 임포트 (incoming 디렉터리)",
+)
+
+prelabeled_import_job = build_prelabeled_import_job(
+    description="Staging 수동 완료데이터 적재: raw ingest + 기존 이벤트/bbox/image caption import",
 )
 
 jobs = [
@@ -132,18 +78,15 @@ jobs = [
     auto_labeling_routed_job,
     yolo_detection_job,
     manual_label_import_job,
+    prelabeled_import_job,
 ]
 
 # ── Sensors ──
 
-sensors = [
-    stuck_run_guard_sensor,
-    incoming_manifest_sensor,
-    auto_bootstrap_manifest_sensor,
-    incoming_to_pending_sensor,
-    dispatch_sensor,
-    spec_resolve_sensor,
-]
+sensors = build_staging_sensors(
+    spec_resolve_sensor=spec_resolve_sensor,
+    dispatch_ingress_sensor=staging_agent_dispatch_sensor,
+)
 
 # ── Definitions ──
 
@@ -151,12 +94,5 @@ defs = Definitions(
     assets=assets,
     jobs=jobs,
     sensors=sensors,
-    resources={
-        "db": DuckDBResource(db_path=EnvVar("DATAOPS_DUCKDB_PATH")),
-        "minio": MinIOResource(
-            endpoint=EnvVar("MINIO_ENDPOINT"),
-            access_key=EnvVar("MINIO_ACCESS_KEY"),
-            secret_key=EnvVar("MINIO_SECRET_KEY"),
-        ),
-    },
+    resources=build_common_resources(),
 )

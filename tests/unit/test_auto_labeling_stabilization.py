@@ -223,7 +223,13 @@ def test_ensure_schema_adds_runtime_auto_label_columns_and_image_labels(tmp_path
         ).fetchone()
 
     assert {"auto_label_status", "auto_label_error", "auto_label_key", "auto_labeled_at"} <= video_columns
-    assert {"caption_text", "image_caption_text", "image_caption_score"} <= image_columns
+    assert {
+        "image_caption_text",
+        "image_caption_score",
+        "image_caption_bucket",
+        "image_caption_key",
+        "image_caption_generated_at",
+    } <= image_columns
     assert {
         "duration_sec",
         "fps",
@@ -289,7 +295,7 @@ def test_ensure_schema_upgrades_asset_id_style_image_metadata_without_rebuild(tm
             """
         )
 
-    resource.ensure_schema()
+    resource.repair_image_metadata_table()
 
     with resource.connect() as conn:
         columns = {
@@ -300,9 +306,9 @@ def test_ensure_schema_upgrades_asset_id_style_image_metadata_without_rebuild(tm
         }
         row = conn.execute(
             """
-            SELECT image_id, source_asset_id, image_bucket, image_key, color_mode, bit_depth, caption_text, image_caption_text, image_caption_score
+            SELECT image_id, source_asset_id, image_bucket, image_key, color_mode, bit_depth, image_caption_text, image_caption_score
             FROM image_metadata
-            WHERE asset_id = 'legacy-image'
+            WHERE image_id = 'legacy-image'
             """
         ).fetchone()
         image_label_columns = {
@@ -312,8 +318,17 @@ def test_ensure_schema_upgrades_asset_id_style_image_metadata_without_rebuild(tm
             ).fetchall()
         }
 
-    assert {"image_id", "source_asset_id", "caption_text", "image_caption_text", "image_caption_score"} <= columns
-    assert row == ("legacy-image", "legacy-image", "vlm-raw", "legacy/legacy.jpg", "RGB", 8, "legacy image caption", "legacy image caption", None)
+    assert {
+        "image_id",
+        "source_asset_id",
+        "image_caption_text",
+        "image_caption_score",
+        "image_caption_bucket",
+        "image_caption_key",
+        "image_caption_generated_at",
+    } <= columns
+    assert "caption_text" not in columns
+    assert row == ("legacy-image", "legacy-image", "vlm-raw", "legacy/legacy.jpg", "RGB", 8, "legacy image caption", None)
     assert {"image_label_id", "image_id", "source_clip_id"} <= image_label_columns
 
 
@@ -746,6 +761,9 @@ def test_replace_processed_clip_frame_metadata_persists_image_caption_text(tmp_p
                 "frame_sec": 0.5,
                 "image_caption_text": "연기가 보이는 프레임",
                 "image_caption_score": 0.91,
+                "image_caption_bucket": "vlm-labels",
+                "image_caption_key": "adlib-hotel-202512/20251222/image_captions/sample_00000001.json",
+                "image_caption_generated_at": datetime(2026, 3, 25, 15, 0, 0),
             }
         ],
     )
@@ -754,7 +772,50 @@ def test_replace_processed_clip_frame_metadata_persists_image_caption_text(tmp_p
     assert len(rows) == 1
     assert rows[0]["image_caption_text"] == "연기가 보이는 프레임"
     assert rows[0]["image_caption_score"] == pytest.approx(0.91)
-    assert rows[0]["caption_text"] is None
+    assert rows[0]["image_caption_bucket"] == "vlm-labels"
+    assert rows[0]["image_caption_key"] == "adlib-hotel-202512/20251222/image_captions/sample_00000001.json"
+    assert "caption_text" not in rows[0]
+
+
+def test_replace_processed_clip_frame_metadata_absorbs_legacy_caption_text(tmp_path: Path) -> None:
+    resource = _resource(tmp_path)
+    resource.ensure_schema()
+    asset_id = _insert_raw_video(resource)
+    resource.insert_processed_clip(
+        {
+            "clip_id": "clip-legacy-caption",
+            "source_asset_id": asset_id,
+            "source_label_id": None,
+            "event_index": 0,
+            "clip_start_sec": 0.0,
+            "clip_end_sec": 1.0,
+            "clip_key": "unit/test/clips/legacy.mp4",
+            "process_status": "completed",
+            "image_extract_status": "completed",
+        }
+    )
+
+    resource.replace_processed_clip_frame_metadata(
+        asset_id,
+        "clip-legacy-caption",
+        [
+            {
+                "image_id": "frame-legacy-caption",
+                "source_clip_id": "clip-legacy-caption",
+                "image_bucket": "vlm-processed",
+                "image_key": "unit/test/image/legacy_00000001.jpg",
+                "image_role": "processed_clip_frame",
+                "frame_index": 1,
+                "frame_sec": 0.2,
+                "caption_text": "legacy image caption",
+            }
+        ],
+    )
+
+    rows = resource.list_processed_clip_frame_rows("clip-legacy-caption")
+    assert len(rows) == 1
+    assert rows[0]["image_caption_text"] == "legacy image caption"
+    assert "caption_text" not in rows[0]
 
 
 def test_extract_clip_frames_captions_only_highest_relevance_frame(
@@ -812,7 +873,7 @@ def test_extract_clip_frames_captions_only_highest_relevance_frame(
     clip_path = tmp_path / "clip.mp4"
     clip_path.write_bytes(b"stub")
 
-    frame_rows, uploaded_keys = process_assets._extract_clip_frames(
+    frame_rows, uploaded_keys, uploaded_caption_keys = process_assets._extract_clip_frames(
         dummy_minio,
         clip_id="clip-1",
         source_asset_id="asset-1",
@@ -828,10 +889,13 @@ def test_extract_clip_frames_captions_only_highest_relevance_frame(
         image_caption_analyzer=object(),
         image_caption_event_category="smoke",
         image_caption_event_caption_text="연기가 퍼지는 이벤트",
+        image_caption_parent_label_key="unit/test/events/sample.json",
+        store_image_caption_json=True,
     )
 
     assert len(frame_rows) == 3
     assert len(uploaded_keys) == 3
+    assert uploaded_caption_keys == ["unit/test/image_captions/sample_00000002.json"]
     assert [row["image_caption_text"] for row in frame_rows] == [
         None,
         "가장 유사한 프레임 캡션",
@@ -842,7 +906,11 @@ def test_extract_clip_frames_captions_only_highest_relevance_frame(
         pytest.approx(0.9),
         pytest.approx(0.5),
     ]
+    assert frame_rows[1]["image_caption_bucket"] == "vlm-labels"
+    assert frame_rows[1]["image_caption_key"] == "unit/test/image_captions/sample_00000002.json"
+    assert frame_rows[0]["image_caption_key"] is None
     assert selected_frames == [b"frame-2"]
+    assert ("vlm-labels", "unit/test/image_captions/sample_00000002.json") in dummy_minio.uploaded
 
 
 def test_processed_clip_image_key_uses_sibling_image_directory() -> None:
@@ -855,3 +923,102 @@ def test_processed_clip_image_key_uses_sibling_image_directory() -> None:
     )
 
     assert image_key == "adlib-hotel-202512/20251222/image/sample_e001_00000000_00002000_00000001.jpg"
+
+
+def test_image_caption_key_uses_sibling_image_captions_directory() -> None:
+    pytest.importorskip("dagster")
+    from vlm_pipeline.defs.process.assets import _build_image_caption_key
+
+    caption_key = _build_image_caption_key(
+        "adlib-hotel-202512/20251222/image/sample_e001_00000000_00002000_00000001.jpg"
+    )
+
+    assert caption_key == "adlib-hotel-202512/20251222/image_captions/sample_e001_00000000_00002000_00000001.json"
+
+
+def test_score_event_frame_image_relevance_with_retry_skips_after_vertex_429(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pytest.importorskip("dagster")
+    from vlm_pipeline.defs.process import assets as process_assets
+
+    calls: list[int] = []
+    sleeps: list[float] = []
+    logs: list[str] = []
+
+    class _DummyLog:
+        def warning(self, message, *args):
+            rendered = message % args if args else message
+            logs.append(rendered)
+
+    def _raise_rate_limit(*args, **kwargs):
+        calls.append(1)
+        raise RuntimeError("429 Resource exhausted")
+
+    monkeypatch.setattr(process_assets, "_score_event_frame_image_relevance", _raise_rate_limit)
+    monkeypatch.setattr(process_assets.time, "sleep", lambda sec: sleeps.append(sec))
+
+    got = process_assets._score_event_frame_image_relevance_with_retry(
+        analyzer=object(),
+        frame_bytes=b"frame",
+        clip_id="clip-1",
+        frame_index=3,
+        event_category="smoke",
+        event_caption_text="연기가 번지는 장면",
+        image_caption_log=_DummyLog(),
+    )
+
+    assert got is None
+    assert len(calls) == 2
+    assert sleeps == [process_assets._VERTEX_RELEVANCE_RETRY_DELAY_SEC]
+    assert any("frame image relevance 429" in line for line in logs)
+    assert any("frame image relevance skip" in line for line in logs)
+
+
+def test_track_empty_output_failure_suppresses_after_three_consecutive_failures() -> None:
+    pytest.importorskip("dagster")
+    from vlm_pipeline.defs.process import assets as process_assets
+
+    consecutive_failures: dict[str, int] = {}
+    suppressed_asset_ids: set[str] = set()
+
+    assert not process_assets._track_empty_output_failure(
+        "asset-1",
+        "ffmpeg_frame_extract_failed:empty_output",
+        consecutive_failures=consecutive_failures,
+        suppressed_asset_ids=suppressed_asset_ids,
+    )
+    assert not process_assets._track_empty_output_failure(
+        "asset-1",
+        "ffmpeg_frame_extract_failed:empty_output",
+        consecutive_failures=consecutive_failures,
+        suppressed_asset_ids=suppressed_asset_ids,
+    )
+    assert process_assets._track_empty_output_failure(
+        "asset-1",
+        "ffmpeg_frame_extract_failed:empty_output",
+        consecutive_failures=consecutive_failures,
+        suppressed_asset_ids=suppressed_asset_ids,
+    )
+
+    assert consecutive_failures["asset-1"] == 3
+    assert "asset-1" in suppressed_asset_ids
+
+
+def test_track_empty_output_failure_resets_on_other_errors() -> None:
+    pytest.importorskip("dagster")
+    from vlm_pipeline.defs.process import assets as process_assets
+
+    consecutive_failures: dict[str, int] = {"asset-1": 2}
+    suppressed_asset_ids: set[str] = set()
+
+    suppressed = process_assets._track_empty_output_failure(
+        "asset-1",
+        "vertex_timeout",
+        consecutive_failures=consecutive_failures,
+        suppressed_asset_ids=suppressed_asset_ids,
+    )
+
+    assert not suppressed
+    assert consecutive_failures["asset-1"] == 0
+    assert not suppressed_asset_ids

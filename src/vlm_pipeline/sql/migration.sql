@@ -57,6 +57,16 @@ WHERE asset_id NOT IN (SELECT asset_id FROM raw_files);
 -- 실행 전 반드시 pipeline.duckdb 백업:
 --   cp ./docker/data/pipeline.duckdb ./docker/data/pipeline.duckdb.bak.$(date +%Y%m%d)
 
+-- 재인코딩 품질 검사 컬럼 추가
+ALTER TABLE video_metadata ADD COLUMN IF NOT EXISTS original_codec VARCHAR;
+ALTER TABLE video_metadata ADD COLUMN IF NOT EXISTS original_profile VARCHAR;
+ALTER TABLE video_metadata ADD COLUMN IF NOT EXISTS original_has_b_frames BOOLEAN;
+ALTER TABLE video_metadata ADD COLUMN IF NOT EXISTS original_level_int INTEGER;
+ALTER TABLE video_metadata ADD COLUMN IF NOT EXISTS reencode_required BOOLEAN DEFAULT FALSE;
+ALTER TABLE video_metadata ADD COLUMN IF NOT EXISTS reencode_reason VARCHAR;
+ALTER TABLE video_metadata ADD COLUMN IF NOT EXISTS reencode_applied BOOLEAN DEFAULT FALSE;
+ALTER TABLE video_metadata ADD COLUMN IF NOT EXISTS reencode_preset VARCHAR;
+
 -- video_metadata: Gemini auto-label 상태 컬럼 추가
 ALTER TABLE video_metadata ADD COLUMN IF NOT EXISTS auto_label_status VARCHAR DEFAULT 'pending';
 ALTER TABLE video_metadata ADD COLUMN IF NOT EXISTS auto_label_error TEXT;

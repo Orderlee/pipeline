@@ -10,11 +10,11 @@ from pathlib import Path
 
 from dagster import DefaultSensorStatus, SkipReason, sensor
 
-from vlm_pipeline.defs.ingest.archive import manifest_allows_auto_bootstrap_without_dispatch
-from vlm_pipeline.lib.env_utils import IS_STAGING, bool_env, int_env
+from vlm_pipeline.lib.env_utils import bool_env, int_env
 from vlm_pipeline.lib.validator import ALLOWED_EXTENSIONS
 from vlm_pipeline.resources.config import PipelineConfig
 
+from .runtime_policy import auto_bootstrap_unit_allowed
 
 def _build_auto_bootstrap_cursor_payload(
     units: dict[str, dict],
@@ -402,14 +402,6 @@ def _select_units_for_tick(
     return selected, next_scan_offset
 
 
-def _is_gcp_unit_path(unit_path: str, incoming_dir: Path) -> bool:
-    try:
-        Path(unit_path).resolve().relative_to((incoming_dir / "gcp").resolve())
-        return True
-    except Exception:
-        return False
-
-
 def _has_done_marker(unit_path: str, marker_name: str) -> bool:
     return (Path(unit_path) / marker_name).exists()
 
@@ -503,21 +495,15 @@ def auto_bootstrap_manifest_sensor(context):
             max_top_entries_per_tick=discovery_max_top_entries,
             excluded_top_level_names=dispatch_requested_folders,
         )
-        if IS_STAGING:
-            discovered_units = [
-                u
-                for u in discovered_units
-                if _is_gcp_unit_path(str(u.get("unit_path", "")), incoming_dir)
-            ]
-        else:
-            discovered_units = [
-                u
-                for u in discovered_units
-                if manifest_allows_auto_bootstrap_without_dispatch(
-                    {"source_unit_path": str(u.get("unit_path", ""))},
-                    config=config,
-                )
-            ]
+        discovered_units = [
+            u
+            for u in discovered_units
+            if auto_bootstrap_unit_allowed(
+                str(u.get("unit_path", "")),
+                incoming_dir=incoming_dir,
+                config=config,
+            )
+        ]
         discovery_elapsed_sec = time.perf_counter() - discovery_started
         
         # 파일 메타 정보 읽기 스캔에는 남은 예산을 사용합니다

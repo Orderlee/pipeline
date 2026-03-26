@@ -105,17 +105,28 @@ class DuckDBBaseMixin:
         ddl = self._load_schema_ddl(include_image_labels=False)
         with self.connect() as conn:
             conn.execute(ddl)
-            self._ensure_image_metadata_columns(conn)
-            self._ensure_image_metadata_indexes(conn)
-            self._ensure_video_metadata_frame_columns(conn)
-            self._ensure_labels_columns(conn)
-            self._ensure_processed_clips_columns(conn)
-            self._ensure_image_labels_table(conn)
-            self._ensure_staging_dispatch_columns(conn)
-            self._ensure_staging_model_configs(conn)
-            self._ensure_staging_pipeline_runs(conn)
-            self._ensure_raw_files_spec_columns(conn)
-            self._ensure_video_metadata_stage_columns(conn)
+            self._ensure_operational_schema(
+                conn,
+                backfill=True,
+                restore_image_labels_backup=True,
+                ensure_indexes=True,
+            )
+
+    def ensure_runtime_schema(self) -> None:
+        """런타임 hot path용 경량 스키마 보장.
+
+        컬럼 존재 여부와 필수 테이블 생성만 수행하고, 대량 backfill/repair/index 재생성은 하지 않는다.
+        운영 배포 시 명시적 migration 단계에서 ensure_schema() 또는 별도 repair 스크립트를 사용한다.
+        """
+        ddl = self._load_schema_ddl(include_image_labels=False)
+        with self.connect() as conn:
+            conn.execute(ddl)
+            self._ensure_operational_schema(
+                conn,
+                backfill=False,
+                restore_image_labels_backup=False,
+                ensure_indexes=False,
+            )
 
     def repair_image_metadata_table(self) -> None:
         """운영 중단 상태에서 image_metadata를 명시적으로 재구성한다."""
@@ -123,8 +134,49 @@ class DuckDBBaseMixin:
         with self.connect() as conn:
             conn.execute(ddl)
             self._rebuild_image_metadata_table(conn)
-            self._ensure_image_metadata_indexes(conn)
-            self._ensure_image_labels_table(conn)
+            self._ensure_image_metadata_indexes(conn, cleanup_legacy=True)
+            self._ensure_image_labels_table(conn, restore_backup=True)
+
+    @classmethod
+    def _ensure_operational_schema(
+        cls,
+        conn: duckdb.DuckDBPyConnection,
+        *,
+        backfill: bool,
+        restore_image_labels_backup: bool,
+        ensure_indexes: bool,
+    ) -> None:
+        cls._ensure_runtime_schema_columns(
+            conn,
+            backfill=backfill,
+            restore_image_labels_backup=restore_image_labels_backup,
+        )
+        cls._ensure_dispatch_support_schema(conn)
+        if ensure_indexes:
+            cls._ensure_image_metadata_indexes(conn, cleanup_legacy=True)
+
+    @classmethod
+    def _ensure_runtime_schema_columns(
+        cls,
+        conn: duckdb.DuckDBPyConnection,
+        *,
+        backfill: bool,
+        restore_image_labels_backup: bool,
+    ) -> None:
+        cls._ensure_image_metadata_columns(conn, backfill=backfill)
+        cls._ensure_video_metadata_frame_columns(conn, backfill=backfill)
+        cls._ensure_video_metadata_reencode_columns(conn)
+        cls._ensure_labels_columns(conn, backfill=backfill)
+        cls._ensure_processed_clips_columns(conn, backfill=backfill)
+        cls._ensure_image_labels_table(conn, restore_backup=restore_image_labels_backup)
+
+    @classmethod
+    def _ensure_dispatch_support_schema(cls, conn: duckdb.DuckDBPyConnection) -> None:
+        cls._ensure_staging_dispatch_columns(conn)
+        cls._ensure_staging_model_configs(conn)
+        cls._ensure_staging_pipeline_runs(conn)
+        cls._ensure_raw_files_spec_columns(conn)
+        cls._ensure_video_metadata_stage_columns(conn)
 
     @staticmethod
     def _table_exists(conn: duckdb.DuckDBPyConnection, table_name: str) -> bool:
@@ -155,7 +207,12 @@ class DuckDBBaseMixin:
         return {str(row[0]) for row in rows}
 
     @classmethod
-    def _ensure_image_metadata_columns(cls, conn: duckdb.DuckDBPyConnection) -> None:
+    def _ensure_image_metadata_columns(
+        cls,
+        conn: duckdb.DuckDBPyConnection,
+        *,
+        backfill: bool,
+    ) -> None:
         columns = cls._table_columns(conn, "image_metadata")
         if not columns:
             return
@@ -176,15 +233,20 @@ class DuckDBBaseMixin:
             "bit_depth": "INTEGER DEFAULT 8",
             "has_alpha": "BOOLEAN DEFAULT FALSE",
             "orientation": "INTEGER DEFAULT 1",
-            "caption_text": "TEXT",
             "image_caption_text": "TEXT",
             "image_caption_score": "DOUBLE",
+            "image_caption_bucket": "VARCHAR",
+            "image_caption_key": "VARCHAR",
+            "image_caption_generated_at": "TIMESTAMP",
             "extracted_at": "TIMESTAMP",
         }
         for column_name, column_type in alter_specs.items():
             if column_name in columns:
                 continue
             conn.execute(f"ALTER TABLE image_metadata ADD COLUMN {column_name} {column_type}")
+
+        if not backfill:
+            return
 
         columns = cls._table_columns(conn, "image_metadata")
         image_id_sources = [name for name in ("image_id", "source_asset_id", "asset_id") if name in columns]
@@ -240,13 +302,24 @@ class DuckDBBaseMixin:
                OR extracted_at IS NULL
             """
         )
-        if {"caption_text", "image_caption_text"}.issubset(columns):
+        if {"image_caption_bucket", "image_caption_key"}.issubset(columns):
             conn.execute(
                 """
                 UPDATE image_metadata
-                SET image_caption_text = COALESCE(image_caption_text, caption_text)
-                WHERE image_caption_text IS NULL
-                  AND caption_text IS NOT NULL
+                SET image_caption_bucket = COALESCE(NULLIF(image_caption_bucket, ''), 'vlm-labels')
+                WHERE image_caption_key IS NOT NULL
+                  AND image_caption_key <> ''
+                  AND (image_caption_bucket IS NULL OR image_caption_bucket = '')
+                """
+            )
+        if {"image_caption_generated_at", "image_caption_key", "extracted_at"}.issubset(columns):
+            conn.execute(
+                """
+                UPDATE image_metadata
+                SET image_caption_generated_at = COALESCE(image_caption_generated_at, extracted_at, CURRENT_TIMESTAMP)
+                WHERE image_caption_key IS NOT NULL
+                  AND image_caption_key <> ''
+                  AND image_caption_generated_at IS NULL
                 """
             )
 
@@ -271,9 +344,11 @@ class DuckDBBaseMixin:
                 bit_depth        INTEGER DEFAULT 8,
                 has_alpha        BOOLEAN DEFAULT FALSE,
                 orientation      INTEGER DEFAULT 1,
-                caption_text     TEXT,
                 image_caption_text TEXT,
                 image_caption_score DOUBLE,
+                image_caption_bucket VARCHAR,
+                image_caption_key VARCHAR,
+                image_caption_generated_at TIMESTAMP,
                 extracted_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 UNIQUE (image_bucket, image_key),
                 UNIQUE (source_asset_id, source_clip_id, image_role, frame_index)
@@ -329,12 +404,28 @@ class DuckDBBaseMixin:
                 COALESCE({cls._image_metadata_col(columns, "bit_depth", alias=alias, fallback_sql="8")}, 8) AS bit_depth,
                 COALESCE({cls._image_metadata_col(columns, "has_alpha", alias=alias, fallback_sql="FALSE")}, FALSE) AS has_alpha,
                 COALESCE({cls._image_metadata_col(columns, "orientation", alias=alias, fallback_sql="1")}, 1) AS orientation,
-                {cls._image_metadata_col(columns, "caption_text", alias=alias)} AS caption_text,
                 COALESCE(
                     {cls._image_metadata_col(columns, "image_caption_text", alias=alias)},
                     {cls._image_metadata_col(columns, "caption_text", alias=alias)}
                 ) AS image_caption_text,
                 {cls._image_metadata_col(columns, "image_caption_score", alias=alias)} AS image_caption_score,
+                CASE
+                    WHEN {cls._image_metadata_col(columns, "image_caption_key", alias=alias)} IS NOT NULL
+                     AND {cls._image_metadata_col(columns, "image_caption_key", alias=alias)} <> ''
+                    THEN COALESCE(NULLIF({cls._image_metadata_col(columns, "image_caption_bucket", alias=alias)}, ''), 'vlm-labels')
+                    ELSE NULL
+                END AS image_caption_bucket,
+                {cls._image_metadata_col(columns, "image_caption_key", alias=alias)} AS image_caption_key,
+                CASE
+                    WHEN {cls._image_metadata_col(columns, "image_caption_key", alias=alias)} IS NOT NULL
+                     AND {cls._image_metadata_col(columns, "image_caption_key", alias=alias)} <> ''
+                    THEN COALESCE(
+                        {cls._image_metadata_col(columns, "image_caption_generated_at", alias=alias)},
+                        {cls._image_metadata_col(columns, "extracted_at", alias=alias, fallback_sql="CURRENT_TIMESTAMP")},
+                        CURRENT_TIMESTAMP
+                    )
+                    ELSE {cls._image_metadata_col(columns, "image_caption_generated_at", alias=alias)}
+                END AS image_caption_generated_at,
                 COALESCE({cls._image_metadata_col(columns, "extracted_at", alias=alias, fallback_sql="CURRENT_TIMESTAMP")}, CURRENT_TIMESTAMP) AS extracted_at
             FROM {source_table} AS {alias}
             LEFT JOIN raw_files AS rf ON rf.asset_id = {source_asset_expr}
@@ -388,9 +479,11 @@ class DuckDBBaseMixin:
                 bit_depth,
                 has_alpha,
                 orientation,
-                caption_text,
                 image_caption_text,
                 image_caption_score,
+                image_caption_bucket,
+                image_caption_key,
+                image_caption_generated_at,
                 extracted_at
             )
             {select_sql}
@@ -419,7 +512,12 @@ class DuckDBBaseMixin:
             conn.execute("DROP TABLE image_metadata__migrated")
 
     @classmethod
-    def _ensure_image_metadata_indexes(cls, conn: duckdb.DuckDBPyConnection) -> None:
+    def _ensure_image_metadata_indexes(
+        cls,
+        conn: duckdb.DuckDBPyConnection,
+        *,
+        cleanup_legacy: bool,
+    ) -> None:
         columns = cls._table_columns(conn, "image_metadata")
         if not {"image_id", "source_asset_id", "source_clip_id"}.issubset(columns):
             return
@@ -429,8 +527,8 @@ class DuckDBBaseMixin:
             ON image_metadata(image_bucket, image_key)
             """
         )
-        conn.execute("DROP INDEX IF EXISTS idx_image_metadata_source_role_frame")
-        conn.execute("DROP INDEX IF EXISTS idx_image_metadata_source_clip_role_frame")
+        if cleanup_legacy:
+            conn.execute("DROP INDEX IF EXISTS idx_image_metadata_source_role_frame")
         conn.execute(
             """
             CREATE UNIQUE INDEX IF NOT EXISTS idx_image_metadata_source_clip_role_frame
@@ -439,7 +537,12 @@ class DuckDBBaseMixin:
         )
 
     @classmethod
-    def _ensure_video_metadata_frame_columns(cls, conn: duckdb.DuckDBPyConnection) -> None:
+    def _ensure_video_metadata_frame_columns(
+        cls,
+        conn: duckdb.DuckDBPyConnection,
+        *,
+        backfill: bool,
+    ) -> None:
         columns = cls._table_columns(conn, "video_metadata")
         if not columns:
             return
@@ -459,6 +562,9 @@ class DuckDBBaseMixin:
                 continue
             conn.execute(f"ALTER TABLE video_metadata ADD COLUMN {column_name} {column_type}")
 
+        if not backfill:
+            return
+
         conn.execute(
             """
             UPDATE video_metadata
@@ -472,7 +578,33 @@ class DuckDBBaseMixin:
         )
 
     @classmethod
-    def _ensure_labels_columns(cls, conn: duckdb.DuckDBPyConnection) -> None:
+    def _ensure_video_metadata_reencode_columns(cls, conn: duckdb.DuckDBPyConnection) -> None:
+        columns = cls._table_columns(conn, "video_metadata")
+        if not columns:
+            return
+
+        alter_specs = {
+            "original_codec": "VARCHAR",
+            "original_profile": "VARCHAR",
+            "original_has_b_frames": "BOOLEAN",
+            "original_level_int": "INTEGER",
+            "reencode_required": "BOOLEAN DEFAULT FALSE",
+            "reencode_reason": "VARCHAR",
+            "reencode_applied": "BOOLEAN DEFAULT FALSE",
+            "reencode_preset": "VARCHAR",
+        }
+        for column_name, column_type in alter_specs.items():
+            if column_name in columns:
+                continue
+            conn.execute(f"ALTER TABLE video_metadata ADD COLUMN {column_name} {column_type}")
+
+    @classmethod
+    def _ensure_labels_columns(
+        cls,
+        conn: duckdb.DuckDBPyConnection,
+        *,
+        backfill: bool,
+    ) -> None:
         columns = cls._table_columns(conn, "labels")
         if not columns:
             return
@@ -491,6 +623,9 @@ class DuckDBBaseMixin:
                 continue
             conn.execute(f"ALTER TABLE labels ADD COLUMN {column_name} {column_type}")
 
+        if not backfill:
+            return
+
         conn.execute(
             """
             UPDATE labels
@@ -506,7 +641,12 @@ class DuckDBBaseMixin:
         )
 
     @classmethod
-    def _ensure_processed_clips_columns(cls, conn: duckdb.DuckDBPyConnection) -> None:
+    def _ensure_processed_clips_columns(
+        cls,
+        conn: duckdb.DuckDBPyConnection,
+        *,
+        backfill: bool,
+    ) -> None:
         columns = cls._table_columns(conn, "processed_clips")
         if not columns:
             return
@@ -529,6 +669,9 @@ class DuckDBBaseMixin:
                 continue
             conn.execute(f"ALTER TABLE processed_clips ADD COLUMN {column_name} {column_type}")
 
+        if not backfill:
+            return
+
         conn.execute(
             """
             UPDATE processed_clips
@@ -542,7 +685,12 @@ class DuckDBBaseMixin:
         )
 
     @classmethod
-    def _ensure_image_labels_table(cls, conn: duckdb.DuckDBPyConnection) -> None:
+    def _ensure_image_labels_table(
+        cls,
+        conn: duckdb.DuckDBPyConnection,
+        *,
+        restore_backup: bool,
+    ) -> None:
         if not cls._table_exists(conn, "image_labels"):
             image_ref_sql = "VARCHAR"
             if cls._image_metadata_has_image_id_constraint(conn):
@@ -565,7 +713,7 @@ class DuckDBBaseMixin:
                 )
                 """
             )
-        if cls._table_exists(conn, "image_labels__backup"):
+        if restore_backup and cls._table_exists(conn, "image_labels__backup"):
             conn.execute(
                 """
                 INSERT INTO image_labels

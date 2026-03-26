@@ -36,17 +36,23 @@ RUN curl -fsSL https://rclone.org/install.sh | bash
 WORKDIR /app
 
 # ===== Python 패키지 설치 =====
-COPY app/requirements.txt .
+COPY docker/app/requirements.txt .
 RUN pip3 install --upgrade pip setuptools wheel \
     && pip3 install --no-cache-dir -r requirements.txt
 
-# ===== 소스 코드 복사 =====
-COPY app/ /app/
+# ===== 런타임 코드/설정 복사 =====
+COPY docker/app/ /app/
+COPY src/python/ /src/python/
+COPY src/ /src/vlm/
+COPY configs/ /configs/
+COPY split_dataset/ /split_dataset/
+COPY gcp/ /gcp/
+COPY scripts/ /scripts/
 RUN chmod +x /app/dg
 
 # ===== 비루트 사용자 생성 =====
 RUN useradd -m -u 10001 appuser \
-    && chown -R appuser:appuser /app
+    && chown -R appuser:appuser /app /src /configs /split_dataset /gcp /scripts
 USER appuser
 
 # ===== 환경변수 설정 =====
