@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from vlm_pipeline.lib.env_utils import IS_STAGING
+from vlm_pipeline.lib.runtime_profile import RuntimeProfile, resolve_runtime_profile
 from vlm_pipeline.resources.runtime_settings import load_ingest_feature_settings
 
 from .archive import (
@@ -16,24 +16,27 @@ from .archive import (
 
 @dataclass(frozen=True)
 class IngestRuntimePolicy:
+    runtime_profile: RuntimeProfile
     is_staging: bool
     defer_video_env_classification: bool
     premove_archive_enabled: bool
 
 
-def resolve_ingest_runtime_policy(*, transfer_tool: str | None) -> IngestRuntimePolicy:
-    normalized_transfer = str(transfer_tool or "").strip().lower()
+def resolve_ingest_runtime_policy(
+    *,
+    transfer_tool: str | None,  # noqa: ARG001 - 정책 확장 대비 인터페이스 유지
+    runtime_profile: RuntimeProfile | None = None,
+) -> IngestRuntimePolicy:
     settings = load_ingest_feature_settings()
+    profile = runtime_profile or resolve_runtime_profile()
+    is_staging = profile.is_staging
     return IngestRuntimePolicy(
-        is_staging=IS_STAGING,
+        runtime_profile=profile,
+        is_staging=is_staging,
         defer_video_env_classification=(
-            not IS_STAGING and settings.defer_video_env_classification
+            not is_staging and settings.defer_video_env_classification
         ),
-        premove_archive_enabled=(
-            IS_STAGING
-            or normalized_transfer != "dispatch_sensor"
-            or settings.premove_archive_enabled
-        ),
+        premove_archive_enabled=settings.premove_archive_enabled,
     )
 
 
@@ -42,9 +45,11 @@ def auto_bootstrap_unit_allowed(
     *,
     incoming_dir: Path,
     config,
+    runtime_profile: RuntimeProfile | None = None,
 ) -> bool:
+    profile = runtime_profile or resolve_runtime_profile()
     resolved_path = Path(unit_path).resolve()
-    if IS_STAGING:
+    if profile.is_staging:
         gcp_root = (incoming_dir / "gcp").resolve()
         try:
             resolved_path.relative_to(gcp_root)
@@ -54,10 +59,48 @@ def auto_bootstrap_unit_allowed(
     return manifest_allows_auto_bootstrap_without_dispatch(
         {"source_unit_path": str(resolved_path)},
         config=config,
+        runtime_profile=profile,
     )
 
 
-def pending_manifest_allowed(payload: dict, *, config) -> bool:
-    if not IS_STAGING:
+def pending_manifest_allowed(
+    payload: dict,
+    *,
+    config,
+    runtime_profile: RuntimeProfile | None = None,
+) -> bool:
+    profile = runtime_profile or resolve_runtime_profile()
+    if not profile.is_staging:
         return True
-    return should_archive_manifest(payload, config=config)
+    return should_archive_manifest(
+        payload,
+        config=config,
+        runtime_profile=profile,
+    )
+
+
+def auto_bootstrap_manifest_archive_requested(
+    manifest: dict,
+    *,
+    config,
+    runtime_profile: RuntimeProfile | None = None,
+) -> bool:
+    profile = runtime_profile or resolve_runtime_profile()
+    return manifest_allows_auto_bootstrap_without_dispatch(
+        manifest,
+        config=config,
+        runtime_profile=profile,
+    )
+
+
+def archive_only_artifact_import_allowed(
+    *,
+    runtime_profile: RuntimeProfile,
+    archive_only: bool,
+    folder_name: str | None,
+) -> bool:
+    return (
+        runtime_profile is not None
+        and archive_only
+        and bool(str(folder_name or "").strip())
+    )

@@ -101,14 +101,13 @@ For each event, provide the precise time segment and a descriptive caption.
 
 Return your response as a JSON array. Each element must have exactly these fields:
 
-- "category": A short English category label (e.g. "fire", "smoke", "fall", "intrusion", "fight", "vehicle_accident", "loitering", "vandalism", "abandoned_object") — do NOT use normal_activity or any category indicating routine/normal scene
+- "category": A short English category label (e.g. "fire", "smoke", "fall", "intrusion", "fight", "normal_activity", "vehicle_accident", "loitering", "vandalism", "abandoned_object")
 - "duration": Duration of the event in seconds (number)
 - "timestamp": [start_sec, end_sec] — start and end time in seconds from the beginning of the video
 - "ko_caption": A concise Korean description of the event
 - "en_caption": A concise English description of the event
 
 Rules:
-- Report only notable or abnormal events. Do not include normal, routine, or uneventful segments.
 - Timestamps must be non-negative and end_sec > start_sec.
 - If no notable event is found, return an empty array: []
 - Do NOT wrap the JSON in markdown code fences.

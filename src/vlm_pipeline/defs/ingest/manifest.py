@@ -13,6 +13,7 @@ from pathlib import Path
 from vlm_pipeline.lib.env_utils import as_int
 from vlm_pipeline.resources.config import PipelineConfig
 from vlm_pipeline.resources.duckdb import DuckDBResource
+from vlm_pipeline.defs.ingest.archive import resolve_archive_source_unit_name
 
 DONE_MARKER_FILENAME = "_DONE"
 
@@ -303,6 +304,7 @@ def maybe_write_archive_done_marker(
 ) -> Path | None:
     source_unit_type = str(manifest.get("source_unit_type", "")).strip().lower()
     source_unit_name = str(manifest.get("source_unit_name", "")).strip()
+    archive_unit_name = resolve_archive_source_unit_name(source_unit_name) or source_unit_name
     source_unit_path = str(manifest.get("source_unit_path", "")).strip()
     stable_signature = str(manifest.get("stable_signature", "")).strip()
     current_manifest_id = str(manifest.get("manifest_id", "")).strip()
@@ -314,7 +316,7 @@ def maybe_write_archive_done_marker(
 
     archive_root_dir = Path(archive_dir)
     archive_unit_dir = archive_unit_dir_hint
-    default_archive_unit_dir = archive_root_dir / source_unit_name
+    default_archive_unit_dir = archive_root_dir / archive_unit_name
     if archive_unit_dir is None or not archive_unit_dir.exists():
         if default_archive_unit_dir.exists():
             archive_unit_dir = default_archive_unit_dir
