@@ -1,6 +1,7 @@
 """DuckDB spec 도메인 — labeling_specs, labeling_configs, requester_config_map CRUD.
 
-Staging spec flow (auto_labeling_unified_spec) 전용. IS_STAGING 시에만 사용.
+Staging spec flow (auto_labeling_unified_spec) 전용.
+staging runtime profile에서만 로드되는 definitions 경로에서 사용한다.
 """
 
 from __future__ import annotations
@@ -8,7 +9,6 @@ from __future__ import annotations
 import json
 from datetime import datetime
 from typing import Any
-from uuid import uuid4
 
 
 def _json_col(val: Any) -> str | None:

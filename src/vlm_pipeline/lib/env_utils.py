@@ -9,6 +9,7 @@ from __future__ import annotations
 import os
 import re
 from collections.abc import Mapping
+from pathlib import PurePosixPath
 
 from vlm_pipeline.lib.sanitizer import sanitize_path_component
 
@@ -94,6 +95,28 @@ def dispatch_raw_key_prefix_folder(tags: Mapping[str, str] | None) -> str | None
     if not orig:
         return None
     return sanitize_path_component(orig) or None
+
+
+def storage_raw_key_prefix_from_source_unit(source_unit_name: str | None) -> str:
+    """MinIO raw_key용 source unit prefix를 정규화한다.
+
+    GCP auto-bootstrap source unit은 `gcp/<bucket>/...` 형태로 관리되지만,
+    MinIO object key는 `gcp/`를 제거한 `<bucket>/...` 형태를 사용한다.
+    나머지 source unit은 기존과 동일하게 전체 경로를 sanitize해서 유지한다.
+    """
+    raw = str(source_unit_name or "").strip().strip("/")
+    if not raw:
+        return ""
+
+    parts = [
+        sanitize_path_component(part)
+        for part in PurePosixPath(raw).parts
+        if part not in {"", ".", ".."}
+    ]
+    if len(parts) >= 2 and parts[0] == "gcp":
+        parts = parts[1:]
+
+    return "/".join(part for part in parts if part)
 
 
 # ── Dispatch outputs 분기 유틸 ──

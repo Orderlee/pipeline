@@ -238,7 +238,6 @@ def main() -> int:
         print("[DONE] dry-run complete")
         return 0
 
-    keep_asset_ids = {row.asset_id for row in duplicate_rows} - set(remove_asset_ids)
     keeper_error_map = {asset_id: marker for marker, asset_id in keeper_updates}
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     tmp_db_path = db_path.with_name(f"{db_path.stem}.dedup_tmp{db_path.suffix}")

@@ -28,61 +28,17 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Iterable, Optional, Sequence
 
+import sys
+
 import duckdb
 
-
 REPO_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(REPO_ROOT / "src" / "python"))
+
+from common.motherduck import connect_motherduck, load_env_for_motherduck  # noqa: E402
 
 if TYPE_CHECKING:
     from minio import Minio
-
-
-def _load_dotenv_if_present(dotenv_path: Path) -> None:
-    if not dotenv_path.exists():
-        return
-
-    for raw_line in dotenv_path.read_text(encoding="utf-8").splitlines():
-        line = raw_line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, value = line.split("=", 1)
-        key = key.strip()
-        value = value.strip()
-        if not key:
-            continue
-        if key in os.environ and os.environ[key] != "":
-            continue
-        if (value.startswith('"') and value.endswith('"')) or (
-            value.startswith("'") and value.endswith("'")
-        ):
-            value = value[1:-1]
-        os.environ[key] = value
-
-
-def load_env_for_motherduck(repo_root: Optional[Path] = None, env_file: Optional[str] = None) -> None:
-    if os.getenv("MOTHERDUCK_TOKEN"):
-        return
-
-    if repo_root is None:
-        repo_root = REPO_ROOT
-
-    if env_file:
-        p = Path(env_file)
-        if not p.is_absolute():
-            p = repo_root / p
-        _load_dotenv_if_present(p)
-        return
-
-    _load_dotenv_if_present(repo_root / ".env")
-    if not os.getenv("MOTHERDUCK_TOKEN"):
-        _load_dotenv_if_present(repo_root / "docker" / ".env")
-
-
-def connect_motherduck(database: str, token: Optional[str] = None) -> duckdb.DuckDBPyConnection:
-    md_token = token or os.getenv("MOTHERDUCK_TOKEN")
-    if not md_token:
-        raise ValueError("MotherDuck token is required. Set MOTHERDUCK_TOKEN or pass --token.")
-    return duckdb.connect(f"md:{database}?motherduck_token={md_token}")
 
 
 FULL_DELETE_TABLE_ORDER = [

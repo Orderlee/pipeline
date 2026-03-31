@@ -1,6 +1,6 @@
 """Spec flow assets — labeling_spec_ingest, config_sync, ingest_router, pending_ingest.
 
-Staging-only (IS_STAGING). Run after raw_ingest for ingest_router.
+Staging runtime profile 전용. ingest_router는 raw_ingest 이후에 실행한다.
 """
 
 from __future__ import annotations

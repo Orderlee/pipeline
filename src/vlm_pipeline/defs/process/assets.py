@@ -53,6 +53,58 @@ from vlm_pipeline.resources.minio import MinIOResource
 
 _MAX_CONSECUTIVE_EMPTY_OUTPUT_FAILURES_PER_ASSET = 3
 _VERTEX_RELEVANCE_RETRY_DELAY_SEC = 2.0
+_DEFAULT_EVENT_CLIP_PRE_BUFFER_SEC = 5.0
+_DEFAULT_EVENT_CLIP_POST_BUFFER_SEC = 5.0
+
+
+def _resolve_event_clip_extraction_window(
+    *,
+    event_start_sec: float | None,
+    event_end_sec: float | None,
+    source_duration_sec: float | None,
+    event_category: str | None = None,
+) -> tuple[float, float]:
+    """Resolve the actual clip extraction window with boundary-safe buffering."""
+    normalized_event_start = _coerce_float(event_start_sec)
+    normalized_event_end = _coerce_float(event_end_sec)
+    if normalized_event_start is None or normalized_event_end is None:
+        raise RuntimeError("video_clip_range_missing")
+    if normalized_event_end <= normalized_event_start:
+        raise RuntimeError("video_clip_range_missing")
+
+    pre_buffer_sec = _DEFAULT_EVENT_CLIP_PRE_BUFFER_SEC
+    post_buffer_sec = _DEFAULT_EVENT_CLIP_POST_BUFFER_SEC
+
+    # Future category-specific override scaffold.
+    # _CATEGORY_CLIP_BUFFER_OVERRIDES = {
+    #     "fire": {"pre_sec": 8.0, "post_sec": 12.0},
+    # }
+    # normalized_category = str(event_category or "").strip().lower()
+    # category_override = _CATEGORY_CLIP_BUFFER_OVERRIDES.get(normalized_category, {})
+    # pre_buffer_sec = float(category_override.get("pre_sec", pre_buffer_sec))
+    # post_buffer_sec = float(category_override.get("post_sec", post_buffer_sec))
+
+    buffered_start_sec = normalized_event_start - float(pre_buffer_sec)
+    buffered_end_sec = normalized_event_end + float(post_buffer_sec)
+    extract_start_sec = max(0.0, buffered_start_sec)
+    extract_end_sec = buffered_end_sec
+
+    normalized_source_duration = _coerce_float(source_duration_sec)
+    if normalized_source_duration is not None and normalized_source_duration > 0:
+        extract_end_sec = min(normalized_source_duration, buffered_end_sec)
+        if extract_end_sec <= extract_start_sec:
+            extract_end_sec = min(normalized_source_duration, normalized_event_end)
+
+    if extract_end_sec <= extract_start_sec:
+        raise RuntimeError(
+            "video_clip_range_invalid:"
+            f"event_start={normalized_event_start:.3f}:"
+            f"event_end={normalized_event_end:.3f}:"
+            f"extract_start={extract_start_sec:.3f}:"
+            f"extract_end={extract_end_sec:.3f}"
+        )
+
+    return extract_start_sec, extract_end_sec
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -777,13 +829,13 @@ def _stable_clip_id(
 
 
 # ═══════════════════════════════════════════════════════════════
-# [STAGING 전용] raw_video_to_frame
+# [DISPATCH YOLO 전용] raw_video_to_frame
 # ═══════════════════════════════════════════════════════════════
 
 @asset(
     name="raw_video_to_frame",
     deps=["raw_ingest"],
-    description="[STAGING YOLO 전용] raw video에서 직접 이미지 추출",
+    description="[Dispatch YOLO 전용] raw video에서 직접 이미지 추출",
     group_name="yolo",
     config_schema={
         "limit": Field(int, default_value=1000),
@@ -1283,9 +1335,10 @@ def clip_to_frame_mvp(
         labels_key = cand["labels_key"]
         label_source = str(cand.get("label_source") or "manual")
         event_index = int(cand.get("event_index") or 0)
-        clip_start_sec = _coerce_float(cand.get("timestamp_start_sec"))
-        clip_end_sec = _coerce_float(cand.get("timestamp_end_sec"))
+        event_start_sec = _coerce_float(cand.get("timestamp_start_sec"))
+        event_end_sec = _coerce_float(cand.get("timestamp_end_sec"))
         caption_text = str(cand.get("caption_text") or "").strip() or None
+        source_video_duration_sec = _coerce_float(cand.get("video_duration_sec"))
         temp_clip_path: Path | None = None
         temp_video_path: Path | None = None
         clip_id: str | None = None
@@ -1299,11 +1352,11 @@ def clip_to_frame_mvp(
             clip_key = _build_processed_clip_key(
                 raw_key,
                 event_index=event_index,
-                clip_start_sec=clip_start_sec,
-                clip_end_sec=clip_end_sec,
+                clip_start_sec=event_start_sec,
+                clip_end_sec=event_end_sec,
                 media_type=media_type,
             )
-            clip_id = _stable_clip_id(label_id, event_index, clip_start_sec, clip_end_sec, clip_key)
+            clip_id = _stable_clip_id(label_id, event_index, event_start_sec, event_end_sec, clip_key)
             width, height, codec = None, None, None
             file_bytes = None
             clip_duration = None
@@ -1316,8 +1369,8 @@ def clip_to_frame_mvp(
                     "source_asset_id": asset_id,
                     "source_label_id": label_id,
                     "event_index": event_index,
-                    "clip_start_sec": clip_start_sec,
-                    "clip_end_sec": clip_end_sec,
+                    "clip_start_sec": event_start_sec,
+                    "clip_end_sec": event_end_sec,
                     "processed_bucket": "vlm-processed",
                     "clip_key": clip_key,
                     "label_key": labels_key,
@@ -1338,15 +1391,34 @@ def clip_to_frame_mvp(
                 minio.upload("vlm-processed", clip_key, file_bytes, f"image/{codec}")
                 uploaded_clip_key = clip_key
 
-            elif clip_start_sec is not None and clip_end_sec is not None and clip_end_sec > clip_start_sec:
+            elif event_start_sec is not None and event_end_sec is not None and event_end_sec > event_start_sec:
                 video_path, temp_video_path = _materialize_video_path(
                     minio,
                     {"archive_path": archive_path, "raw_bucket": raw_bucket, "raw_key": raw_key},
                 )
+                extract_start_sec, extract_end_sec = _resolve_event_clip_extraction_window(
+                    event_start_sec=event_start_sec,
+                    event_end_sec=event_end_sec,
+                    source_duration_sec=source_video_duration_sec,
+                    event_category=None,
+                )
+                buffered_start_sec = float(event_start_sec) - _DEFAULT_EVENT_CLIP_PRE_BUFFER_SEC
+                buffered_end_sec = float(event_end_sec) + _DEFAULT_EVENT_CLIP_POST_BUFFER_SEC
+                context.log.info(
+                    "clip_to_frame extraction window: asset=%s event=[%.3f, %.3f] extract=[%.3f, %.3f] "
+                    "start_clamped=%s end_clamped=%s",
+                    asset_id,
+                    float(event_start_sec),
+                    float(event_end_sec),
+                    extract_start_sec,
+                    extract_end_sec,
+                    extract_start_sec != buffered_start_sec,
+                    extract_end_sec != buffered_end_sec,
+                )
                 temp_clip_path = _extract_video_clip_path(
                     video_path,
-                    clip_start_sec=clip_start_sec,
-                    clip_end_sec=clip_end_sec,
+                    clip_start_sec=extract_start_sec,
+                    clip_end_sec=extract_end_sec,
                 )
                 file_bytes = temp_clip_path.read_bytes()
                 minio.upload("vlm-processed", clip_key, file_bytes, "video/mp4")
@@ -1371,8 +1443,8 @@ def clip_to_frame_mvp(
                     "source_asset_id": asset_id,
                     "source_label_id": label_id,
                     "event_index": event_index,
-                    "clip_start_sec": clip_start_sec,
-                    "clip_end_sec": clip_end_sec,
+                    "clip_start_sec": event_start_sec,
+                    "clip_end_sec": event_end_sec,
                     "checksum": checksum,
                     "file_size": file_size,
                     "processed_bucket": "vlm-processed",
@@ -1593,9 +1665,10 @@ def clip_to_frame_routed_impl(
         labels_key = cand["labels_key"]
         label_source = str(cand.get("label_source") or "manual")
         event_index = int(cand.get("event_index") or 0)
-        clip_start_sec = _coerce_float(cand.get("timestamp_start_sec"))
-        clip_end_sec = _coerce_float(cand.get("timestamp_end_sec"))
+        event_start_sec = _coerce_float(cand.get("timestamp_start_sec"))
+        event_end_sec = _coerce_float(cand.get("timestamp_end_sec"))
         caption_text = str(cand.get("caption_text") or "").strip() or None
+        source_video_duration_sec = _coerce_float(cand.get("video_duration_sec"))
         temp_clip_path: Path | None = None
         temp_video_path: Path | None = None
         clip_id: str | None = None
@@ -1642,11 +1715,11 @@ def clip_to_frame_routed_impl(
             clip_key = _build_processed_clip_key(
                 raw_key,
                 event_index=event_index,
-                clip_start_sec=clip_start_sec,
-                clip_end_sec=clip_end_sec,
+                clip_start_sec=event_start_sec,
+                clip_end_sec=event_end_sec,
                 media_type=media_type,
             )
-            clip_id = _stable_clip_id(label_id, event_index, clip_start_sec, clip_end_sec, clip_key)
+            clip_id = _stable_clip_id(label_id, event_index, event_start_sec, event_end_sec, clip_key)
             width, height, codec = None, None, None
             file_bytes = None
             clip_duration = None
@@ -1659,8 +1732,8 @@ def clip_to_frame_routed_impl(
                     "source_asset_id": asset_id,
                     "source_label_id": label_id,
                     "event_index": event_index,
-                    "clip_start_sec": clip_start_sec,
-                    "clip_end_sec": clip_end_sec,
+                    "clip_start_sec": event_start_sec,
+                    "clip_end_sec": event_end_sec,
                     "processed_bucket": "vlm-processed",
                     "clip_key": clip_key,
                     "label_key": labels_key,
@@ -1680,15 +1753,34 @@ def clip_to_frame_routed_impl(
                     codec = (img.format or "jpeg").lower()
                 minio.upload("vlm-processed", clip_key, file_bytes, f"image/{codec}")
                 uploaded_clip_key = clip_key
-            elif clip_start_sec is not None and clip_end_sec is not None and clip_end_sec > clip_start_sec:
+            elif event_start_sec is not None and event_end_sec is not None and event_end_sec > event_start_sec:
                 video_path, temp_video_path = _materialize_video_path(
                     minio,
                     {"archive_path": archive_path, "raw_bucket": raw_bucket, "raw_key": raw_key},
                 )
+                extract_start_sec, extract_end_sec = _resolve_event_clip_extraction_window(
+                    event_start_sec=event_start_sec,
+                    event_end_sec=event_end_sec,
+                    source_duration_sec=source_video_duration_sec,
+                    event_category=event_category,
+                )
+                buffered_start_sec = float(event_start_sec) - _DEFAULT_EVENT_CLIP_PRE_BUFFER_SEC
+                buffered_end_sec = float(event_end_sec) + _DEFAULT_EVENT_CLIP_POST_BUFFER_SEC
+                context.log.info(
+                    "clip_to_frame extraction window: asset=%s event=[%.3f, %.3f] extract=[%.3f, %.3f] "
+                    "start_clamped=%s end_clamped=%s",
+                    asset_id,
+                    float(event_start_sec),
+                    float(event_end_sec),
+                    extract_start_sec,
+                    extract_end_sec,
+                    extract_start_sec != buffered_start_sec,
+                    extract_end_sec != buffered_end_sec,
+                )
                 temp_clip_path = _extract_video_clip_path(
                     video_path,
-                    clip_start_sec=clip_start_sec,
-                    clip_end_sec=clip_end_sec,
+                    clip_start_sec=extract_start_sec,
+                    clip_end_sec=extract_end_sec,
                 )
                 file_bytes = temp_clip_path.read_bytes()
                 minio.upload("vlm-processed", clip_key, file_bytes, "video/mp4")
@@ -1712,8 +1804,8 @@ def clip_to_frame_routed_impl(
                     "source_asset_id": asset_id,
                     "source_label_id": label_id,
                     "event_index": event_index,
-                    "clip_start_sec": clip_start_sec,
-                    "clip_end_sec": clip_end_sec,
+                    "clip_start_sec": event_start_sec,
+                    "clip_end_sec": event_end_sec,
                     "checksum": checksum,
                     "file_size": file_size,
                     "processed_bucket": "vlm-processed",

@@ -18,7 +18,6 @@ _RUN_MODE_TO_OUTPUTS = {
     "yolo": ["bbox"],
     "both": ["timestamp", "captioning", "bbox"],
 }
-
 _OUTPUT_PRIORITY = {
     "timestamp": 0,
     "captioning": 1,
@@ -33,6 +32,7 @@ _NO_LABELING_MARKERS = frozenset(
         "라벨링필요없음",
         "라벨링_필요없음",
         "라벨링없음",
+        "skip",
         "no_labeling",
         "labeling_not_required",
         "not_required",
@@ -123,7 +123,6 @@ def parse_dispatch_request_payload(payload: Mapping[str, Any]) -> dict[str, Any]
     raw_outputs_items = _normalize_string_list(payload.get("outputs"), lowercase=True)
     raw_categories = _normalize_string_list(payload.get("categories"), lowercase=True)
     raw_classes = _normalize_string_list(payload.get("classes"), lowercase=True)
-
     archive_only = any(
         (
             _has_no_labeling_marker(raw_labeling_method_items),

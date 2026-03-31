@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from vlm_pipeline.lib.staging_vertex import (
+    build_event_frame_image_prompt,
+    build_event_frame_relevance_prompt,
     merge_overlapping_events,
     offset_gemini_events,
     parse_event_frame_relevance_response,
@@ -57,6 +59,28 @@ def test_merge_overlapping_events_deduplicates_same_category_after_offset() -> N
             "en_caption": "longer smoke description",
         }
     ]
+
+
+def test_build_event_frame_relevance_prompt_keeps_json_contract() -> None:
+    prompt = build_event_frame_relevance_prompt(
+        event_category="smoke",
+        event_caption_text="연기가 번짐",
+    )
+
+    assert 'Parent event category: "smoke"' in prompt
+    assert 'Parent event description: "연기가 번짐"' in prompt
+    assert '{"relevance_score": 0.0}' in prompt
+
+
+def test_build_event_frame_image_prompt_keeps_json_contract() -> None:
+    prompt = build_event_frame_image_prompt(
+        event_category="smoke",
+        event_caption_text="연기가 번짐",
+    )
+
+    assert 'Parent event category: "smoke"' in prompt
+    assert 'Parent event description: "연기가 번짐"' in prompt
+    assert '{"is_relevant": true, "caption": "..." }' in prompt
 
 
 def test_parse_event_frame_image_caption_response_handles_irrelevant_frame() -> None:

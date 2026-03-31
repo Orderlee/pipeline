@@ -12,11 +12,16 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from vlm_pipeline.lib.env_utils import storage_raw_key_prefix_from_source_unit
 from vlm_pipeline.lib.file_loader import load_image_once
 from vlm_pipeline.lib.sanitizer import sanitize_filename, sanitize_path_component
 from vlm_pipeline.lib.validator import detect_media_type, validate_incoming
 from vlm_pipeline.lib.video_loader import load_video_once
-from vlm_pipeline.lib.video_reencode import STANDARD_PRESET_NAME, needs_reencode, reencode_to_tmp
+from vlm_pipeline.lib.video_reencode import (
+    STANDARD_PRESET_NAME,
+    needs_reencode,
+    reencode_to_tmp,
+)
 from vlm_pipeline.resources.duckdb import DuckDBResource
 from vlm_pipeline.resources.minio import MinIOResource
 
@@ -97,7 +102,8 @@ def register_incoming(
     manifest path는 컨테이너 경로 (/nas/incoming/...) 기준.
     라벨 JSON은 INGEST 대상 아님 (LABEL 단계에서 별도 생성).
 
-    MinIO raw_key는 source_unit_name/rel_path 구조를 유지하여 폴더 구조를 보존한다.
+    MinIO raw_key는 source unit/rel_path 구조를 유지하여 폴더 구조를 보존한다.
+    단, GCP auto-bootstrap unit(`gcp/<bucket>/...`)은 `gcp/` prefix를 제거한다.
     """
     results: list[dict] = []
     batch_id = manifest.get("manifest_id", f"batch_{datetime.now():%Y%m%d_%H%M%S}")
@@ -145,7 +151,7 @@ def register_incoming(
             else:
                 sanitized_rel = sanitized_name
 
-            sanitized_source_unit_name = _sanitize_path_parts(source_unit_name)
+            sanitized_source_unit_name = storage_raw_key_prefix_from_source_unit(source_unit_name)
             if sanitized_source_unit_name and source_unit_type != "file":
                 raw_key = f"{sanitized_source_unit_name}/{sanitized_rel}"
             else:
@@ -218,6 +224,8 @@ def normalize_and_archive(
     except ValueError:
         max_workers = 4
     max_workers = max(1, min(16, max_workers))
+
+    # 재인코딩 병렬 처리 설정 (CPU 코어 수 기준 기본값 3, threads=4)
     try:
         reencode_workers = max(1, min(16, int(os.getenv("INGEST_REENCODE_WORKERS", "3"))))
         reencode_threads = max(1, int(os.getenv("INGEST_REENCODE_THREADS", "4")))
@@ -278,11 +286,16 @@ def normalize_and_archive(
                     include_file_stream=False,
                     include_env_metadata=not defer_video_env_classification,
                 )
-                reencode_required, reencode_reason = needs_reencode(meta["video_metadata"], Path(filepath))
-                meta["video_metadata"]["reencode_required"] = reencode_required
-                meta["video_metadata"]["reencode_reason"] = reencode_reason
-                if reencode_required:
-                    context.log.info(f"reencode_required: {filepath} reason={reencode_reason}")
+                # 인코딩 품질 판정 (원본 ffprobe 결과 재사용, 조건 통과 시만 추가 probe)
+                reencode_req, reencode_rsn = needs_reencode(
+                    meta["video_metadata"], Path(filepath)
+                )
+                meta["video_metadata"]["reencode_required"] = reencode_req
+                meta["video_metadata"]["reencode_reason"] = reencode_rsn
+                if reencode_req:
+                    context.log.info(
+                        f"reencode_required: {filepath} reason={reencode_rsn}"
+                    )
 
             stage_hint = "db"
             # 정확 중복 검출
@@ -337,14 +350,16 @@ def normalize_and_archive(
             upload_tasks.append(
                 {
                     "filepath": filepath,
-                    "source_path": filepath,
+                    "source_path": filepath,   # 원본 NAS 경로 보존 (reencode 시 filepath 교체돼도 유지)
                     "asset_id": asset_id,
                     "media_type": media_type,
                     "raw_key": raw_key,
                     "db_record": db_record,
                     "meta": meta,
                     "reencode_required": (
-                        meta["video_metadata"].get("reencode_required", False) if media_type == "video" else False
+                        meta["video_metadata"].get("reencode_required", False)
+                        if media_type == "video"
+                        else False
                     ),
                     "reencode_threads": reencode_threads,
                 }
@@ -420,16 +435,26 @@ def normalize_and_archive(
         # SpooledTemporaryFile stream 대신 NAS에 위치한 원본 파일 경로를 직접 넘겨 병렬 업로드 최적화
         minio.upload_file("vlm-raw", raw_key, filepath, content_type=content_type)
 
+    # 재인코딩이 필요한 task가 있으면 reencode_workers 수로 제한
     has_reencode_tasks = any(t.get("reencode_required") for t in upload_tasks)
     effective_workers = reencode_workers if has_reencode_tasks else max_workers
 
-    # 2) MinIO 업로드 (병렬)
+    # 2) MinIO 업로드 (병렬, 재인코딩 필요 시 reencode → 업로드 순서)
     def _execute_upload(task: dict) -> dict:
-        """단일 업로드 실행 후 결과 dict 반환."""
+        """단일 업로드 실행 후 결과 dict 반환.
+
+        video + reencode_required=True 인 경우:
+          1) 임시 파일로 표준 스펙 재인코딩
+          2) 재인코딩본으로 MinIO 업로드
+          3) 임시 파일 정리 (finally)
+        """
         tmp_path = None
         try:
             if task["media_type"] == "video" and task.get("reencode_required"):
-                tmp_path = reencode_to_tmp(Path(task["filepath"]), threads=task.get("reencode_threads", 4))
+                tmp_path = reencode_to_tmp(
+                    Path(task["filepath"]),
+                    threads=task.get("reencode_threads", 4),
+                )
                 task["filepath"] = str(tmp_path)
                 task["reencode_info"] = {"reencode_preset": STANDARD_PRESET_NAME}
             _upload_single(task)
@@ -462,15 +487,20 @@ def normalize_and_archive(
                 if not first_upload_logged:
                     context.log.info(f"first_upload_complete raw_key={raw_key}")
                     first_upload_logged = True
+                # 재인코딩이 적용된 경우 video_metadata 업데이트
                 reencode_info = task.get("reencode_info")
                 if reencode_info and media_type == "video":
                     try:
                         db.update_video_reencode_applied(
                             asset_id,
-                            reencode_preset=reencode_info.get("reencode_preset", STANDARD_PRESET_NAME),
+                            reencode_preset=reencode_info.get(
+                                "reencode_preset", STANDARD_PRESET_NAME
+                            ),
                         )
                     except Exception as re_exc:  # noqa: BLE001
-                        context.log.warning(f"reencode_applied 업데이트 실패: {asset_id}: {re_exc}")
+                        context.log.warning(
+                            f"reencode_applied 업데이트 실패: {asset_id}: {re_exc}"
+                        )
                 uploaded.append(
                     {
                         "asset_id": asset_id,

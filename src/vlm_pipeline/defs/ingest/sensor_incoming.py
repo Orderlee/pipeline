@@ -9,6 +9,7 @@ from pathlib import Path
 from dagster import DefaultSensorStatus, RunRequest, SkipReason, sensor
 
 from vlm_pipeline.lib.env_utils import int_env
+from vlm_pipeline.lib.runtime_profile import resolve_runtime_profile
 from vlm_pipeline.resources.config import PipelineConfig
 
 from .runtime_policy import pending_manifest_allowed
@@ -56,6 +57,7 @@ def incoming_manifest_sensor(context):
     cursor 기반 중복 방지: 이미 처리된 manifest는 건너뜀.
     """
     config = PipelineConfig()
+    runtime_profile = resolve_runtime_profile()
     pending_dir = Path(config.manifest_dir) / "pending"
     processed_dir = Path(config.manifest_dir) / "processed"
     processed_dir.mkdir(parents=True, exist_ok=True)
@@ -86,7 +88,11 @@ def incoming_manifest_sensor(context):
         blocked_entries = 0
         for entry in manifest_entries:
             payload = entry.get("payload") or {}
-            if pending_manifest_allowed(payload, config=config):
+            if pending_manifest_allowed(
+                payload,
+                config=config,
+                runtime_profile=runtime_profile,
+            ):
                 allowed_entries.append(entry)
                 continue
             _move_staging_blocked_manifest(entry["path"], processed_dir, context)
