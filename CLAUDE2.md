@@ -1752,3 +1752,128 @@
     - [7593105a] fix: 사전 라벨링 원본 stem 추론 패턴 추가
     - [b89f4a79] feat: staging dispatch 리팩터링과 사전 라벨링 데이터 적재 경로 추가
     - [9837bf41] 운영·스테이징 ingest/dispatch 구조를 리팩토링하고 안정화한다
+
+  --- 2026-03-26 자동 기록 (상세) ---
+  1) 운영/스키마 계층 정비
+    - 문제: DuckDB 스키마 보정 또는 카탈로그 안정성이 중요한 변경이 포함되어, 런타임 중 스키마 불일치 재발 가능성을 줄일 필요가 있었음.
+    - 원인: DuckDB 관련 변경은 단순 컬럼 추가를 넘어서 `ensure_schema`, ingest 저장 경로, schema DDL이 함께 맞물리기 때문에, 일부만 수정하면 운영/테스트 환경에서 서로 다른 상태가 남을 수 있음.
+    - 조치:
+      - DuckDB 관련 리소스, ingest 저장 로직, schema 정의를 함께 정리해 런타임 스키마 보정 흐름을 일관되게 맞춤.
+      - 필요 시 수동 복구 절차나 점검 스크립트를 함께 두어 운영 장애 대응 시 즉시 사용할 수 있도록 준비.
+    - 관련 파일:
+      - `src/vlm_pipeline/resources/duckdb_base.py`
+      - `src/vlm_pipeline/resources/duckdb_ingest.py`
+      - `src/vlm_pipeline/resources/duckdb_labeling.py`
+      - `src/vlm_pipeline/sql/schema.sql`
+  2) Staging dispatch 및 ingest 흐름 정리
+    - 문제: staging에서 trigger JSON 여부, incoming 대기, archive 이동, MinIO 업로드 순서가 테스트 의도와 다르게 동작할 수 있었음.
+    - 원인: dispatch sensor, bootstrap sensor, ingest/archive 경로가 동시에 개입하면 JSON 없는 입력까지 자동 처리되거나, archive 전후 순서가 기대와 어긋날 수 있음.
+    - 조치:
+      - dispatch 관련 sensor, archive helper, ingest sensor를 함께 조정해 staging에서 원하는 트리거 조건과 이동 순서를 명확히 분리함.
+      - trigger JSON 유무에 따라 대기/이동/업로드 흐름이 달라지도록 분기 규칙을 정리함.
+    - 관련 파일:
+      - `src/vlm_pipeline/defs/dispatch/service.py`
+      - `src/vlm_pipeline/defs/dispatch/staging_agent_sensor.py`
+      - `src/vlm_pipeline/defs/ingest/archive.py`
+  3) Staging spec 모듈 및 센서 분리
+    - 문제: staging 실험용 spec 흐름과 공용 파이프라인 흐름이 섞이면 테스트 반복성과 책임 경계가 흐려질 수 있었음.
+    - 원인: staging 전용 sensor, asset, spec config가 충분히 분리되지 않으면 운영 경로와 테스트 경로가 같은 job/asset 정의를 공유하게 됨.
+    - 조치:
+      - staging 전용 definitions, spec asset, sensor 계층을 분리해 테스트 흐름을 독립적으로 유지함.
+      - spec 관련 DB 저장 구조와 config 해석 경로를 함께 보정함.
+    - 관련 파일:
+      - `src/vlm_pipeline/definitions_staging.py`
+  4) YOLO 실행 조건 및 순서 조정
+    - 문제: bbox/image classification 요청이 있을 때 YOLO가 너무 이른 시점에 실행되거나, 다른 라우팅과 충돌할 수 있었음.
+    - 원인: YOLO는 frame 생성 이후 실행돼야 하는데, dispatch selection 또는 공용 asset 연결 구조상 독립적으로 먼저 뜰 수 있었음.
+    - 조치:
+      - YOLO 관련 asset과 routing 조건을 조정해 frame 생성 이후 실행되도록 순서를 맞춤.
+      - bbox, image classification, captioning 조합별로 staging 분기 규칙을 명확히 정리함.
+    - 관련 파일:
+      - `src/vlm_pipeline/defs/process/assets.py`
+      - `src/vlm_pipeline/defs/yolo/assets.py`
+      - `src/vlm_pipeline/lib/video_frames.py`
+  5) 로컬 전용 자산 및 문서/자동화 정리
+    - 문제: 로컬 메모, 개인용 스킬, env 예시 파일 같은 자산이 공용 저장소 이력과 섞이면 협업 범위가 모호해질 수 있었음.
+    - 원인: 개인 환경에서만 의미 있는 파일까지 추적되면 저장소 이력에 불필요한 변경이 누적되고, 자동화 문서도 실제 운영 상태와 어긋날 수 있음.
+    - 조치:
+      - `.agent`, `doc_2`, env 예시, daily worklog 관련 파일을 목적에 맞게 추적/비추적 대상으로 정리함.
+      - 자동화 스크립트와 문서 포맷을 실제 운영/테스트 경험에 맞춰 보정함.
+    - 관련 파일:
+      - `.env.example`
+      - `.gitignore`
+  핵심 파일 변경:
+    - `docker/app/dagster.yaml`
+    - `docker/docker-compose.yaml`
+    - `src/vlm_pipeline/definitions.py`
+    - `src/vlm_pipeline/defs/dedup/assets.py`
+    - `src/vlm_pipeline/defs/dedup/sensor.py`
+    - `src/vlm_pipeline/defs/dispatch/staging_agent_sensor.py`
+    - `src/vlm_pipeline/defs/ingest/ops.py`
+    - `src/vlm_pipeline/defs/process/assets.py`
+    - `src/vlm_pipeline/defs/process/sensor.py`
+    - `src/vlm_pipeline/defs/sync/sensor.py`
+    - `src/vlm_pipeline/defs/yolo/assets.py`
+    - `src/vlm_pipeline/resources/duckdb_base.py`
+    - `... 외 3개`
+  관련 커밋 요약:
+    - [e4ddebee] feat: 스테이징 API 연동과 라벨링 파이프라인 안정화
+    - [a7586ce3] Merge pull request #26 from hoonikooni/feature/sanghoon
+
+  --- 2026-03-30 자동 기록 (상세) ---
+  1) Staging dispatch 및 ingest 흐름 정리
+    - 문제: staging에서 trigger JSON 여부, incoming 대기, archive 이동, MinIO 업로드 순서가 테스트 의도와 다르게 동작할 수 있었음.
+    - 원인: dispatch sensor, bootstrap sensor, ingest/archive 경로가 동시에 개입하면 JSON 없는 입력까지 자동 처리되거나, archive 전후 순서가 기대와 어긋날 수 있음.
+    - 조치:
+      - dispatch 관련 sensor, archive helper, ingest sensor를 함께 조정해 staging에서 원하는 트리거 조건과 이동 순서를 명확히 분리함.
+      - trigger JSON 유무에 따라 대기/이동/업로드 흐름이 달라지도록 분기 규칙을 정리함.
+    - 관련 파일:
+      - `src/vlm_pipeline/defs/dispatch/production_agent_sensor.py`
+      - `src/vlm_pipeline/defs/dispatch/sensor.py`
+      - `src/vlm_pipeline/defs/dispatch/sensor_incoming_mover.py`
+      - `src/vlm_pipeline/defs/dispatch/service.py`
+      - `src/vlm_pipeline/defs/dispatch/staging_agent_sensor.py`
+      - `src/vlm_pipeline/defs/ingest/archive.py`
+      - `... 외 4개`
+  2) Staging Vertex/VQA 캡셔닝 구조 보강
+    - 문제: staging에서 영상 이벤트 캡션과 이미지/VQA 캡션의 저장 책임이 분리되지 않거나, 프레임 선택 기준이 불명확할 수 있었음.
+    - 원인: captioning 관련 변경은 label/event 레벨과 image/frame 레벨을 함께 건드리므로, 라우팅과 저장 컬럼 의미를 동시에 정리하지 않으면 후속 조회 시 혼선이 생김.
+    - 조치:
+      - Vertex helper와 process asset을 함께 수정해 event caption과 image caption의 책임을 분리함.
+      - 프레임 relevance 판단, top-1 선택, 이미지 캡션 저장 흐름을 staging 기준으로 정리함.
+    - 관련 파일:
+      - `src/vlm_pipeline/defs/label/assets.py`
+      - `src/vlm_pipeline/defs/process/assets.py`
+      - `src/vlm_pipeline/lib/staging_vertex.py`
+  3) Staging spec 모듈 및 센서 분리
+    - 문제: staging 실험용 spec 흐름과 공용 파이프라인 흐름이 섞이면 테스트 반복성과 책임 경계가 흐려질 수 있었음.
+    - 원인: staging 전용 sensor, asset, spec config가 충분히 분리되지 않으면 운영 경로와 테스트 경로가 같은 job/asset 정의를 공유하게 됨.
+    - 조치:
+      - staging 전용 definitions, spec asset, sensor 계층을 분리해 테스트 흐름을 독립적으로 유지함.
+      - spec 관련 DB 저장 구조와 config 해석 경로를 함께 보정함.
+    - 관련 파일:
+      - `src/vlm_pipeline/definitions_staging.py`
+      - `src/vlm_pipeline/defs/spec/assets.py`
+      - `src/vlm_pipeline/resources/duckdb_spec.py`
+  4) YOLO 실행 조건 및 순서 조정
+    - 문제: bbox/image classification 요청이 있을 때 YOLO가 너무 이른 시점에 실행되거나, 다른 라우팅과 충돌할 수 있었음.
+    - 원인: YOLO는 frame 생성 이후 실행돼야 하는데, dispatch selection 또는 공용 asset 연결 구조상 독립적으로 먼저 뜰 수 있었음.
+    - 조치:
+      - YOLO 관련 asset과 routing 조건을 조정해 frame 생성 이후 실행되도록 순서를 맞춤.
+      - bbox, image classification, captioning 조합별로 staging 분기 규칙을 명확히 정리함.
+    - 관련 파일:
+      - `src/vlm_pipeline/defs/process/assets.py`
+      - `src/vlm_pipeline/defs/yolo/assets.py`
+  핵심 파일 변경:
+    - `src/vlm_pipeline/definitions.py`
+    - `src/vlm_pipeline/defs/dispatch/production_agent_sensor.py`
+    - `src/vlm_pipeline/defs/dispatch/sensor.py`
+    - `src/vlm_pipeline/defs/dispatch/staging_agent_sensor.py`
+    - `src/vlm_pipeline/defs/ingest/assets.py`
+    - `src/vlm_pipeline/defs/label/assets.py`
+    - `src/vlm_pipeline/defs/process/assets.py`
+    - `src/vlm_pipeline/defs/spec/assets.py`
+    - `src/vlm_pipeline/defs/yolo/assets.py`
+    - `src/vlm_pipeline/resources/duckdb_spec.py`
+  관련 커밋 요약:
+    - [7db48860] feat: 운영·스테이징 라벨링 적재 흐름 정비

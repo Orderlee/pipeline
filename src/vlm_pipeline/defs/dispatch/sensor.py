@@ -1,4 +1,7 @@
-"""Dispatch JSON 센서 — `.dispatch/pending` 처리 후 dispatch_stage_job 트리거."""
+"""Dispatch JSON ingress sensor.
+
+production 기본 경로이며, staging에서는 파일 기반 레거시/호환 경로로 유지한다.
+"""
 
 from __future__ import annotations
 
@@ -8,17 +11,31 @@ from pathlib import Path
 from dagster import SensorEvaluationContext, sensor
 
 from vlm_pipeline.defs.dispatch.service import (
-    build_dispatch_pipeline_rows,
-    build_dispatch_request_record,
-    build_dispatch_run_request,
-    has_active_dispatch_run,
+    DispatchIngressRequest,
     move_dispatch_file,
-    prepare_dispatch_request,
+    process_dispatch_ingress_request,
     record_failed_dispatch_request,
-    resolve_dispatch_applied_params,
-    write_dispatch_manifest,
 )
 from vlm_pipeline.resources.config import PipelineConfig
+
+
+def _record_failed_and_move(
+    *,
+    db_resource,
+    request_id: str,
+    request_payload: dict,
+    reason: str,
+    request_file: Path,
+    failed_dir: Path,
+    context: SensorEvaluationContext,
+) -> None:
+    record_failed_dispatch_request(
+        db_resource,
+        request_id,
+        request_payload,
+        reason,
+    )
+    move_dispatch_file(request_file, failed_dir, context=context)
 
 
 @sensor(
@@ -54,93 +71,42 @@ def dispatch_sensor(context: SensorEvaluationContext):
             move_dispatch_file(req_file, failed_dir, context=context)
             continue
 
-        request_id = str(req_data.get("request_id") or req_file.stem).strip()
-
-        try:
-            prepared = prepare_dispatch_request(req_data, incoming_dir=incoming_dir)
-        except ValueError as exc:
-            record_failed_dispatch_request(db_resource, request_id, req_data, str(exc))
-            move_dispatch_file(req_file, failed_dir, context=context)
-            continue
-
-        if not prepared.incoming_folder_path.is_dir():
-            record_failed_dispatch_request(
-                db_resource,
-                prepared.request_id,
-                req_data,
-                "folder_not_in_incoming",
-            )
-            move_dispatch_file(req_file, failed_dir, context=context)
-            continue
-
-        existing_rows = db_resource.get_in_flight_dispatch_requests(prepared.folder_name)
-        existing_status = db_resource.get_dispatch_request_status(prepared.request_id)
-
-        if existing_rows and has_active_dispatch_run(context, prepared.folder_name):
-            record_failed_dispatch_request(
-                db_resource,
-                prepared.request_id,
-                req_data,
-                "folder_dispatch_in_flight",
-            )
-            move_dispatch_file(req_file, failed_dir, context=context)
-            continue
-
-        if existing_rows:
-            for row in existing_rows:
-                stale_request_id = str(row.get("request_id") or "").strip()
-                if not stale_request_id:
-                    continue
-                db_resource.close_dispatch_request(
-                    stale_request_id,
-                    status="canceled",
-                    error_message="stale_dispatch_request_without_active_run",
-                )
-
-        if existing_status:
-            record_failed_dispatch_request(
-                db_resource,
-                prepared.request_id,
-                req_data,
-                "duplicate_request_id",
-            )
-            move_dispatch_file(req_file, failed_dir, context=context)
-            continue
-
-        try:
-            manifest_path, archive_dest = write_dispatch_manifest(config, prepared)
-        except Exception as exc:  # noqa: BLE001
-            record_failed_dispatch_request(
-                db_resource,
-                prepared.request_id,
-                req_data,
-                f"failed_to_write_manifest:{exc}",
-            )
-            move_dispatch_file(req_file, failed_dir, context=context)
-            continue
-
-        context.log.info(
-            "dispatch manifest 생성 완료(archive 이동/파일 인덱싱은 raw_ingest에서 수행): "
-            f"request_id={prepared.request_id} folder={prepared.folder_name} manifest={manifest_path.name}"
+        request_id = str(req_data.get("request_id") or req_file.stem).strip() or req_file.stem
+        outcome = process_dispatch_ingress_request(
+            context,
+            db_resource=db_resource,
+            config=config,
+            ingress_request=DispatchIngressRequest(
+                payload=req_data,
+                fallback_request_id=request_id,
+                duplicate_policy="reject",
+                in_flight_policy="reject",
+            ),
         )
-
-        model_defaults = db_resource.get_active_staging_model_configs(prepared.labeling_method)
-        applied_params = resolve_dispatch_applied_params(req_data, model_defaults)
-
-        db_resource.insert_dispatch_request(
-            build_dispatch_request_record(
-                prepared,
-                archive_dest=archive_dest,
-                applied_params=applied_params,
+        if outcome.status != "run_request":
+            _record_failed_and_move(
+                db_resource=db_resource,
+                request_id=outcome.request_id,
+                request_payload=req_data,
+                reason=outcome.reason,
+                request_file=req_file,
+                failed_dir=failed_dir,
+                context=context,
             )
-        )
-        db_resource.insert_dispatch_pipeline_runs(
-            build_dispatch_pipeline_rows(
-                prepared,
-                model_defaults=model_defaults,
-                applied_params=applied_params,
+            continue
+
+        prepared = outcome.prepared
+        if prepared is None or outcome.run_request is None:
+            _record_failed_and_move(
+                db_resource=db_resource,
+                request_id=outcome.request_id,
+                request_payload=req_data,
+                reason="invalid_dispatch_outcome",
+                request_file=req_file,
+                failed_dir=failed_dir,
+                context=context,
             )
-        )
+            continue
 
         move_dispatch_file(req_file, processed_dir, context=context)
 
@@ -151,8 +117,4 @@ def dispatch_sensor(context: SensorEvaluationContext):
                 prepared.folder_name,
             )
 
-        yield build_dispatch_run_request(
-            prepared,
-            manifest_path=manifest_path,
-            applied_params=applied_params,
-        )
+        yield outcome.run_request

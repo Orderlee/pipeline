@@ -120,9 +120,7 @@ def ready_for_labeling_sensor(
     job_name = "auto_labeling_routed_job"
     instance = context.instance
     for row in rows:
-        spec_id, source_unit_name, resolved_config_id, resolved_config_scope = (
-            row[0], row[1], row[2], row[3]
-        )
+        spec_id, source_unit_name, resolved_config_id = row[0], row[1], row[2]
         if not spec_id:
             continue
         spec = db.get_labeling_spec_by_id(spec_id)

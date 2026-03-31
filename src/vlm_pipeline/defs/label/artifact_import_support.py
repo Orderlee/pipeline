@@ -15,6 +15,7 @@ from vlm_pipeline.defs.label.import_support import EVENT_LABEL_DIR_NAMES, import
 from vlm_pipeline.defs.process.assets import _build_image_caption_key
 from vlm_pipeline.defs.yolo.assets import _build_yolo_label_key
 from vlm_pipeline.lib.checksum import sha256sum
+from vlm_pipeline.lib.yolo_coco import convert_detection_payload_to_coco
 from vlm_pipeline.lib.video_frames import describe_frame_bytes
 from vlm_pipeline.lib.video_loader import load_video_once
 
@@ -479,14 +480,21 @@ def _import_bbox_json_files(
             summary.not_matched += 1
             continue
 
-        detections = payload.get("detections")
-        if not isinstance(detections, list):
-            detections = []
+        coco_payload = convert_detection_payload_to_coco(
+            payload,
+            fallback_image_id=str(image_row["image_id"]),
+            fallback_source_clip_id=image_row.get("source_clip_id"),
+            fallback_image_key=str(image_row["image_key"]),
+            fallback_image_width=image_row.get("width"),
+            fallback_image_height=image_row.get("height"),
+            default_class_source="manual_import",
+        )
+        annotation_count = len(coco_payload.get("annotations") or [])
         labels_key = _build_yolo_label_key(str(image_row["image_key"]))
         minio.upload(
             "vlm-labels",
             labels_key,
-            json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+            json.dumps(coco_payload, ensure_ascii=False).encode("utf-8"),
             "application/json",
         )
         db.insert_image_label(
@@ -496,12 +504,12 @@ def _import_bbox_json_files(
                 "source_clip_id": image_row.get("source_clip_id"),
                 "labels_bucket": "vlm-labels",
                 "labels_key": labels_key,
-                "label_format": "yolo_detection_json",
+                "label_format": "coco",
                 "label_tool": "yolo-world",
                 "label_source": "manual",
                 "review_status": "reviewed",
                 "label_status": "completed",
-                "object_count": len(detections),
+                "object_count": annotation_count,
                 "created_at": _now(),
             }
         )

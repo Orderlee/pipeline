@@ -13,7 +13,6 @@ from pathlib import Path
 from dagster import AssetKey, asset
 
 from vlm_pipeline.defs.label.artifact_import_support import import_local_label_artifacts, resolve_local_artifact_source_dirs
-from vlm_pipeline.lib.env_utils import IS_STAGING
 from vlm_pipeline.lib.phash import compute_phash
 from vlm_pipeline.lib.validator import ALLOWED_EXTENSIONS
 from vlm_pipeline.resources.config import PipelineConfig
@@ -22,9 +21,7 @@ from vlm_pipeline.resources.minio import MinIOResource
 
 from .archive import (
     archive_uploaded_assets,
-    complete_uploaded_assets_in_archive,
     complete_uploaded_assets_without_archive,
-    prepare_manifest_for_archive_upload,
     should_archive_manifest,
 )
 from .duplicate import collect_duplicate_asset_file_map
@@ -34,7 +31,11 @@ from .manifest import (
     write_ingest_failure_logs,
 )
 from .ops import ingest_summary, normalize_and_archive, register_incoming
-from .runtime_policy import IngestRuntimePolicy, resolve_ingest_runtime_policy
+from .runtime_policy import (
+    IngestRuntimePolicy,
+    archive_only_artifact_import_allowed,
+    resolve_ingest_runtime_policy,
+)
 
 
 @dataclass
@@ -115,25 +116,25 @@ def _prepare_archive_inputs(
     if state.manifest is None:
         return
 
-    state.archive_requested = should_archive_manifest(state.manifest, config=config)
+    state.archive_requested = should_archive_manifest(
+        state.manifest,
+        config=config,
+        runtime_profile=policy.runtime_profile,
+    )
+    state.archive_prepared_for_upload = False
     context.log.info("archive_prepare:start")
     if state.archive_requested and policy.premove_archive_enabled:
-        (
-            state.manifest,
-            state.archive_unit_dir_hint,
-            state.archive_prepared_for_upload,
-        ) = prepare_manifest_for_archive_upload(
-            context,
-            state.manifest,
-            archive_dir=config.archive_dir,
+        context.log.info(
+            "archive_prepare:premove_disabled "
+            "pre-move path is disabled; archive_finalize에서 uploaded 파일만 이동"
         )
-        _persist_manifest(state.manifest_path, state.manifest)
 
     context.log.info(
         "archive_prepare:done "
         f"archive_requested={state.archive_requested} "
         f"prepared={state.archive_prepared_for_upload} "
-        f"premove_enabled={policy.premove_archive_enabled}"
+        f"premove_enabled={policy.premove_archive_enabled} "
+        "premove_applied=False"
     )
 
 
@@ -168,8 +169,13 @@ def _run_staging_archive_only_artifact_import(
     *,
     config: PipelineConfig,
     state: RawIngestState,
+    runtime_profile,
 ) -> dict[str, object] | None:
-    if not IS_STAGING or not state.archive_only or not state.folder_name:
+    if not archive_only_artifact_import_allowed(
+        runtime_profile=runtime_profile,
+        archive_only=state.archive_only,
+        folder_name=state.folder_name,
+    ):
         return None
 
     source_unit_dirs = resolve_local_artifact_source_dirs(
@@ -601,24 +607,21 @@ def _run_raw_ingest_pipeline(
         )
 
         state.stage = "archive_finalize"
-        context.log.info("archive_finalize:start")
+        context.log.info(
+            "archive_finalize:start "
+            f"archive_requested={state.archive_requested} "
+            f"prepared={state.archive_prepared_for_upload} "
+            f"uploaded={len(state.uploaded)}"
+        )
         if state.archive_requested:
-            if state.archive_prepared_for_upload:
-                state.archived = complete_uploaded_assets_in_archive(
-                    context=context,
-                    db=db,
-                    manifest=state.manifest,
-                    uploaded=state.uploaded,
-                )
-            else:
-                state.archived, state.archive_unit_dir_hint = archive_uploaded_assets(
-                    context=context,
-                    db=db,
-                    manifest=state.manifest,
-                    uploaded=state.uploaded,
-                    archive_dir=target_archive_dir,
-                    ingest_rejections=state.ingest_rejections,
-                )
+            state.archived, state.archive_unit_dir_hint = archive_uploaded_assets(
+                context=context,
+                db=db,
+                manifest=state.manifest,
+                uploaded=state.uploaded,
+                archive_dir=target_archive_dir,
+                ingest_rejections=state.ingest_rejections,
+            )
         else:
             state.archived = complete_uploaded_assets_without_archive(
                 context=context,
@@ -627,7 +630,12 @@ def _run_raw_ingest_pipeline(
                 uploaded=state.uploaded,
             )
             state.archive_unit_dir_hint = None
-        context.log.info(f"archive_finalize:done archived={len(state.archived)}")
+        context.log.info(
+            "archive_finalize:done "
+            f"archived={len(state.archived)} "
+            f"uploaded={len(state.uploaded)} "
+            f"archive_requested={state.archive_requested}"
+        )
 
         state.stage = "label_artifact_import"
         local_artifact_summary = _run_staging_archive_only_artifact_import(
@@ -636,6 +644,7 @@ def _run_raw_ingest_pipeline(
             minio,
             config=config,
             state=state,
+            runtime_profile=runtime_policy.runtime_profile,
         )
 
         state.stage = "retry_manifest"

@@ -5,6 +5,7 @@ from __future__ import annotations
 from dagster import EnvVar, ScheduleDefinition, define_asset_job
 
 from vlm_pipeline.defs.build.assets import build_dataset
+from vlm_pipeline.defs.dispatch.production_agent_sensor import production_agent_dispatch_sensor
 from vlm_pipeline.defs.dispatch.sensor import dispatch_sensor
 from vlm_pipeline.defs.dispatch.sensor_run_status import (
     dispatch_run_canceled_sensor,
@@ -20,12 +21,9 @@ from vlm_pipeline.defs.ingest.sensor import (
 )
 from vlm_pipeline.defs.label.assets import clip_timestamp
 from vlm_pipeline.defs.label.manual_import import manual_label_import
-from vlm_pipeline.defs.label.prelabeled_import import prelabeled_import
 from vlm_pipeline.defs.process.assets import clip_captioning, clip_to_frame, raw_video_to_frame
-from vlm_pipeline.defs.spec.assets import labeling_spec_ingest, pending_ingest
-from vlm_pipeline.defs.spec.staging_assets import activate_labeling_spec, config_sync, ingest_router
 from vlm_pipeline.defs.sync.assets import motherduck_sync
-from vlm_pipeline.defs.yolo.assets import bbox_labeling, yolo_image_detection
+from vlm_pipeline.defs.yolo.assets import bbox_labeling, dispatch_yolo_image_detection, yolo_image_detection
 from vlm_pipeline.defs.yolo.staging_assets import staging_yolo_image_detection
 from vlm_pipeline.resources.duckdb import DuckDBResource
 from vlm_pipeline.resources.minio import MinIOResource
@@ -36,7 +34,14 @@ CLIP_AUTO_LABEL_ASSETS = (
     clip_to_frame,
 )
 
-DISPATCH_STAGE_SELECTION = [
+PRODUCTION_DISPATCH_STAGE_SELECTION = [
+    raw_ingest,
+    *CLIP_AUTO_LABEL_ASSETS,
+    raw_video_to_frame,
+    dispatch_yolo_image_detection,
+]
+
+STAGING_DISPATCH_STAGE_SELECTION = [
     raw_ingest,
     *CLIP_AUTO_LABEL_ASSETS,
     raw_video_to_frame,
@@ -94,10 +99,10 @@ def build_gcs_download_job(*, description: str, tags: dict[str, str] | None = No
     )
 
 
-def build_dispatch_stage_job(*, description: str):
+def build_dispatch_stage_job(*, description: str, staging: bool):
     return define_asset_job(
         "dispatch_stage_job",
-        selection=DISPATCH_STAGE_SELECTION,
+        selection=STAGING_DISPATCH_STAGE_SELECTION if staging else PRODUCTION_DISPATCH_STAGE_SELECTION,
         tags={"duckdb_writer": "true"},
         description=description,
     )
@@ -122,6 +127,8 @@ def build_manual_label_import_job(*, description: str):
 
 
 def build_prelabeled_import_job(*, description: str):
+    from vlm_pipeline.defs.label.prelabeled_import import prelabeled_import
+
     return define_asset_job(
         "prelabeled_import_job",
         selection=[prelabeled_import],
@@ -149,6 +156,8 @@ def build_staging_yolo_detection_job(*, description: str):
 
 
 def build_auto_labeling_routed_job(*, description: str):
+    from vlm_pipeline.defs.spec.staging_assets import activate_labeling_spec
+
     return define_asset_job(
         "auto_labeling_routed_job",
         selection=[
@@ -214,8 +223,7 @@ def build_production_assets(*, enable_manual_label_import: bool, enable_yolo_det
         raw_video_to_frame,
         build_dataset,
         motherduck_sync,
-        bbox_labeling,
-        staging_yolo_image_detection,
+        dispatch_yolo_image_detection,
     ]
     if enable_manual_label_import:
         assets.append(manual_label_import)
@@ -225,6 +233,10 @@ def build_production_assets(*, enable_manual_label_import: bool, enable_yolo_det
 
 
 def build_staging_assets() -> list[object]:
+    from vlm_pipeline.defs.label.prelabeled_import import prelabeled_import
+    from vlm_pipeline.defs.spec.assets import labeling_spec_ingest, pending_ingest
+    from vlm_pipeline.defs.spec.staging_assets import activate_labeling_spec, config_sync, ingest_router
+
     return [
         raw_ingest,
         gcs_download_to_incoming,
@@ -246,6 +258,7 @@ def build_production_sensors(motherduck_table_sensors: list[object] | tuple[obje
     return [
         *COMMON_INGEST_SENSORS,
         dispatch_sensor,
+        production_agent_dispatch_sensor,
         *COMMON_DISPATCH_STATUS_SENSORS,
         *motherduck_table_sensors,
     ]
