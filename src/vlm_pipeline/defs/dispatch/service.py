@@ -8,7 +8,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 from uuid import uuid4
 
 from dagster import RunRequest, SensorEvaluationContext
@@ -38,6 +38,9 @@ _OUTPUT_TO_STEPS = {
 }
 
 _DISPATCH_RUN_JOBS = {"dispatch_stage_job", "ingest_job"}
+DispatchDuplicatePolicy = Literal["reject", "accept_noop"]
+DispatchInFlightPolicy = Literal["reject", "defer"]
+DispatchIngressStatus = Literal["run_request", "rejected", "duplicate_noop", "deferred"]
 
 
 @dataclass(frozen=True)
@@ -66,6 +69,23 @@ class PreparedDispatchRequest:
     storage_labeling_method: str
     storage_categories: str
     storage_classes: str
+
+
+@dataclass(frozen=True)
+class DispatchIngressRequest:
+    payload: Mapping[str, Any]
+    fallback_request_id: str
+    duplicate_policy: DispatchDuplicatePolicy
+    in_flight_policy: DispatchInFlightPolicy
+
+
+@dataclass(frozen=True)
+class DispatchIngressResult:
+    status: DispatchIngressStatus
+    request_id: str
+    reason: str
+    prepared: PreparedDispatchRequest | None = None
+    run_request: RunRequest | None = None
 
 
 def resolve_dispatch_request_id_from_tags(tags: Mapping[str, Any]) -> str | None:
@@ -200,7 +220,6 @@ def write_dispatch_manifest(
         "labeling_method": prepared.labeling_method,
         "files": [],
     }
-
     manifest_dir = Path(config.manifest_dir) / "dispatch"
     manifest_dir.mkdir(parents=True, exist_ok=True)
     manifest_path = manifest_dir / f"{manifest_id}.json"
@@ -324,6 +343,124 @@ def build_dispatch_run_request(
         run_key=prepared.request_id,
         job_name="dispatch_stage_job",
         tags=run_tags,
+    )
+
+
+def process_dispatch_ingress_request(
+    context: SensorEvaluationContext,
+    *,
+    db_resource,
+    config: PipelineConfig,
+    ingress_request: DispatchIngressRequest,
+) -> DispatchIngressResult:
+    request_id = str(
+        ingress_request.payload.get("request_id") or ingress_request.fallback_request_id or ""
+    ).strip() or ingress_request.fallback_request_id
+
+    try:
+        prepared = prepare_dispatch_request(ingress_request.payload, incoming_dir=Path(config.incoming_dir))
+    except ValueError as exc:
+        return DispatchIngressResult(
+            status="rejected",
+            request_id=request_id,
+            reason=str(exc),
+        )
+
+    if not prepared.incoming_folder_path.is_dir():
+        return DispatchIngressResult(
+            status="rejected",
+            request_id=prepared.request_id,
+            reason="folder_not_in_incoming",
+            prepared=prepared,
+        )
+
+    existing_rows = db_resource.get_in_flight_dispatch_requests(prepared.folder_name)
+    existing_status = db_resource.get_dispatch_request_status(prepared.request_id)
+
+    if existing_rows and has_active_dispatch_run(context, prepared.folder_name):
+        if ingress_request.in_flight_policy == "defer":
+            return DispatchIngressResult(
+                status="deferred",
+                request_id=prepared.request_id,
+                reason="folder_dispatch_in_flight",
+                prepared=prepared,
+            )
+        return DispatchIngressResult(
+            status="rejected",
+            request_id=prepared.request_id,
+            reason="folder_dispatch_in_flight",
+            prepared=prepared,
+        )
+
+    if existing_rows:
+        for row in existing_rows:
+            stale_request_id = str(row.get("request_id") or "").strip()
+            if not stale_request_id:
+                continue
+            db_resource.close_dispatch_request(
+                stale_request_id,
+                status="canceled",
+                error_message="stale_dispatch_request_without_active_run",
+            )
+
+    if existing_status:
+        if ingress_request.duplicate_policy == "accept_noop":
+            return DispatchIngressResult(
+                status="duplicate_noop",
+                request_id=prepared.request_id,
+                reason="duplicate_request_id_noop",
+                prepared=prepared,
+            )
+        return DispatchIngressResult(
+            status="rejected",
+            request_id=prepared.request_id,
+            reason="duplicate_request_id",
+            prepared=prepared,
+        )
+
+    try:
+        manifest_path, archive_dest = write_dispatch_manifest(config, prepared)
+    except Exception as exc:  # noqa: BLE001
+        return DispatchIngressResult(
+            status="rejected",
+            request_id=prepared.request_id,
+            reason=f"failed_to_write_manifest:{exc}",
+            prepared=prepared,
+        )
+
+    context.log.info(
+        "dispatch manifest 생성 완료(archive 이동/파일 인덱싱은 raw_ingest에서 수행): "
+        f"request_id={prepared.request_id} folder={prepared.folder_name} manifest={manifest_path.name}"
+    )
+
+    model_defaults = db_resource.get_active_staging_model_configs(prepared.labeling_method)
+    applied_params = resolve_dispatch_applied_params(ingress_request.payload, model_defaults)
+
+    db_resource.insert_dispatch_request(
+        build_dispatch_request_record(
+            prepared,
+            archive_dest=archive_dest,
+            applied_params=applied_params,
+        )
+    )
+    db_resource.insert_dispatch_pipeline_runs(
+        build_dispatch_pipeline_rows(
+            prepared,
+            model_defaults=model_defaults,
+            applied_params=applied_params,
+        )
+    )
+    run_request = build_dispatch_run_request(
+        prepared,
+        manifest_path=manifest_path,
+        applied_params=applied_params,
+    )
+    return DispatchIngressResult(
+        status="run_request",
+        request_id=prepared.request_id,
+        reason="run_request_created",
+        prepared=prepared,
+        run_request=run_request,
     )
 
 

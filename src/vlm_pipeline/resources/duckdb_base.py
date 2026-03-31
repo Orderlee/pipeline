@@ -105,12 +105,18 @@ class DuckDBBaseMixin:
         ddl = self._load_schema_ddl(include_image_labels=False)
         with self.connect() as conn:
             conn.execute(ddl)
-            self._ensure_operational_schema(
-                conn,
-                backfill=True,
-                restore_image_labels_backup=True,
-                ensure_indexes=True,
-            )
+            self._ensure_image_metadata_columns(conn, backfill=True)
+            self._ensure_image_metadata_indexes(conn, cleanup_legacy=True)
+            self._ensure_video_metadata_frame_columns(conn, backfill=True)
+            self._ensure_labels_columns(conn, backfill=True)
+            self._ensure_processed_clips_columns(conn, backfill=True)
+            self._ensure_image_labels_table(conn, restore_backup=True)
+            self._ensure_staging_dispatch_columns(conn)
+            self._ensure_staging_model_configs(conn)
+            self._ensure_staging_pipeline_runs(conn)
+            self._ensure_raw_files_spec_columns(conn)
+            self._ensure_video_metadata_stage_columns(conn)
+            self._ensure_video_metadata_reencode_columns(conn)
 
     def ensure_runtime_schema(self) -> None:
         """런타임 hot path용 경량 스키마 보장.
@@ -121,12 +127,17 @@ class DuckDBBaseMixin:
         ddl = self._load_schema_ddl(include_image_labels=False)
         with self.connect() as conn:
             conn.execute(ddl)
-            self._ensure_operational_schema(
-                conn,
-                backfill=False,
-                restore_image_labels_backup=False,
-                ensure_indexes=False,
-            )
+            self._ensure_image_metadata_columns(conn, backfill=False)
+            self._ensure_video_metadata_frame_columns(conn, backfill=False)
+            self._ensure_labels_columns(conn, backfill=False)
+            self._ensure_processed_clips_columns(conn, backfill=False)
+            self._ensure_image_labels_table(conn, restore_backup=False)
+            self._ensure_staging_dispatch_columns(conn)
+            self._ensure_staging_model_configs(conn)
+            self._ensure_staging_pipeline_runs(conn)
+            self._ensure_raw_files_spec_columns(conn)
+            self._ensure_video_metadata_stage_columns(conn)
+            self._ensure_video_metadata_reencode_columns(conn)
 
     def repair_image_metadata_table(self) -> None:
         """운영 중단 상태에서 image_metadata를 명시적으로 재구성한다."""
@@ -902,6 +913,30 @@ class DuckDBBaseMixin:
             "bbox_status": "VARCHAR DEFAULT 'pending'",
             "bbox_error": "TEXT",
             "bbox_completed_at": "TIMESTAMP",
+        }
+        for column_name, column_type in alter_specs.items():
+            if column_name in columns:
+                continue
+            conn.execute(f"ALTER TABLE video_metadata ADD COLUMN {column_name} {column_type}")
+
+    @classmethod
+    def _ensure_video_metadata_reencode_columns(cls, conn: duckdb.DuckDBPyConnection) -> None:
+        """video_metadata에 재인코딩 관련 컬럼이 없으면 추가.
+
+        원본 인코딩 정보(original_*) + 재인코딩 판정/적용 결과(reencode_*) 컬럼.
+        """
+        columns = cls._table_columns(conn, "video_metadata")
+        if not columns:
+            return
+        alter_specs = {
+            "original_codec":        "VARCHAR",
+            "original_profile":      "VARCHAR",
+            "original_has_b_frames": "BOOLEAN",
+            "original_level_int":    "INTEGER",
+            "reencode_required":     "BOOLEAN DEFAULT FALSE",
+            "reencode_reason":       "VARCHAR",
+            "reencode_applied":      "BOOLEAN DEFAULT FALSE",
+            "reencode_preset":       "VARCHAR",
         }
         for column_name, column_type in alter_specs.items():
             if column_name in columns:

@@ -178,6 +178,14 @@ def load_video_once(
     except (TypeError, ValueError):
         original_level_int = 0
 
+    # 원본 인코딩 정보 추출 (ffprobe -show_streams 결과에 이미 포함, 추가 비용 없음)
+    original_profile = str(video_stream.get("profile") or "")
+    original_has_b_frames = bool(int(video_stream.get("has_b_frames") or 0))
+    try:
+        original_level_int = int(video_stream.get("level") or 0)
+    except (TypeError, ValueError):
+        original_level_int = 0
+
     # fps 파싱 (예: "30000/1001" → 29.97)
     fps_raw = str(video_stream.get("avg_frame_rate") or "0/1")
     fps = 0.0

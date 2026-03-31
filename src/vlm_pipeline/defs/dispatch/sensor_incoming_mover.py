@@ -1,6 +1,7 @@
-"""Dispatch JSON 존재 여부만 점검하는 센서.
+"""Dispatch JSON 존재 여부만 점검하는 레거시 호환 센서.
 
-dispatch_sensor가 incoming 폴더를 직접 읽도록 유지한다.
+기본 ingress는 production의 dispatch_sensor / staging의 agent polling이며,
+이 센서는 파일 기반 경로 호환성을 위해서만 유지한다.
 """
 
 import json
@@ -33,11 +34,11 @@ def _load_requested_folders(dispatch_pending_dir: Path) -> set[str]:
 
 @sensor(
     name="incoming_to_pending_sensor",
-    description="dispatch JSON 존재 여부만 점검하고 dispatch_sensor가 incoming을 직접 처리",
+    description="(레거시 호환) dispatch JSON 존재 여부만 점검하고 dispatch_sensor가 incoming을 직접 처리",
     minimum_interval_seconds=15,
 )
 def incoming_to_pending_sensor(context: SensorEvaluationContext):
-    """dispatch JSON은 dispatch_sensor가 incoming을 직접 읽도록 남겨둔다."""
+    """기본 ingress가 아닌 파일 기반 호환 경로를 점검한다."""
     config = PipelineConfig()
     incoming_dir = Path(config.incoming_dir)
     dispatch_pending_dir = incoming_dir / ".dispatch" / "pending"

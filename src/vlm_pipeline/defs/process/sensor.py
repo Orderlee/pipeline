@@ -356,6 +356,10 @@ def video_frame_extract_sensor(context):
                     "clip_captioning": {
                         "config": {
                             "limit": int_env("VIDEO_FRAME_SENSOR_LIMIT", 200, 1),
+                            "jpeg_quality": int_env("VIDEO_FRAME_SENSOR_JPEG_QUALITY", 90, 1),
+                            "overwrite_existing": bool_env(
+                                "VIDEO_FRAME_SENSOR_OVERWRITE_EXISTING", False
+                            ),
                         }
                     }
                 }
@@ -399,6 +403,10 @@ def video_frame_extract_sensor(context):
                 "clip_captioning": {
                     "config": {
                         "limit": int_env("VIDEO_FRAME_SENSOR_LIMIT", 200, 1),
+                        "jpeg_quality": int_env("VIDEO_FRAME_SENSOR_JPEG_QUALITY", 90, 1),
+                        "overwrite_existing": bool_env(
+                            "VIDEO_FRAME_SENSOR_OVERWRITE_EXISTING", False
+                        ),
                     }
                 }
             }

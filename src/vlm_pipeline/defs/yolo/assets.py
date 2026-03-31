@@ -1,7 +1,7 @@
 """YOLO @asset — YOLO-World-L object detection (별도 Docker 서버 호출).
 
-YOLO 서버: docker/yolo/ (GPU 1 전용, 모델 상주)
-이 asset: HTTP로 detection 요청 → vlm-labels JSON 업로드 + image_labels INSERT
+YOLO 서버: docker/yolo/ (GPU 1 전용, 모델 상주).
+이 asset: HTTP로 detection 요청 → COCO detection JSON 업로드 + image_labels INSERT.
 
 파이프라인 흐름:
   clip_to_frame → [yolo_detection_sensor] → yolo_image_detection
@@ -26,6 +26,7 @@ from vlm_pipeline.lib.env_utils import (
     should_run_any_output,
 )
 from vlm_pipeline.lib.spec_config import load_persisted_spec_config, parse_requested_outputs
+from vlm_pipeline.lib.yolo_coco import build_coco_detection_payload
 from vlm_pipeline.lib.yolo_world import get_yolo_client
 from vlm_pipeline.resources.duckdb import DuckDBResource
 from vlm_pipeline.resources.minio import MinIOResource
@@ -42,7 +43,7 @@ class YoloTargetClassResolution:
 @asset(
     name="yolo_image_detection",
     deps=["clip_to_frame"],
-    description="YOLO-World-L object detection → vlm-labels JSON + image_labels INSERT",
+    description="YOLO-World-L object detection → vlm-labels COCO JSON + image_labels INSERT",
     group_name="yolo",
     config_schema={
         "limit": Field(int, default_value=500),
@@ -57,6 +58,27 @@ def yolo_image_detection(
     minio: MinIOResource,
 ) -> dict:
     """processed_clip_frame 이미지에 YOLO-World-L detection 실행."""
+    return _run_yolo_image_detection(context, db, minio)
+
+
+@asset(
+    name="dispatch_yolo_image_detection",
+    deps=["clip_to_frame", "raw_video_to_frame"],
+    description="Dispatch 라인: frame 추출 완료 후 YOLO-World-L object detection",
+    group_name="yolo",
+    config_schema={
+        "limit": Field(int, default_value=500),
+        "confidence_threshold": Field(float, default_value=0.25),
+        "iou_threshold": Field(float, default_value=0.45),
+        "batch_size": Field(int, default_value=4),
+    },
+)
+def dispatch_yolo_image_detection(
+    context,
+    db: DuckDBResource,
+    minio: MinIOResource,
+) -> dict:
+    """dispatch_stage_job용 YOLO-World-L detection 실행."""
     return _run_yolo_image_detection(context, db, minio)
 
 
@@ -187,23 +209,25 @@ def _run_yolo_image_detection(
 
             result = batch_results[idx] if idx < len(batch_results) else {}
             detections = result.get("detections", [])
+            image_size = result.get("image_size")
 
             try:
-                label_json = {
-                    "image_id": image_id,
-                    "source_clip_id": source_clip_id,
-                    "image_key": image_key,
-                    "model": "yolov8l-worldv2",
-                    "confidence_threshold": conf,
-                    "iou_threshold": iou,
-                    "detections": detections,
-                    "detection_count": len(detections),
-                    "requested_classes": target_classes,
-                    "requested_classes_count": len(target_classes),
-                    "class_source": class_source,
-                    "resolved_config_id": resolved_config_id,
-                    "detected_at": datetime.now().isoformat(),
-                }
+                detected_at = datetime.now()
+                label_json = _build_coco_detection_payload(
+                    image_id=image_id,
+                    source_clip_id=source_clip_id,
+                    image_key=image_key,
+                    image_width=result.get("image_width") or (image_size[0] if isinstance(image_size, list) and len(image_size) >= 1 else cand.get("width")),
+                    image_height=result.get("image_height") or (image_size[1] if isinstance(image_size, list) and len(image_size) >= 2 else cand.get("height")),
+                    detections=detections,
+                    requested_classes=target_classes,
+                    class_source=class_source,
+                    resolved_config_id=resolved_config_id,
+                    confidence_threshold=conf,
+                    iou_threshold=iou,
+                    detected_at=detected_at,
+                )
+                annotation_count = len(label_json.get("annotations") or [])
 
                 labels_key = _build_yolo_label_key(image_key)
                 label_bytes = json.dumps(label_json, ensure_ascii=False).encode("utf-8")
@@ -215,17 +239,17 @@ def _run_yolo_image_detection(
                     "source_clip_id": source_clip_id,
                     "labels_bucket": "vlm-labels",
                     "labels_key": labels_key,
-                    "label_format": "yolo_detection_json",
+                    "label_format": "coco",
                     "label_tool": "yolo-world",
                     "label_source": "auto",
                     "review_status": "auto_generated",
                     "label_status": "completed",
-                    "object_count": len(detections),
-                    "created_at": datetime.now(),
+                    "object_count": annotation_count,
+                    "created_at": detected_at,
                 })
 
                 processed += 1
-                total_detections += len(detections)
+                total_detections += annotation_count
 
             except Exception as exc:
                 failed += 1
@@ -344,6 +368,38 @@ def _flush_labels(db: DuckDBResource, rows: list[dict], context) -> None:
         context.log.debug(f"YOLO image_labels flush: {count}건")
     except Exception as exc:
         context.log.error(f"YOLO image_labels flush 실패: {exc}")
+
+
+def _build_coco_detection_payload(
+    *,
+    image_id: str,
+    source_clip_id: str | None,
+    image_key: str,
+    image_width: object,
+    image_height: object,
+    detections: list[dict[str, object]],
+    requested_classes: list[str],
+    class_source: str,
+    resolved_config_id: str | None,
+    confidence_threshold: float,
+    iou_threshold: float,
+    detected_at: datetime,
+) -> dict[str, object]:
+    # Backward-compatible wrapper for existing tests/imports.
+    return build_coco_detection_payload(
+        image_id=image_id,
+        source_clip_id=source_clip_id,
+        image_key=image_key,
+        image_width=image_width,
+        image_height=image_height,
+        detections=detections,
+        requested_classes=requested_classes,
+        class_source=class_source,
+        resolved_config_id=resolved_config_id,
+        confidence_threshold=confidence_threshold,
+        iou_threshold=iou_threshold,
+        detected_at=detected_at,
+    )
 
 
 def _parse_tag_list(raw_value: object) -> list[str]:

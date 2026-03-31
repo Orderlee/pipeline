@@ -374,6 +374,34 @@ class DuckDBIngestMixin:
                     meta.get("reencode_preset"),
                 ],
             )
+            # 재인코딩 관련 컬럼 — 컬럼이 존재하는 경우에만 UPDATE (ensure_runtime_schema 이후 보장)
+            columns = self._table_columns(conn, "video_metadata")
+            reencode_cols = {
+                "original_codec", "original_profile", "original_has_b_frames",
+                "original_level_int", "reencode_required", "reencode_reason",
+            }
+            if reencode_cols.issubset(columns):
+                conn.execute(
+                    """
+                    UPDATE video_metadata SET
+                        original_codec        = ?,
+                        original_profile      = ?,
+                        original_has_b_frames = ?,
+                        original_level_int    = ?,
+                        reencode_required     = ?,
+                        reencode_reason       = ?
+                    WHERE asset_id = ?
+                    """,
+                    [
+                        meta.get("original_codec"),
+                        meta.get("original_profile"),
+                        meta.get("original_has_b_frames", False),
+                        meta.get("original_level_int"),
+                        meta.get("reencode_required", False),
+                        meta.get("reencode_reason"),
+                        asset_id,
+                    ],
+                )
 
     def find_by_checksum(self, checksum: str, completed_only: bool = True) -> dict[str, Any] | None:
         query = "SELECT * FROM raw_files WHERE checksum = ?"
@@ -1235,6 +1263,42 @@ class DuckDBIngestMixin:
                 conn.execute("ROLLBACK")
                 raise
         return len(rows)
+
+    def update_video_reencode_applied(
+        self,
+        asset_id: str,
+        *,
+        codec: str = "h264",
+        reencode_preset: str = "standard",
+    ) -> None:
+        """재인코딩 완료 후 video_metadata 업데이트.
+
+        codec을 실제 저장 파일 기준(h264)으로 갱신하고
+        reencode_applied=True, reencode_preset 을 기록한다.
+        reencode 컬럼이 없는 구버전 DB에서는 codec만 업데이트한다.
+        """
+        normalized_id = str(asset_id or "").strip()
+        if not normalized_id:
+            return
+        with self.connect() as conn:
+            columns = self._table_columns(conn, "video_metadata")
+            if {"reencode_applied", "reencode_preset"}.issubset(columns):
+                conn.execute(
+                    """
+                    UPDATE video_metadata
+                    SET codec            = ?,
+                        reencode_applied = TRUE,
+                        reencode_preset  = ?
+                    WHERE asset_id = ?
+                    """,
+                    [codec, reencode_preset, normalized_id],
+                )
+            else:
+                # 컬럼 미존재(마이그레이션 전) — codec만 갱신
+                conn.execute(
+                    "UPDATE video_metadata SET codec = ? WHERE asset_id = ?",
+                    [codec, normalized_id],
+                )
 
     def update_video_frame_extract_status(
         self,

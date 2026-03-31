@@ -64,7 +64,6 @@ def _init_gemini_analyzer(context) -> GeminiAnalyzer:
     """GeminiAnalyzer 초기화 (환경변수 기반)."""
     return GeminiAnalyzer()
 
-
 def _materialize_video(
     minio: MinIOResource,
     candidate: dict,
@@ -211,6 +210,7 @@ def _analyze_routed_video_events(
     *,
     duration_sec: float | int | None,
     temp_paths: list[Path],
+    video_prompt: str,
 ) -> list[dict]:
     threshold_sec = _int_env("STAGING_GEMINI_CHUNK_THRESHOLD_SEC", 3600, minimum=1)
     duration_value = _coerce_float(duration_sec)
@@ -220,6 +220,7 @@ def _analyze_routed_video_events(
             video_path,
             duration_sec=duration_sec,
             temp_paths=temp_paths,
+            video_prompt=video_prompt,
         )
 
     window_sec = _int_env("STAGING_GEMINI_CHUNK_WINDOW_SEC", 660, minimum=60)
@@ -235,6 +236,7 @@ def _analyze_routed_video_events(
             video_path,
             duration_sec=duration_sec,
             temp_paths=temp_paths,
+            video_prompt=video_prompt,
         )
 
     context.log.info(
@@ -256,6 +258,7 @@ def _analyze_routed_video_events(
             chunk_path,
             duration_sec=chunk.duration_sec,
             temp_paths=temp_paths,
+            video_prompt=video_prompt,
         )
         merged_events.extend(
             offset_gemini_events(
@@ -282,6 +285,7 @@ def _analyze_single_video_events(
     *,
     duration_sec: float | int | None,
     temp_paths: list[Path],
+    video_prompt: str,
 ) -> list[dict]:
     gemini_video_path, gemini_temp_path = _prepare_gemini_video_for_request(
         video_path,
@@ -291,7 +295,7 @@ def _analyze_single_video_events(
         temp_paths.append(gemini_temp_path)
     response_text = analyzer.analyze_video(
         str(gemini_video_path),
-        prompt=VIDEO_EVENT_PROMPT,
+        prompt=video_prompt,
         mime_type="video/mp4" if gemini_temp_path is not None else None,
     )
     return _parse_gemini_events_response(response_text)
@@ -443,6 +447,7 @@ def clip_timestamp_mvp(
         return {"processed": 0, "failed": 0}
 
     analyzer = _init_gemini_analyzer(context)
+    video_prompt = VIDEO_EVENT_PROMPT
     total_candidates = len(candidates)
     context.log.info(f"clip_timestamp 시작: 총 {total_candidates}건 처리 예정")
     processed = 0
@@ -468,7 +473,7 @@ def clip_timestamp_mvp(
 
             response_text = analyzer.analyze_video(
                 str(gemini_video_path),
-                prompt=VIDEO_EVENT_PROMPT,
+                prompt=video_prompt,
                 mime_type="video/mp4" if gemini_temp_path is not None else None,
             )
 
@@ -533,6 +538,7 @@ def clip_timestamp_routed_impl(
 ) -> dict:
     """spec/dispatch: requested_outputs·spec_id 기준 timestamp 단계."""
     tags = context.run.tags if context.run else {}
+    video_prompt = VIDEO_EVENT_PROMPT
     spec_id = tags.get("spec_id")
     requested = parse_requested_outputs(tags)
     standard_spec_run = is_standard_spec_run(tags)
@@ -586,6 +592,7 @@ def clip_timestamp_routed_impl(
                 video_path,
                 duration_sec=duration_val,
                 temp_paths=temp_paths,
+                video_prompt=video_prompt,
             )
             label_bytes = _serialize_gemini_events(events)
             minio.ensure_bucket("vlm-labels")

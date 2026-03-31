@@ -43,6 +43,16 @@ class StagingAgentPollingSettings:
     interval_sec: int
 
 
+@dataclass(frozen=True)
+class ProductionAgentPollingSettings:
+    enabled: bool
+    base_url: str
+    poll_limit: int
+    connect_timeout_sec: int
+    read_timeout_sec: int
+    interval_sec: int
+
+
 def _split_csv(raw_value: str) -> tuple[str, ...]:
     return tuple(item.strip() for item in raw_value.split(",") if item.strip())
 
@@ -50,7 +60,7 @@ def _split_csv(raw_value: str) -> tuple[str, ...]:
 def load_ingest_feature_settings() -> IngestFeatureSettings:
     return IngestFeatureSettings(
         defer_video_env_classification=bool_env("INGEST_DEFER_VIDEO_ENV_CLASSIFICATION", False),
-        premove_archive_enabled=bool_env("INGEST_PREMOVE_ARCHIVE", True),
+        premove_archive_enabled=bool_env("INGEST_PREMOVE_ARCHIVE", False),
     )
 
 
@@ -107,4 +117,16 @@ def load_staging_agent_polling_settings() -> StagingAgentPollingSettings:
         connect_timeout_sec=int_env("STAGING_AGENT_CONNECT_TIMEOUT_SEC", 3, 1),
         read_timeout_sec=int_env("STAGING_AGENT_READ_TIMEOUT_SEC", 10, 1),
         interval_sec=int_env("STAGING_AGENT_SENSOR_INTERVAL_SEC", 30, 5),
+    )
+
+
+def load_production_agent_polling_settings() -> ProductionAgentPollingSettings:
+    base_url = (os.getenv("PROD_AGENT_BASE_URL") or "http://host.docker.internal:8080").strip().rstrip("/")
+    return ProductionAgentPollingSettings(
+        enabled=bool_env("PROD_AGENT_POLLING_ENABLED", False),
+        base_url=base_url or "http://host.docker.internal:8080",
+        poll_limit=int_env("PROD_AGENT_POLL_LIMIT", 20, 1),
+        connect_timeout_sec=int_env("PROD_AGENT_CONNECT_TIMEOUT_SEC", 3, 1),
+        read_timeout_sec=int_env("PROD_AGENT_READ_TIMEOUT_SEC", 10, 1),
+        interval_sec=int_env("PROD_AGENT_SENSOR_INTERVAL_SEC", 30, 5),
     )
