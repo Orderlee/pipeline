@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
 """uploading 상태 파일들을 archive로 이동하고 completed로 업데이트하는 복구 스크립트."""
 
+import os
 import shutil
 from pathlib import Path
 from datetime import datetime
 import duckdb
 
-db_path = "/data/pipeline.duckdb"
-archive_base = Path("/nas/archive")
-incoming_base = Path("/nas/incoming")
+db_path = os.getenv("DATAOPS_DUCKDB_PATH", "/data/pipeline.duckdb")
+archive_base = Path(os.getenv("ARCHIVE_DIR", "/nas/archive"))
+incoming_base = Path(os.getenv("INCOMING_DIR", "/nas/incoming"))
 
 con = duckdb.connect(db_path)
 

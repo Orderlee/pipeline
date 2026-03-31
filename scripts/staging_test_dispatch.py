@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """Staging 테스트용 dispatch trigger JSON 생성 + 데이터 복사 스크립트.
 
+기본 목적은 파일 기반 dispatch ingress(`incoming/.dispatch/pending`) 회귀 테스트입니다.
+staging 기본 ingress는 agent polling이며, 이 스크립트는 호환/레거시 경로 검증에 사용합니다.
+
 사용법:
     python3 staging_test_dispatch.py --folder tmp_data_2 --round 1
     python3 staging_test_dispatch.py --folder GS건설 --round 1
@@ -9,7 +12,6 @@
 
 import argparse
 import json
-import os
 import random
 import shutil
 import subprocess
@@ -17,7 +19,6 @@ import sys
 import time
 from datetime import datetime
 from pathlib import Path
-from uuid import uuid4
 
 # ── 경로 설정 ──
 STAGING_ROOT = Path("/home/pia/mou/staging")
@@ -102,7 +103,7 @@ def generate_trigger_json(
 
 
 def wait_until_folder_in_archive_pending(folder_name: str, timeout_sec: int = 180, interval: float = 5.0) -> None:
-    """incoming_to_pending_sensor가 폴더를 옮길 때까지 대기."""
+    """레거시 archive_pending 워크플로우를 사용하는 환경에서만 대기."""
     dest = ARCHIVE_PENDING_DIR / folder_name
     print(f"  [WAIT] archive_pending/{folder_name} 생성 대기 (최대 {timeout_sec}s)...")
     start = time.time()
@@ -133,7 +134,7 @@ def place_trigger(trigger: dict) -> Path:
         params = {k: trigger[k] for k in ("max_frames_per_video", "jpeg_quality", "confidence_threshold", "iou_threshold") if k in trigger}
         print(f"    params:     {params}")
     else:
-        print(f"    params:     (기본값 사용)")
+        print("    params:     (기본값 사용)")
     return filepath
 
 
@@ -162,7 +163,7 @@ def wait_for_dispatch_processing(request_id: str, timeout_sec: int = 300) -> str
             return "failed"
         if not pending_file.exists():
             # DB에서 상태 확인
-            print(f"  [INFO] pending에서 사라짐, DB 확인 중...")
+            print("  [INFO] pending에서 사라짐, DB 확인 중...")
             return "unknown"
 
         elapsed = int(time.time() - start)
@@ -176,7 +177,7 @@ def wait_for_dispatch_processing(request_id: str, timeout_sec: int = 300) -> str
 
 def check_dagster_run_status(request_id: str, timeout_sec: int = 600) -> dict:
     """Dagster run 상태를 DB에서 확인."""
-    print(f"  [CHECK] Dagster run 상태 확인...")
+    print("  [CHECK] Dagster run 상태 확인...")
     # 컨테이너 내에서 DB 조회
     check_script = f"""
 import duckdb, json
@@ -305,7 +306,7 @@ def run_cycle(round_num: int) -> list[dict]:
 def print_report(all_results: list[list[dict]]):
     """전체 테스트 보고서 출력."""
     print(f"\n{'='*70}")
-    print(f"  STAGING 테스트 보고서")
+    print("  STAGING 테스트 보고서")
     print(f"  생성 시각: {datetime.now().isoformat()}")
     print(f"{'='*70}")
 
@@ -322,7 +323,7 @@ def print_report(all_results: list[list[dict]]):
                 print(f"     error:      {r['db_status']['error']}")
 
     # DB 요약
-    print(f"\n--- DB 최종 상태 ---")
+    print("\n--- DB 최종 상태 ---")
     summary = get_db_summary()
     for table, count in summary.items():
         if table in ('pipeline_runs', 'model_configs'):
@@ -330,12 +331,12 @@ def print_report(all_results: list[list[dict]]):
         print(f"  {table}: {count} rows")
 
     if summary.get('model_configs'):
-        print(f"\n--- Model Configs ---")
+        print("\n--- Model Configs ---")
         for mc in summary['model_configs']:
             print(f"  {mc['output']}: {mc['model']} (active={mc['active']})")
 
     if summary.get('pipeline_runs'):
-        print(f"\n--- Pipeline Runs ---")
+        print("\n--- Pipeline Runs ---")
         for pr in summary['pipeline_runs']:
             print(f"  {pr['step']}: {pr['status']} ({pr['count']})")
 
@@ -352,12 +353,12 @@ def main():
     parser.add_argument(
         "--wait-archive-pending",
         action="store_true",
-        help="복사 후 archive_pending 이동까지 대기 후 트리거 (센서 레이스 방지)",
+        help="레거시 archive_pending 이동을 기다린 뒤 트리거 (기본 staging ingress에는 불필요)",
     )
     parser.add_argument(
         "--skip-copy",
         action="store_true",
-        help="이미 incoming에 atomic 배치됨 — 복사 생략, archive_pending 대기만",
+        help="이미 incoming에 배치됨 — 복사 생략 (필요 시 legacy archive_pending 대기만 수행)",
     )
     parser.add_argument("--request-id", type=str, default=None, help="고정 request_id (QA 보고용)")
     args = parser.parse_args()

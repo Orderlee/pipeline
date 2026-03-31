@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
+from types import SimpleNamespace
 
 import duckdb
 import pytest
@@ -24,6 +25,52 @@ class _TestDuckDBResource(
 
 def _resource(tmp_path: Path) -> _TestDuckDBResource:
     return _TestDuckDBResource(str(tmp_path / "pipeline.duckdb"))
+
+
+class _DummyProcessLog:
+    def __init__(self) -> None:
+        self.messages: list[str] = []
+
+    def info(self, message, *args) -> None:
+        rendered = message % args if args else str(message)
+        self.messages.append(rendered)
+
+    def warning(self, message, *args) -> None:
+        rendered = message % args if args else str(message)
+        self.messages.append(rendered)
+
+    def error(self, message, *args) -> None:
+        rendered = message % args if args else str(message)
+        self.messages.append(rendered)
+
+    def debug(self, message, *args) -> None:
+        rendered = message % args if args else str(message)
+        self.messages.append(rendered)
+
+
+class _DummyProcessContext:
+    def __init__(self, *, tags: dict[str, str] | None = None, op_config: dict | None = None) -> None:
+        self.run = SimpleNamespace(tags=tags or {})
+        self.op_config = op_config or {}
+        self.log = _DummyProcessLog()
+        self.output_metadata: list[dict] = []
+
+    def add_output_metadata(self, metadata: dict) -> None:
+        self.output_metadata.append(metadata)
+
+
+class _DummyProcessMinIO:
+    def __init__(self) -> None:
+        self.uploaded: list[tuple[str, str]] = []
+
+    def upload(self, bucket: str, key: str, data: bytes, content_type: str) -> None:
+        self.uploaded.append((bucket, key))
+
+    def download(self, bucket: str, key: str) -> bytes:
+        raise AssertionError(f"unexpected download: {bucket}/{key}")
+
+    def delete(self, bucket: str, key: str) -> None:
+        pass
 
 
 def _insert_raw_video(
@@ -585,6 +632,7 @@ def test_find_processable_keeps_failed_clips_reprocessable(tmp_path: Path) -> No
 
     rows = resource.find_processable()
     assert [row["label_id"] for row in rows] == ["label-1"]
+    assert rows[0]["video_duration_sec"] == pytest.approx(12.5)
 
     resource.insert_processed_clip(
         {
@@ -639,7 +687,292 @@ def test_find_processable_allows_ready_for_labeling_with_spec_id(tmp_path: Path)
 
     rows = resource.find_processable(spec_id="spec-1")
     assert [row["label_id"] for row in rows] == ["label-spec-1"]
+    assert rows[0]["video_duration_sec"] == pytest.approx(12.5)
     assert resource.find_processable(spec_id="spec-2") == []
+
+
+def test_resolve_event_clip_extraction_window_applies_default_buffer() -> None:
+    pytest.importorskip("dagster")
+    from vlm_pipeline.defs.process import assets as process_assets
+
+    got = process_assets._resolve_event_clip_extraction_window(
+        event_start_sec=10.0,
+        event_end_sec=20.0,
+        source_duration_sec=30.0,
+    )
+
+    assert got == pytest.approx((5.0, 25.0))
+
+
+def test_resolve_event_clip_extraction_window_clamps_start_within_first_five_seconds() -> None:
+    pytest.importorskip("dagster")
+    from vlm_pipeline.defs.process import assets as process_assets
+
+    got = process_assets._resolve_event_clip_extraction_window(
+        event_start_sec=4.0,
+        event_end_sec=7.0,
+        source_duration_sec=20.0,
+    )
+
+    assert got == pytest.approx((0.0, 12.0))
+
+
+def test_resolve_event_clip_extraction_window_handles_zero_start_boundary() -> None:
+    pytest.importorskip("dagster")
+    from vlm_pipeline.defs.process import assets as process_assets
+
+    got = process_assets._resolve_event_clip_extraction_window(
+        event_start_sec=0.0,
+        event_end_sec=3.0,
+        source_duration_sec=20.0,
+    )
+
+    assert got == pytest.approx((0.0, 8.0))
+
+
+def test_resolve_event_clip_extraction_window_clamps_end_to_source_duration() -> None:
+    pytest.importorskip("dagster")
+    from vlm_pipeline.defs.process import assets as process_assets
+
+    got = process_assets._resolve_event_clip_extraction_window(
+        event_start_sec=18.0,
+        event_end_sec=20.0,
+        source_duration_sec=22.0,
+    )
+
+    assert got == pytest.approx((13.0, 22.0))
+
+
+def test_resolve_event_clip_extraction_window_ignores_invalid_duration_metadata() -> None:
+    pytest.importorskip("dagster")
+    from vlm_pipeline.defs.process import assets as process_assets
+
+    got = process_assets._resolve_event_clip_extraction_window(
+        event_start_sec=4.0,
+        event_end_sec=7.0,
+        source_duration_sec="invalid",
+    )
+
+    assert got == pytest.approx((0.0, 12.0))
+
+
+def test_resolve_event_clip_extraction_window_keeps_default_buffer_for_category() -> None:
+    pytest.importorskip("dagster")
+    from vlm_pipeline.defs.process import assets as process_assets
+
+    got = process_assets._resolve_event_clip_extraction_window(
+        event_start_sec=10.0,
+        event_end_sec=20.0,
+        source_duration_sec=30.0,
+        event_category="fire",
+    )
+
+    assert got == pytest.approx((5.0, 25.0))
+
+
+def test_clip_to_frame_mvp_extracts_buffered_window_but_stores_original_event_range(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    pytest.importorskip("dagster")
+    from vlm_pipeline.defs.process import assets as process_assets
+
+    resource = _resource(tmp_path)
+    resource.ensure_schema()
+    asset_id = _insert_raw_video(resource)
+    with resource.connect() as conn:
+        conn.execute("UPDATE video_metadata SET duration_sec = 30.0 WHERE asset_id = ?", [asset_id])
+
+    resource.insert_label(
+        {
+            "label_id": "label-buffered-mvp",
+            "asset_id": asset_id,
+            "labels_key": "adlib-hotel-202512/20251222/events/sample.json",
+            "label_format": "gemini_event_json",
+            "label_tool": "gemini",
+            "label_source": "auto",
+            "event_index": 0,
+            "event_count": 1,
+            "timestamp_start_sec": 10.0,
+            "timestamp_end_sec": 20.0,
+            "caption_text": "smoke",
+        }
+    )
+
+    source_path = tmp_path / "source.mp4"
+    source_path.write_bytes(b"source-video")
+    extracted_path = tmp_path / "buffered.mp4"
+    recorded_window: dict[str, float] = {}
+
+    monkeypatch.setattr(
+        process_assets,
+        "_materialize_video_path",
+        lambda minio, candidate: (source_path, None),
+    )
+
+    def _fake_extract(video_path: Path, *, clip_start_sec: float, clip_end_sec: float) -> Path:
+        recorded_window["start"] = clip_start_sec
+        recorded_window["end"] = clip_end_sec
+        extracted_path.write_bytes(b"buffered-clip")
+        return extracted_path
+
+    monkeypatch.setattr(process_assets, "_extract_video_clip_path", _fake_extract)
+    monkeypatch.setattr(
+        process_assets,
+        "_ffprobe_clip_meta",
+        lambda clip_path: {
+            "duration_sec": 20.0,
+            "fps": 25.0,
+            "frame_count": 500,
+            "width": 1920,
+            "height": 1080,
+            "codec": "h264",
+        },
+    )
+    monkeypatch.setattr(
+        process_assets,
+        "resolve_frame_sampling_policy",
+        lambda **kwargs: SimpleNamespace(
+            sampling_mode="clip_event",
+            effective_max_frames=1,
+            frame_interval_sec=1.0,
+            policy_source="test",
+        ),
+    )
+    monkeypatch.setattr(
+        process_assets,
+        "_extract_clip_frames",
+        lambda *args, **kwargs: ([], [], []),
+    )
+
+    context = _DummyProcessContext(op_config={"limit": 10, "jpeg_quality": 90})
+    summary = process_assets.clip_to_frame_mvp(context, resource, _DummyProcessMinIO())
+
+    assert summary["processed"] == 1
+    assert summary["failed"] == 0
+    assert recorded_window == {"start": 5.0, "end": 25.0}
+    assert any("start_clamped=False end_clamped=False" in line for line in context.log.messages)
+
+    with resource.connect() as conn:
+        row = conn.execute(
+            """
+            SELECT clip_start_sec, clip_end_sec, clip_key
+            FROM processed_clips
+            WHERE source_label_id = 'label-buffered-mvp'
+            """
+        ).fetchone()
+
+    assert row == (
+        10.0,
+        20.0,
+        "adlib-hotel-202512/20251222/clips/sample_00010000_00020000.mp4",
+    )
+
+
+def test_clip_to_frame_routed_impl_extracts_buffered_window_but_stores_original_event_range(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    pytest.importorskip("dagster")
+    from vlm_pipeline.defs.process import assets as process_assets
+
+    resource = _resource(tmp_path)
+    resource.ensure_schema()
+    asset_id = _insert_raw_video(resource)
+
+    resource.insert_label(
+        {
+            "label_id": "label-buffered-routed",
+            "asset_id": asset_id,
+            "labels_key": "adlib-hotel-202512/20251222/events/sample.json",
+            "label_format": "gemini_event_json",
+            "label_tool": "gemini",
+            "label_source": "auto",
+            "event_index": 0,
+            "event_count": 1,
+            "timestamp_start_sec": 4.0,
+            "timestamp_end_sec": 7.0,
+            "caption_text": "smoke",
+        }
+    )
+
+    source_path = tmp_path / "source-routed.mp4"
+    source_path.write_bytes(b"source-video")
+    extracted_path = tmp_path / "buffered-routed.mp4"
+    recorded_window: dict[str, float] = {}
+
+    monkeypatch.setattr(
+        process_assets,
+        "_materialize_video_path",
+        lambda minio, candidate: (source_path, None),
+    )
+
+    def _fake_extract(video_path: Path, *, clip_start_sec: float, clip_end_sec: float) -> Path:
+        recorded_window["start"] = clip_start_sec
+        recorded_window["end"] = clip_end_sec
+        extracted_path.write_bytes(b"buffered-clip")
+        return extracted_path
+
+    monkeypatch.setattr(process_assets, "_extract_video_clip_path", _fake_extract)
+    monkeypatch.setattr(
+        process_assets,
+        "_ffprobe_clip_meta",
+        lambda clip_path: {
+            "duration_sec": 12.0,
+            "fps": 25.0,
+            "frame_count": 300,
+            "width": 1920,
+            "height": 1080,
+            "codec": "h264",
+        },
+    )
+    monkeypatch.setattr(
+        process_assets,
+        "resolve_frame_sampling_policy",
+        lambda **kwargs: SimpleNamespace(
+            sampling_mode="clip_event",
+            effective_max_frames=1,
+            frame_interval_sec=1.0,
+            policy_source="test",
+        ),
+    )
+    monkeypatch.setattr(process_assets, "GeminiAnalyzer", lambda: object())
+    monkeypatch.setattr(
+        process_assets,
+        "_load_gemini_label_event",
+        lambda minio, labels_key, event_index, cache: {"category": "smoke", "ko_caption": "연기"},
+    )
+    monkeypatch.setattr(
+        process_assets,
+        "_extract_clip_frames",
+        lambda *args, **kwargs: ([], [], []),
+    )
+
+    context = _DummyProcessContext(
+        tags={"requested_outputs": "captioning", "folder_name": "adlib-hotel-202512"},
+        op_config={"limit": 10},
+    )
+    summary = process_assets.clip_to_frame_routed_impl(context, resource, _DummyProcessMinIO())
+
+    assert summary["processed"] == 1
+    assert summary["failed"] == 0
+    assert recorded_window == {"start": 0.0, "end": 12.0}
+    assert any("start_clamped=True end_clamped=False" in line for line in context.log.messages)
+
+    with resource.connect() as conn:
+        row = conn.execute(
+            """
+            SELECT clip_start_sec, clip_end_sec, clip_key
+            FROM processed_clips
+            WHERE source_label_id = 'label-buffered-routed'
+            """
+        ).fetchone()
+
+    assert row == (
+        4.0,
+        7.0,
+        "adlib-hotel-202512/20251222/clips/sample_00004000_00007000.mp4",
+    )
 
 
 def test_find_ready_for_labeling_caption_backlog_returns_timestamp_completed_rows(tmp_path: Path) -> None:

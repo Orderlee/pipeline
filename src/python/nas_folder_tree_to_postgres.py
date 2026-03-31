@@ -14,14 +14,12 @@ Docker 실행:
 """
 
 import os
-import sys
 import argparse
 import glob
 import re
 from datetime import datetime
-from pathlib import Path
 from collections import defaultdict
-from typing import Dict, List, Tuple, Optional
+from typing import Dict, List, Tuple
 
 import psycopg2
 from psycopg2 import sql
@@ -464,7 +462,7 @@ def main():
     print("=" * 60)
     print("🌳 NAS Folder Tree Scanner for Grafana")
     print("=" * 60)
-    print(f"📂 스캔 패턴:")
+    print("📂 스캔 패턴:")
     for p in path_patterns:
         print(f"   - {p}")
     print(f"📏 최대 깊이: {args.max_depth}")

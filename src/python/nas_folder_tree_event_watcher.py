@@ -42,7 +42,6 @@ import argparse
 import os
 import sys
 import time
-from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
 from threading import Lock
@@ -54,7 +53,7 @@ from psycopg2.extras import execute_values
 try:
     from watchdog.events import FileSystemEvent, FileSystemEventHandler
     from watchdog.observers import Observer
-except Exception as exc:  # pragma: no cover - runtime import guard
+except Exception:  # pragma: no cover - runtime import guard
     print("Missing dependency: watchdog. Install with `pip install watchdog`.")
     raise
 

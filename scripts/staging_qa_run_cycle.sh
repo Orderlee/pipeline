@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 한 사이클: safe_drop → archive_pending 대기 → 트리거 (staging_test_dispatch.py)
+# 한 사이클(레거시 파일 ingress QA): safe_drop → archive_pending 대기 → 트리거
 # 사용: STAGING_ROOT=/home/pia/mou/staging bash scripts/staging_qa_run_cycle.sh tmp_data_2 qa_c1_ts timestamp
 #       STAGING_ROOT=... bash scripts/staging_qa_run_cycle.sh GS건설 qa_x bbox captioning
 set -euo pipefail

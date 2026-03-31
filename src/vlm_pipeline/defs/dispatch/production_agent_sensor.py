@@ -1,6 +1,7 @@
-"""Staging 기본 dispatch ingress sensor backed by piaspace-agent polling API.
+"""Production optional dispatch ingress sensor backed by piaspace-agent polling API.
 
-파일 기반 dispatch_sensor 경로는 staging에서 레거시/호환 용도로만 유지한다.
+기본 운영 ingress는 file-based dispatch_sensor를 유지한다.
+이 sensor는 PROD_AGENT_POLLING_ENABLED=true일 때만 활성 동작한다.
 """
 
 from __future__ import annotations
@@ -18,7 +19,10 @@ from vlm_pipeline.defs.dispatch.service import (
 )
 from vlm_pipeline.lib.sanitizer import sanitize_path_component
 from vlm_pipeline.resources.config import PipelineConfig
-from vlm_pipeline.resources.runtime_settings import load_staging_agent_polling_settings
+from vlm_pipeline.resources.runtime_settings import load_production_agent_polling_settings
+
+_PROD_PENDING_PATH = "/api/production/dispatch/pending"
+_PROD_ACK_PATH = "/api/production/dispatch/ack"
 
 
 def _build_agent_request_id(delivery_id: str) -> str:
@@ -26,30 +30,12 @@ def _build_agent_request_id(delivery_id: str) -> str:
     return f"agent_{rendered}"
 
 
-def _payload_field_has_value(value: Any) -> bool:
-    if isinstance(value, list):
-        return any(str(item or "").strip() for item in value)
-    return bool(str(value or "").strip())
-
-
-def should_wait_for_dispatch_params(request_payload: Mapping[str, Any]) -> bool:
-    """Return True when dispatch-driving metadata is entirely empty."""
-    watched_fields = (
-        request_payload.get("labeling_method"),
-        request_payload.get("outputs"),
-        request_payload.get("run_mode"),
-        request_payload.get("categories"),
-        request_payload.get("classes"),
-    )
-    return not any(_payload_field_has_value(value) for value in watched_fields)
-
-
 def normalize_agent_dispatch_request(
     request_payload: Mapping[str, Any],
     *,
     delivery_id: str,
 ) -> dict[str, Any]:
-    """Convert agent payload into canonical staging dispatch request payload."""
+    """Convert agent payload into canonical dispatch request payload."""
     normalized = dict(request_payload)
     source_unit_name = str(normalized.get("source_unit_name") or normalized.get("folder_name") or "").strip()
     if not source_unit_name:
@@ -91,7 +77,7 @@ def _fetch_pending_dispatch_items(
     timeout: tuple[int, int],
 ) -> list[dict[str, Any]]:
     response = session.get(
-        f"{base_url}/api/staging/dispatch/pending",
+        f"{base_url}{_PROD_PENDING_PATH}",
         params={"limit": limit},
         timeout=timeout,
     )
@@ -116,7 +102,7 @@ def _post_dispatch_ack(
 ) -> None:
     try:
         response = session.post(
-            f"{base_url}/api/staging/dispatch/ack",
+            f"{base_url}{_PROD_ACK_PATH}",
             json=build_agent_ack_payload(
                 delivery_id=delivery_id,
                 status=status,
@@ -128,7 +114,7 @@ def _post_dispatch_ack(
         response.raise_for_status()
     except Exception as exc:  # noqa: BLE001
         context.log.warning(
-            "staging agent ack 전송 실패: "
+            "production agent ack 전송 실패: "
             f"delivery_id={delivery_id} status={status} request_id={request_id or ''} error={exc}"
         )
 
@@ -187,16 +173,16 @@ def _reject_dispatch_item(
 
 
 @sensor(
-    name="staging_agent_dispatch_sensor",
-    description="staging 전용 agent API polling -> dispatch_stage_job ingress",
-    minimum_interval_seconds=load_staging_agent_polling_settings().interval_sec,
+    name="production_agent_dispatch_sensor",
+    description="production optional agent API polling -> dispatch_stage_job ingress",
+    minimum_interval_seconds=load_production_agent_polling_settings().interval_sec,
     required_resource_keys={"db"},
     job_name="dispatch_stage_job",
 )
-def staging_agent_dispatch_sensor(context: SensorEvaluationContext):
-    settings = load_staging_agent_polling_settings()
+def production_agent_dispatch_sensor(context: SensorEvaluationContext):
+    settings = load_production_agent_polling_settings()
     if not settings.enabled:
-        yield SkipReason("STAGING_AGENT_POLLING_ENABLED=false")
+        yield SkipReason("PROD_AGENT_POLLING_ENABLED=false")
         return
 
     db_resource = getattr(context.resources, "db", None)
@@ -219,14 +205,14 @@ def staging_agent_dispatch_sensor(context: SensorEvaluationContext):
                 timeout=timeout,
             )
         except requests.RequestException as exc:
-            yield SkipReason(f"staging agent polling unavailable: {exc}")
+            yield SkipReason(f"production agent polling unavailable: {exc}")
             return
         except ValueError as exc:
-            yield SkipReason(f"staging agent pending payload invalid: {exc}")
+            yield SkipReason(f"production agent pending payload invalid: {exc}")
             return
 
         if not items:
-            yield SkipReason("staging agent pending queue empty")
+            yield SkipReason("production agent pending queue empty")
             return
 
         yielded = False
@@ -235,7 +221,7 @@ def staging_agent_dispatch_sensor(context: SensorEvaluationContext):
             delivery_id = str(item.get("delivery_id") or "").strip()
             raw_request = item.get("request")
             if not delivery_id or not isinstance(raw_request, Mapping):
-                context.log.warning(f"staging agent payload 무시: invalid item shape={item}")
+                context.log.warning(f"production agent payload 무시: invalid item shape={item}")
                 continue
 
             request_id: str | None = None
@@ -262,25 +248,6 @@ def staging_agent_dispatch_sensor(context: SensorEvaluationContext):
                 )
                 continue
 
-            if should_wait_for_dispatch_params(canonical_request):
-                folder_name = str(canonical_request.get("folder_name") or "").strip()
-                context.log.info(
-                    "staging agent dispatch waiting: "
-                    f"delivery_id={delivery_id} request_id={request_id} "
-                    f"folder={folder_name} reason=waiting_for_dispatch_params"
-                )
-                _ack_dispatch_item(
-                    context,
-                    session,
-                    settings=settings,
-                    timeout=timeout,
-                    delivery_id=delivery_id,
-                    status="accepted",
-                    request_id=request_id,
-                    message="waiting_for_dispatch_params",
-                )
-                continue
-
             try:
                 outcome = process_dispatch_ingress_request(
                     context,
@@ -295,7 +262,7 @@ def staging_agent_dispatch_sensor(context: SensorEvaluationContext):
                 )
             except Exception as exc:  # noqa: BLE001
                 context.log.error(
-                    "staging agent dispatch 처리 실패(ack 보류): "
+                    "production agent dispatch 처리 실패(ack 보류): "
                     f"delivery_id={delivery_id} request_id={request_id or ''} error={exc}"
                 )
                 continue
@@ -304,14 +271,14 @@ def staging_agent_dispatch_sensor(context: SensorEvaluationContext):
                 prepared = outcome.prepared
                 folder_name = prepared.folder_name if prepared is not None else ""
                 context.log.info(
-                    "staging agent folder in flight -> ack 보류: "
+                    "production agent folder in flight -> ack 보류: "
                     f"delivery_id={delivery_id} folder={folder_name}"
                 )
                 continue
 
             if outcome.status == "duplicate_noop":
                 context.log.info(
-                    "staging agent duplicate request_id 감지: "
+                    "production agent duplicate request_id 감지: "
                     f"delivery_id={delivery_id} request_id={outcome.request_id}"
                 )
                 _ack_dispatch_item(
@@ -342,14 +309,14 @@ def staging_agent_dispatch_sensor(context: SensorEvaluationContext):
 
             if outcome.status != "run_request" or outcome.run_request is None or outcome.prepared is None:
                 context.log.error(
-                    "staging agent dispatch unexpected outcome(ack 보류): "
+                    "production agent dispatch unexpected outcome(ack 보류): "
                     f"delivery_id={delivery_id} status={outcome.status} request_id={outcome.request_id}"
                 )
                 continue
 
             prepared = outcome.prepared
             context.log.info(
-                "staging agent dispatch accepted: "
+                "production agent dispatch accepted: "
                 f"delivery_id={delivery_id} request_id={prepared.request_id} folder={prepared.folder_name}"
             )
             _ack_dispatch_item(
@@ -366,4 +333,4 @@ def staging_agent_dispatch_sensor(context: SensorEvaluationContext):
             yield outcome.run_request
 
         if not yielded:
-            yield SkipReason("staging agent pending items handled without new run request")
+            yield SkipReason("production agent pending items handled without new run request")

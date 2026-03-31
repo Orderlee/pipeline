@@ -1,0 +1,28 @@
+# Application settings — src/python/ 스크립트용 설정 템플릿
+# 복사: cp configs/config.sample.yaml configs/global.yaml
+# 환경에 맞게 수정 후 사용 (global.yaml은 .gitignore 대상)
+#
+# ※ vlm_pipeline(Dagster)은 이 파일을 사용하지 않음 → docker/.env 참조
+
+nas_root: "/path/to/nas/datasets/projects"
+duckdb_path: "/path/to/catalog.duckdb"
+
+minio:
+  endpoint: "http://172.168.47.36:9000"
+  access_key: "minioadmin"
+  secret_key: "minioadmin"
+  bucket: "raw-data"
+
+qdrant:
+  host: "localhost"
+  port: 6333
+  api_key: ""
+
+cvat:
+  host: "http://localhost:8080"
+  username: "admin"
+  password: "admin"
+
+dataset_builder:
+  output_dir: "./datasets/output"
+  manifest_name: "dataset_manifest.json"

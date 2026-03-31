@@ -11,10 +11,14 @@ from pathlib import Path
 from dagster import DefaultSensorStatus, SkipReason, sensor
 
 from vlm_pipeline.lib.env_utils import bool_env, int_env
+from vlm_pipeline.lib.runtime_profile import resolve_runtime_profile
 from vlm_pipeline.lib.validator import ALLOWED_EXTENSIONS
 from vlm_pipeline.resources.config import PipelineConfig
 
-from .runtime_policy import auto_bootstrap_unit_allowed
+from .runtime_policy import (
+    auto_bootstrap_manifest_archive_requested,
+    auto_bootstrap_unit_allowed,
+)
 
 def _build_auto_bootstrap_cursor_payload(
     units: dict[str, dict],
@@ -406,6 +410,15 @@ def _has_done_marker(unit_path: str, marker_name: str) -> bool:
     return (Path(unit_path) / marker_name).exists()
 
 
+def _is_gcp_unit_path(unit_path: str, incoming_dir: Path) -> bool:
+    gcp_root = (incoming_dir / "gcp").resolve()
+    try:
+        Path(unit_path).resolve().relative_to(gcp_root)
+        return True
+    except Exception:
+        return False
+
+
 def _chunk_files(unit_files: list[dict], max_files_per_manifest: int) -> list[list[dict]]:
     if max_files_per_manifest <= 0:
         max_files_per_manifest = 1
@@ -429,12 +442,13 @@ def auto_bootstrap_manifest_sensor(context):
       1) 동일 signature가 stable_cycles 이상 연속 관측
       2) 마지막 수정 시각이 stable_age_sec 이상 경과
 
-    staging(IS_STAGING): **incoming/gcp** 트리만 스캔 (트리거 JSON 없이 GCS 경로만).
+    staging profile: **incoming/gcp** 트리만 스캔 (트리거 JSON 없이 GCS 경로만).
 
     production: auto_bootstrap도 **incoming/gcp/** 만 스캔한다.
     `incoming/tmp_data_2` 같은 직접 드롭 폴더는 `.dispatch/pending` 트리거 JSON 없이는 처리하지 않는다.
     """
     config = PipelineConfig()
+    runtime_profile = resolve_runtime_profile()
     incoming_dir = Path(config.incoming_dir)
     pending_dir = Path(config.manifest_dir) / "pending"
     pending_dir.mkdir(parents=True, exist_ok=True)
@@ -502,6 +516,7 @@ def auto_bootstrap_manifest_sensor(context):
                 str(u.get("unit_path", "")),
                 incoming_dir=incoming_dir,
                 config=config,
+                runtime_profile=runtime_profile,
             )
         ]
         discovery_elapsed_sec = time.perf_counter() - discovery_started
@@ -684,9 +699,10 @@ def auto_bootstrap_manifest_sensor(context):
                 "source_unit_chunk_count": chunk_count,
                 "stable_signature": signature,
                 "transfer_tool": "auto_bootstrap_sensor",
-                "archive_requested": manifest_allows_auto_bootstrap_without_dispatch(
+                "archive_requested": auto_bootstrap_manifest_archive_requested(
                     {"source_unit_path": manifest_unit_path},
                     config=config,
+                    runtime_profile=runtime_profile,
                 ),
                 "file_count": len(chunk_files),
                 "files": [

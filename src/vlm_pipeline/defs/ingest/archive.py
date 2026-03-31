@@ -5,16 +5,34 @@ assets.py에서 분리된 archive 관련 헬퍼.
 
 from __future__ import annotations
 
-import os
 import shutil
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING
 
-from vlm_pipeline.lib.env_utils import IS_STAGING
+from vlm_pipeline.lib.runtime_profile import RuntimeProfile, resolve_runtime_profile
 
 if TYPE_CHECKING:
     from vlm_pipeline.resources.config import PipelineConfig
     from vlm_pipeline.resources.duckdb import DuckDBResource
+
+
+def resolve_archive_source_unit_name(source_unit_name: str) -> str:
+    """archive 디렉토리용 source unit 이름을 정규화한다.
+
+    GCP auto-bootstrap unit은 `gcp/<bucket>/...` 형태로 들어오지만,
+    archive 저장은 `archive/<bucket>/...` 규칙을 사용한다.
+    """
+    raw = str(source_unit_name or "").strip().strip("/")
+    if not raw:
+        return ""
+
+    parts = [part for part in PurePosixPath(raw).parts if part not in {"", ".", ".."}]
+    if len(parts) >= 2 and parts[0].lower() == "gcp":
+        parts = parts[1:]
+
+    if not parts:
+        return ""
+    return str(PurePosixPath(*parts))
 
 
 def resolve_unique_directory(target_dir: Path, max_attempts: int = 100) -> Path:
@@ -221,7 +239,9 @@ def manifest_source_under_gcp(manifest: dict, config: PipelineConfig | None = No
 
 
 def manifest_allows_auto_bootstrap_without_dispatch(
-    manifest: dict, config: PipelineConfig | None = None
+    manifest: dict,
+    config: PipelineConfig | None = None,
+    runtime_profile: RuntimeProfile | None = None,  # noqa: ARG001 - 향후 정책 확장용
 ) -> bool:
     """dispatch 트리거 JSON 없이 auto_bootstrap·ingest 허용: production/staging 모두 gcp 트리만."""
     return manifest_source_under_gcp(manifest, config)
@@ -241,7 +261,12 @@ def _staging_transfer_allows_archive(
     return False
 
 
-def should_archive_manifest(manifest: dict, *, config: PipelineConfig | None = None) -> bool:
+def should_archive_manifest(
+    manifest: dict,
+    *,
+    config: PipelineConfig | None = None,
+    runtime_profile: RuntimeProfile | None = None,
+) -> bool:
     """manifest 정책에 따라 archive 이동 여부를 결정한다.
 
     staging: dispatch·ingest_retry 또는 **incoming/gcp** auto_bootstrap만 (트리거 JSON 없이 gcp만).
@@ -250,6 +275,8 @@ def should_archive_manifest(manifest: dict, *, config: PipelineConfig | None = N
     `incoming/tmp_data_2` 같은 직접 드롭 폴더는 dispatch JSON 없이 archive 이동하지 않는다.
     legacy manifest 호환을 위해 archive_requested가 없으면 transfer_tool 기준으로 fallback 판단한다.
     """
+    profile = runtime_profile or resolve_runtime_profile()
+    is_staging = profile.is_staging
     transfer_tool = str(manifest.get("transfer_tool", "")).strip().lower()
 
     def _production_auto_bootstrap_gate() -> bool:
@@ -262,22 +289,22 @@ def should_archive_manifest(manifest: dict, *, config: PipelineConfig | None = N
         if isinstance(archive_requested, str):
             normalized = archive_requested.strip().lower()
             if normalized in {"1", "true", "t", "yes", "y", "on"}:
-                if IS_STAGING and not _staging_transfer_allows_archive(manifest, transfer_tool, config=config):
+                if is_staging and not _staging_transfer_allows_archive(manifest, transfer_tool, config=config):
                     return False
-                if not IS_STAGING and not _production_auto_bootstrap_gate():
+                if not is_staging and not _production_auto_bootstrap_gate():
                     return False
                 return True
             if normalized in {"0", "false", "f", "no", "n", "off", ""}:
                 return False
         if not bool(archive_requested):
             return False
-        if IS_STAGING and not _staging_transfer_allows_archive(manifest, transfer_tool, config=config):
+        if is_staging and not _staging_transfer_allows_archive(manifest, transfer_tool, config=config):
             return False
-        if not IS_STAGING and not _production_auto_bootstrap_gate():
+        if not is_staging and not _production_auto_bootstrap_gate():
             return False
         return True
 
-    if not IS_STAGING:
+    if not is_staging:
         if not _production_auto_bootstrap_gate():
             return False
         return True
@@ -297,6 +324,7 @@ def prepare_manifest_for_archive_upload(
     """
     source_unit_type = str(manifest.get("source_unit_type", "")).strip().lower()
     source_unit_name = str(manifest.get("source_unit_name", "")).strip()
+    archive_unit_name = resolve_archive_source_unit_name(source_unit_name) or source_unit_name
     source_unit_path_raw = str(manifest.get("source_unit_path", "")).strip()
     source_dir_raw = str(manifest.get("source_dir", "")).strip()
     if source_unit_type != "directory" or not source_unit_name or not source_unit_path_raw:
@@ -311,12 +339,12 @@ def prepare_manifest_for_archive_upload(
         or source_unit_total_file_count > manifest_file_count
     )
     if is_chunked_manifest:
-        return manifest, Path(archive_dir) / source_unit_name, False
+        return manifest, Path(archive_dir) / archive_unit_name, False
 
     source_unit_path = Path(source_unit_path_raw)
     archive_root_dir = Path(archive_dir)
     archive_root_dir.mkdir(parents=True, exist_ok=True)
-    base_archive_unit_dir = archive_root_dir / source_unit_name
+    base_archive_unit_dir = archive_root_dir / archive_unit_name
 
     def _rewrite_manifest_paths(archive_unit_dir: Path) -> dict:
         updated_manifest = dict(manifest)
@@ -457,6 +485,7 @@ def archive_uploaded_assets(
 
     source_unit_type = str(manifest.get("source_unit_type", "")).strip().lower()
     source_unit_name = str(manifest.get("source_unit_name", "")).strip()
+    archive_unit_name = resolve_archive_source_unit_name(source_unit_name) or source_unit_name
     source_unit_path_raw = str(manifest.get("source_unit_path", "")).strip()
     source_dir_raw = str(manifest.get("source_dir", "")).strip()
     source_unit_path = Path(source_unit_path_raw) if source_unit_path_raw else None
@@ -474,7 +503,7 @@ def archive_uploaded_assets(
     archive_unit_dir_hint: Path | None = None
 
     if source_unit_type == "directory" and source_unit_name:
-        archive_unit_dir_hint = archive_root_dir / source_unit_name
+        archive_unit_dir_hint = archive_root_dir / archive_unit_name
 
     if not uploaded:
         return archived_items, archive_unit_dir_hint
@@ -513,7 +542,7 @@ def archive_uploaded_assets(
             )
 
     if source_unit_type == "directory" and source_unit_name:
-        base_unit_archive_dir = archive_root_dir / source_unit_name
+        base_unit_archive_dir = archive_root_dir / archive_unit_name
 
         if (
             not is_chunked_manifest
@@ -555,7 +584,7 @@ def archive_uploaded_assets(
 
         for item in uploaded:
             _move_single_file(context, item, unit_archive_dir, rel_path_by_source,
-                              archive_root_dir, source_unit_name, _mark_archive_result)
+                              archive_root_dir, archive_unit_name, _mark_archive_result)
 
         if source_unit_path:
             cleanup_empty_tree(source_unit_path)
@@ -573,7 +602,7 @@ def _move_single_file(
     unit_archive_dir: Path,
     rel_path_by_source: dict[str, str],
     archive_root_dir: Path,
-    source_unit_name: str,
+    archive_unit_name: str,
     mark_fn,
 ) -> None:
     source_path = str(item.get("source_path", "")).strip()
@@ -596,7 +625,7 @@ def _move_single_file(
         if is_source_missing_error(exc):
             existing = find_existing_in_archive_unit_dirs(
                 archive_root_dir=archive_root_dir,
-                source_unit_name=source_unit_name,
+                source_unit_name=archive_unit_name,
                 rel_path=rel_path,
             )
             if existing is not None:

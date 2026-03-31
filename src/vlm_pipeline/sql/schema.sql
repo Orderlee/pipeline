@@ -69,12 +69,15 @@ CREATE TABLE IF NOT EXISTS video_metadata (
     bbox_status          VARCHAR DEFAULT 'pending',
     bbox_error           TEXT,
     bbox_completed_at    TIMESTAMP,
+    -- 재인코딩: 원본 인코딩 정보 (감사/디버깅 목적)
     original_codec        VARCHAR,
     original_profile      VARCHAR,
     original_has_b_frames BOOLEAN,
     original_level_int    INTEGER,
+    -- 재인코딩: 판정 결과
     reencode_required     BOOLEAN DEFAULT FALSE,
     reencode_reason       VARCHAR,
+    -- 재인코딩: 적용 결과 (codec은 실제 저장 파일 기준으로 갱신됨)
     reencode_applied      BOOLEAN DEFAULT FALSE,
     reencode_preset       VARCHAR
 );

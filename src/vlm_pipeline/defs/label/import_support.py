@@ -6,7 +6,6 @@ import json
 from dataclasses import dataclass, field
 from hashlib import sha1
 from pathlib import Path
-from typing import Any
 
 EVENT_LABEL_DIR_NAMES = ("auto_labels", "reviewed_labels", "labels", "annotations")
 

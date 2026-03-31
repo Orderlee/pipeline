@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -33,7 +34,6 @@ if str(REPO / "src") not in sys.path:
 from vlm_pipeline.lib.video_frames import (
     extract_frame_jpeg_bytes,
     plan_frame_timestamps,
-    resolve_duration_sec,
 )
 
 DEFAULT_VIDEO_DIR = Path("/home/pia/mou/staging/tmp_data_2")
@@ -242,7 +242,7 @@ def run_preset(
 def call_yolo_batch(base_url: str, image_paths: list[Path]) -> tuple[int, str | None]:
     """YOLO /detect/batch 호출 후 총 검출 수 반환. 오류 시 (0, error_message)."""
     try:
-        import requests  # noqa: optional
+        import requests  # noqa: PLC0415
     except ImportError:
         return 0, "requests not installed"
 
@@ -326,7 +326,6 @@ def main() -> None:
 
     print(json.dumps(all_results, ensure_ascii=False, indent=2))
     if not args.out_dir:
-        import shutil
         shutil.rmtree(out_root, ignore_errors=True)
 
 

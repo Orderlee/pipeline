@@ -6,7 +6,7 @@ NAS에 있는 이미지/비디오 미디어를 수집하고, 중복을 정리한
 현재 기준으로 이 저장소는 **production**과 **staging**을 분리해 운영합니다.
 
 - **production**: `/nas/incoming` 기반 수집, `.dispatch/pending/*.json` 기반 자동 라벨링
-- **staging**: `/nas/staging/incoming` 기반 검증, `agent:8080` polling 기반 dispatch
+- **staging**: `/nas/staging/incoming` 기반 검증, `piaspace-agent:8080` polling 기반 dispatch
 
 ## Architecture
 
@@ -26,7 +26,7 @@ NAS에 있는 이미지/비디오 미디어를 수집하고, 중복을 정리한
 │   .dispatch/pending/*.json -> dispatch_sensor -> dispatch_stage_job          │
 │                                                                              │
 │ Staging                                                                      │
-│   agent polling -> staging_agent_dispatch_sensor                    │
+│   piaspace-agent polling -> staging_agent_dispatch_sensor                    │
 │   -> dispatch_stage_job / auto_labeling_routed_job / import jobs            │
 └───────────────┬───────────────────────────────┬──────────────────────────────┘
                 │                               │
@@ -57,13 +57,15 @@ NAS에 있는 이미지/비디오 미디어를 수집하고, 중복을 정리한
 | Archive | `/nas/archive` | `/nas/staging/archive` |
 | MinIO endpoint | `http://172.168.47.36:9000` | `http://172.168.47.36:9002` |
 | Dagster home | `/app/dagster_home` | `/app/dagster_home_staging` |
+| Workspace | `/app/workspace_prod.yaml` | `/app/workspace_staging.yaml` |
 | Main entrypoint | `src/vlm_pipeline/definitions.py` | `src/vlm_pipeline/definitions_staging.py` |
-| Dispatch ingress | `.dispatch/pending/*.json` | `agent` polling |
+| Dispatch ingress | `.dispatch/pending/*.json` | `piaspace-agent` polling |
 
 핵심 차이:
 
 - **production**은 자동 라벨링을 `.dispatch/pending/*.json` 요청 파일로만 시작합니다.
-- **staging**은 `staging_agent_dispatch_sensor`가 `agent:8080`에서 pending 요청을 polling해서 시작합니다.
+- **staging**은 `staging_agent_dispatch_sensor`가 `piaspace-agent:8080`에서 pending 요청을 polling해서 시작합니다.
+- staging의 파일 기반 `dispatch_sensor` 경로는 레거시/호환 목적이며 기본 ingress가 아닙니다.
 - staging은 `manual_label_import_job`, `prelabeled_import_job`, spec 기반 라우팅 등 검증용 흐름을 더 포함합니다.
 
 ## Data Flow
@@ -93,7 +95,7 @@ production 정책은 다음과 같습니다.
 ### Staging
 
 ```text
-agent:8080
+piaspace-agent:8080
   -> staging_agent_dispatch_sensor
   -> dispatch_stage_job
   -> raw_ingest
@@ -234,6 +236,7 @@ YOLO 서버는 `docker/yolo/` 아래 별도 서비스로 동작합니다.
 │   └── vlm_pipeline/
 │       ├── definitions.py              # production entrypoint
 │       ├── definitions_staging.py      # staging entrypoint
+│       ├── definitions_profiles.py     # profile 기반 공통 조립
 │       ├── definitions_common.py       # 공통 job/sensor 조립
 │       ├── defs/
 │       │   ├── dispatch/               # dispatch sensor / service / staging agent sensor
@@ -391,7 +394,7 @@ pytest tests/integration -q
 | 이름 | 환경 | 설명 |
 |------|------|------|
 | `dispatch_sensor` | production | `.dispatch/pending/*.json` -> `dispatch_stage_job` |
-| `staging_agent_dispatch_sensor` | staging | `agent` polling -> `dispatch_stage_job` |
+| `staging_agent_dispatch_sensor` | staging | `piaspace-agent` polling -> `dispatch_stage_job` |
 | `incoming_manifest_sensor` | both | pending manifest -> ingest |
 | `auto_bootstrap_manifest_sensor` | both | incoming 스캔 후 manifest 생성 |
 | `spec_resolve_sensor` | staging | spec 요청 -> routed job |
@@ -436,7 +439,7 @@ WHERE image_caption_text IS NOT NULL;
 ## 운영 팁
 
 - production에서 자동 라벨링을 시작하려면 `.dispatch/pending/*.json`을 사용합니다.
-- staging은 `agent` 연결 상태와 `STAGING_AGENT_POLLING_ENABLED=true` 여부를 먼저 확인합니다.
+- staging은 `piaspace-agent` 연결 상태와 `STAGING_AGENT_POLLING_ENABLED=true` 여부를 먼저 확인합니다.
 - `필요없음` 요청은 staging에서 raw ingest 후, 같은 폴더 안의 기존 라벨 결과를 best-effort로 자동 import 할 수 있습니다.
 - `tmp_data_2` 같은 재테스트 전에는 DB / MinIO / `.dispatch` 상태를 정리한 뒤 다시 시작하는 것이 안전합니다.
 
@@ -451,4 +454,4 @@ WHERE image_caption_text IS NOT NULL;
 
 ---
 
-이 README는 현재 `definitions.py`, `definitions_staging.py`, `definitions_common.py`, `runtime_settings.py` 기준의 운영 흐름을 요약합니다. 세부 스키마나 플레이북은 `CLAUDE2.md`와 `src/vlm_pipeline/sql/schema.sql`을 함께 참고하세요.
+이 README는 현재 `definitions.py`, `definitions_staging.py`, `definitions_profiles.py`, `runtime_settings.py` 기준의 운영 흐름을 요약합니다. 세부 스키마나 플레이북은 `CLAUDE2.md`와 `src/vlm_pipeline/sql/schema.sql`을 함께 참고하세요.

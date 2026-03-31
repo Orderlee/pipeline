@@ -57,15 +57,25 @@ WHERE asset_id NOT IN (SELECT asset_id FROM raw_files);
 -- 실행 전 반드시 pipeline.duckdb 백업:
 --   cp ./docker/data/pipeline.duckdb ./docker/data/pipeline.duckdb.bak.$(date +%Y%m%d)
 
+-- ============================================================
 -- 재인코딩 품질 검사 컬럼 추가
-ALTER TABLE video_metadata ADD COLUMN IF NOT EXISTS original_codec VARCHAR;
-ALTER TABLE video_metadata ADD COLUMN IF NOT EXISTS original_profile VARCHAR;
+-- ============================================================
+-- 실행 전 반드시 pipeline.duckdb 백업:
+--   cp ./docker/data/pipeline.duckdb ./docker/data/pipeline.duckdb.bak.$(date +%Y%m%d)
+
+-- 원본 인코딩 정보 (재인코딩 전 기록, 감사/디버깅 목적)
+ALTER TABLE video_metadata ADD COLUMN IF NOT EXISTS original_codec        VARCHAR;
+ALTER TABLE video_metadata ADD COLUMN IF NOT EXISTS original_profile      VARCHAR;
 ALTER TABLE video_metadata ADD COLUMN IF NOT EXISTS original_has_b_frames BOOLEAN;
-ALTER TABLE video_metadata ADD COLUMN IF NOT EXISTS original_level_int INTEGER;
-ALTER TABLE video_metadata ADD COLUMN IF NOT EXISTS reencode_required BOOLEAN DEFAULT FALSE;
-ALTER TABLE video_metadata ADD COLUMN IF NOT EXISTS reencode_reason VARCHAR;
-ALTER TABLE video_metadata ADD COLUMN IF NOT EXISTS reencode_applied BOOLEAN DEFAULT FALSE;
-ALTER TABLE video_metadata ADD COLUMN IF NOT EXISTS reencode_preset VARCHAR;
+ALTER TABLE video_metadata ADD COLUMN IF NOT EXISTS original_level_int    INTEGER;
+
+-- 재인코딩 판정 결과
+ALTER TABLE video_metadata ADD COLUMN IF NOT EXISTS reencode_required     BOOLEAN DEFAULT FALSE;
+ALTER TABLE video_metadata ADD COLUMN IF NOT EXISTS reencode_reason       VARCHAR;
+
+-- 재인코딩 적용 결과 (codec은 실제 저장 파일 기준으로 갱신됨)
+ALTER TABLE video_metadata ADD COLUMN IF NOT EXISTS reencode_applied      BOOLEAN DEFAULT FALSE;
+ALTER TABLE video_metadata ADD COLUMN IF NOT EXISTS reencode_preset       VARCHAR;
 
 -- video_metadata: Gemini auto-label 상태 컬럼 추가
 ALTER TABLE video_metadata ADD COLUMN IF NOT EXISTS auto_label_status VARCHAR DEFAULT 'pending';

@@ -50,36 +50,33 @@ x-prod-volumes: &prod-volumes
     target: /root/.config/gcloud
     read_only: false
 
+# Staging 전용 볼륨 — 소스 코드를 별도 repo(dev 브랜치)에서 마운트
 x-staging-volumes: &staging-volumes
-  - ./app:/app
-  - ./data:/data
+  - ${STAGING_REPO_PATH:-/volume2/datapipeline-staging}/docker/app:/app
+  - ${STAGING_REPO_PATH:-/volume2/datapipeline-staging}/docker/data:/data
   - type: bind
-    source: /home/pia/mou/nas_192tb/datasets
+    source: ${DATASETS_HOST_PATH:-/home/pia/mou/nas_192tb/datasets}
     target: /nas/datasets
     read_only: false
   - type: bind
-    source: /home/pia/mou/nas_192tb/datasets/projects
+    source: ${PROJECTS_HOST_PATH:-/home/pia/mou/nas_192tb/datasets/projects}
     target: /nas/datasets/projects
     read_only: true
   - type: bind
-    source: /home/pia/mou/archive
+    source: ${ARCHIVE_HOST_PATH:-/home/pia/mou/staging/archive}
     target: /nas/archive
     read_only: false
   - type: bind
-    source: /home/pia/mou/incoming
+    source: ${INCOMING_HOST_PATH:-/home/pia/mou/staging/incoming}
     target: /nas/incoming
     read_only: false
-  - type: bind
-    source: /home/pia/mou/staging
-    target: /nas/staging
-    read_only: false
   - /home/pia/test_data:/test_data
-  - ../src/python:/src/python:ro
-  - ../src:/src/vlm:ro
-  - ../configs:/configs:ro
-  - ../split_dataset:/split_dataset:ro
-  - ../gcp:/gcp:ro
-  - ../scripts:/scripts:ro
+  - ${STAGING_REPO_PATH:-/volume2/datapipeline-staging}/src/python:/src/python:ro
+  - ${STAGING_REPO_PATH:-/volume2/datapipeline-staging}/src:/src/vlm:ro
+  - ${STAGING_REPO_PATH:-/volume2/datapipeline-staging}/configs:/configs:ro
+  - ${STAGING_REPO_PATH:-/volume2/datapipeline-staging}/split_dataset:/split_dataset:ro
+  - ${STAGING_REPO_PATH:-/volume2/datapipeline-staging}/gcp:/gcp:ro
+  - ${STAGING_REPO_PATH:-/volume2/datapipeline-staging}/scripts:/scripts:ro
   - type: bind
     source: ${GCLOUD_CONFIG_HOST_PATH:-/home/pia/.config/gcloud}
     target: /root/.config/gcloud
@@ -177,6 +174,8 @@ services:
       - minio
 
   # ===== Staging Dagster (dev 브랜치 검증용) =====
+  # 소스 코드: /volume2/datapipeline-staging/ (dev 브랜치)
+  # 운영 repo와 완전 분리 — git pull해도 운영에 영향 없음
   dagster-staging:
     profiles: ["staging"]
     image: datapipeline:gpu-cu124
@@ -205,6 +204,11 @@ services:
       DATAOPS_MINIO__ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
       DATAOPS_MINIO__SECRET_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin}
       DATAOPS_MINIO__BUCKET: raw-data
+      DATAOPS_PIPELINE_ROOT: /nas/datasets/projects
+      DATAOPS_NAS_ROOT: /nas/datasets/projects
+      DATAOPS_NAS_ROOTS: /nas/datasets/projects;/nas/incoming
+      DATAOPS_ASSET_PATH_PREFIX_FROM: /home/pia/mou/nas_192tb;/home/pia/mou/staging/archive;/home/pia/mou/staging/incoming
+      DATAOPS_ASSET_PATH_PREFIX_TO: /nas
     volumes: *staging-volumes
     depends_on:
       - postgres

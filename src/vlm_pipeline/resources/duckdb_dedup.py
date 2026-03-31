@@ -194,6 +194,7 @@ class DuckDBDedupMixin:
                     l.timestamp_end_sec,
                     l.caption_text,
                     l.object_count,
+                    vm.duration_sec AS video_duration_sec,
                     vm.width AS video_width,
                     vm.height AS video_height,
                     vm.codec AS video_codec
@@ -211,6 +212,7 @@ class DuckDBDedupMixin:
                 "label_source", "review_status", "event_index",
                 "timestamp_start_sec", "timestamp_end_sec",
                 "caption_text", "object_count",
+                "video_duration_sec",
                 "video_width", "video_height", "video_codec",
             ]
             return [dict(zip(columns, row)) for row in rows]
