@@ -284,6 +284,61 @@ class DuckDBDedupMixin:
                 ],
             )
 
+    def find_processed_clip_by_checksum(
+        self,
+        checksum: str,
+        *,
+        source_asset_id: str | None = None,
+        exclude_clip_id: str | None = None,
+    ) -> dict[str, Any] | None:
+        normalized_checksum = str(checksum or "").strip()
+        if not normalized_checksum:
+            return None
+
+        with self.connect() as conn:
+            where_clauses = ["checksum = ?"]
+            params: list[Any] = [normalized_checksum]
+            if source_asset_id:
+                where_clauses.append("source_asset_id = ?")
+                params.append(str(source_asset_id))
+            if exclude_clip_id:
+                where_clauses.append("clip_id != ?")
+                params.append(str(exclude_clip_id))
+
+            row = conn.execute(
+                f"""
+                SELECT
+                    clip_id,
+                    source_asset_id,
+                    source_label_id,
+                    event_index,
+                    clip_start_sec,
+                    clip_end_sec,
+                    checksum,
+                    clip_key,
+                    process_status
+                FROM processed_clips
+                WHERE {' AND '.join(where_clauses)}
+                ORDER BY created_at
+                LIMIT 1
+                """,
+                params,
+            ).fetchone()
+            if row is None:
+                return None
+            columns = [
+                "clip_id",
+                "source_asset_id",
+                "source_label_id",
+                "event_index",
+                "clip_start_sec",
+                "clip_end_sec",
+                "checksum",
+                "clip_key",
+                "process_status",
+            ]
+            return dict(zip(columns, row))
+
     def find_dataset_candidates(self) -> list[dict]:
         with self.connect() as conn:
             rows = conn.execute(

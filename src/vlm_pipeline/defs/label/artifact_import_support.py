@@ -11,9 +11,15 @@ from hashlib import sha1
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-from vlm_pipeline.defs.label.import_support import EVENT_LABEL_DIR_NAMES, import_event_label_files, iter_label_files
+from vlm_pipeline.defs.label.import_support import (
+    EVENT_LABEL_DIR_NAMES,
+    VIDEO_CLASSIFICATION_DIR_NAMES,
+    detect_label_format,
+    import_event_label_files,
+    iter_label_files,
+)
 from vlm_pipeline.defs.process.assets import _build_image_caption_key
-from vlm_pipeline.defs.yolo.assets import _build_yolo_label_key
+from vlm_pipeline.defs.yolo.assets import _build_image_classification_key, _build_yolo_label_key
 from vlm_pipeline.lib.checksum import sha256sum
 from vlm_pipeline.lib.yolo_coco import convert_detection_payload_to_coco
 from vlm_pipeline.lib.video_frames import describe_frame_bytes
@@ -21,6 +27,7 @@ from vlm_pipeline.lib.video_loader import load_video_once
 
 _BBOX_DIR_NAMES = ("detections",)
 _CAPTION_DIR_NAMES = ("image_captions",)
+_IMAGE_CLASSIFICATION_DIR_NAMES = ("image_classifications",)
 _IMAGE_SUFFIXES = (".jpg", ".jpeg", ".png", ".webp")
 _VIDEO_SUFFIXES = (".mp4", ".mov", ".avi", ".mkv")
 
@@ -127,6 +134,57 @@ def _scan_artifact_json_paths(
         for path in iter_label_files(root):
             selected.setdefault(_artifact_identity(root, path), path)
     return list(selected.values())
+
+
+def _scan_loose_artifact_json_paths(
+    *,
+    source_unit_dirs: list[Path],
+    known_paths: list[Path],
+) -> list[Path]:
+    known = {str(path.resolve()) for path in known_paths}
+    discovered: list[Path] = []
+    seen: set[str] = set()
+    for source_unit_dir in source_unit_dirs:
+        for path in sorted(source_unit_dir.rglob("*.json")):
+            if not path.is_file():
+                continue
+            resolved = str(path.resolve())
+            if resolved in known or resolved in seen:
+                continue
+            seen.add(resolved)
+            discovered.append(path)
+    return discovered
+
+
+def _is_bbox_payload(payload: Any) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    if "images" in payload and "annotations" in payload:
+        return True
+    return any(key in payload for key in ("detections", "boxes", "annotations", "objects"))
+
+
+def _is_image_caption_payload(payload: Any) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    if not any(str(payload.get(key) or "").strip() for key in ("image_key", "image_id")):
+        return False
+    return bool(str(payload.get("caption_text") or "").strip())
+
+
+def _classify_loose_artifact_payload(payload: Any) -> str | None:
+    label_format = detect_label_format(payload)
+    if label_format == "image_classification_json":
+        return "image_classification"
+    if label_format == "video_classification_json":
+        return "video_classification"
+    if label_format in {"auto_event_json", "labelme", "yolo"}:
+        return "event"
+    if _is_bbox_payload(payload):
+        return "bbox"
+    if _is_image_caption_payload(payload):
+        return "image_caption"
+    return None
 
 
 def _normalize_unit_scoped_key(source_unit_name: str, explicit_key: str | None, file_path: Path, source_unit_dir: Path) -> str:
@@ -615,6 +673,145 @@ def _import_image_caption_json_files(
     return summary
 
 
+def _import_image_classification_json_files(
+    context,
+    db,
+    minio,
+    *,
+    source_unit_name: str,
+    source_unit_dir: Path | None = None,
+    source_unit_dirs: list[Path] | tuple[Path, ...] | None = None,
+    json_paths: list[Path],
+    failures: list[dict[str, Any]],
+) -> _ArtifactImportSummary:
+    summary = _ArtifactImportSummary()
+    normalized_source_unit_dirs = _coerce_source_unit_dirs(
+        source_unit_dir=source_unit_dir,
+        source_unit_dirs=source_unit_dirs,
+    )
+    for json_path in json_paths:
+        try:
+            payload = json.loads(json_path.read_text(encoding="utf-8"))
+        except Exception as exc:  # noqa: BLE001
+            failures.append(
+                {"stage": "image_classification", "path": str(json_path), "error": f"json_parse_failed:{exc}"}
+            )
+            summary.skipped += 1
+            continue
+
+        if not isinstance(payload, dict):
+            failures.append({"stage": "image_classification", "path": str(json_path), "error": "invalid_payload_type"})
+            summary.skipped += 1
+            continue
+
+        image_row = _find_existing_image_row(
+            db,
+            source_unit_name=source_unit_name,
+            payload=payload,
+            json_path=json_path,
+        )
+        if image_row is None:
+            image_row = _ensure_processed_media_rows(
+                context,
+                db,
+                minio,
+                source_unit_name=source_unit_name,
+                source_unit_dirs=normalized_source_unit_dirs,
+                payload=payload,
+                json_path=json_path,
+            )
+        if image_row is None:
+            failures.append({"stage": "image_classification", "path": str(json_path), "error": "image_not_matched"})
+            summary.not_matched += 1
+            continue
+
+        predicted_classes = payload.get("predicted_classes")
+        if isinstance(predicted_classes, list):
+            normalized_predicted_classes = [
+                str(value or "").strip().lower()
+                for value in predicted_classes
+                if str(value or "").strip()
+            ]
+        else:
+            normalized_predicted_classes = []
+
+        raw_class_counts = payload.get("class_counts")
+        normalized_class_counts: dict[str, int] = {}
+        if isinstance(raw_class_counts, dict):
+            for key, value in raw_class_counts.items():
+                rendered_key = str(key or "").strip().lower()
+                if not rendered_key:
+                    continue
+                try:
+                    normalized_class_counts[rendered_key] = int(value)
+                except (TypeError, ValueError):
+                    continue
+
+        if not normalized_class_counts and normalized_predicted_classes:
+            normalized_class_counts = {class_name: 1 for class_name in normalized_predicted_classes}
+        if not normalized_predicted_classes and normalized_class_counts:
+            normalized_predicted_classes = [
+                class_name
+                for class_name, _count in sorted(normalized_class_counts.items(), key=lambda item: (-item[1], item[0]))
+            ]
+        if not normalized_predicted_classes and not normalized_class_counts:
+            failures.append(
+                {
+                    "stage": "image_classification",
+                    "path": str(json_path),
+                    "error": "predicted_classes_missing",
+                }
+            )
+            summary.skipped += 1
+            continue
+
+        classification_key = _build_image_classification_key(str(image_row["image_key"]))
+        generated_at_raw = str(payload.get("generated_at") or "").strip()
+        try:
+            generated_at = datetime.fromisoformat(generated_at_raw) if generated_at_raw else _now()
+        except ValueError:
+            generated_at = _now()
+
+        normalized_payload = {
+            **payload,
+            "image_id": str(image_row["image_id"]),
+            "source_clip_id": image_row.get("source_clip_id"),
+            "image_key": str(image_row["image_key"]),
+            "predicted_classes": normalized_predicted_classes,
+            "class_counts": normalized_class_counts,
+            "bbox_labels_key": str(payload.get("bbox_labels_key") or "").strip() or None,
+            "requested_classes": payload.get("requested_classes") if isinstance(payload.get("requested_classes"), list) else [],
+            "class_source": str(payload.get("class_source") or "manual_import").strip() or "manual_import",
+            "generated_at": generated_at.isoformat(),
+        }
+        minio.upload(
+            "vlm-labels",
+            classification_key,
+            json.dumps(normalized_payload, ensure_ascii=False).encode("utf-8"),
+            "application/json",
+        )
+        db.insert_image_label(
+            {
+                "image_label_id": _stable_id(str(image_row["image_id"]), classification_key),
+                "image_id": image_row["image_id"],
+                "source_clip_id": image_row.get("source_clip_id"),
+                "labels_bucket": "vlm-labels",
+                "labels_key": classification_key,
+                "label_format": "image_classification_json",
+                "label_tool": "yolo-world-classification",
+                "label_source": "manual",
+                "review_status": "reviewed",
+                "label_status": "completed",
+                "object_count": len(normalized_predicted_classes),
+                "created_at": generated_at,
+            }
+        )
+        summary.processed += 1
+        summary.inserted += 1
+
+    return summary
+
+
 def import_local_label_artifacts(
     context,
     db,
@@ -639,6 +836,10 @@ def import_local_label_artifacts(
             "event_labels_inserted": 0,
             "event_labels_skipped": 0,
             "event_labels_not_matched": 0,
+            "video_classifications_loaded": 0,
+            "video_classifications_inserted": 0,
+            "video_classifications_skipped": 0,
+            "video_classifications_not_matched": 0,
             "bbox_processed": 0,
             "bbox_inserted": 0,
             "bbox_skipped": 0,
@@ -647,6 +848,10 @@ def import_local_label_artifacts(
             "image_captions_inserted": 0,
             "image_captions_skipped": 0,
             "image_captions_not_matched": 0,
+            "image_classifications_processed": 0,
+            "image_classifications_inserted": 0,
+            "image_classifications_skipped": 0,
+            "image_classifications_not_matched": 0,
             "failure_count": 0,
         }
 
@@ -655,6 +860,13 @@ def import_local_label_artifacts(
         incoming_dir=incoming_dir,
         source_unit_dirs=normalized_source_unit_dirs,
         dir_names=EVENT_LABEL_DIR_NAMES,
+        scan_global_dirs=scan_global_dirs,
+        scan_local_dirs=scan_local_dirs,
+    )
+    video_classification_json_paths = _scan_artifact_json_paths(
+        incoming_dir=incoming_dir,
+        source_unit_dirs=normalized_source_unit_dirs,
+        dir_names=VIDEO_CLASSIFICATION_DIR_NAMES,
         scan_global_dirs=scan_global_dirs,
         scan_local_dirs=scan_local_dirs,
     )
@@ -672,6 +884,40 @@ def import_local_label_artifacts(
         scan_global_dirs=scan_global_dirs,
         scan_local_dirs=scan_local_dirs,
     )
+    image_classification_json_paths = _scan_artifact_json_paths(
+        incoming_dir=incoming_dir,
+        source_unit_dirs=normalized_source_unit_dirs,
+        dir_names=_IMAGE_CLASSIFICATION_DIR_NAMES,
+        scan_global_dirs=scan_global_dirs,
+        scan_local_dirs=scan_local_dirs,
+    )
+    known_paths = [
+        *event_json_paths,
+        *video_classification_json_paths,
+        *bbox_json_paths,
+        *caption_json_paths,
+        *image_classification_json_paths,
+    ]
+    loose_json_paths = _scan_loose_artifact_json_paths(
+        source_unit_dirs=normalized_source_unit_dirs,
+        known_paths=known_paths,
+    )
+    for loose_json_path in loose_json_paths:
+        try:
+            payload = json.loads(loose_json_path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        classified = _classify_loose_artifact_payload(payload)
+        if classified == "event":
+            event_json_paths.append(loose_json_path)
+        elif classified == "video_classification":
+            video_classification_json_paths.append(loose_json_path)
+        elif classified == "bbox":
+            bbox_json_paths.append(loose_json_path)
+        elif classified == "image_caption":
+            caption_json_paths.append(loose_json_path)
+        elif classified == "image_classification":
+            image_classification_json_paths.append(loose_json_path)
 
     failures: list[dict[str, Any]] = []
     event_result = import_event_label_files(
@@ -681,6 +927,14 @@ def import_local_label_artifacts(
         event_json_paths,
         source_unit_name=source_unit_name,
         update_timestamp_status=update_timestamp_status,
+    )
+    video_classification_result = import_event_label_files(
+        context,
+        db,
+        minio,
+        video_classification_json_paths,
+        source_unit_name=source_unit_name,
+        update_timestamp_status=False,
     )
     bbox_result = _import_bbox_json_files(
         context,
@@ -700,6 +954,15 @@ def import_local_label_artifacts(
         json_paths=caption_json_paths,
         failures=failures,
     )
+    image_classification_result = _import_image_classification_json_files(
+        context,
+        db,
+        minio,
+        source_unit_name=source_unit_name,
+        source_unit_dirs=normalized_source_unit_dirs,
+        json_paths=image_classification_json_paths,
+        failures=failures,
+    )
     failure_log_path = _write_failure_log(
         config,
         source_unit_name,
@@ -712,6 +975,10 @@ def import_local_label_artifacts(
         "event_labels_inserted": event_result.inserted,
         "event_labels_skipped": event_result.skipped,
         "event_labels_not_matched": event_result.not_matched,
+        "video_classifications_loaded": video_classification_result.loaded,
+        "video_classifications_inserted": video_classification_result.inserted,
+        "video_classifications_skipped": video_classification_result.skipped,
+        "video_classifications_not_matched": video_classification_result.not_matched,
         "bbox_processed": bbox_result.processed,
         "bbox_inserted": bbox_result.inserted,
         "bbox_skipped": bbox_result.skipped,
@@ -720,6 +987,10 @@ def import_local_label_artifacts(
         "image_captions_inserted": caption_result.inserted,
         "image_captions_skipped": caption_result.skipped,
         "image_captions_not_matched": caption_result.not_matched,
+        "image_classifications_processed": image_classification_result.processed,
+        "image_classifications_inserted": image_classification_result.inserted,
+        "image_classifications_skipped": image_classification_result.skipped,
+        "image_classifications_not_matched": image_classification_result.not_matched,
         "failure_count": len(failures),
     }
     if failure_log_path is not None:
