@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import os
 import re
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from pathlib import PurePosixPath
 
 from vlm_pipeline.lib.sanitizer import sanitize_path_component
@@ -123,29 +123,66 @@ def storage_raw_key_prefix_from_source_unit(source_unit_name: str | None) -> str
 
 # run_mode → outputs 자동 변환 매핑
 _RUN_MODE_TO_OUTPUTS: dict[str, list[str]] = {
-    "gemini": ["timestamp", "captioning"],
+    "gemini": ["timestamp_video", "captioning_video"],
     "yolo": ["bbox"],
-    "both": ["timestamp", "captioning", "bbox"],
+    "both": ["timestamp_video", "captioning_video", "bbox"],
 }
 
-# 유효한 output 키 목록
-VALID_OUTPUTS = frozenset([
-    "timestamp",       # Gemini 이벤트 구간 추출
-    "captioning",      # Gemini 캡셔닝 + clip 절단 + 프레임 추출
-    "bbox",            # YOLO-World bbox detection
-    "image_classification",  # (향후) 이미지 분류
-    "video_classification",  # (향후) 비디오 분류
-])
+_OUTPUT_NAME_ALIASES: dict[str, str] = {
+    "timestamp": "timestamp_video",
+    "timestamp_video": "timestamp_video",
+    "captioning": "captioning_video",
+    "captioning_video": "captioning_video",
+    "captioning_image": "captioning_image",
+    "image_classification": "classification_image",
+    "classification_image": "classification_image",
+    "video_classification": "classification_video",
+    "classification_video": "classification_video",
+    "bbox": "bbox",
+    "skip": "skip",
+}
 
-YOLO_OUTPUTS = frozenset([
-    "bbox",
-    "image_classification",
-])
+# 유효한 dispatch runtime output 키 목록
+VALID_OUTPUTS = frozenset(
+    [
+        "timestamp_video",
+        "captioning_video",
+        "captioning_image",
+        "classification_video",
+        "classification_image",
+        "bbox",
+    ]
+)
+
+VALID_LABELING_METHODS = frozenset([*VALID_OUTPUTS, "skip"])
+
+YOLO_OUTPUTS = frozenset(
+    [
+        "bbox",
+        "classification_image",
+    ]
+)
+
+CAPTIONING_OUTPUTS = frozenset(
+    [
+        "captioning_video",
+        "captioning_image",
+    ]
+)
+
+TIMESTAMP_OUTPUTS = frozenset(
+    [
+        "timestamp_video",
+        "captioning_video",
+        "captioning_image",
+    ]
+)
 
 # output 간 의존성: key를 요청하면 value도 자동 포함
 # (frame_extraction은 bbox 요청 시 내부 stage로만 추가, requested_outputs에는 미포함)
 _OUTPUT_DEPENDENCIES: dict[str, list[str]] = {
-    "captioning": ["timestamp"],  # captioning은 timestamp(이벤트 구간 추출)에 의존
+    "captioning_video": ["timestamp_video"],
+    "captioning_image": ["timestamp_video", "captioning_video"],
 }
 
 # categories → classes 파생 (auto_labeling_unified_spec, staging spec flow)
@@ -182,7 +219,21 @@ def normalize_output_name(value: object) -> str:
         return ""
     rendered = rendered.replace("-", "_").replace(" ", "_")
     rendered = re.sub(r"_+", "_", rendered)
-    return rendered.strip("_")
+    rendered = rendered.strip("_")
+    return _OUTPUT_NAME_ALIASES.get(rendered, rendered)
+
+
+def normalize_output_names(values: Iterable[object] | None) -> list[str]:
+    """반복 가능한 출력 값을 canonical 목록으로 정규화."""
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for value in values or []:
+        rendered = normalize_output_name(value)
+        if not rendered or rendered in seen:
+            continue
+        seen.add(rendered)
+        normalized.append(rendered)
+    return normalized
 
 
 def parse_outputs_raw(outputs_raw: str | None) -> list[str]:
@@ -215,11 +266,31 @@ def is_dispatch_yolo_only_requested(tags) -> bool:
     return bool(requested) and requested.issubset(YOLO_OUTPUTS)
 
 
+def requested_outputs_require_timestamp(requested_outputs: Iterable[object] | None) -> bool:
+    normalized = set(normalize_output_names(requested_outputs))
+    return bool(normalized & TIMESTAMP_OUTPUTS)
+
+
+def requested_outputs_require_caption_labels(requested_outputs: Iterable[object] | None) -> bool:
+    normalized = set(normalize_output_names(requested_outputs))
+    return bool(normalized & CAPTIONING_OUTPUTS)
+
+
+def requested_outputs_require_frame_image_caption(requested_outputs: Iterable[object] | None) -> bool:
+    normalized = set(normalize_output_names(requested_outputs))
+    return "captioning_image" in normalized
+
+
+def requested_outputs_require_raw_video_frames(requested_outputs: Iterable[object] | None) -> bool:
+    normalized = set(normalize_output_names(requested_outputs))
+    return bool(normalized & YOLO_OUTPUTS) and not bool(normalized & CAPTIONING_OUTPUTS)
+
+
 def resolve_outputs(run_mode: str | None, outputs_raw: str | None) -> list[str]:
     """run_mode 또는 outputs 문자열에서 실행할 산출물 목록을 반환.
 
     우선순위: outputs_raw > run_mode (하위 호환)
-    의존성 자동 해석: captioning → timestamp 자동 포함
+    의존성 자동 해석: captioning_video → timestamp_video 자동 포함
     """
     if outputs_raw:
         parsed = parse_outputs_raw(outputs_raw)
@@ -247,7 +318,11 @@ def should_run_output(context, required_output: str) -> bool:
 
     dispatch_stage_job 이외의 일반 job에서 호출 시 항상 True 반환.
     """
-    outputs_raw = context.run.tags.get("outputs")
+    outputs_raw = (
+        context.run.tags.get("requested_outputs")
+        or context.run.tags.get("outputs")
+        or context.run.tags.get("labeling_method")
+    )
     run_mode = context.run.tags.get("run_mode")
 
     # dispatch가 아닌 일반 실행엔 태그가 없으므로 항상 실행
@@ -255,12 +330,16 @@ def should_run_output(context, required_output: str) -> bool:
         return True
 
     resolved = resolve_outputs(run_mode, outputs_raw)
-    return required_output in resolved
+    return normalize_output_name(required_output) in resolved
 
 
 def should_run_any_output(context, required_outputs: set[str] | frozenset[str] | list[str] | tuple[str, ...]) -> bool:
     """현재 run에서 주어진 output 후보 중 하나라도 요청되었는지 확인."""
-    outputs_raw = context.run.tags.get("outputs")
+    outputs_raw = (
+        context.run.tags.get("requested_outputs")
+        or context.run.tags.get("outputs")
+        or context.run.tags.get("labeling_method")
+    )
     run_mode = context.run.tags.get("run_mode")
 
     if not outputs_raw and not run_mode:

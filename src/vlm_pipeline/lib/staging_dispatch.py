@@ -6,6 +6,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from vlm_pipeline.lib.env_utils import (
+    VALID_LABELING_METHODS,
     VALID_OUTPUTS,
     YOLO_OUTPUTS,
     derive_classes_from_categories,
@@ -14,16 +15,18 @@ from vlm_pipeline.lib.env_utils import (
 )
 
 _RUN_MODE_TO_OUTPUTS = {
-    "gemini": ["timestamp", "captioning"],
+    "gemini": ["timestamp_video", "captioning_video"],
     "yolo": ["bbox"],
-    "both": ["timestamp", "captioning", "bbox"],
+    "both": ["timestamp_video", "captioning_video", "bbox"],
 }
 _OUTPUT_PRIORITY = {
-    "timestamp": 0,
-    "captioning": 1,
+    "timestamp_video": 0,
+    "captioning_video": 1,
+    "captioning_image": 2,
     "bbox": 2,
-    "image_classification": 3,
-    "video_classification": 4,
+    "classification_image": 3,
+    "classification_video": 4,
+    "skip": 999,
 }
 
 _NO_LABELING_MARKERS = frozenset(
@@ -90,6 +93,24 @@ def _normalize_output_list(value: Any) -> list[str]:
     return normalized
 
 
+def _collect_invalid_output_values(
+    raw_values: list[str],
+    *,
+    valid_values: set[str] | frozenset[str],
+) -> list[str]:
+    invalid: list[str] = []
+    seen: set[str] = set()
+    for item in raw_values:
+        normalized = normalize_output_name(item)
+        if not normalized or normalized in _NO_LABELING_MARKERS or normalized in valid_values:
+            continue
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        invalid.append(normalized)
+    return invalid
+
+
 def _has_no_labeling_marker(values: list[str]) -> bool:
     for item in values:
         if normalize_output_name(item) in _NO_LABELING_MARKERS:
@@ -123,6 +144,14 @@ def parse_dispatch_request_payload(payload: Mapping[str, Any]) -> dict[str, Any]
     raw_outputs_items = _normalize_string_list(payload.get("outputs"), lowercase=True)
     raw_categories = _normalize_string_list(payload.get("categories"), lowercase=True)
     raw_classes = _normalize_string_list(payload.get("classes"), lowercase=True)
+    invalid_labeling_method = _collect_invalid_output_values(
+        raw_labeling_method_items,
+        valid_values=VALID_LABELING_METHODS,
+    )
+    invalid_outputs = _collect_invalid_output_values(
+        raw_outputs_items,
+        valid_values=VALID_OUTPUTS,
+    )
     archive_only = any(
         (
             _has_no_labeling_marker(raw_labeling_method_items),
@@ -132,11 +161,18 @@ def parse_dispatch_request_payload(payload: Mapping[str, Any]) -> dict[str, Any]
     )
 
     if archive_only:
+        non_marker_values = [
+            normalize_output_name(item)
+            for item in [*raw_labeling_method_items, *raw_outputs_items]
+            if normalize_output_name(item) and normalize_output_name(item) not in _NO_LABELING_MARKERS
+        ]
+        if non_marker_values:
+            raise ValueError("skip_must_be_standalone")
         return {
             "categories": raw_categories,
             "classes": raw_classes,
-            "labeling_method": [],
-            "outputs_str": "",
+            "labeling_method": ["skip"],
+            "outputs_str": "skip",
             "run_mode": "",
             "archive_only": True,
         }
@@ -146,11 +182,15 @@ def parse_dispatch_request_payload(payload: Mapping[str, Any]) -> dict[str, Any]
     run_mode = str(payload.get("run_mode") or "").strip().lower()
 
     if raw_labeling_method:
-        valid_outputs = [item for item in raw_labeling_method if item in VALID_OUTPUTS]
+        if invalid_labeling_method:
+            raise ValueError("invalid_labeling_method")
+        valid_outputs = [item for item in raw_labeling_method if item in VALID_LABELING_METHODS]
         if not valid_outputs:
             raise ValueError("invalid_labeling_method")
         labeling_method = _finalize_outputs(valid_outputs)
     elif raw_outputs:
+        if invalid_outputs:
+            raise ValueError("invalid_outputs")
         valid_outputs = [item for item in raw_outputs if item in VALID_OUTPUTS]
         if not valid_outputs:
             raise ValueError("invalid_outputs")
@@ -166,6 +206,8 @@ def parse_dispatch_request_payload(payload: Mapping[str, Any]) -> dict[str, Any]
     classes = raw_classes
     if not classes and categories:
         classes = derive_classes_from_categories(categories)
+    if "classification_video" in labeling_method and not (categories or classes):
+        raise ValueError("classification_video_requires_categories_or_classes")
 
     return {
         "categories": categories,

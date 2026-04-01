@@ -487,6 +487,7 @@ class DuckDBLabelingMixin:
         limit: int = 500,
         folder_name: str | None = None,
         spec_id: str | None = None,
+        include_image_classification: bool = False,
     ) -> list[dict[str, Any]]:
         """image_labels에 아직 YOLO detection 결과가 없는 processed_clip_frame/raw_video_frame 조회."""
         with self.connect() as conn:
@@ -504,6 +505,25 @@ class DuckDBLabelingMixin:
                 params.append(f"{folder_name}/%")
             query_cond = "\n".join(query_filters)
             params.append(max(1, int(limit)))
+            missing_detection_clause = """
+                  NOT EXISTS (
+                      SELECT 1
+                      FROM image_labels il
+                      WHERE il.image_id = im.image_id
+                        AND il.label_tool = 'yolo-world'
+                  )
+            """.strip()
+            missing_classification_clause = """
+                  NOT EXISTS (
+                      SELECT 1
+                      FROM image_labels il
+                      WHERE il.image_id = im.image_id
+                        AND il.label_tool = 'yolo-world-classification'
+                  )
+            """.strip()
+            pending_clause = missing_detection_clause
+            if include_image_classification:
+                pending_clause = f"({missing_detection_clause} OR {missing_classification_clause})"
 
             rows = conn.execute(
                 f"""
@@ -520,12 +540,7 @@ class DuckDBLabelingMixin:
                 FROM image_metadata im
                 JOIN raw_files r ON r.asset_id = im.source_asset_id
                 WHERE im.image_role IN ('processed_clip_frame', 'raw_video_frame')
-                  AND NOT EXISTS (
-                      SELECT 1
-                      FROM image_labels il
-                      WHERE il.image_id = im.image_id
-                        AND il.label_tool = 'yolo-world'
-                  )
+                  AND {pending_clause}
                   {query_cond}
                 ORDER BY im.extracted_at
                 LIMIT ?
@@ -536,6 +551,108 @@ class DuckDBLabelingMixin:
                 "image_id", "source_asset_id", "source_clip_id",
                 "image_bucket", "image_key", "width", "height",
                 "frame_index", "frame_sec",
+            ]
+            return [dict(zip(columns, row)) for row in rows]
+
+    def find_sam3_shadow_candidates(
+        self,
+        *,
+        image_role: str,
+        limit: int,
+        max_per_source_unit: int,
+    ) -> list[dict[str, Any]]:
+        """YOLO bbox 결과가 있는 이미지 중 SAM3 shadow benchmark 대상 조회."""
+        normalized_role = str(image_role or "").strip().lower()
+        if normalized_role not in {"processed_clip_frame", "raw_video_frame"}:
+            return []
+
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                WITH latest_yolo_labels AS (
+                    SELECT
+                        il.image_id,
+                        il.labels_bucket,
+                        il.labels_key,
+                        il.created_at,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY il.image_id
+                            ORDER BY il.created_at DESC, il.image_label_id DESC
+                        ) AS rn
+                    FROM image_labels il
+                    WHERE il.label_tool = 'yolo-world'
+                ),
+                ranked_candidates AS (
+                    SELECT
+                        im.image_id,
+                        im.source_asset_id,
+                        im.source_clip_id,
+                        im.image_bucket,
+                        im.image_key,
+                        im.image_role,
+                        im.width,
+                        im.height,
+                        im.frame_index,
+                        im.frame_sec,
+                        im.extracted_at,
+                        r.source_unit_name,
+                        r.raw_key,
+                        yl.labels_bucket AS yolo_labels_bucket,
+                        yl.labels_key AS yolo_labels_key,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY r.source_unit_name
+                            ORDER BY COALESCE(im.extracted_at, CURRENT_TIMESTAMP), im.image_id
+                        ) AS source_rank
+                    FROM image_metadata im
+                    JOIN raw_files r ON r.asset_id = im.source_asset_id
+                    JOIN latest_yolo_labels yl
+                      ON yl.image_id = im.image_id
+                     AND yl.rn = 1
+                    WHERE im.image_role = ?
+                )
+                SELECT
+                    image_id,
+                    source_asset_id,
+                    source_clip_id,
+                    image_bucket,
+                    image_key,
+                    image_role,
+                    width,
+                    height,
+                    frame_index,
+                    frame_sec,
+                    extracted_at,
+                    source_unit_name,
+                    raw_key,
+                    yolo_labels_bucket,
+                    yolo_labels_key
+                FROM ranked_candidates
+                WHERE source_rank <= ?
+                ORDER BY source_unit_name, COALESCE(extracted_at, CURRENT_TIMESTAMP), image_id
+                LIMIT ?
+                """,
+                [
+                    normalized_role,
+                    max(1, int(max_per_source_unit)),
+                    max(1, int(limit)),
+                ],
+            ).fetchall()
+            columns = [
+                "image_id",
+                "source_asset_id",
+                "source_clip_id",
+                "image_bucket",
+                "image_key",
+                "image_role",
+                "width",
+                "height",
+                "frame_index",
+                "frame_sec",
+                "extracted_at",
+                "source_unit_name",
+                "raw_key",
+                "yolo_labels_bucket",
+                "yolo_labels_key",
             ]
             return [dict(zip(columns, row)) for row in rows]
 

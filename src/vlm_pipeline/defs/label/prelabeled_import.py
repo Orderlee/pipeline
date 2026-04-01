@@ -200,8 +200,10 @@ def prelabeled_import(
             "raw_ingest_failed": int(ingest_summary.get("failed", 0)),
             "raw_ingest_skipped": int(ingest_summary.get("skipped", 0)),
             "event_labels_inserted": int(artifact_summary.get("event_labels_inserted", 0)),
+            "video_classifications_inserted": int(artifact_summary.get("video_classifications_inserted", 0)),
             "bbox_inserted": int(artifact_summary.get("bbox_inserted", 0)),
             "image_captions_inserted": int(artifact_summary.get("image_captions_inserted", 0)),
+            "image_classifications_inserted": int(artifact_summary.get("image_classifications_inserted", 0)),
             "failure_count": int(artifact_summary.get("failure_count", 0)),
             **(
                 {"failure_log_path": str(artifact_summary["failure_log_path"])}
@@ -212,4 +214,3 @@ def prelabeled_import(
     )
     context.log.info(f"PRELABELED IMPORT 완료: {summary}")
     return summary
-

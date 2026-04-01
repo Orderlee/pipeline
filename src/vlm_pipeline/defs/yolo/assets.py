@@ -26,6 +26,11 @@ from vlm_pipeline.lib.env_utils import (
     should_run_any_output,
 )
 from vlm_pipeline.lib.spec_config import load_persisted_spec_config, parse_requested_outputs
+from vlm_pipeline.lib.yolo_thresholds import (
+    filter_detections_by_class_confidence,
+    resolve_active_class_confidence_thresholds,
+    resolve_effective_request_confidence_threshold,
+)
 from vlm_pipeline.lib.yolo_coco import build_coco_detection_payload
 from vlm_pipeline.lib.yolo_world import get_yolo_client
 from vlm_pipeline.resources.duckdb import DuckDBResource
@@ -103,6 +108,7 @@ def _run_yolo_image_detection(
     iou = float(context.op_config.get("iou_threshold", 0.45))
     batch_size = int(context.op_config.get("batch_size", 4))
     tags = context.run.tags if context.run else {}
+    requested_outputs = parse_requested_outputs(tags)
     resolution = _resolve_yolo_target_classes(tags, db)
     folder_name = folder_name_override
     if folder_name is None and not spec_id_override:
@@ -112,6 +118,7 @@ def _run_yolo_image_detection(
     resolved_config_id = (
         resolved_config_id_override if resolved_config_id_override is not None else resolution.resolved_config_id
     )
+    store_image_classification = not bool(spec_id) and "classification_image" in requested_outputs
 
     if target_classes_override is not None:
         target_classes = _normalize_yolo_classes(target_classes_override)
@@ -120,10 +127,17 @@ def _run_yolo_image_detection(
         target_classes = list(resolution.classes)
         class_source = class_source_override or resolution.class_source
 
+    active_class_confidence_thresholds = resolve_active_class_confidence_thresholds(target_classes, conf)
+    effective_request_confidence_threshold = resolve_effective_request_confidence_threshold(
+        conf,
+        active_class_confidence_thresholds,
+    )
+
     candidates = db.find_yolo_pending_images(
         limit=limit,
         folder_name=folder_name,
         spec_id=spec_id,
+        include_image_classification=store_image_classification,
     )
     if not candidates:
         context.log.info("YOLO 대상 이미지 없음")
@@ -134,6 +148,8 @@ def _run_yolo_image_detection(
             "requested_classes": target_classes,
             "class_source": class_source,
             "resolved_config_id": resolved_config_id,
+            "effective_request_confidence_threshold": effective_request_confidence_threshold,
+            "class_confidence_thresholds": active_class_confidence_thresholds,
         }
 
     client = get_yolo_client()
@@ -152,6 +168,11 @@ def _run_yolo_image_detection(
         "YOLO target classes resolved: "
         f"source={class_source} spec_id={spec_id or '-'} "
         f"classes={', '.join(target_classes) if target_classes else '(server default)'}"
+    )
+    context.log.info(
+        "YOLO confidence thresholds: "
+        f"base={conf:.3f} request={effective_request_confidence_threshold:.3f} "
+        f"class_thresholds={json.dumps(active_class_confidence_thresholds, ensure_ascii=False, sort_keys=True)}"
     )
 
     total_candidates = len(candidates)
@@ -193,7 +214,7 @@ def _run_yolo_image_detection(
         try:
             batch_results = client.detect_batch(
                 image_bytes_list,
-                conf=conf,
+                conf=effective_request_confidence_threshold,
                 iou=iou,
                 classes=target_classes or None,
             )
@@ -208,7 +229,11 @@ def _run_yolo_image_detection(
             image_key = str(cand["image_key"])
 
             result = batch_results[idx] if idx < len(batch_results) else {}
-            detections = result.get("detections", [])
+            detections = filter_detections_by_class_confidence(
+                result.get("detections", []),
+                global_confidence_threshold=conf,
+                class_confidence_thresholds=active_class_confidence_thresholds,
+            )
             image_size = result.get("image_size")
 
             try:
@@ -226,6 +251,9 @@ def _run_yolo_image_detection(
                     confidence_threshold=conf,
                     iou_threshold=iou,
                     detected_at=detected_at,
+                    effective_request_confidence_threshold=effective_request_confidence_threshold,
+                    class_confidence_thresholds=active_class_confidence_thresholds,
+                    elapsed_ms=result.get("elapsed_ms"),
                 )
                 annotation_count = len(label_json.get("annotations") or [])
 
@@ -247,6 +275,40 @@ def _run_yolo_image_detection(
                     "object_count": annotation_count,
                     "created_at": detected_at,
                 })
+
+                if store_image_classification:
+                    classification_key = _build_image_classification_key(image_key)
+                    classification_payload = _build_image_classification_payload(
+                        image_id=image_id,
+                        source_clip_id=source_clip_id,
+                        image_key=image_key,
+                        detections=detections,
+                        bbox_labels_key=labels_key,
+                        requested_classes=target_classes,
+                        class_source=class_source,
+                        resolved_config_id=resolved_config_id,
+                        detected_at=detected_at,
+                    )
+                    minio.upload(
+                        "vlm-labels",
+                        classification_key,
+                        json.dumps(classification_payload, ensure_ascii=False).encode("utf-8"),
+                        "application/json",
+                    )
+                    label_rows_buffer.append({
+                        "image_label_id": str(uuid4()),
+                        "image_id": image_id,
+                        "source_clip_id": source_clip_id,
+                        "labels_bucket": "vlm-labels",
+                        "labels_key": classification_key,
+                        "label_format": "image_classification_json",
+                        "label_tool": "yolo-world-classification",
+                        "label_source": "auto",
+                        "review_status": "auto_generated",
+                        "label_status": "completed",
+                        "object_count": len(classification_payload.get("predicted_classes") or []),
+                        "created_at": detected_at,
+                    })
 
                 processed += 1
                 total_detections += annotation_count
@@ -277,6 +339,8 @@ def _run_yolo_image_detection(
         "requested_classes": target_classes,
         "class_source": class_source,
         "resolved_config_id": resolved_config_id,
+        "effective_request_confidence_threshold": effective_request_confidence_threshold,
+        "class_confidence_thresholds": active_class_confidence_thresholds,
     }
     context.add_output_metadata(
         {
@@ -286,6 +350,12 @@ def _run_yolo_image_detection(
             "requested_classes": ", ".join(target_classes) if target_classes else "(server default)",
             "class_source": class_source,
             "resolved_config_id": resolved_config_id or "",
+            "effective_request_confidence_threshold": effective_request_confidence_threshold,
+            "class_confidence_thresholds": json.dumps(
+                active_class_confidence_thresholds,
+                ensure_ascii=False,
+                sort_keys=True,
+            ),
         }
     )
     context.log.info(f"YOLO 완료: {summary}")
@@ -362,6 +432,19 @@ def _build_yolo_label_key(image_key: str) -> str:
     return str(PurePosixPath("detections") / f"{stem}.json")
 
 
+def _build_image_classification_key(image_key: str) -> str:
+    key_path = PurePosixPath(str(image_key or "").strip())
+    stem = key_path.stem or "image"
+    parent = key_path.parent
+    if parent.name == "image":
+        raw_parent = parent.parent
+    else:
+        raw_parent = parent
+    if str(raw_parent) and str(raw_parent) != ".":
+        return str(raw_parent / "image_classifications" / f"{stem}.json")
+    return str(PurePosixPath("image_classifications") / f"{stem}.json")
+
+
 def _flush_labels(db: DuckDBResource, rows: list[dict], context) -> None:
     try:
         count = db.batch_insert_image_labels(rows)
@@ -384,6 +467,9 @@ def _build_coco_detection_payload(
     confidence_threshold: float,
     iou_threshold: float,
     detected_at: datetime,
+    effective_request_confidence_threshold: float,
+    class_confidence_thresholds: Mapping[str, object],
+    elapsed_ms: float | None = None,
 ) -> dict[str, object]:
     # Backward-compatible wrapper for existing tests/imports.
     return build_coco_detection_payload(
@@ -399,7 +485,47 @@ def _build_coco_detection_payload(
         confidence_threshold=confidence_threshold,
         iou_threshold=iou_threshold,
         detected_at=detected_at,
+        effective_request_confidence_threshold=effective_request_confidence_threshold,
+        class_confidence_thresholds=class_confidence_thresholds,
+        elapsed_ms=elapsed_ms,
     )
+
+
+def _build_image_classification_payload(
+    *,
+    image_id: str,
+    source_clip_id: str | None,
+    image_key: str,
+    detections: list[dict[str, object]],
+    bbox_labels_key: str,
+    requested_classes: list[str],
+    class_source: str,
+    resolved_config_id: str | None,
+    detected_at: datetime,
+) -> dict[str, object]:
+    class_counts: dict[str, int] = {}
+    for detection in detections:
+        class_name = str(detection.get("class") or detection.get("class_name") or "").strip().lower()
+        if not class_name:
+            continue
+        class_counts[class_name] = int(class_counts.get(class_name, 0)) + 1
+
+    predicted_classes = [
+        class_name
+        for class_name, _count in sorted(class_counts.items(), key=lambda item: (-item[1], item[0]))
+    ]
+    return {
+        "image_id": image_id,
+        "source_clip_id": source_clip_id,
+        "image_key": image_key,
+        "predicted_classes": predicted_classes,
+        "class_counts": class_counts,
+        "bbox_labels_key": bbox_labels_key,
+        "requested_classes": list(requested_classes),
+        "class_source": class_source,
+        "resolved_config_id": resolved_config_id,
+        "generated_at": detected_at.isoformat(),
+    }
 
 
 def _parse_tag_list(raw_value: object) -> list[str]:

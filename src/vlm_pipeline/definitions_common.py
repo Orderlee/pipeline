@@ -19,9 +19,10 @@ from vlm_pipeline.defs.ingest.sensor import (
     incoming_manifest_sensor,
     stuck_run_guard_sensor,
 )
-from vlm_pipeline.defs.label.assets import clip_timestamp
+from vlm_pipeline.defs.label.assets import classification_video, clip_timestamp
 from vlm_pipeline.defs.label.manual_import import manual_label_import
 from vlm_pipeline.defs.process.assets import clip_captioning, clip_to_frame, raw_video_to_frame
+from vlm_pipeline.defs.sam.assets import sam3_shadow_compare
 from vlm_pipeline.defs.sync.assets import motherduck_sync
 from vlm_pipeline.defs.yolo.assets import bbox_labeling, dispatch_yolo_image_detection, yolo_image_detection
 from vlm_pipeline.defs.yolo.staging_assets import staging_yolo_image_detection
@@ -37,6 +38,7 @@ CLIP_AUTO_LABEL_ASSETS = (
 PRODUCTION_DISPATCH_STAGE_SELECTION = [
     raw_ingest,
     *CLIP_AUTO_LABEL_ASSETS,
+    classification_video,
     raw_video_to_frame,
     dispatch_yolo_image_detection,
 ]
@@ -44,6 +46,7 @@ PRODUCTION_DISPATCH_STAGE_SELECTION = [
 STAGING_DISPATCH_STAGE_SELECTION = [
     raw_ingest,
     *CLIP_AUTO_LABEL_ASSETS,
+    classification_video,
     raw_video_to_frame,
     staging_yolo_image_detection,
 ]
@@ -137,6 +140,15 @@ def build_prelabeled_import_job(*, description: str):
     )
 
 
+def build_sam3_shadow_compare_job(*, description: str):
+    return define_asset_job(
+        "sam3_shadow_compare_job",
+        selection=[sam3_shadow_compare],
+        tags={"duckdb_writer": "true"},
+        description=description,
+    )
+
+
 def build_yolo_standard_detection_job(*, description: str):
     return define_asset_job(
         "yolo_standard_detection_job",
@@ -223,7 +235,9 @@ def build_production_assets(*, enable_manual_label_import: bool, enable_yolo_det
         raw_video_to_frame,
         build_dataset,
         motherduck_sync,
+        classification_video,
         dispatch_yolo_image_detection,
+        sam3_shadow_compare,
     ]
     if enable_manual_label_import:
         assets.append(manual_label_import)
@@ -250,7 +264,9 @@ def build_staging_assets() -> list[object]:
         pending_ingest,
         activate_labeling_spec,
         *CLIP_AUTO_LABEL_ASSETS,
+        classification_video,
         bbox_labeling,
+        sam3_shadow_compare,
     ]
 
 
@@ -264,9 +280,10 @@ def build_production_sensors(motherduck_table_sensors: list[object] | tuple[obje
     ]
 
 
-def build_staging_sensors(*, spec_resolve_sensor, dispatch_ingress_sensor) -> list[object]:
+def build_staging_sensors(*, spec_resolve_sensor, dispatch_ingress_sensor, dispatch_json_sensor) -> list[object]:
     return [
         *COMMON_INGEST_SENSORS,
+        dispatch_json_sensor,
         dispatch_ingress_sensor,
         *COMMON_DISPATCH_STATUS_SENSORS,
         spec_resolve_sensor,
