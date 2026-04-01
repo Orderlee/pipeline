@@ -25,6 +25,9 @@ from vlm_pipeline.lib.env_utils import (
     dispatch_folder_for_source_unit,
     dispatch_raw_key_prefix_folder,
     is_dispatch_yolo_only_requested,
+    requested_outputs_require_caption_labels,
+    requested_outputs_require_frame_image_caption,
+    requested_outputs_require_raw_video_frames,
     should_run_output,
 )
 from vlm_pipeline.lib.gemini import GeminiAnalyzer, extract_clean_json_text
@@ -55,6 +58,95 @@ _MAX_CONSECUTIVE_EMPTY_OUTPUT_FAILURES_PER_ASSET = 3
 _VERTEX_RELEVANCE_RETRY_DELAY_SEC = 2.0
 _DEFAULT_EVENT_CLIP_PRE_BUFFER_SEC = 5.0
 _DEFAULT_EVENT_CLIP_POST_BUFFER_SEC = 5.0
+
+
+def _candidate_clip_window_plan_key(candidate: dict[str, Any]) -> tuple[str, int]:
+    return (
+        str(candidate.get("label_id") or "").strip(),
+        int(candidate.get("event_index") or 0),
+    )
+
+
+def _sort_process_candidates(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return sorted(
+        candidates,
+        key=lambda row: (
+            str(row.get("asset_id") or ""),
+            float(_coerce_float(row.get("timestamp_start_sec")) or 0.0),
+            float(_coerce_float(row.get("timestamp_end_sec")) or 0.0),
+            int(row.get("event_index") or 0),
+            str(row.get("label_id") or ""),
+        ),
+    )
+
+
+def _window_values_match(
+    left_start_sec: float,
+    left_end_sec: float,
+    right_start_sec: float,
+    right_end_sec: float,
+    *,
+    tolerance: float = 1e-6,
+) -> bool:
+    return (
+        abs(float(left_start_sec) - float(right_start_sec)) <= tolerance
+        and abs(float(left_end_sec) - float(right_end_sec)) <= tolerance
+    )
+
+
+def _is_full_duration_window(
+    start_sec: float,
+    end_sec: float,
+    source_duration_sec: float | None,
+    *,
+    tolerance: float = 1e-6,
+) -> bool:
+    normalized_source_duration = _coerce_float(source_duration_sec)
+    if normalized_source_duration is None or normalized_source_duration <= 0:
+        return False
+    return abs(float(start_sec)) <= tolerance and abs(float(end_sec) - normalized_source_duration) <= tolerance
+
+
+def _build_adjacent_event_cut_point(left_event: dict[str, Any], right_event: dict[str, Any]) -> float:
+    left_event_end_sec = float(left_event["event_end_sec"])
+    right_event_start_sec = float(right_event["event_start_sec"])
+    if left_event_end_sec <= right_event_start_sec:
+        return (left_event_end_sec + right_event_start_sec) / 2.0
+
+    left_center_sec = (float(left_event["event_start_sec"]) + left_event_end_sec) / 2.0
+    right_center_sec = (right_event_start_sec + float(right_event["event_end_sec"])) / 2.0
+    return (left_center_sec + right_center_sec) / 2.0
+
+
+def _resolve_event_only_clip_extraction_window(
+    *,
+    event_start_sec: float | None,
+    event_end_sec: float | None,
+    source_duration_sec: float | None,
+) -> tuple[float, float]:
+    normalized_event_start = _coerce_float(event_start_sec)
+    normalized_event_end = _coerce_float(event_end_sec)
+    if normalized_event_start is None or normalized_event_end is None:
+        raise RuntimeError("video_clip_range_missing")
+    if normalized_event_end <= normalized_event_start:
+        raise RuntimeError("video_clip_range_missing")
+
+    extract_start_sec = max(0.0, normalized_event_start)
+    extract_end_sec = normalized_event_end
+    normalized_source_duration = _coerce_float(source_duration_sec)
+    if normalized_source_duration is not None and normalized_source_duration > 0:
+        extract_end_sec = min(normalized_source_duration, extract_end_sec)
+
+    if extract_end_sec <= extract_start_sec:
+        raise RuntimeError(
+            "video_clip_range_invalid:"
+            f"event_start={normalized_event_start:.3f}:"
+            f"event_end={normalized_event_end:.3f}:"
+            f"extract_start={extract_start_sec:.3f}:"
+            f"extract_end={extract_end_sec:.3f}"
+        )
+
+    return extract_start_sec, extract_end_sec
 
 
 def _resolve_event_clip_extraction_window(
@@ -105,6 +197,253 @@ def _resolve_event_clip_extraction_window(
         )
 
     return extract_start_sec, extract_end_sec
+
+
+def _plan_asset_event_clip_extraction_windows(
+    candidates: list[dict[str, Any]],
+) -> dict[tuple[str, int], dict[str, float | str]]:
+    plans: dict[tuple[str, int], dict[str, float | str]] = {}
+    grouped_candidates: dict[str, list[dict[str, Any]]] = {}
+    for candidate in candidates:
+        asset_id = str(candidate.get("asset_id") or "").strip()
+        if not asset_id:
+            continue
+        grouped_candidates.setdefault(asset_id, []).append(candidate)
+
+    for asset_candidates in grouped_candidates.values():
+        planned_events: list[dict[str, Any]] = []
+        for candidate in _sort_process_candidates(asset_candidates):
+            if str(candidate.get("media_type") or "").strip().lower() != "video":
+                continue
+            event_start_sec = _coerce_float(candidate.get("timestamp_start_sec"))
+            event_end_sec = _coerce_float(candidate.get("timestamp_end_sec"))
+            if event_start_sec is None or event_end_sec is None or event_end_sec <= event_start_sec:
+                continue
+            source_duration_sec = _coerce_float(candidate.get("video_duration_sec"))
+            base_start_sec, base_end_sec = _resolve_event_clip_extraction_window(
+                event_start_sec=event_start_sec,
+                event_end_sec=event_end_sec,
+                source_duration_sec=source_duration_sec,
+                event_category=None,
+            )
+            planned_events.append(
+                {
+                    "key": _candidate_clip_window_plan_key(candidate),
+                    "event_start_sec": event_start_sec,
+                    "event_end_sec": event_end_sec,
+                    "source_duration_sec": source_duration_sec,
+                    "base_extract_start_sec": base_start_sec,
+                    "base_extract_end_sec": base_end_sec,
+                }
+            )
+
+        pair_cut_points: dict[int, float] = {}
+        for idx in range(len(planned_events) - 1):
+            left_event = planned_events[idx]
+            right_event = planned_events[idx + 1]
+            same_base_window = _window_values_match(
+                float(left_event["base_extract_start_sec"]),
+                float(left_event["base_extract_end_sec"]),
+                float(right_event["base_extract_start_sec"]),
+                float(right_event["base_extract_end_sec"]),
+            )
+            both_full_duration = _is_full_duration_window(
+                float(left_event["base_extract_start_sec"]),
+                float(left_event["base_extract_end_sec"]),
+                _coerce_float(left_event.get("source_duration_sec")),
+            ) and _is_full_duration_window(
+                float(right_event["base_extract_start_sec"]),
+                float(right_event["base_extract_end_sec"]),
+                _coerce_float(right_event.get("source_duration_sec")),
+            )
+            if not same_base_window and not both_full_duration:
+                continue
+            pair_cut_points[idx] = _build_adjacent_event_cut_point(left_event, right_event)
+
+        for idx, planned_event in enumerate(planned_events):
+            extract_start_sec = float(planned_event["base_extract_start_sec"])
+            extract_end_sec = float(planned_event["base_extract_end_sec"])
+            window_strategy = "buffered"
+            prev_cut_point = pair_cut_points.get(idx - 1)
+            next_cut_point = pair_cut_points.get(idx)
+
+            if prev_cut_point is not None or next_cut_point is not None:
+                adjusted_start_sec = extract_start_sec if prev_cut_point is None else max(extract_start_sec, prev_cut_point)
+                adjusted_end_sec = extract_end_sec if next_cut_point is None else min(extract_end_sec, next_cut_point)
+                adjusted_start_sec = min(adjusted_start_sec, float(planned_event["event_start_sec"]))
+                adjusted_end_sec = max(adjusted_end_sec, float(planned_event["event_end_sec"]))
+                adjusted_start_sec = max(0.0, adjusted_start_sec)
+                source_duration_sec = _coerce_float(planned_event.get("source_duration_sec"))
+                if source_duration_sec is not None and source_duration_sec > 0:
+                    adjusted_end_sec = min(source_duration_sec, adjusted_end_sec)
+                if adjusted_end_sec <= adjusted_start_sec:
+                    adjusted_start_sec, adjusted_end_sec = _resolve_event_only_clip_extraction_window(
+                        event_start_sec=planned_event.get("event_start_sec"),
+                        event_end_sec=planned_event.get("event_end_sec"),
+                        source_duration_sec=planned_event.get("source_duration_sec"),
+                    )
+                if not _window_values_match(
+                    extract_start_sec,
+                    extract_end_sec,
+                    adjusted_start_sec,
+                    adjusted_end_sec,
+                ):
+                    extract_start_sec = adjusted_start_sec
+                    extract_end_sec = adjusted_end_sec
+                    window_strategy = "split_by_adjacent_events"
+
+            plans[planned_event["key"]] = {
+                "extract_start_sec": extract_start_sec,
+                "extract_end_sec": extract_end_sec,
+                "base_extract_start_sec": float(planned_event["base_extract_start_sec"]),
+                "base_extract_end_sec": float(planned_event["base_extract_end_sec"]),
+                "window_strategy": window_strategy,
+            }
+
+    return plans
+
+
+def _log_clip_extraction_window(
+    context,
+    *,
+    asset_id: str,
+    event_start_sec: float,
+    event_end_sec: float,
+    extract_start_sec: float,
+    extract_end_sec: float,
+    window_strategy: str,
+) -> None:
+    buffered_start_sec = float(event_start_sec) - _DEFAULT_EVENT_CLIP_PRE_BUFFER_SEC
+    buffered_end_sec = float(event_end_sec) + _DEFAULT_EVENT_CLIP_POST_BUFFER_SEC
+    context.log.info(
+        "clip_to_frame extraction window: asset=%s event=[%.3f, %.3f] extract=[%.3f, %.3f] "
+        "start_clamped=%s end_clamped=%s strategy=%s",
+        asset_id,
+        float(event_start_sec),
+        float(event_end_sec),
+        extract_start_sec,
+        extract_end_sec,
+        extract_start_sec != buffered_start_sec,
+        extract_end_sec != buffered_end_sec,
+        window_strategy,
+    )
+
+
+def _extract_video_clip_media(
+    context,
+    db: DuckDBResource,
+    minio: MinIOResource,
+    *,
+    asset_id: str,
+    clip_id: str,
+    clip_key: str,
+    video_path: Path,
+    event_start_sec: float,
+    event_end_sec: float,
+    source_duration_sec: float | None,
+    extract_start_sec: float,
+    extract_end_sec: float,
+    window_strategy: str,
+    video_width: object,
+    video_height: object,
+    video_codec: object,
+) -> dict[str, Any]:
+    def _extract_once(
+        *,
+        start_sec: float,
+        end_sec: float,
+        strategy: str,
+    ) -> dict[str, Any]:
+        _log_clip_extraction_window(
+            context,
+            asset_id=asset_id,
+            event_start_sec=event_start_sec,
+            event_end_sec=event_end_sec,
+            extract_start_sec=start_sec,
+            extract_end_sec=end_sec,
+            window_strategy=strategy,
+        )
+        temp_clip_path = _extract_video_clip_path(
+            video_path,
+            clip_start_sec=start_sec,
+            clip_end_sec=end_sec,
+        )
+        file_bytes = temp_clip_path.read_bytes()
+        minio.upload("vlm-processed", clip_key, file_bytes, "video/mp4")
+        clip_meta = _ffprobe_clip_meta(temp_clip_path)
+        return {
+            "temp_clip_path": temp_clip_path,
+            "uploaded_clip_key": clip_key,
+            "file_bytes": file_bytes,
+            "clip_duration": clip_meta.get("duration_sec"),
+            "clip_fps": clip_meta.get("fps"),
+            "clip_frame_count": clip_meta.get("frame_count"),
+            "width": clip_meta.get("width") or video_width,
+            "height": clip_meta.get("height") or video_height,
+            "codec": clip_meta.get("codec") or video_codec or "mp4",
+            "checksum": sha256_bytes(file_bytes),
+            "file_size": len(file_bytes),
+            "extract_start_sec": start_sec,
+            "extract_end_sec": end_sec,
+            "window_strategy": strategy,
+        }
+
+    extracted = _extract_once(
+        start_sec=extract_start_sec,
+        end_sec=extract_end_sec,
+        strategy=window_strategy,
+    )
+    existing_clip = db.find_processed_clip_by_checksum(
+        str(extracted["checksum"]),
+        source_asset_id=asset_id,
+        exclude_clip_id=clip_id,
+    )
+    if existing_clip is None:
+        return extracted
+
+    retry_start_sec, retry_end_sec = _resolve_event_only_clip_extraction_window(
+        event_start_sec=event_start_sec,
+        event_end_sec=event_end_sec,
+        source_duration_sec=source_duration_sec,
+    )
+    if _window_values_match(
+        float(extracted["extract_start_sec"]),
+        float(extracted["extract_end_sec"]),
+        retry_start_sec,
+        retry_end_sec,
+    ):
+        raise RuntimeError(
+            "duplicate_clip_media_after_window_split:"
+            f"existing_clip_id={existing_clip['clip_id']}:checksum={extracted['checksum']}"
+        )
+
+    context.log.warning(
+        "clip_to_frame checksum collision: asset=%s clip_id=%s existing_clip_id=%s checksum=%s "
+        "strategy=%s -> retry event_only",
+                asset_id,
+        clip_id,
+        existing_clip["clip_id"],
+        extracted["checksum"],
+        extracted["window_strategy"],
+    )
+    _delete_minio_keys(minio, "vlm-processed", [clip_key])
+    _cleanup_temp_path(extracted["temp_clip_path"])
+    extracted = _extract_once(
+        start_sec=retry_start_sec,
+        end_sec=retry_end_sec,
+        strategy="event_only_retry",
+    )
+    existing_clip = db.find_processed_clip_by_checksum(
+        str(extracted["checksum"]),
+        source_asset_id=asset_id,
+        exclude_clip_id=clip_id,
+    )
+    if existing_clip is not None:
+        raise RuntimeError(
+            "duplicate_clip_media_after_window_split:"
+            f"existing_clip_id={existing_clip['clip_id']}:checksum={extracted['checksum']}"
+        )
+    return extracted
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -849,13 +1188,14 @@ def raw_video_to_frame(
     minio: MinIOResource,
 ) -> dict:
     tags = context.run.tags if context.run else {}
-    if not is_dispatch_yolo_only_requested(context.run.tags if context.run else {}):
+    requested_outputs = parse_requested_outputs(tags)
+    if not requested_outputs_require_raw_video_frames(requested_outputs):
         context.log.info("raw_video_to_frame 스킵: dispatch YOLO 전용 요청이 아닙니다.")
         return {"processed": 0, "failed": 0, "frames_extracted": 0, "skipped": True}
 
     folder_name = dispatch_raw_key_prefix_folder(tags)
     image_profile = tags.get("image_profile", "current")
-    requested_outputs = parse_requested_outputs(tags) or ["bbox"]
+    requested_outputs = requested_outputs or ["bbox"]
     limit = int(context.op_config.get("limit", 1000))
 
     # dispatch JSON에서 파라미터가 있으면 우선 사용, 없으면 config 기본값
@@ -1188,7 +1528,7 @@ def clip_captioning_routed_impl(
     if is_dispatch_yolo_only_requested(tags):
         context.log.info("clip_captioning 스킵: dispatch labeling_method가 YOLO 전용입니다.")
         return {"processed": 0, "failed": 0, "labels_inserted": 0, "skipped": True}
-    if "captioning" not in requested and not standard_spec_run:
+    if not requested_outputs_require_caption_labels(requested) and not standard_spec_run:
         context.log.info("clip_captioning 스킵: outputs에 captioning 없음")
         return {"processed": 0, "failed": 0, "labels_inserted": 0, "skipped": True}
 
@@ -1317,7 +1657,8 @@ def clip_to_frame_mvp(
 
     limit = int(context.op_config.get("limit", 1000))
     jpeg_quality = int(context.op_config.get("jpeg_quality", 90))
-    candidates = candidates[:limit]
+    candidates = _sort_process_candidates(candidates[:limit])
+    clip_window_plans = _plan_asset_event_clip_extraction_windows(candidates)
     total_candidates = len(candidates)
     context.log.info(f"clip_to_frame 시작: 총 {total_candidates}건 처리 예정")
 
@@ -1341,6 +1682,7 @@ def clip_to_frame_mvp(
         source_video_duration_sec = _coerce_float(cand.get("video_duration_sec"))
         temp_clip_path: Path | None = None
         temp_video_path: Path | None = None
+        video_path: Path | None = None
         clip_id: str | None = None
         clip_key: str | None = None
         uploaded_clip_key: str | None = None
@@ -1396,46 +1738,59 @@ def clip_to_frame_mvp(
                     minio,
                     {"archive_path": archive_path, "raw_bucket": raw_bucket, "raw_key": raw_key},
                 )
-                extract_start_sec, extract_end_sec = _resolve_event_clip_extraction_window(
-                    event_start_sec=event_start_sec,
-                    event_end_sec=event_end_sec,
+                window_plan = clip_window_plans.get(_candidate_clip_window_plan_key(cand), {})
+                extracted_clip = _extract_video_clip_media(
+                    context,
+                    db,
+                    minio,
+                    asset_id=asset_id,
+                    clip_id=clip_id,
+                    clip_key=clip_key,
+                    video_path=video_path,
+                    event_start_sec=float(event_start_sec),
+                    event_end_sec=float(event_end_sec),
                     source_duration_sec=source_video_duration_sec,
-                    event_category=None,
+                    extract_start_sec=float(
+                        window_plan.get(
+                            "extract_start_sec",
+                            _resolve_event_clip_extraction_window(
+                                event_start_sec=event_start_sec,
+                                event_end_sec=event_end_sec,
+                                source_duration_sec=source_video_duration_sec,
+                                event_category=None,
+                            )[0],
+                        )
+                    ),
+                    extract_end_sec=float(
+                        window_plan.get(
+                            "extract_end_sec",
+                            _resolve_event_clip_extraction_window(
+                                event_start_sec=event_start_sec,
+                                event_end_sec=event_end_sec,
+                                source_duration_sec=source_video_duration_sec,
+                                event_category=None,
+                            )[1],
+                        )
+                    ),
+                    window_strategy=str(window_plan.get("window_strategy") or "buffered"),
+                    video_width=cand.get("video_width"),
+                    video_height=cand.get("video_height"),
+                    video_codec=cand.get("video_codec"),
                 )
-                buffered_start_sec = float(event_start_sec) - _DEFAULT_EVENT_CLIP_PRE_BUFFER_SEC
-                buffered_end_sec = float(event_end_sec) + _DEFAULT_EVENT_CLIP_POST_BUFFER_SEC
-                context.log.info(
-                    "clip_to_frame extraction window: asset=%s event=[%.3f, %.3f] extract=[%.3f, %.3f] "
-                    "start_clamped=%s end_clamped=%s",
-                    asset_id,
-                    float(event_start_sec),
-                    float(event_end_sec),
-                    extract_start_sec,
-                    extract_end_sec,
-                    extract_start_sec != buffered_start_sec,
-                    extract_end_sec != buffered_end_sec,
-                )
-                temp_clip_path = _extract_video_clip_path(
-                    video_path,
-                    clip_start_sec=extract_start_sec,
-                    clip_end_sec=extract_end_sec,
-                )
-                file_bytes = temp_clip_path.read_bytes()
-                minio.upload("vlm-processed", clip_key, file_bytes, "video/mp4")
-                uploaded_clip_key = clip_key
-
-                clip_meta = _ffprobe_clip_meta(temp_clip_path)
-                clip_duration = clip_meta.get("duration_sec")
-                clip_fps = clip_meta.get("fps")
-                clip_frame_count = clip_meta.get("frame_count")
-                width = clip_meta.get("width") or cand.get("video_width")
-                height = clip_meta.get("height") or cand.get("video_height")
-                codec = clip_meta.get("codec") or cand.get("video_codec") or "mp4"
+                temp_clip_path = extracted_clip["temp_clip_path"]
+                file_bytes = extracted_clip["file_bytes"]
+                uploaded_clip_key = extracted_clip["uploaded_clip_key"]
+                clip_duration = extracted_clip["clip_duration"]
+                clip_fps = extracted_clip["clip_fps"]
+                clip_frame_count = extracted_clip["clip_frame_count"]
+                width = extracted_clip["width"]
+                height = extracted_clip["height"]
+                codec = extracted_clip["codec"]
             else:
                 raise RuntimeError("video_clip_range_missing")
 
-            checksum = sha256_bytes(file_bytes) if file_bytes else None
-            file_size = len(file_bytes) if file_bytes else None
+            checksum = extracted_clip["checksum"] if media_type == "video" else (sha256_bytes(file_bytes) if file_bytes else None)
+            file_size = extracted_clip["file_size"] if media_type == "video" else (len(file_bytes) if file_bytes else None)
 
             db.insert_processed_clip(
                 {
@@ -1572,10 +1927,15 @@ def clip_to_frame_routed_impl(
     """spec/dispatch: frame_status·선택적 프레임 이미지 캡션."""
     tags = context.run.tags if context.run else {}
     requested = parse_requested_outputs(tags)
-    if is_dispatch_yolo_only_requested(tags):
+    standard_spec_run = is_standard_spec_run(tags)
+    if not standard_spec_run and requested_outputs_require_raw_video_frames(requested):
         context.log.info("clip_to_frame 스킵: dispatch labeling_method가 YOLO 전용입니다.")
         return {"processed": 0, "failed": 0, "frames_extracted": 0, "skipped": True}
-    should_run = "captioning" in requested or "bbox" in requested
+    should_run = (
+        bool({"bbox"} & set(requested))
+        or requested_outputs_require_caption_labels(requested)
+        or standard_spec_run
+    )
     if not should_run:
         context.log.info("clip_to_frame 스킵: outputs에 captioning/bbox 없음")
         return {"processed": 0, "failed": 0, "frames_extracted": 0, "skipped": True}
@@ -1613,9 +1973,10 @@ def clip_to_frame_routed_impl(
             "resolved_config_id": resolved_config_id,
         }
 
-    candidates = candidates[:limit]
+    candidates = _sort_process_candidates(candidates[:limit])
+    clip_window_plans = _plan_asset_event_clip_extraction_windows(candidates)
     total_candidates = len(candidates)
-    enable_image_captioning = "captioning" in requested and any(
+    enable_image_captioning = requested_outputs_require_frame_image_caption(requested) and any(
         str(candidate.get("media_type") or "").strip().lower() == "video"
         for candidate in candidates
     )
@@ -1671,6 +2032,7 @@ def clip_to_frame_routed_impl(
         source_video_duration_sec = _coerce_float(cand.get("video_duration_sec"))
         temp_clip_path: Path | None = None
         temp_video_path: Path | None = None
+        video_path: Path | None = None
         clip_id: str | None = None
         clip_key: str | None = None
         uploaded_clip_key: str | None = None
@@ -1758,46 +2120,59 @@ def clip_to_frame_routed_impl(
                     minio,
                     {"archive_path": archive_path, "raw_bucket": raw_bucket, "raw_key": raw_key},
                 )
-                extract_start_sec, extract_end_sec = _resolve_event_clip_extraction_window(
-                    event_start_sec=event_start_sec,
-                    event_end_sec=event_end_sec,
+                window_plan = clip_window_plans.get(_candidate_clip_window_plan_key(cand), {})
+                extracted_clip = _extract_video_clip_media(
+                    context,
+                    db,
+                    minio,
+                    asset_id=asset_id,
+                    clip_id=clip_id,
+                    clip_key=clip_key,
+                    video_path=video_path,
+                    event_start_sec=float(event_start_sec),
+                    event_end_sec=float(event_end_sec),
                     source_duration_sec=source_video_duration_sec,
-                    event_category=event_category,
+                    extract_start_sec=float(
+                        window_plan.get(
+                            "extract_start_sec",
+                            _resolve_event_clip_extraction_window(
+                                event_start_sec=event_start_sec,
+                                event_end_sec=event_end_sec,
+                                source_duration_sec=source_video_duration_sec,
+                                event_category=event_category,
+                            )[0],
+                        )
+                    ),
+                    extract_end_sec=float(
+                        window_plan.get(
+                            "extract_end_sec",
+                            _resolve_event_clip_extraction_window(
+                                event_start_sec=event_start_sec,
+                                event_end_sec=event_end_sec,
+                                source_duration_sec=source_video_duration_sec,
+                                event_category=event_category,
+                            )[1],
+                        )
+                    ),
+                    window_strategy=str(window_plan.get("window_strategy") or "buffered"),
+                    video_width=cand.get("video_width"),
+                    video_height=cand.get("video_height"),
+                    video_codec=cand.get("video_codec"),
                 )
-                buffered_start_sec = float(event_start_sec) - _DEFAULT_EVENT_CLIP_PRE_BUFFER_SEC
-                buffered_end_sec = float(event_end_sec) + _DEFAULT_EVENT_CLIP_POST_BUFFER_SEC
-                context.log.info(
-                    "clip_to_frame extraction window: asset=%s event=[%.3f, %.3f] extract=[%.3f, %.3f] "
-                    "start_clamped=%s end_clamped=%s",
-                    asset_id,
-                    float(event_start_sec),
-                    float(event_end_sec),
-                    extract_start_sec,
-                    extract_end_sec,
-                    extract_start_sec != buffered_start_sec,
-                    extract_end_sec != buffered_end_sec,
-                )
-                temp_clip_path = _extract_video_clip_path(
-                    video_path,
-                    clip_start_sec=extract_start_sec,
-                    clip_end_sec=extract_end_sec,
-                )
-                file_bytes = temp_clip_path.read_bytes()
-                minio.upload("vlm-processed", clip_key, file_bytes, "video/mp4")
-                uploaded_clip_key = clip_key
-
-                clip_meta = _ffprobe_clip_meta(temp_clip_path)
-                clip_duration = clip_meta.get("duration_sec")
-                clip_fps = clip_meta.get("fps")
-                clip_frame_count = clip_meta.get("frame_count")
-                width = clip_meta.get("width") or cand.get("video_width")
-                height = clip_meta.get("height") or cand.get("video_height")
-                codec = clip_meta.get("codec") or cand.get("video_codec") or "mp4"
+                temp_clip_path = extracted_clip["temp_clip_path"]
+                file_bytes = extracted_clip["file_bytes"]
+                uploaded_clip_key = extracted_clip["uploaded_clip_key"]
+                clip_duration = extracted_clip["clip_duration"]
+                clip_fps = extracted_clip["clip_fps"]
+                clip_frame_count = extracted_clip["clip_frame_count"]
+                width = extracted_clip["width"]
+                height = extracted_clip["height"]
+                codec = extracted_clip["codec"]
             else:
                 raise RuntimeError("video_clip_range_missing")
 
-            checksum = sha256_bytes(file_bytes) if file_bytes else None
-            file_size = len(file_bytes) if file_bytes else None
+            checksum = extracted_clip["checksum"] if media_type == "video" else (sha256_bytes(file_bytes) if file_bytes else None)
+            file_size = extracted_clip["file_size"] if media_type == "video" else (len(file_bytes) if file_bytes else None)
             db.insert_processed_clip(
                 {
                     "clip_id": clip_id,
@@ -1925,7 +2300,7 @@ def clip_to_frame_routed_impl(
                     "clip_to_frame repeated empty_output 억제: asset=%s threshold=%d",
                     asset_id,
                     _MAX_CONSECUTIVE_EMPTY_OUTPUT_FAILURES_PER_ASSET,
-                )
+            )
             if clip_id:
                 db.update_processed_clip_status(clip_id, "failed")
                 db.update_clip_image_extract_status(

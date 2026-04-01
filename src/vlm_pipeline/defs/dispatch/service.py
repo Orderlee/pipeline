@@ -17,6 +17,10 @@ from dagster._core.storage.dagster_run import DagsterRunStatus, RunsFilter
 from vlm_pipeline.defs.ingest.archive import resolve_unique_directory
 from vlm_pipeline.lib.sanitizer import sanitize_path_component
 from vlm_pipeline.lib.staging_dispatch import format_dispatch_storage_list, parse_dispatch_request_payload
+from vlm_pipeline.lib.yolo_thresholds import (
+    resolve_active_class_confidence_thresholds,
+    resolve_effective_request_confidence_threshold,
+)
 from vlm_pipeline.resources.config import PipelineConfig
 
 _OUTPUT_TO_STEPS = {
@@ -25,15 +29,32 @@ _OUTPUT_TO_STEPS = {
         ("frame_extract", 2),
         ("yolo_detect", 3),
     ],
-    "timestamp": [
+    "timestamp_video": [
         ("archive_move", 1),
         ("gemini_timestamp", 2),
     ],
-    "captioning": [
+    "captioning_video": [
         ("archive_move", 1),
         ("gemini_timestamp", 2),
         ("gemini_caption", 3),
         ("frame_extract", 4),
+    ],
+    "captioning_image": [
+        ("archive_move", 1),
+        ("gemini_timestamp", 2),
+        ("gemini_caption", 3),
+        ("frame_extract", 4),
+        ("gemini_image_caption", 5),
+    ],
+    "classification_video": [
+        ("archive_move", 1),
+        ("gemini_video_classification", 2),
+    ],
+    "classification_image": [
+        ("archive_move", 1),
+        ("frame_extract", 2),
+        ("yolo_detect", 3),
+        ("image_classification", 4),
     ],
 }
 
@@ -264,17 +285,27 @@ def build_dispatch_pipeline_rows(
 ) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     seen_steps: set[str] = set()
-    applied_params_json = json.dumps(
-        {
-            "jpeg_quality": applied_params.jpeg_quality,
-            "confidence": applied_params.confidence_threshold,
-            "iou": applied_params.iou_threshold,
-            "categories": prepared.categories,
-            "classes": prepared.classes,
-            "labeling_method": prepared.labeling_method,
-        },
-        default=str,
-    )
+    applied_params_payload = {
+        "jpeg_quality": applied_params.jpeg_quality,
+        "confidence": applied_params.confidence_threshold,
+        "iou": applied_params.iou_threshold,
+        "categories": prepared.categories,
+        "classes": prepared.classes,
+        "labeling_method": prepared.labeling_method,
+    }
+    if "bbox" in prepared.labeling_method and applied_params.confidence_threshold is not None:
+        class_confidence_thresholds = resolve_active_class_confidence_thresholds(
+            prepared.classes,
+            applied_params.confidence_threshold,
+        )
+        applied_params_payload["class_confidence_thresholds"] = class_confidence_thresholds
+        applied_params_payload["effective_request_confidence_threshold"] = (
+            resolve_effective_request_confidence_threshold(
+                applied_params.confidence_threshold,
+                class_confidence_thresholds,
+            )
+        )
+    applied_params_json = json.dumps(applied_params_payload, default=str)
     for output_key in prepared.labeling_method:
         steps = _OUTPUT_TO_STEPS.get(output_key, [])
         defaults = model_defaults.get(output_key, {})

@@ -36,10 +36,10 @@ ARCHIVE_PENDING_DIR = STAGING_ROOT / "archive_pending"
 # ── Output 조합 (번갈아가며 사용) ──
 OUTPUT_COMBINATIONS = [
     ["bbox"],
-    ["timestamp", "captioning"],
-    ["bbox", "timestamp", "captioning"],
-    ["bbox", "captioning"],
-    ["timestamp"],
+    ["timestamp_video", "captioning_video"],
+    ["bbox", "timestamp_video", "captioning_video"],
+    ["bbox", "captioning_video"],
+    ["timestamp_video"],
 ]
 
 # ── 이미지 추출 파라미터 프리셋 ──
@@ -90,7 +90,7 @@ def generate_trigger_json(
     trigger = {
         "request_id": request_id,
         "folder_name": folder_name,
-        "outputs": outputs,
+        "labeling_method": outputs,
         "requested_by": "staging_test_script",
         "requested_at": now.isoformat(),
     }
@@ -346,7 +346,11 @@ def main():
     parser.add_argument("--folder", choices=["tmp_data_2", "GS건설"], help="테스트할 폴더")
     parser.add_argument("--round", type=int, default=1, help="라운드 번호")
     parser.add_argument("--test-idx", type=int, default=1, help="테스트 인덱스")
-    parser.add_argument("--outputs", nargs="+", help="출력 타입 (bbox, timestamp, captioning)")
+    parser.add_argument(
+        "--outputs",
+        nargs="+",
+        help="출력 타입 (bbox, timestamp_video, captioning_video, captioning_image, classification_video, classification_image, skip)",
+    )
     parser.add_argument("--auto-cycle", action="store_true", help="자동 사이클 모드")
     parser.add_argument("--rounds", type=int, default=3, help="자동 사이클 반복 횟수")
     parser.add_argument("--generate-only", action="store_true", help="trigger JSON만 생성 (대기 안함)")

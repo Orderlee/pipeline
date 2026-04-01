@@ -266,6 +266,7 @@ async def detect_batch(
             max_det=max_det, verbose=False,
         )
     elapsed_ms = round((time.time() - t0) * 1000, 1)
+    per_image_elapsed_ms = round(elapsed_ms / max(1, len(results)), 1)
 
     batch_results = []
     for idx, result in enumerate(results):
@@ -291,6 +292,7 @@ async def detect_batch(
             "detections": detections,
             "detection_count": len(detections),
             "image_size": [img_w, img_h],
+            "elapsed_ms": per_image_elapsed_ms,
         })
 
     return {

@@ -1,7 +1,7 @@
 {
   "request_id": "req_UNIQUE_ID_CHANGE_ME",
   "folder_name": "tmp_data_2",
-  "labeling_method": ["timestamp", "captioning", "bbox"],
+  "labeling_method": ["timestamp_video", "captioning_video", "bbox"],
   "categories": ["falldown", "fire"],
   "classes": ["person_fallen", "fire", "flame"],
   "image_profile": "current",

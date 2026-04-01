@@ -8,6 +8,7 @@ from hashlib import sha1
 from pathlib import Path
 
 EVENT_LABEL_DIR_NAMES = ("auto_labels", "reviewed_labels", "labels", "annotations")
+VIDEO_CLASSIFICATION_DIR_NAMES = ("video_classifications",)
 
 
 @dataclass
@@ -54,8 +55,19 @@ def detect_label_source(json_path: Path) -> tuple[str, str]:
     return "manual", "pending"
 
 
-def build_label_key(raw_key: str, label_source: str, review_status: str) -> str:
+def build_label_key(
+    raw_key: str,
+    label_source: str,
+    review_status: str,
+    *,
+    label_format: str | None = None,
+) -> str:
     base_key = str(raw_key).rsplit(".", 1)[0]
+    if label_format == "video_classification_json":
+        parent, _, stem = base_key.rpartition("/")
+        if parent:
+            return f"{parent}/video_classifications/{stem}.json"
+        return f"video_classifications/{stem}.json"
     if label_source == "manual" and review_status == "pending":
         return f"{base_key}.json"
     suffix = "reviewed" if review_status == "reviewed" else label_source
@@ -130,8 +142,22 @@ def normalize_event_payload(item: object, index: int) -> dict:
         or []
     )
     object_count = len(detections) if isinstance(detections, list) else 0
+    predicted_classes = payload.get("predicted_classes") if isinstance(payload.get("predicted_classes"), list) else []
+    if object_count == 0 and predicted_classes:
+        object_count = len(predicted_classes)
+    if object_count == 0 and str(payload.get("predicted_class") or "").strip():
+        object_count = 1
     caption_text = (
-        str(payload.get("caption_text") or payload.get("caption") or payload.get("description") or payload.get("text") or "").strip()
+        str(
+            payload.get("caption_text")
+            or payload.get("predicted_class")
+            or payload.get("classification")
+            or payload.get("class_label")
+            or payload.get("caption")
+            or payload.get("description")
+            or payload.get("text")
+            or ""
+        ).strip()
         or None
     )
     if start_sec is None and end_sec is None and not caption_text and object_count == 0:
@@ -162,6 +188,19 @@ def coerce_float(value: object) -> float | None:
 
 def detect_label_format(data: dict | list) -> str:
     if isinstance(data, dict):
+        has_image_identity = any(str(data.get(key) or "").strip() for key in ("image_key", "image_id"))
+        has_image_classification = (
+            isinstance(data.get("predicted_classes"), list)
+            or isinstance(data.get("class_counts"), dict)
+            or bool(str(data.get("bbox_labels_key") or "").strip())
+        )
+        if has_image_identity and has_image_classification:
+            return "image_classification_json"
+        if (
+            any(str(data.get(key) or "").strip() for key in ("predicted_class", "classification", "class_label"))
+            and not has_image_identity
+        ):
+            return "video_classification_json"
         if "images" in data and "annotations" in data:
             return "coco"
         if "events" in data or "segments" in data or "predictions" in data:
@@ -178,6 +217,11 @@ def detect_label_tool(data: dict | list, label_source: str) -> str:
         explicit_tool = str(data.get("label_tool") or data.get("tool") or "").strip()
         if explicit_tool:
             return explicit_tool
+        label_format = detect_label_format(data)
+        if label_format == "video_classification_json":
+            return "gemini"
+        if label_format == "image_classification_json":
+            return "yolo-world-classification"
     if label_source == "auto":
         return "auto-model"
     if label_source == "manual_review":
@@ -235,16 +279,20 @@ def import_event_label_files(
             raw_key = str(matching_asset["raw_key"])
             asset_id = str(matching_asset["asset_id"])
             label_source, review_status = detect_label_source(json_path)
-            label_key = build_label_key(raw_key, label_source, review_status)
-            label_bytes = json.dumps(label_data, ensure_ascii=False).encode("utf-8")
-            minio.upload("vlm-labels", label_key, label_bytes, "application/json")
-
             events = extract_label_events(label_data)
             if not events:
                 events = [{}]
 
             event_count = len(events)
             label_format = detect_label_format(label_data)
+            label_key = build_label_key(
+                raw_key,
+                label_source,
+                review_status,
+                label_format=label_format,
+            )
+            label_bytes = json.dumps(label_data, ensure_ascii=False).encode("utf-8")
+            minio.upload("vlm-labels", label_key, label_bytes, "application/json")
             label_tool = detect_label_tool(label_data, label_source)
             for event_index, event in enumerate(events):
                 db.insert_label(

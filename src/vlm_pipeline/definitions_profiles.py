@@ -27,6 +27,7 @@ def _build_production_definitions() -> Definitions:
         build_mvp_stage_job,
         build_production_assets,
         build_production_sensors,
+        build_sam3_shadow_compare_job,
         build_yolo_standard_detection_job,
     )
     from vlm_pipeline.defs.sync.sensor import MOTHERDUCK_TABLE_SENSORS
@@ -50,6 +51,9 @@ def _build_production_definitions() -> Definitions:
         description="[운영 유일 자동 라벨링] `.dispatch/pending` 트리거 JSON → ingest + clip_* + YOLO",
         staging=False,
     )
+    sam3_shadow_compare_job = build_sam3_shadow_compare_job(
+        description="[운영 shadow benchmark] YOLO bbox 결과와 SAM3 segmentation/bbox agreement 비교",
+    )
 
     jobs = [
         mvp_stage_job,
@@ -57,6 +61,7 @@ def _build_production_definitions() -> Definitions:
         gcs_download_job,
         motherduck_sync_job,
         dispatch_stage_job,
+        sam3_shadow_compare_job,
     ]
     if enable_manual_label_import:
         jobs.append(
@@ -95,10 +100,12 @@ def _build_staging_definitions() -> Definitions:
         build_ingest_job,
         build_manual_label_import_job,
         build_prelabeled_import_job,
+        build_sam3_shadow_compare_job,
         build_staging_assets,
         build_staging_sensors,
         build_staging_yolo_detection_job,
     )
+    from vlm_pipeline.defs.dispatch.sensor import dispatch_sensor
     from vlm_pipeline.defs.dispatch.staging_agent_sensor import staging_agent_dispatch_sensor
     from vlm_pipeline.defs.spec.staging_sensor import spec_resolve_sensor
 
@@ -125,6 +132,9 @@ def _build_staging_definitions() -> Definitions:
     prelabeled_import_job = build_prelabeled_import_job(
         description="Staging 수동 완료데이터 적재: raw ingest + 기존 이벤트/bbox/image caption import",
     )
+    sam3_shadow_compare_job = build_sam3_shadow_compare_job(
+        description="[Staging shadow benchmark] YOLO bbox 결과와 SAM3 segmentation/bbox agreement 비교",
+    )
 
     return Definitions(
         assets=build_staging_assets(),
@@ -134,12 +144,14 @@ def _build_staging_definitions() -> Definitions:
             dispatch_stage_job,
             auto_labeling_routed_job,
             yolo_detection_job,
+            sam3_shadow_compare_job,
             manual_label_import_job,
             prelabeled_import_job,
         ],
         sensors=build_staging_sensors(
             spec_resolve_sensor=spec_resolve_sensor,
             dispatch_ingress_sensor=staging_agent_dispatch_sensor,
+            dispatch_json_sensor=dispatch_sensor,
         ),
         resources=build_common_resources(),
     )
