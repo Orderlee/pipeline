@@ -190,7 +190,9 @@ def resolve_frame_sampling_policy(
         for value in (requested_outputs or [])
         if str(value or "").strip()
     }
-    bbox_only = "bbox" in normalized_outputs and "captioning" not in normalized_outputs
+    yolo_only = bool({"bbox", "classification_image"} & normalized_outputs) and not bool(
+        {"captioning_video", "captioning_image"} & normalized_outputs
+    )
 
     base_target = target_frame_count(
         duration_sec=duration_sec,
@@ -203,11 +205,11 @@ def resolve_frame_sampling_policy(
     if normalized_mode == "raw_video":
         dynamic_upper_bound = 36 if normalized_profile == "dense" else 24
         dynamic_floor = 10 if normalized_profile == "dense" else 6
-        multiplier = 2 if bbox_only else 1
+        multiplier = 2 if yolo_only else 1
         effective_max_frames = min(dynamic_upper_bound, max(dynamic_floor, base_target * multiplier))
     else:
         effective_max_frames = base_target
-        if bbox_only:
+        if yolo_only:
             clip_bbox_cap = 24 if normalized_profile == "dense" else 16
             effective_max_frames = min(clip_bbox_cap, max(effective_max_frames, base_target + 2))
 

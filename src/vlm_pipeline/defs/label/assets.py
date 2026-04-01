@@ -10,6 +10,7 @@ import json
 import os
 import subprocess
 from datetime import datetime
+from hashlib import sha1
 from pathlib import Path, PurePosixPath
 from tempfile import NamedTemporaryFile, gettempdir
 from uuid import uuid4
@@ -20,6 +21,7 @@ from vlm_pipeline.lib.env_utils import (
     dispatch_folder_for_source_unit,
     dispatch_raw_key_prefix_folder,
     is_dispatch_yolo_only_requested,
+    requested_outputs_require_timestamp,
     should_run_output,
 )
 from vlm_pipeline.lib.gemini import GeminiAnalyzer, extract_clean_json_text
@@ -58,7 +60,260 @@ def clip_timestamp(
     return clip_timestamp_routed_impl(context, db, minio)
 
 
+@asset(
+    name="classification_video",
+    deps=["raw_ingest"],
+    description="Dispatch 전용 Gemini 비디오 단일분류 → vlm-labels + labels",
+    group_name="auto_labeling",
+    config_schema={"limit": Field(int, default_value=50)},
+)
+def classification_video(
+    context,
+    db: DuckDBResource,
+    minio: MinIOResource,
+) -> dict:
+    tags = context.run.tags if context.run else {}
+    if is_standard_spec_run(tags):
+        context.log.info("classification_video 스킵: staging spec 흐름은 이번 범위에서 제외합니다.")
+        return {"processed": 0, "failed": 0, "skipped": True}
+
+    requested = parse_requested_outputs(tags)
+    if "classification_video" not in requested:
+        context.log.info("classification_video 스킵: outputs에 classification_video 없음")
+        return {"processed": 0, "failed": 0, "skipped": True}
+
+    folder_name = dispatch_folder_for_source_unit(tags)
+    if not folder_name:
+        context.log.info("classification_video 스킵: dispatch folder 없음")
+        return {"processed": 0, "failed": 0, "skipped": True}
+
+    candidate_classes = _resolve_dispatch_video_class_candidates(tags)
+    if not candidate_classes:
+        raise RuntimeError("classification_video_requires_categories_or_classes")
+
+    db.ensure_runtime_schema()
+    limit = int(context.op_config.get("limit", 50))
+    candidates = _find_dispatch_video_classification_candidates(
+        db,
+        folder_name=folder_name,
+        limit=limit,
+    )
+    if not candidates:
+        context.log.info("classification_video: 대상 없음")
+        return {"processed": 0, "failed": 0, "predicted": 0}
+
+    analyzer = _init_gemini_analyzer(context)
+    processed = 0
+    failed = 0
+
+    for idx, cand in enumerate(candidates, start=1):
+        asset_id = str(cand.get("asset_id") or "")
+        raw_key = str(cand.get("raw_key") or "")
+        temp_paths: list[Path] = []
+        try:
+            video_path, temp_path = _materialize_video(minio, cand)
+            if temp_path:
+                temp_paths.append(temp_path)
+            response_text = analyzer.analyze_video(
+                str(video_path),
+                prompt=_build_video_classification_prompt(candidate_classes),
+            )
+            cleaned = extract_clean_json_text(response_text)
+            payload = _parse_video_classification_response(cleaned, candidate_classes)
+            label_key = _build_video_classification_key(raw_key)
+            generated_at = datetime.now()
+            artifact_payload = {
+                "asset_id": asset_id,
+                "raw_key": raw_key,
+                "predicted_class": payload["predicted_class"],
+                "candidate_classes": candidate_classes,
+                "rationale": payload.get("rationale"),
+                "model": getattr(analyzer, "model_name", None),
+                "generated_at": generated_at.isoformat(),
+            }
+            minio.ensure_bucket("vlm-labels")
+            minio.upload(
+                "vlm-labels",
+                label_key,
+                json.dumps(artifact_payload, ensure_ascii=False).encode("utf-8"),
+                "application/json",
+            )
+            db.insert_label(
+                {
+                    "label_id": _stable_video_classification_label_id(asset_id, label_key, payload["predicted_class"]),
+                    "asset_id": asset_id,
+                    "labels_bucket": "vlm-labels",
+                    "labels_key": label_key,
+                    "label_format": "video_classification_json",
+                    "label_tool": "gemini",
+                    "label_source": "auto",
+                    "review_status": "auto_generated",
+                    "event_index": 0,
+                    "event_count": 1,
+                    "timestamp_start_sec": None,
+                    "timestamp_end_sec": None,
+                    "caption_text": payload["predicted_class"],
+                    "object_count": 1,
+                    "label_status": "completed",
+                    "created_at": generated_at,
+                }
+            )
+            processed += 1
+            context.log.info(
+                "classification_video 진행: [%d/%d] asset=%s predicted_class=%s ✅",
+                idx,
+                len(candidates),
+                asset_id,
+                payload["predicted_class"],
+            )
+        except Exception as exc:
+            failed += 1
+            context.log.error(
+                "classification_video 진행: [%d/%d] asset=%s ❌ %s",
+                idx,
+                len(candidates),
+                asset_id,
+                exc,
+            )
+        finally:
+            for path in reversed(temp_paths):
+                _cleanup_temp(path)
+
+    summary = {"processed": processed, "failed": failed, "predicted": processed}
+    context.add_output_metadata(summary)
+    return summary
+
+
 # ── helpers ──
+
+def _stable_video_classification_label_id(asset_id: str, label_key: str, predicted_class: str) -> str:
+    token = "|".join([str(asset_id), str(label_key), str(predicted_class or "").strip().lower()])
+    return sha1(token.encode("utf-8")).hexdigest()
+
+
+def _build_video_classification_key(raw_key: str) -> str:
+    key_path = PurePosixPath(str(raw_key or "").strip())
+    stem = key_path.stem or "video"
+    parent = key_path.parent
+    if str(parent) and str(parent) != ".":
+        return str(parent / "video_classifications" / f"{stem}.json")
+    return str(PurePosixPath("video_classifications") / f"{stem}.json")
+
+
+def _build_video_classification_prompt(candidate_classes: list[str]) -> str:
+    rendered_candidates = ", ".join(str(value).strip().lower() for value in candidate_classes if str(value).strip())
+    return (
+        "You are classifying a CCTV video into exactly one class.\n\n"
+        f"Allowed classes: [{rendered_candidates}]\n\n"
+        "Task:\n"
+        "Choose the single best matching class based only on visible evidence in the video.\n\n"
+        "Return JSON only in this shape:\n"
+        '{"predicted_class":"...", "rationale":"..."}\n\n'
+        "Rules:\n"
+        "- predicted_class must be exactly one value from Allowed classes.\n"
+        "- rationale must be a short English explanation.\n"
+        "- Do not include markdown fences or extra explanation."
+    )
+
+
+def _parse_video_classification_response(payload_text: str, candidate_classes: list[str]) -> dict[str, str | None]:
+    payload = json.loads(str(payload_text or "").strip())
+    if not isinstance(payload, dict):
+        raise ValueError("video_classification_response_not_object")
+
+    predicted_class = str(payload.get("predicted_class") or "").strip().lower()
+    allowed = {str(value).strip().lower() for value in candidate_classes if str(value).strip()}
+    if not predicted_class or predicted_class not in allowed:
+        raise ValueError("video_classification_invalid_predicted_class")
+
+    rationale = str(payload.get("rationale") or "").strip() or None
+    return {
+        "predicted_class": predicted_class,
+        "rationale": rationale,
+    }
+
+
+def _resolve_dispatch_video_class_candidates(tags) -> list[str]:
+    raw_categories = str(tags.get("categories") or "").strip()
+    if raw_categories:
+        try:
+            parsed = json.loads(raw_categories) if raw_categories.startswith("[") else raw_categories.split(",")
+        except Exception:
+            parsed = raw_categories.split(",")
+        normalized = []
+        seen = set()
+        for value in parsed:
+            rendered = str(value or "").strip().lower()
+            if not rendered or rendered in seen:
+                continue
+            seen.add(rendered)
+            normalized.append(rendered)
+        if normalized:
+            return normalized
+
+    raw_classes = str(tags.get("classes") or "").strip()
+    if raw_classes:
+        try:
+            parsed = json.loads(raw_classes) if raw_classes.startswith("[") else raw_classes.split(",")
+        except Exception:
+            parsed = raw_classes.split(",")
+        normalized = []
+        seen = set()
+        for value in parsed:
+            rendered = str(value or "").strip().lower()
+            if not rendered or rendered in seen:
+                continue
+            seen.add(rendered)
+            normalized.append(rendered)
+        return normalized
+    return []
+
+
+def _find_dispatch_video_classification_candidates(
+    db: DuckDBResource,
+    *,
+    folder_name: str,
+    limit: int,
+) -> list[dict[str, object]]:
+    with db.connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT
+                r.asset_id,
+                r.raw_bucket,
+                r.raw_key,
+                r.archive_path,
+                r.source_path,
+                vm.duration_sec,
+                vm.fps,
+                vm.frame_count
+            FROM raw_files r
+            JOIN video_metadata vm ON vm.asset_id = r.asset_id
+            WHERE r.media_type = 'video'
+              AND r.ingest_status = 'completed'
+              AND r.source_unit_name = ?
+              AND NOT EXISTS (
+                    SELECT 1
+                    FROM labels l
+                    WHERE l.asset_id = r.asset_id
+                      AND l.label_format = 'video_classification_json'
+                )
+            ORDER BY r.created_at
+            LIMIT ?
+            """,
+            [folder_name, max(1, int(limit))],
+        ).fetchall()
+    columns = [
+        "asset_id",
+        "raw_bucket",
+        "raw_key",
+        "archive_path",
+        "source_path",
+        "duration_sec",
+        "fps",
+        "frame_count",
+    ]
+    return [dict(zip(columns, row)) for row in rows]
 
 def _init_gemini_analyzer(context) -> GeminiAnalyzer:
     """GeminiAnalyzer 초기화 (환경변수 기반)."""
@@ -545,7 +800,7 @@ def clip_timestamp_routed_impl(
     if is_dispatch_yolo_only_requested(tags):
         context.log.info("clip_timestamp 스킵: dispatch labeling_method가 YOLO 전용입니다.")
         return {"processed": 0, "failed": 0, "skipped": True}
-    if "timestamp" not in requested and not standard_spec_run:
+    if not requested_outputs_require_timestamp(requested) and not standard_spec_run:
         context.log.info("clip_timestamp 스킵: outputs에 timestamp 없음")
         return {"processed": 0, "failed": 0, "skipped": True}
 

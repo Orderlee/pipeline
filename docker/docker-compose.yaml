@@ -17,6 +17,7 @@ x-common-env: &common-env
   VIDEO_ENV_MODEL_DIR: /data/models/places365
   VIDEO_ENV_AUTO_DOWNLOAD: "false"
   YOLO_API_URL: http://yolo:8001
+  SAM3_API_URL: http://sam3:8002
   VIDEO_FFPROBE_TIMEOUT_SEC: "120"
   VIDEO_FFPROBE_RETRY_COUNT: "1"
   VIDEO_FFPROBE_RETRY_DELAY_MS: "250"
@@ -303,6 +304,38 @@ services:
               capabilities: [gpu]
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
+      interval: 30s
+      timeout: 10s
+      start_period: 60s
+      retries: 3
+    restart: unless-stopped
+
+  # ===== SAM3 Shadow Compare Server (GPU 0 전용, optional profile) =====
+  sam3:
+    profiles: ["sam3"]
+    build:
+      context: ./sam3
+      dockerfile: Dockerfile
+    image: datapipeline-sam3:gpu-cu128
+    user: root
+    ports:
+      - "${SAM3_PORT:-8002}:8002"
+    environment:
+      SAM3_DEVICE: "cuda:0"
+      SAM3_PORT: "8002"
+      SAM3_SCORE_THRESHOLD: "0.0"
+      SAM3_MAX_MASKS_PER_PROMPT: "50"
+      HF_TOKEN: ${HF_TOKEN:-}
+      NVIDIA_VISIBLE_DEVICES: "all"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8002/health"]
       interval: 30s
       timeout: 10s
       start_period: 60s

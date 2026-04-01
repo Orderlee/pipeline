@@ -7,6 +7,11 @@ from copy import deepcopy
 from datetime import datetime
 from typing import Any
 
+from vlm_pipeline.lib.yolo_thresholds import (
+    resolve_active_class_confidence_thresholds,
+    resolve_effective_request_confidence_threshold,
+)
+
 
 def _coerce_positive_float(value: object) -> float | None:
     try:
@@ -37,6 +42,23 @@ def _normalize_requested_classes(values: object) -> list[str]:
             continue
         seen.add(rendered)
         normalized.append(rendered)
+    return normalized
+
+
+def _normalize_class_confidence_thresholds(values: object) -> dict[str, float]:
+    if not isinstance(values, Mapping):
+        return {}
+
+    normalized: dict[str, float] = {}
+    for key, value in sorted(values.items(), key=lambda item: str(item[0] or "").strip().lower()):
+        class_name = str(key or "").strip().lower()
+        if not class_name:
+            continue
+        try:
+            threshold = float(value)
+        except (TypeError, ValueError):
+            continue
+        normalized[class_name] = threshold
     return normalized
 
 
@@ -100,10 +122,18 @@ def build_coco_detection_payload(
     confidence_threshold: float,
     iou_threshold: float,
     detected_at: datetime,
+    effective_request_confidence_threshold: float | None = None,
+    class_confidence_thresholds: Mapping[str, object] | None = None,
+    elapsed_ms: float | None = None,
     model_name: str = "yolov8l-worldv2",
 ) -> dict[str, Any]:
     width = int(_coerce_positive_float(image_width) or 0)
     height = int(_coerce_positive_float(image_height) or 0)
+    normalized_class_confidence_thresholds = _normalize_class_confidence_thresholds(class_confidence_thresholds)
+    resolved_request_confidence = _coerce_float(
+        effective_request_confidence_threshold,
+        confidence_threshold,
+    )
 
     category_names = _resolve_coco_category_names(detections, requested_classes)
     category_id_map = {name: idx + 1 for idx, name in enumerate(category_names)}
@@ -180,11 +210,14 @@ def build_coco_detection_payload(
             "model": model_name,
             "confidence_threshold": confidence_threshold,
             "iou_threshold": iou_threshold,
+            "effective_request_confidence_threshold": resolved_request_confidence,
+            "class_confidence_thresholds": normalized_class_confidence_thresholds,
             "requested_classes": requested_classes,
             "requested_classes_count": len(requested_classes),
             "class_source": class_source,
             "resolved_config_id": resolved_config_id,
             "detected_at": detected_at.isoformat(),
+            "elapsed_ms": _coerce_positive_float(elapsed_ms),
         },
     }
 
@@ -246,6 +279,19 @@ def convert_detection_payload_to_coco(
 
     confidence_threshold = _coerce_float(payload.get("confidence_threshold"), default_confidence_threshold)
     iou_threshold = _coerce_float(payload.get("iou_threshold"), default_iou_threshold)
+    class_confidence_thresholds = _normalize_class_confidence_thresholds(payload.get("class_confidence_thresholds"))
+    if not class_confidence_thresholds:
+        class_confidence_thresholds = resolve_active_class_confidence_thresholds(
+            requested_classes,
+            confidence_threshold,
+        )
+    effective_request_confidence_threshold = _coerce_float(
+        payload.get("effective_request_confidence_threshold"),
+        resolve_effective_request_confidence_threshold(
+            confidence_threshold,
+            class_confidence_thresholds,
+        ),
+    )
     detected_at = _parse_detected_at(payload.get("detected_at"))
     model_name = str(payload.get("model") or default_model).strip() or default_model
 
@@ -262,5 +308,8 @@ def convert_detection_payload_to_coco(
         confidence_threshold=confidence_threshold,
         iou_threshold=iou_threshold,
         detected_at=detected_at,
+        effective_request_confidence_threshold=effective_request_confidence_threshold,
+        class_confidence_thresholds=class_confidence_thresholds,
+        elapsed_ms=_coerce_positive_float(payload.get("elapsed_ms")),
         model_name=model_name,
     )

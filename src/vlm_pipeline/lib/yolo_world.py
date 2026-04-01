@@ -112,7 +112,15 @@ class YOLOWorldClient:
         )
         resp.raise_for_status()
         data = resp.json()
-        return data.get("results", [])
+        results = list(data.get("results", []) or [])
+        try:
+            fallback_elapsed_ms = round(float(data.get("elapsed_ms") or 0.0) / max(1, len(results)), 1)
+        except (TypeError, ValueError):
+            fallback_elapsed_ms = 0.0
+        for result in results:
+            if isinstance(result, dict) and "elapsed_ms" not in result:
+                result["elapsed_ms"] = fallback_elapsed_ms
+        return results
 
     def set_classes(self, classes: list[str]) -> dict[str, Any]:
         """detection 클래스 변경."""
