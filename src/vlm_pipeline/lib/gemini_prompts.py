@@ -15,6 +15,7 @@ Please generate the question in structured JSON format according to the guidelin
 - The question must have a clear, unambiguous answer and high educational value.
 - The answer should be inferable based solely on visual evidence from the single frame.
 - Various question types are acceptable, but the output format must strictly follow the JSON structure.
+- Do not force importance onto routine or uneventful scenes; plain "normal_activity" does not need to be treated as a notable situation.
 
 ---
 
@@ -61,6 +62,7 @@ The question must strictly follow the structured JSON format below.
 - The question must be clear, unambiguous, and have high educational value.
 - The correct answer must be inferable solely from the provided video clip using visual and contextual evidence.
 - Various question types are acceptable, but the output must strictly follow the JSON structure below.
+- Do not force importance onto routine or uneventful scenes; plain "normal_activity" does not need to be treated as a notable situation.
 
 ---
 
@@ -101,7 +103,7 @@ For each event, provide the precise time segment and a descriptive caption.
 
 Return your response as a JSON array. Each element must have exactly these fields:
 
-- "category": A short English category label (e.g. "fire", "smoke", "fall", "intrusion", "fight", "normal_activity", "vehicle_accident", "loitering", "vandalism", "abandoned_object")
+- "category": A short English category label (e.g. "fire", "smoke", "fall", "intrusion", "fight", "vehicle_accident", "loitering", "vandalism", "abandoned_object")
 - "duration": Duration of the event in seconds (number)
 - "timestamp": [start_sec, end_sec] — start and end time in seconds from the beginning of the video
 - "ko_caption": A concise Korean description of the event
@@ -109,6 +111,7 @@ Return your response as a JSON array. Each element must have exactly these field
 
 Rules:
 - Timestamps must be non-negative and end_sec > start_sec.
+- Routine or uneventful "normal_activity" does not need to be annotated; only include notable or security-relevant events.
 - If no notable event is found, return an empty array: []
 - Do NOT wrap the JSON in markdown code fences.
 - Sort events by start time ascending.
