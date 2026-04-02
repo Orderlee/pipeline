@@ -224,12 +224,14 @@ YOLO 서버는 `docker/yolo/` 아래 별도 서비스로 동작합니다.
 
 | 테이블 | 설명 |
 |--------|------|
-| `staging_dispatch_requests` | staging dispatch 요청 추적 |
-| `staging_pipeline_runs` | staging run 상태 추적 |
-| `staging_model_configs` | staging 기본 설정 저장 |
-| `labeling_specs` | spec 요청 정의 |
-| `labeling_configs` | spec 설정 스냅샷 |
-| `requester_config_map` | requester 별 config 연결 |
+| `staging_dispatch_requests` | staging dispatch 요청 추적 (YOLO 파라미터, labeling_method 포함) |
+| `staging_pipeline_runs` | staging run 단계별 상태 추적 (step_name, step_status, 처리 통계) |
+| `staging_model_configs` | output 타입별 모델 선택 + 기본 파라미터 (bbox/timestamp/captioning) |
+| `labeling_specs` | spec 수신 → 라우팅/재시도/완료 추적 (categories, classes, labeling_method) |
+| `labeling_configs` | config/parameters JSON 동기화 (버전 관리) |
+| `requester_config_map` | requester/team → config 매핑 (personal → team → fallback 우선순위) |
+
+현재 schema.sql 기준 총 14개 테이블 (운영 8 + staging/spec 6).
 
 현재 스키마에서 중요한 점:
 
@@ -247,17 +249,18 @@ YOLO 서버는 `docker/yolo/` 아래 별도 서비스로 동작합니다.
 │       ├── definitions_profiles.py     # profile 기반 공통 조립
 │       ├── definitions_common.py       # 공통 job/sensor 조립
 │       ├── defs/
-│       │   ├── dispatch/               # dispatch sensor / service / staging agent sensor
+│       │   ├── dispatch/               # dispatch sensor / service / agent_sensor_common
 │       │   ├── ingest/                 # raw ingest, archive, manifest
-│       │   ├── label/                  # Gemini label, manual/prelabeled import
-│       │   ├── process/                # frame extraction, image captioning
+│       │   ├── label/                  # assets + artifact_bbox/caption/classification, label_helpers, timestamp
+│       │   ├── process/                # assets(라우팅) + helpers, captioning, frame_extract, raw_frames
 │       │   ├── yolo/                   # YOLO assets / staging YOLO assets
-│       │   ├── spec/                   # staging spec assets / sensors
+│       │   ├── spec/                   # staging spec assets / sensors / config_resolver
 │       │   ├── build/                  # dataset build
+│       │   ├── sam/                    # SAM3 segmentation
 │       │   ├── gcp/                    # GCS download
 │       │   └── sync/                   # MotherDuck sync
-│       ├── lib/                        # prompts, frame planning, yolo client, env helpers
-│       ├── resources/                  # DuckDB / MinIO / runtime settings
+│       ├── lib/                        # prompts, frame planning, yolo client, key_builders, env helpers
+│       ├── resources/                  # duckdb_base + duckdb_phash/migration/ingest_* / MinIO / runtime settings
 │       └── sql/                        # schema.sql, migration.sql
 ├── docker/
 │   ├── docker-compose.yaml
@@ -336,8 +339,10 @@ cp docker/.env docker/.env.staging
 | `INCOMING_DIR` | incoming 경로 |
 | `GOOGLE_APPLICATION_CREDENTIALS` | Vertex 인증 |
 | `MOTHERDUCK_TOKEN` | MotherDuck 토큰 |
+| `PROD_AGENT_POLLING_ENABLED` | production agent polling 활성화 (`true` 권장) |
+| `PROD_AGENT_BASE_URL` | production agent base URL (기본 `host.docker.internal:8080`) |
 | `STAGING_AGENT_POLLING_ENABLED` | staging agent polling 활성화 |
-| `STAGING_AGENT_BASE_URL` | staging agent base URL |
+| `STAGING_AGENT_BASE_URL` | staging agent base URL (기본 `host.docker.internal:8081`) |
 
 ### 3. 인프라 실행
 
@@ -447,8 +452,8 @@ WHERE image_caption_text IS NOT NULL;
 
 ## 운영 팁
 
-- production에서 자동 라벨링을 시작하려면 `.dispatch/pending/*.json`을 사용합니다.
-- staging은 `piaspace-agent` 연결 상태와 `STAGING_AGENT_POLLING_ENABLED=true` 여부를 먼저 확인합니다.
+- production에서 자동 라벨링은 `piaspace-agent:8080` polling이 기본 ingress입니다 (`PROD_AGENT_POLLING_ENABLED=true`). `.dispatch/pending/*.json`은 fallback으로 유지됩니다.
+- staging은 `piaspace-agent-staging:8081` 연결 상태와 `STAGING_AGENT_POLLING_ENABLED=true` 여부를 먼저 확인합니다.
 - `필요없음` 요청은 staging에서 raw ingest 후, 같은 폴더 안의 기존 라벨 결과를 best-effort로 자동 import 할 수 있습니다.
 - `tmp_data_2` 같은 재테스트 전에는 DB / MinIO / `.dispatch` 상태를 정리한 뒤 다시 시작하는 것이 안전합니다.
 
