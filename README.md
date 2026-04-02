@@ -5,8 +5,14 @@ NAS에 있는 이미지/비디오 미디어를 수집하고, 중복을 정리한
 
 현재 기준으로 이 저장소는 **production**과 **staging**을 분리해 운영합니다.
 
-- **production**: `/nas/incoming` 기반 수집, `.dispatch/pending/*.json` 기반 자동 라벨링
-- **staging**: `/nas/staging/incoming` 기반 검증, `piaspace-agent:8080` polling 기반 dispatch
+- **production**: `/nas/incoming` 기반 수집, `piaspace-agent:8080` polling 기반 dispatch + `.dispatch/pending/*.json` fallback
+- **staging**: `/nas/staging/incoming` 기반 검증, `piaspace-agent:8081` polling 기반 dispatch
+
+문서 운영 기준은 역할을 분리합니다.
+
+- `README.md`: 사람용 개요와 운영 흐름
+- `AGENTS.md`: 에이전트용 짧은 맵
+- `docs/`: 설계, 계획, 참고 문서의 기록 시스템
 
 ## Architecture
 
@@ -23,7 +29,8 @@ NAS에 있는 이미지/비디오 미디어를 수집하고, 중복을 정리한
 │                                                                              │
 │ Production                                                                   │
 │   incoming/manifest sensors -> ingest_job                                    │
-│   .dispatch/pending/*.json -> dispatch_sensor -> dispatch_stage_job          │
+│   piaspace-agent polling -> production_agent_dispatch_sensor                │
+│   .dispatch/pending/*.json -> dispatch_sensor (fallback)                    │
 │                                                                              │
 │ Staging                                                                      │
 │   piaspace-agent polling -> staging_agent_dispatch_sensor                    │
@@ -59,12 +66,12 @@ NAS에 있는 이미지/비디오 미디어를 수집하고, 중복을 정리한
 | Dagster home | `/app/dagster_home` | `/app/dagster_home_staging` |
 | Workspace | `/app/workspace_prod.yaml` | `/app/workspace_staging.yaml` |
 | Main entrypoint | `src/vlm_pipeline/definitions.py` | `src/vlm_pipeline/definitions_staging.py` |
-| Dispatch ingress | `.dispatch/pending/*.json` | `piaspace-agent` polling |
+| Dispatch ingress | `piaspace-agent:8080` polling + JSON fallback | `piaspace-agent:8081` polling |
 
 핵심 차이:
 
-- **production**은 자동 라벨링을 `.dispatch/pending/*.json` 요청 파일로만 시작합니다.
-- **staging**은 `staging_agent_dispatch_sensor`가 `piaspace-agent:8080`에서 pending 요청을 polling해서 시작합니다.
+- **production**은 `production_agent_dispatch_sensor`를 기본 ingress로 사용하고, `.dispatch/pending/*.json`은 fallback 경로로 유지합니다.
+- **staging**은 `staging_agent_dispatch_sensor`가 `piaspace-agent:8081`에서 pending 요청을 polling해서 시작합니다.
 - staging의 파일 기반 `dispatch_sensor` 경로는 레거시/호환 목적이며 기본 ingress가 아닙니다.
 - staging은 `manual_label_import_job`, `prelabeled_import_job`, spec 기반 라우팅 등 검증용 흐름을 더 포함합니다.
 
@@ -73,17 +80,18 @@ NAS에 있는 이미지/비디오 미디어를 수집하고, 중복을 정리한
 ### Production
 
 ```text
-/nas/incoming
-  ├─ auto_bootstrap / manifest sensor
-  │    -> ingest_job (수집 전용)
-  └─ .dispatch/pending/*.json
-       -> dispatch_sensor
-       -> dispatch_stage_job
-       -> raw_ingest
-       -> clip_timestamp
-       -> clip_captioning
-       -> clip_to_frame
-       -> staging_yolo_image_detection
+piaspace-agent:8080
+  -> production_agent_dispatch_sensor
+  -> dispatch_stage_job
+  -> raw_ingest
+  -> clip_timestamp
+  -> clip_captioning
+  -> clip_to_frame
+  -> dispatch_yolo_image_detection
+
+/nas/incoming/.dispatch/pending/*.json
+  -> dispatch_sensor (fallback)
+  -> dispatch_stage_job
 ```
 
 production 정책은 다음과 같습니다.
@@ -95,7 +103,7 @@ production 정책은 다음과 같습니다.
 ### Staging
 
 ```text
-piaspace-agent:8080
+piaspace-agent:8081
   -> staging_agent_dispatch_sensor
   -> dispatch_stage_job
   -> raw_ingest
@@ -393,7 +401,8 @@ pytest tests/integration -q
 
 | 이름 | 환경 | 설명 |
 |------|------|------|
-| `dispatch_sensor` | production | `.dispatch/pending/*.json` -> `dispatch_stage_job` |
+| `production_agent_dispatch_sensor` | production | `piaspace-agent` polling -> `dispatch_stage_job` |
+| `dispatch_sensor` | production fallback | `.dispatch/pending/*.json` -> `dispatch_stage_job` |
 | `staging_agent_dispatch_sensor` | staging | `piaspace-agent` polling -> `dispatch_stage_job` |
 | `incoming_manifest_sensor` | both | pending manifest -> ingest |
 | `auto_bootstrap_manifest_sensor` | both | incoming 스캔 후 manifest 생성 |

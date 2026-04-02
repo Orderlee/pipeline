@@ -64,12 +64,12 @@ x-staging-volumes: &staging-volumes
     target: /nas/datasets/projects
     read_only: true
   - type: bind
-    source: ${ARCHIVE_HOST_PATH:-/home/pia/mou/staging/archive}
-    target: /nas/archive
+    source: ${STAGING_ARCHIVE_HOST_PATH:-/home/pia/mou/staging/archive}
+    target: /nas/staging/archive
     read_only: false
   - type: bind
-    source: ${INCOMING_HOST_PATH:-/home/pia/mou/staging/incoming}
-    target: /nas/incoming
+    source: ${STAGING_INCOMING_HOST_PATH:-/home/pia/mou/staging/incoming}
+    target: /nas/staging/incoming
     read_only: false
   - /home/pia/test_data:/test_data
   - ${STAGING_REPO_PATH:-/volume2/datapipeline-staging}/src/python:/src/python:ro
@@ -96,6 +96,8 @@ x-prod-dagster-common: &prod-dagster-common
   env_file:
     - .env
   environment: *prod-dagster-env
+  extra_hosts:
+    - "host.docker.internal:host-gateway"
   volumes: *prod-volumes
   gpus: all
   restart: unless-stopped
