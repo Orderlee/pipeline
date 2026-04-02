@@ -1,7 +1,6 @@
 # Data & Logs
 minio_data/
 scanner_output/
-docs/
 doc_2/
 result/
 catalog/logs/
@@ -53,7 +52,6 @@ pyproject.toml
 .worklog_logs/
 
 # 로컬 문서 메모
-AGENTS.md
 CLAUDE2.md
 LABEL_STORAGE_POLICY.md
 ANTIGRAVITY.md

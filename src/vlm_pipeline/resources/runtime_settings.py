@@ -109,10 +109,10 @@ def load_motherduck_sensor_settings() -> MotherDuckSensorSettings:
 
 
 def load_staging_agent_polling_settings() -> StagingAgentPollingSettings:
-    base_url = (os.getenv("STAGING_AGENT_BASE_URL") or "http://host.docker.internal:8080").strip().rstrip("/")
+    base_url = (os.getenv("STAGING_AGENT_BASE_URL") or "http://host.docker.internal:8081").strip().rstrip("/")
     return StagingAgentPollingSettings(
         enabled=bool_env("STAGING_AGENT_POLLING_ENABLED", False),
-        base_url=base_url or "http://host.docker.internal:8080",
+        base_url=base_url or "http://host.docker.internal:8081",
         poll_limit=int_env("STAGING_AGENT_POLL_LIMIT", 20, 1),
         connect_timeout_sec=int_env("STAGING_AGENT_CONNECT_TIMEOUT_SEC", 3, 1),
         read_timeout_sec=int_env("STAGING_AGENT_READ_TIMEOUT_SEC", 10, 1),

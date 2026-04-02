@@ -66,11 +66,17 @@ Staging은 `docker compose --profile staging`으로만 기동. Production과 **D
 - **Python 3.10+**, formatter/linter: `ruff` (line-length 120)
 - **Dagster**: `@asset` 우선, `@op+@job` 필요 시만
 - **Import 계층** — 코드에 5-layer 주석 있음. 하위→상위 import 금지
-  - L1-2: `lib/` (순수 Python) → L3: `ops` → L4: `assets/sensors` → L5: `definitions.py`
+  - L1-2: `lib/` (순수 Python, key_builders 포함) → L3: `ops` → L4: `assets/sensors` → L5: `definitions.py`
+  - `lib/spec_config.py`는 순수 태그 파싱만. DB 의존 함수는 `defs/spec/config_resolver.py`에 위치
+  - MinIO 키 빌더는 `lib/key_builders.py`에 통합. 각 `defs/` 모듈은 thin wrapper로 위임
+- **모듈 분할 규칙** — 대형 파일은 도메인별 서브모듈로 분할
+  - `defs/process/`: `assets.py`(라우팅) + `helpers.py` + `captioning.py` + `frame_extract.py` + `raw_frames.py`
+  - `defs/label/`: `assets.py`(라우팅) + `label_helpers.py` + `timestamp.py` + `artifact_*.py`
+  - `resources/`: `duckdb_base.py` + `duckdb_phash.py` + `duckdb_migration.py` + `duckdb_ingest_*.py`
 - **커밋**: conventional commits (`feat:`, `fix:`, `refactor:`, `test:`, `docs:`, `chore:`)
   - "어떻게 수정했다"보다 **"무엇과 왜 수정했는지"** (`.gitmessage.txt` 참고)
 - **에러 처리**: per-file fail-forward — 한 파일 실패해도 나머지 계속 처리
-- **테스트**: pytest, in-memory DuckDB fixture, mocked MinIO (`moto[s3]`)
+- **테스트**: pytest, in-memory DuckDB fixture, mocked MinIO (`moto[s3]`), `tests/conftest.py` 공통 fixture
 
 ---
 
