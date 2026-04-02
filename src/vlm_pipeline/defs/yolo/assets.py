@@ -420,29 +420,13 @@ def bbox_labeling(
 
 
 def _build_yolo_label_key(image_key: str) -> str:
-    key_path = PurePosixPath(str(image_key or "").strip())
-    stem = key_path.stem or "image"
-    parent = key_path.parent
-    if parent.name == "image":
-        raw_parent = parent.parent
-    else:
-        raw_parent = parent
-    if str(raw_parent) and str(raw_parent) != ".":
-        return str(raw_parent / "detections" / f"{stem}.json")
-    return str(PurePosixPath("detections") / f"{stem}.json")
+    from vlm_pipeline.lib.key_builders import build_yolo_label_key
+    return build_yolo_label_key(image_key)
 
 
 def _build_image_classification_key(image_key: str) -> str:
-    key_path = PurePosixPath(str(image_key or "").strip())
-    stem = key_path.stem or "image"
-    parent = key_path.parent
-    if parent.name == "image":
-        raw_parent = parent.parent
-    else:
-        raw_parent = parent
-    if str(raw_parent) and str(raw_parent) != ".":
-        return str(raw_parent / "image_classifications" / f"{stem}.json")
-    return str(PurePosixPath("image_classifications") / f"{stem}.json")
+    from vlm_pipeline.lib.key_builders import build_image_classification_key
+    return build_image_classification_key(image_key)
 
 
 def _flush_labels(db: DuckDBResource, rows: list[dict], context) -> None:

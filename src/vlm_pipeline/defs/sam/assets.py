@@ -268,13 +268,8 @@ def _run_sam3_shadow_compare(context, db: DuckDBResource, minio: MinIOResource) 
 
 
 def _build_sam3_segmentation_key(image_key: str) -> str:
-    key_path = PurePosixPath(str(image_key or "").strip())
-    stem = key_path.stem or "image"
-    parent = key_path.parent
-    raw_parent = parent.parent if parent.name == "image" else parent
-    if str(raw_parent) and str(raw_parent) != ".":
-        return str(raw_parent / "sam3_segmentations" / f"{stem}.json")
-    return str(PurePosixPath("sam3_segmentations") / f"{stem}.json")
+    from vlm_pipeline.lib.key_builders import build_sam3_segmentation_key
+    return build_sam3_segmentation_key(image_key)
 
 
 def _build_sam3_benchmark_root(benchmark_id: str) -> str:
