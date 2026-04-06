@@ -29,6 +29,7 @@
   - [RUN_2f50c9bb_MOTHERDUCK_QUERY](RUN_2f50c9bb_MOTHERDUCK_QUERY.md)
   - [QA_PHASE3_REPORT](QA_PHASE3_REPORT.md)
   - [QA_PHASE4_REPORT](QA_PHASE4_REPORT.md)
+  - [Production khon/adlib 라벨·전처리 정리 Runbook](references/production-khon-adlib-label-preprocess-cleanup-runbook.md)
 
 ## 새 문서 작성 규칙
 

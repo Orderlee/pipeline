@@ -148,6 +148,18 @@ Staging은 `docker compose --profile staging`으로만 기동. Production과 **D
 
 ---
 
+## Label Studio 연동
+
+- compose: `docker compose -f docker-compose.yaml -f docker-compose.labelstudio.yaml up -d`
+- LS UI: `http://<HOST>:8084` (기본 8080이나 piaspace-agent 충돌로 `LS_PORT=8084` 사용)
+- 필수 env: `LS_API_KEY` (LS 계정 설정에서 발급), `WEBHOOK_HOST` (LS→webhook 접근 IP)
+- sensor `ls_task_create_sensor`: Dagster UI에서 수동 ON 필요 (default=STOPPED)
+- webhook 등록 (프로젝트별): `python src/gemini/ls_webhook.py register --project <id>`
+- presigned URL 만료(기본 7일) 시: `python src/gemini/ls_tasks.py renew --project-name <name>`
+- Slack 알림/slash command는 `SLACK_WEBHOOK_URL`, `SLACK_SIGNING_SECRET` 설정 시 활성화
+
+---
+
 ## GCS 외부 수집
 
 - 버킷: `khon-kaen-rtsp-bucket` (주), `adlibhotel-event-bucket`, `kkpolice-event-bucket`

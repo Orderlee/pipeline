@@ -1,0 +1,66 @@
+# =====================================================
+# Label Studio + Webhook Server
+# 별도 프로파일로 main compose와 독립 기동
+# 사용: docker compose -f docker-compose.yaml -f docker-compose.labelstudio.yaml up -d
+# =====================================================
+
+name: pipeline
+
+services:
+  # ===== Label Studio =====
+  labelstudio:
+    image: heartexlabs/label-studio:latest
+    ports:
+      - "0.0.0.0:${LS_PORT:-8080}:8080"
+    environment:
+      LABEL_STUDIO_HOST: ${LABEL_STUDIO_HOST:-http://localhost:${LS_PORT:-8080}}
+      DJANGO_DB: default
+      POSTGRE_NAME: ${POSTGRES_DB:-airflow}
+      POSTGRE_USER: ${POSTGRES_USER:-airflow}
+      POSTGRE_PASSWORD: ${POSTGRES_PASSWORD:-airflow}
+      POSTGRE_PORT: 5432
+      POSTGRE_HOST: pipeline-postgres
+    volumes:
+      - labelstudio_data:/label-studio/data
+    depends_on:
+      - postgres
+    restart: unless-stopped
+    networks:
+      - pipeline-network
+
+  # ===== LS Webhook Server =====
+  ls-webhook:
+    image: datapipeline:gpu-cu124
+    user: root
+    ports:
+      - "0.0.0.0:${LS_WEBHOOK_PORT:-8003}:8003"
+    environment:
+      LS_API_KEY: ${LS_API_KEY:-}
+      LS_URL: http://labelstudio:8080
+      WEBHOOK_HOST: ${WEBHOOK_HOST:-}
+      WEBHOOK_PORT: ${LS_WEBHOOK_PORT:-8003}
+      SLACK_WEBHOOK_URL: ${SLACK_WEBHOOK_URL:-}
+      SLACK_SIGNING_SECRET: ${SLACK_SIGNING_SECRET:-}
+      DATAOPS_DUCKDB_PATH: ${DATAOPS_DUCKDB_PATH:-/data/pipeline.duckdb}
+      MINIO_ENDPOINT: ${MINIO_ENDPOINT:-http://172.168.47.36:9000}
+      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin}
+    volumes:
+      - ./data:/data
+    command:
+      [
+        "/bin/bash", "-c",
+        "PYTHONPATH=/:/src/python:/src/vlm python /src/vlm/gemini/ls_webhook.py serve --host 0.0.0.0 --port ${LS_WEBHOOK_PORT:-8003}"
+      ]
+    depends_on:
+      - labelstudio
+    restart: unless-stopped
+    networks:
+      - pipeline-network
+
+volumes:
+  labelstudio_data:
+
+networks:
+  pipeline-network:
+    external: true

@@ -1,0 +1,62 @@
+{
+  "generated_at": "2026-04-06T11:40:00+09:00",
+  "scope": "production_full_reset_for_retest",
+  "db": {
+    "path": "/home/pia/work_p/Datapipeline-Data-data_pipeline/docker/data/pipeline.duckdb",
+    "method": "recreate_from_schema_sql",
+    "before": {
+      "dataset_clips": 0,
+      "datasets": 0,
+      "image_labels": 355,
+      "image_metadata": 355,
+      "labeling_configs": 0,
+      "labeling_specs": 0,
+      "labels": 96,
+      "processed_clips": 96,
+      "raw_files": 20882,
+      "requester_config_map": 0,
+      "staging_dispatch_requests": 6,
+      "staging_model_configs": 3,
+      "staging_pipeline_runs": 23,
+      "video_metadata": 20881
+    },
+    "after": {
+      "dataset_clips": 0,
+      "datasets": 0,
+      "image_labels": 0,
+      "image_metadata": 0,
+      "labeling_configs": 0,
+      "labeling_specs": 0,
+      "labels": 0,
+      "processed_clips": 0,
+      "raw_files": 0,
+      "requester_config_map": 0,
+      "staging_dispatch_requests": 0,
+      "staging_model_configs": 0,
+      "staging_pipeline_runs": 0,
+      "video_metadata": 0
+    }
+  },
+  "minio": {
+    "endpoint": "http://172.168.47.36:9000",
+    "before": {
+      "vlm-raw": 20795,
+      "vlm-labels": 409,
+      "vlm-processed": 445,
+      "vlm-dataset": 0
+    },
+    "after": {
+      "vlm-raw": 0,
+      "vlm-labels": 0,
+      "vlm-processed": 0,
+      "vlm-dataset": 0
+    }
+  },
+  "services_left_stopped": [
+    "pipeline-dagster-1",
+    "pipeline-dagster-code-server-1",
+    "pipeline-dagster-daemon-1",
+    "pipeline-app-1"
+  ],
+  "note": "production empty state preservation을 위해 app/writer는 재기동하지 않음"
+}

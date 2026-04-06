@@ -1,0 +1,591 @@
+{
+  "generated_at": "2026-04-06T01:08:02",
+  "mode": "apply",
+  "scope": "label_preprocess",
+  "requested_prefixes": {
+    "labels": [
+      "adlib-hotel-202512/",
+      "khon-kaen-rtsp-bucket/"
+    ],
+    "processed": [
+      "khon-kaen-rtsp-bucket/"
+    ]
+  },
+  "target_prefixes": [
+    "adlib-hotel-202512/",
+    "khon-kaen-rtsp-bucket/"
+  ],
+  "db_path": "/data/pipeline.duckdb",
+  "minio_endpoint": "http://pipeline-minio-1:9000",
+  "report_path": "/tmp/production_label_preprocess_cleanup_asymmetric_apply_20260406.json",
+  "before": {
+    "requested_scope_breakdown": {
+      "labels": [
+        {
+          "scope_type": "labels",
+          "target_prefix": "adlib-hotel-202512/",
+          "asset_count": 3497,
+          "counts": {
+            "raw_files": 3497,
+            "video_metadata": 3497,
+            "labels": 106,
+            "processed_clips": 103,
+            "image_metadata": 0,
+            "image_labels": 0,
+            "dataset_clips": 0
+          },
+          "samples": [
+            {
+              "asset_id": "272c3242-40dc-43a2-9704-fc541456f606",
+              "source_unit_name": null,
+              "raw_key": "adlib-hotel-202512/20251222/falldown_1_9608.mp4",
+              "archive_path": "/nas/archive/adlib-hotel-202512/20251222/falldown_1_9608.mp4"
+            },
+            {
+              "asset_id": "6a54ef91-4acf-40d5-a978-ffd8666e17cc",
+              "source_unit_name": null,
+              "raw_key": "adlib-hotel-202512/20251222/smoke_1_0386.mp4",
+              "archive_path": "/nas/archive/adlib-hotel-202512/20251222/smoke_1_0386.mp4"
+            },
+            {
+              "asset_id": "fc13ad63-94df-4b7c-be87-9b275a5aac54",
+              "source_unit_name": null,
+              "raw_key": "adlib-hotel-202512/20251222/smoke_1_0405.mp4",
+              "archive_path": "/nas/archive/adlib-hotel-202512/20251222/smoke_1_0405.mp4"
+            },
+            {
+              "asset_id": "7f8a9d20-c704-47de-a283-7305113ad829",
+              "source_unit_name": null,
+              "raw_key": "adlib-hotel-202512/20251222/smoke_1_0457.mp4",
+              "archive_path": "/nas/archive/adlib-hotel-202512/20251222/smoke_1_0457.mp4"
+            },
+            {
+              "asset_id": "d53f690d-bb16-4ea2-8c07-ef5b4d9ec044",
+              "source_unit_name": null,
+              "raw_key": "adlib-hotel-202512/20251222/smoke_1_0950.mp4",
+              "archive_path": "/nas/archive/adlib-hotel-202512/20251222/smoke_1_0950.mp4"
+            }
+          ]
+        },
+        {
+          "scope_type": "labels",
+          "target_prefix": "khon-kaen-rtsp-bucket/",
+          "asset_count": 4215,
+          "counts": {
+            "raw_files": 4215,
+            "video_metadata": 4215,
+            "labels": 1305,
+            "processed_clips": 1957,
+            "image_metadata": 9785,
+            "image_labels": 0,
+            "dataset_clips": 0
+          },
+          "samples": [
+            {
+              "asset_id": "0f19b9dd-4637-4912-96f9-c595042658ac",
+              "source_unit_name": null,
+              "raw_key": "khon-kaen-rtsp-bucket/20251128/fire_235_156.mp4",
+              "archive_path": "/nas/archive/khon-kaen-rtsp-bucket/20251128/fire_235_156.mp4"
+            },
+            {
+              "asset_id": "af518e3c-4950-43e8-97a7-70ca752e6b8d",
+              "source_unit_name": null,
+              "raw_key": "khon-kaen-rtsp-bucket/20251128/weapon_184_2149.mp4",
+              "archive_path": "/nas/archive/khon-kaen-rtsp-bucket/20251128/weapon_184_2149.mp4"
+            },
+            {
+              "asset_id": "4fb5f67b-810c-47f2-9890-cfe09859f955",
+              "source_unit_name": null,
+              "raw_key": "khon-kaen-rtsp-bucket/20251128/weapon_185_2165.mp4",
+              "archive_path": "/nas/archive/khon-kaen-rtsp-bucket/20251128/weapon_185_2165.mp4"
+            },
+            {
+              "asset_id": "b84b4093-55e1-49ac-a65d-a09709b89f8c",
+              "source_unit_name": null,
+              "raw_key": "khon-kaen-rtsp-bucket/20251128/weapon_188_155.mp4",
+              "archive_path": "/nas/archive/khon-kaen-rtsp-bucket/20251128/weapon_188_155.mp4"
+            },
+            {
+              "asset_id": "8283e5f4-2df8-46a8-afec-384f943a616c",
+              "source_unit_name": null,
+              "raw_key": "khon-kaen-rtsp-bucket/20251128/weapon_190_69.mp4",
+              "archive_path": "/nas/archive/khon-kaen-rtsp-bucket/20251128/weapon_190_69.mp4"
+            }
+          ]
+        }
+      ],
+      "processed": [
+        {
+          "scope_type": "processed",
+          "target_prefix": "khon-kaen-rtsp-bucket/",
+          "asset_count": 4215,
+          "counts": {
+            "raw_files": 4215,
+            "video_metadata": 4215,
+            "labels": 0,
+            "processed_clips": 1957,
+            "image_metadata": 9785,
+            "image_labels": 0,
+            "dataset_clips": 0
+          },
+          "samples": [
+            {
+              "asset_id": "0f19b9dd-4637-4912-96f9-c595042658ac",
+              "source_unit_name": null,
+              "raw_key": "khon-kaen-rtsp-bucket/20251128/fire_235_156.mp4",
+              "archive_path": "/nas/archive/khon-kaen-rtsp-bucket/20251128/fire_235_156.mp4"
+            },
+            {
+              "asset_id": "af518e3c-4950-43e8-97a7-70ca752e6b8d",
+              "source_unit_name": null,
+              "raw_key": "khon-kaen-rtsp-bucket/20251128/weapon_184_2149.mp4",
+              "archive_path": "/nas/archive/khon-kaen-rtsp-bucket/20251128/weapon_184_2149.mp4"
+            },
+            {
+              "asset_id": "4fb5f67b-810c-47f2-9890-cfe09859f955",
+              "source_unit_name": null,
+              "raw_key": "khon-kaen-rtsp-bucket/20251128/weapon_185_2165.mp4",
+              "archive_path": "/nas/archive/khon-kaen-rtsp-bucket/20251128/weapon_185_2165.mp4"
+            },
+            {
+              "asset_id": "b84b4093-55e1-49ac-a65d-a09709b89f8c",
+              "source_unit_name": null,
+              "raw_key": "khon-kaen-rtsp-bucket/20251128/weapon_188_155.mp4",
+              "archive_path": "/nas/archive/khon-kaen-rtsp-bucket/20251128/weapon_188_155.mp4"
+            },
+            {
+              "asset_id": "8283e5f4-2df8-46a8-afec-384f943a616c",
+              "source_unit_name": null,
+              "raw_key": "khon-kaen-rtsp-bucket/20251128/weapon_190_69.mp4",
+              "archive_path": "/nas/archive/khon-kaen-rtsp-bucket/20251128/weapon_190_69.mp4"
+            }
+          ]
+        }
+      ]
+    },
+    "target_counts": {
+      "raw_files": 7712,
+      "video_metadata": 7712,
+      "labels": 1411,
+      "processed_clips": 2060,
+      "image_metadata": 9785,
+      "image_labels": 0,
+      "dataset_clips": 0
+    },
+    "table_total_counts": {
+      "raw_files": 20882,
+      "video_metadata": 20881,
+      "labels": 1507,
+      "processed_clips": 2156,
+      "image_metadata": 10140,
+      "image_labels": 355,
+      "dataset_clips": 0
+    },
+    "delete_candidates": {
+      "label_asset_id_count": 7712,
+      "processed_asset_id_count": 4215,
+      "asset_id_count": 7712,
+      "label_id_count": 1411,
+      "clip_id_count": 2060,
+      "image_id_count": 9785,
+      "bucket_candidates": [
+        {
+          "bucket": "vlm-labels",
+          "candidate_count": 911,
+          "sample_keys": [
+            "adlib-hotel-202512/20251222/events/smoke_1_1436.json",
+            "adlib-hotel-202512/20251222/events/smoke_1_1503.json",
+            "adlib-hotel-202512/20251222/events/smoke_1_1520.json",
+            "adlib-hotel-202512/20251222/events/smoke_1_1523.json",
+            "adlib-hotel-202512/20251222/events/smoke_1_1534.json"
+          ]
+        },
+        {
+          "bucket": "vlm-processed",
+          "candidate_count": 11840,
+          "sample_keys": [
+            "adlib-hotel-202512/20251222/clips/smoke_1_1436_00001000_00002000.mp4",
+            "adlib-hotel-202512/20251222/clips/smoke_1_1503_00000000_00002000.mp4",
+            "adlib-hotel-202512/20251222/clips/smoke_1_1520_00000000_00002000.mp4",
+            "adlib-hotel-202512/20251222/clips/smoke_1_1523_00000000_00004000.mp4",
+            "adlib-hotel-202512/20251222/clips/smoke_1_1534_00000000_00425000.mp4"
+          ]
+        }
+      ]
+    },
+    "image_role_breakdown": [
+      {
+        "image_role": "processed_clip_frame",
+        "count": 9785
+      }
+    ],
+    "prefix_object_counts": [
+      {
+        "bucket": "vlm-labels",
+        "prefix": "adlib-hotel-202512/",
+        "count": 0,
+        "samples": []
+      },
+      {
+        "bucket": "vlm-labels",
+        "prefix": "khon-kaen-rtsp-bucket/",
+        "count": 0,
+        "samples": []
+      },
+      {
+        "bucket": "vlm-processed",
+        "prefix": "adlib-hotel-202512/",
+        "count": 0,
+        "samples": []
+      },
+      {
+        "bucket": "vlm-processed",
+        "prefix": "khon-kaen-rtsp-bucket/",
+        "count": 0,
+        "samples": []
+      }
+    ]
+  },
+  "warnings": [],
+  "apply": {
+    "db_transaction": {
+      "mode": "staged_commits_for_duckdb_fk_limitation",
+      "stages": [
+        "detach_clip_children",
+        "delete_processed_clips",
+        "delete_image_metadata",
+        "delete_labels"
+      ],
+      "detached_foreign_keys": [
+        "image_metadata.source_clip_id"
+      ],
+      "tables_touched_in_order": [
+        "dataset_clips",
+        "image_labels",
+        "image_metadata.source_clip_id (set NULL)",
+        "processed_clips",
+        "image_metadata",
+        "labels"
+      ]
+    },
+    "minio": {
+      "deleted": 0,
+      "missing": 12751,
+      "failed": 0,
+      "per_bucket": [
+        {
+          "bucket": "vlm-labels",
+          "deleted": 0,
+          "missing": 911,
+          "failed": 0
+        },
+        {
+          "bucket": "vlm-processed",
+          "deleted": 0,
+          "missing": 11840,
+          "failed": 0
+        }
+      ],
+      "samples": {
+        "missing": [
+          {
+            "bucket": "vlm-labels",
+            "key": "adlib-hotel-202512/20251222/events/smoke_1_1436.json"
+          },
+          {
+            "bucket": "vlm-labels",
+            "key": "adlib-hotel-202512/20251222/events/smoke_1_1503.json"
+          },
+          {
+            "bucket": "vlm-labels",
+            "key": "adlib-hotel-202512/20251222/events/smoke_1_1520.json"
+          },
+          {
+            "bucket": "vlm-labels",
+            "key": "adlib-hotel-202512/20251222/events/smoke_1_1523.json"
+          },
+          {
+            "bucket": "vlm-labels",
+            "key": "adlib-hotel-202512/20251222/events/smoke_1_1534.json"
+          },
+          {
+            "bucket": "vlm-labels",
+            "key": "adlib-hotel-202512/20251222/events/smoke_1_1537.json"
+          },
+          {
+            "bucket": "vlm-labels",
+            "key": "adlib-hotel-202512/20251222/events/smoke_1_1669.json"
+          },
+          {
+            "bucket": "vlm-labels",
+            "key": "adlib-hotel-202512/20251222/events/smoke_1_1671.json"
+          },
+          {
+            "bucket": "vlm-labels",
+            "key": "adlib-hotel-202512/20251223/events/falldown_1_3457.json"
+          },
+          {
+            "bucket": "vlm-labels",
+            "key": "adlib-hotel-202512/20251223/events/smoke_1_4593.json"
+          }
+        ],
+        "failed": []
+      }
+    }
+  },
+  "after": {
+    "requested_scope_breakdown": {
+      "labels": [
+        {
+          "scope_type": "labels",
+          "target_prefix": "adlib-hotel-202512/",
+          "asset_count": 3497,
+          "counts": {
+            "raw_files": 3497,
+            "video_metadata": 3497,
+            "labels": 0,
+            "processed_clips": 0,
+            "image_metadata": 0,
+            "image_labels": 0,
+            "dataset_clips": 0
+          },
+          "samples": [
+            {
+              "asset_id": "272c3242-40dc-43a2-9704-fc541456f606",
+              "source_unit_name": null,
+              "raw_key": "adlib-hotel-202512/20251222/falldown_1_9608.mp4",
+              "archive_path": "/nas/archive/adlib-hotel-202512/20251222/falldown_1_9608.mp4"
+            },
+            {
+              "asset_id": "6a54ef91-4acf-40d5-a978-ffd8666e17cc",
+              "source_unit_name": null,
+              "raw_key": "adlib-hotel-202512/20251222/smoke_1_0386.mp4",
+              "archive_path": "/nas/archive/adlib-hotel-202512/20251222/smoke_1_0386.mp4"
+            },
+            {
+              "asset_id": "fc13ad63-94df-4b7c-be87-9b275a5aac54",
+              "source_unit_name": null,
+              "raw_key": "adlib-hotel-202512/20251222/smoke_1_0405.mp4",
+              "archive_path": "/nas/archive/adlib-hotel-202512/20251222/smoke_1_0405.mp4"
+            },
+            {
+              "asset_id": "7f8a9d20-c704-47de-a283-7305113ad829",
+              "source_unit_name": null,
+              "raw_key": "adlib-hotel-202512/20251222/smoke_1_0457.mp4",
+              "archive_path": "/nas/archive/adlib-hotel-202512/20251222/smoke_1_0457.mp4"
+            },
+            {
+              "asset_id": "d53f690d-bb16-4ea2-8c07-ef5b4d9ec044",
+              "source_unit_name": null,
+              "raw_key": "adlib-hotel-202512/20251222/smoke_1_0950.mp4",
+              "archive_path": "/nas/archive/adlib-hotel-202512/20251222/smoke_1_0950.mp4"
+            }
+          ]
+        },
+        {
+          "scope_type": "labels",
+          "target_prefix": "khon-kaen-rtsp-bucket/",
+          "asset_count": 4215,
+          "counts": {
+            "raw_files": 4215,
+            "video_metadata": 4215,
+            "labels": 0,
+            "processed_clips": 0,
+            "image_metadata": 0,
+            "image_labels": 0,
+            "dataset_clips": 0
+          },
+          "samples": [
+            {
+              "asset_id": "0f19b9dd-4637-4912-96f9-c595042658ac",
+              "source_unit_name": null,
+              "raw_key": "khon-kaen-rtsp-bucket/20251128/fire_235_156.mp4",
+              "archive_path": "/nas/archive/khon-kaen-rtsp-bucket/20251128/fire_235_156.mp4"
+            },
+            {
+              "asset_id": "af518e3c-4950-43e8-97a7-70ca752e6b8d",
+              "source_unit_name": null,
+              "raw_key": "khon-kaen-rtsp-bucket/20251128/weapon_184_2149.mp4",
+              "archive_path": "/nas/archive/khon-kaen-rtsp-bucket/20251128/weapon_184_2149.mp4"
+            },
+            {
+              "asset_id": "4fb5f67b-810c-47f2-9890-cfe09859f955",
+              "source_unit_name": null,
+              "raw_key": "khon-kaen-rtsp-bucket/20251128/weapon_185_2165.mp4",
+              "archive_path": "/nas/archive/khon-kaen-rtsp-bucket/20251128/weapon_185_2165.mp4"
+            },
+            {
+              "asset_id": "b84b4093-55e1-49ac-a65d-a09709b89f8c",
+              "source_unit_name": null,
+              "raw_key": "khon-kaen-rtsp-bucket/20251128/weapon_188_155.mp4",
+              "archive_path": "/nas/archive/khon-kaen-rtsp-bucket/20251128/weapon_188_155.mp4"
+            },
+            {
+              "asset_id": "8283e5f4-2df8-46a8-afec-384f943a616c",
+              "source_unit_name": null,
+              "raw_key": "khon-kaen-rtsp-bucket/20251128/weapon_190_69.mp4",
+              "archive_path": "/nas/archive/khon-kaen-rtsp-bucket/20251128/weapon_190_69.mp4"
+            }
+          ]
+        }
+      ],
+      "processed": [
+        {
+          "scope_type": "processed",
+          "target_prefix": "khon-kaen-rtsp-bucket/",
+          "asset_count": 4215,
+          "counts": {
+            "raw_files": 4215,
+            "video_metadata": 4215,
+            "labels": 0,
+            "processed_clips": 0,
+            "image_metadata": 0,
+            "image_labels": 0,
+            "dataset_clips": 0
+          },
+          "samples": [
+            {
+              "asset_id": "0f19b9dd-4637-4912-96f9-c595042658ac",
+              "source_unit_name": null,
+              "raw_key": "khon-kaen-rtsp-bucket/20251128/fire_235_156.mp4",
+              "archive_path": "/nas/archive/khon-kaen-rtsp-bucket/20251128/fire_235_156.mp4"
+            },
+            {
+              "asset_id": "af518e3c-4950-43e8-97a7-70ca752e6b8d",
+              "source_unit_name": null,
+              "raw_key": "khon-kaen-rtsp-bucket/20251128/weapon_184_2149.mp4",
+              "archive_path": "/nas/archive/khon-kaen-rtsp-bucket/20251128/weapon_184_2149.mp4"
+            },
+            {
+              "asset_id": "4fb5f67b-810c-47f2-9890-cfe09859f955",
+              "source_unit_name": null,
+              "raw_key": "khon-kaen-rtsp-bucket/20251128/weapon_185_2165.mp4",
+              "archive_path": "/nas/archive/khon-kaen-rtsp-bucket/20251128/weapon_185_2165.mp4"
+            },
+            {
+              "asset_id": "b84b4093-55e1-49ac-a65d-a09709b89f8c",
+              "source_unit_name": null,
+              "raw_key": "khon-kaen-rtsp-bucket/20251128/weapon_188_155.mp4",
+              "archive_path": "/nas/archive/khon-kaen-rtsp-bucket/20251128/weapon_188_155.mp4"
+            },
+            {
+              "asset_id": "8283e5f4-2df8-46a8-afec-384f943a616c",
+              "source_unit_name": null,
+              "raw_key": "khon-kaen-rtsp-bucket/20251128/weapon_190_69.mp4",
+              "archive_path": "/nas/archive/khon-kaen-rtsp-bucket/20251128/weapon_190_69.mp4"
+            }
+          ]
+        }
+      ]
+    },
+    "target_counts": {
+      "raw_files": 7712,
+      "video_metadata": 7712,
+      "labels": 0,
+      "processed_clips": 0,
+      "image_metadata": 0,
+      "image_labels": 0,
+      "dataset_clips": 0
+    },
+    "table_total_counts": {
+      "raw_files": 20882,
+      "video_metadata": 20881,
+      "labels": 96,
+      "processed_clips": 96,
+      "image_metadata": 355,
+      "image_labels": 355,
+      "dataset_clips": 0
+    },
+    "delete_candidates": {
+      "label_asset_id_count": 7712,
+      "processed_asset_id_count": 4215,
+      "asset_id_count": 7712,
+      "label_id_count": 0,
+      "clip_id_count": 0,
+      "image_id_count": 0,
+      "bucket_candidates": []
+    },
+    "image_role_breakdown": [],
+    "prefix_object_counts": [
+      {
+        "bucket": "vlm-labels",
+        "prefix": "adlib-hotel-202512/",
+        "count": 0,
+        "samples": []
+      },
+      {
+        "bucket": "vlm-labels",
+        "prefix": "khon-kaen-rtsp-bucket/",
+        "count": 0,
+        "samples": []
+      },
+      {
+        "bucket": "vlm-processed",
+        "prefix": "adlib-hotel-202512/",
+        "count": 0,
+        "samples": []
+      },
+      {
+        "bucket": "vlm-processed",
+        "prefix": "khon-kaen-rtsp-bucket/",
+        "count": 0,
+        "samples": []
+      }
+    ]
+  },
+  "verification": {
+    "after_target_counts": {
+      "raw_files": 7712,
+      "video_metadata": 7712,
+      "labels": 0,
+      "processed_clips": 0,
+      "image_metadata": 0,
+      "image_labels": 0,
+      "dataset_clips": 0
+    },
+    "after_prefix_object_counts": [
+      {
+        "bucket": "vlm-labels",
+        "prefix": "adlib-hotel-202512/",
+        "count": 0,
+        "samples": []
+      },
+      {
+        "bucket": "vlm-labels",
+        "prefix": "khon-kaen-rtsp-bucket/",
+        "count": 0,
+        "samples": []
+      },
+      {
+        "bucket": "vlm-processed",
+        "prefix": "adlib-hotel-202512/",
+        "count": 0,
+        "samples": []
+      },
+      {
+        "bucket": "vlm-processed",
+        "prefix": "khon-kaen-rtsp-bucket/",
+        "count": 0,
+        "samples": []
+      }
+    ],
+    "zero_checks": {
+      "labels": true,
+      "processed_clips": true,
+      "image_metadata": true,
+      "image_labels": true,
+      "dataset_clips": true
+    },
+    "preserved_checks": {
+      "raw_files_preserved": true,
+      "video_metadata_preserved": true
+    },
+    "minio_checks": {
+      "vlm-labels::adlib-hotel-202512/": true,
+      "vlm-labels::khon-kaen-rtsp-bucket/": true,
+      "vlm-processed::adlib-hotel-202512/": true,
+      "vlm-processed::khon-kaen-rtsp-bucket/": true
+    },
+    "all_passed": true
+  }
+}

@@ -1,5 +1,47 @@
 # WORKLOG
 
+## 2026-04-06
+
+### 1. Label Studio 셋업 준비
+- **목적**: Gemini 라벨 검수용 Label Studio 컨테이너 기동 준비
+- **조치**:
+    - `docker/.env`에 LS 관련 환경변수 추가 (`LS_PORT=8084`, `LS_API_KEY`, `WEBHOOK_HOST`, `LS_WEBHOOK_PORT=8003`)
+    - 포트 `8080`은 `piaspace-agent`가 점유 중이므로 `8084`로 변경
+    - `docker-compose.labelstudio.yaml`은 기존 파이프라인과 완전 분리 구조 확인 완료
+- **다음 단계**:
+    1. `docker compose -f docker-compose.yaml -f docker-compose.labelstudio.yaml up -d labelstudio`
+    2. `http://<HOST>:8084` 접속 → 계정 생성 → API key 발급
+    3. `.env`에 `LS_API_KEY`, `WEBHOOK_HOST` 값 반영 후 `ls-webhook` 기동
+
+## 2026-04-03
+
+### 1. Staging dispatch 서비스 분리 및 흐름 정리
+- **문제**: staging dispatch 처리 로직이 sensor 안에 몰려 있어 중복 요청 체크, 실패 기록, manifest 작성, run 상태 연동을 한 번에 파악하기 어려웠음.
+- **원인**: dispatch request 준비, archive/manifest 경로 계산, DB 기록, in-flight run 검사 로직이 sensor 본문과 run status 처리 코드에 분산되어 유지보수성이 떨어졌음.
+- **조치**:
+    - dispatch request 준비, manifest 작성, DB 기록, run request 생성 로직을 service 레이어로 분리해 sensor 책임을 줄임.
+    - 중복 request_id, 같은 folder의 진행 중 run, 실패 request upsert 흐름을 DB helper와 공통 함수로 정리함.
+    - dispatch run status와 archive 판단 경로가 같은 tag 해석 함수를 사용하도록 맞춰 상태 전파를 일관되게 정리함.
+    - 관련 파일:
+      - `src/vlm_pipeline/defs/ingest/archive.py`
+
+### 2. 운영 / 에이전트 문서 보강
+- **문제**: 운영과 staging 구분, 파이프라인 흐름, 자동화 에이전트 참고 문서가 서로 다른 수준으로 흩어져 있어 작업자마다 참조 경로가 달라질 수 있었음.
+- **원인**: 짧은 운영 컨텍스트와 장문 레퍼런스, 외부 에이전트용 진입 문서가 분리되어 있었지만 최근 변경사항이 한 번에 정리돼 있지 않았음.
+- **조치**:
+    - Codex/에이전트용 `AGENTS.md`를 추가해 운영 규칙, staging/prod 차이, 자주 쓰는 명령을 빠르게 확인할 수 있게 정리함.
+    - `ANTIGRAVITY.md`와 `CLAUDE2.md`를 보강해 에이전트 진입점과 장문 레퍼런스를 역할별로 구분해 둠.
+    - 관련 파일:
+      - `AGENTS.md`
+
+### 3. 당일 정리
+- **변경 통계**:
+    - 변경 파일 **25개**, +1739/-571줄.
+- **관련 커밋**:
+    - `b94657e6`: fix: DuckDB lock 경합 완화와 운영 복구 스크립트 추가
+    - `0b9c3df9`: feat: ingest 컴팩션/재수화 모듈 추가, 클립 윈도우 분리 및 운영 스크립트 정비
+- **서비스 상태**: 파이프라인 서비스 9개 컨테이너 중 9개 정상 가동.
+- **작업 환경**: Cursor, VSCode
 
 ## 2026-04-02
 

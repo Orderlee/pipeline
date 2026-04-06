@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import ClassVar
+
 import duckdb
 
 
@@ -11,6 +13,8 @@ class DuckDBMigrationMixin:
     ``_table_exists``, ``_table_columns``, ``_load_schema_ddl``, ``connect`` 등은
     ``DuckDBBaseMixin`` 에서 제공된다(MRO 기준).
     """
+
+    _runtime_schema_ensured: ClassVar[bool] = False
 
     # ── Public entry-points ──
 
@@ -37,7 +41,12 @@ class DuckDBMigrationMixin:
 
         컬럼 존재 여부와 필수 테이블 생성만 수행하고, 대량 backfill/repair/index 재생성은 하지 않는다.
         운영 배포 시 명시적 migration 단계에서 ensure_schema() 또는 별도 repair 스크립트를 사용한다.
+
+        프로세스 레벨 ClassVar flag로 첫 호출 시만 DDL을 실행한다.
+        code-server 재시작 시 자동 리셋된다.
         """
+        if DuckDBMigrationMixin._runtime_schema_ensured:
+            return
         ddl = self._load_schema_ddl(include_image_labels=False)
         with self.connect() as conn:
             conn.execute(ddl)
@@ -52,6 +61,7 @@ class DuckDBMigrationMixin:
             self._ensure_raw_files_spec_columns(conn)
             self._ensure_video_metadata_stage_columns(conn)
             self._ensure_video_metadata_reencode_columns(conn)
+        DuckDBMigrationMixin._runtime_schema_ensured = True
 
     def repair_image_metadata_table(self) -> None:
         """운영 중단 상태에서 image_metadata를 명시적으로 재구성한다."""

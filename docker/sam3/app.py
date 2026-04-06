@@ -54,8 +54,14 @@ def _load_model() -> None:
         from sam3.model_builder import build_sam3_image_model
 
         _device = _resolve_device()
-        logger.info("SAM3 loading on device=%s", _device)
-        _model = build_sam3_image_model()
+        checkpoint_path = os.environ.get("SAM3_CHECKPOINT_PATH") or None
+        load_from_hf = checkpoint_path is None
+        logger.info("SAM3 loading on device=%s checkpoint=%s hf=%s", _device, checkpoint_path, load_from_hf)
+        _model = build_sam3_image_model(
+            device=_device,
+            checkpoint_path=checkpoint_path,
+            load_from_HF=load_from_hf,
+        )
         if hasattr(_model, "to"):
             _model = _model.to(_device)
         _processor = Sam3Processor(_model)
