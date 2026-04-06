@@ -322,11 +322,14 @@ services:
     user: root
     ports:
       - "${SAM3_PORT:-8002}:8002"
+    volumes:
+      - ./data/models/sam3:/models:ro
     environment:
       SAM3_DEVICE: "cuda:0"
       SAM3_PORT: "8002"
       SAM3_SCORE_THRESHOLD: "0.0"
       SAM3_MAX_MASKS_PER_PROMPT: "50"
+      SAM3_CHECKPOINT_PATH: "/models/sam3.1_multiplex.pt"
       HF_TOKEN: ${HF_TOKEN:-}
       NVIDIA_VISIBLE_DEVICES: "all"
     deploy:

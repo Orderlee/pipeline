@@ -3,14 +3,18 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any
+from typing import Any, ClassVar
 from uuid import uuid4
 
 
 class DuckDBIngestDispatchMixin:
     """Dispatch tracking tables CRUD mixin."""
 
+    _dispatch_tables_ensured: ClassVar[bool] = False
+
     def ensure_dispatch_tracking_tables(self) -> None:
+        if DuckDBIngestDispatchMixin._dispatch_tables_ensured:
+            return
         with self.connect() as conn:
             conn.execute(
                 """
@@ -61,6 +65,7 @@ class DuckDBIngestDispatchMixin:
                 )
                 """
             )
+        DuckDBIngestDispatchMixin._dispatch_tables_ensured = True
 
     def get_in_flight_dispatch_requests(self, folder_name: str) -> list[dict[str, Any]]:
         normalized_folder = str(folder_name or "").strip()

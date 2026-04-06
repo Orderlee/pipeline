@@ -32,6 +32,16 @@ def int_env(name: str, default: int, minimum: int = 0) -> int:
     return max(minimum, value)
 
 
+def coerce_float(value: object, default: float = 0.0) -> float:
+    """값을 float로 변환, 실패 시 default 반환."""
+    if value in (None, ""):
+        return default
+    try:
+        return float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return default
+
+
 def bool_env(name: str, default: bool = False) -> bool:
     """환경변수를 bool로 읽는다. 미설정이면 default."""
     raw = os.getenv(name)

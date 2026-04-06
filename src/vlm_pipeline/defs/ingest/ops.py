@@ -25,6 +25,16 @@ from vlm_pipeline.lib.video_reencode import (
 from vlm_pipeline.resources.duckdb import DuckDBResource
 from vlm_pipeline.resources.minio import MinIOResource
 
+# ── 업로드 / 재인코딩 워커 상수 ──────────────────────────────────
+DEFAULT_UPLOAD_WORKERS: int = 4
+MAX_UPLOAD_WORKERS: int = 16
+DEFAULT_REENCODE_WORKERS: int = 3
+DEFAULT_REENCODE_THREADS: int = 4
+
+# ── MinIO content-type 기본값 ────────────────────────────────────
+DEFAULT_VIDEO_CONTENT_TYPE: str = "video/mp4"
+DEFAULT_IMAGE_CODEC: str = "jpeg"
+DEFAULT_RAW_BUCKET: str = "vlm-raw"
 
 TRANSIENT_ERROR_MARKERS = (
     "could not set lock on file",
@@ -218,20 +228,19 @@ def normalize_and_archive(
     """
     uploaded: list[dict] = []
     upload_tasks: list[dict[str, Any]] = []
-    max_workers_raw = os.getenv("INGEST_UPLOAD_WORKERS", "4")
+    max_workers_raw = os.getenv("INGEST_UPLOAD_WORKERS", str(DEFAULT_UPLOAD_WORKERS))
     try:
         max_workers = int(max_workers_raw)
     except ValueError:
-        max_workers = 4
-    max_workers = max(1, min(16, max_workers))
+        max_workers = DEFAULT_UPLOAD_WORKERS
+    max_workers = max(1, min(MAX_UPLOAD_WORKERS, max_workers))
 
-    # 재인코딩 병렬 처리 설정 (CPU 코어 수 기준 기본값 3, threads=4)
     try:
-        reencode_workers = max(1, min(16, int(os.getenv("INGEST_REENCODE_WORKERS", "3"))))
-        reencode_threads = max(1, int(os.getenv("INGEST_REENCODE_THREADS", "4")))
+        reencode_workers = max(1, min(MAX_UPLOAD_WORKERS, int(os.getenv("INGEST_REENCODE_WORKERS", str(DEFAULT_REENCODE_WORKERS)))))
+        reencode_threads = max(1, int(os.getenv("INGEST_REENCODE_THREADS", str(DEFAULT_REENCODE_THREADS))))
     except ValueError:
-        reencode_workers = 3
-        reencode_threads = 4
+        reencode_workers = DEFAULT_REENCODE_WORKERS
+        reencode_threads = DEFAULT_REENCODE_THREADS
     candidate_records = [rec for rec in records if rec.get("status") == "registered"]
     total_candidates = len(candidate_records)
     processed_candidates = 0
@@ -336,7 +345,7 @@ def normalize_and_archive(
                 image_meta = dict(meta["image_metadata"])
                 image_meta.update(
                     {
-                        "image_bucket": "vlm-raw",
+                        "image_bucket": DEFAULT_RAW_BUCKET,
                         "image_key": raw_key,
                         "image_role": "source_image",
                         "checksum": meta.get("checksum"),
@@ -422,18 +431,17 @@ def normalize_and_archive(
         filepath = task["filepath"]
         
         if media_type == "image":
-            content_type = f"image/{meta.get('image_metadata', {}).get('codec', 'jpeg')}"
-            minio.upload("vlm-raw", raw_key, meta["file_bytes"], content_type)
+            content_type = f"image/{meta.get('image_metadata', {}).get('codec', DEFAULT_IMAGE_CODEC)}"
+            minio.upload(DEFAULT_RAW_BUCKET, raw_key, meta["file_bytes"], content_type)
             return
 
         stream = meta.get("file_stream")
-        content_type = "video/mp4"
+        content_type = DEFAULT_VIDEO_CONTENT_TYPE
         if stream is not None:
-            minio.upload_fileobj("vlm-raw", raw_key, stream, content_type=content_type)
+            minio.upload_fileobj(DEFAULT_RAW_BUCKET, raw_key, stream, content_type=content_type)
             return
 
-        # SpooledTemporaryFile stream 대신 NAS에 위치한 원본 파일 경로를 직접 넘겨 병렬 업로드 최적화
-        minio.upload_file("vlm-raw", raw_key, filepath, content_type=content_type)
+        minio.upload_file(DEFAULT_RAW_BUCKET, raw_key, filepath, content_type=content_type)
 
     # 재인코딩이 필요한 task가 있으면 reencode_workers 수로 제한
     has_reencode_tasks = any(t.get("reencode_required") for t in upload_tasks)
@@ -470,6 +478,7 @@ def normalize_and_archive(
     successful_uploads = 0
     first_upload_logged = False
 
+    records_by_asset_id = {rec.get("asset_id"): rec for rec in records if rec.get("asset_id")}
     with ThreadPoolExecutor(max_workers=effective_workers) as executor:
         futures = {executor.submit(_execute_upload, t): t for t in upload_tasks}
         for future in as_completed(futures):
@@ -514,10 +523,9 @@ def normalize_and_archive(
             else:
                 exc = result["error"]
                 context.log.error(f"업로드 실패: {filepath}: {exc}")
-                for rec in records:
-                    if rec.get("asset_id") == asset_id:
-                        rec["status"] = "failed"
-                        break
+                rec_by_id = records_by_asset_id.get(asset_id)
+                if rec_by_id is not None:
+                    rec_by_id["status"] = "failed"
                 db.update_raw_file_status(asset_id, "failed", str(exc))
 
             completed_uploads += 1

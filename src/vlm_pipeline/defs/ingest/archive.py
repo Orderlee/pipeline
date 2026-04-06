@@ -15,6 +15,14 @@ if TYPE_CHECKING:
     from vlm_pipeline.resources.config import PipelineConfig
     from vlm_pipeline.resources.duckdb import DuckDBResource
 
+# ── archive 경로 충돌 해결 상수 ──────────────────────────────────
+ARCHIVE_MAX_SUFFIX_ATTEMPTS: int = 100
+ARCHIVE_FIND_MAX_SUFFIX: int = 10
+ARCHIVE_CLEANUP_MAX_DEPTH: int = 5
+ARCHIVE_CLEANUP_MAX_PARENT_LEVELS: int = 8
+TRUTHY_STRINGS: frozenset[str] = frozenset({"1", "true", "t", "yes", "y", "on"})
+FALSY_STRINGS: frozenset[str] = frozenset({"0", "false", "f", "no", "n", "off", ""})
+
 
 def resolve_archive_source_unit_name(source_unit_name: str) -> str:
     """archive 디렉토리용 source unit 이름을 정규화한다.
@@ -35,7 +43,7 @@ def resolve_archive_source_unit_name(source_unit_name: str) -> str:
     return str(PurePosixPath(*parts))
 
 
-def resolve_unique_directory(target_dir: Path, max_attempts: int = 100) -> Path:
+def resolve_unique_directory(target_dir: Path, max_attempts: int = ARCHIVE_MAX_SUFFIX_ATTEMPTS) -> Path:
     """경로 충돌 시 __2, __3 suffix를 붙여 유니크 디렉토리 경로 생성."""
     if not target_dir.exists():
         return target_dir
@@ -46,7 +54,7 @@ def resolve_unique_directory(target_dir: Path, max_attempts: int = 100) -> Path:
     raise OSError(f"Cannot find unique directory after {max_attempts} attempts: {target_dir}")
 
 
-def resolve_unique_file(target_file: Path, max_attempts: int = 100) -> Path:
+def resolve_unique_file(target_file: Path, max_attempts: int = ARCHIVE_MAX_SUFFIX_ATTEMPTS) -> Path:
     """경로 충돌 시 __2, __3 suffix를 붙여 유니크 파일 경로 생성."""
     if not target_file.exists():
         return target_file
@@ -59,7 +67,7 @@ def resolve_unique_file(target_file: Path, max_attempts: int = 100) -> Path:
     raise OSError(f"Cannot find unique file after {max_attempts} attempts: {target_file}")
 
 
-def find_existing_archive_directory(base_dir: Path, max_suffix: int = 10) -> Path | None:
+def find_existing_archive_directory(base_dir: Path, max_suffix: int = ARCHIVE_FIND_MAX_SUFFIX) -> Path | None:
     """archive 대상 디렉토리(base + __N) 중 실제 존재 경로를 탐색."""
     if base_dir.exists() and base_dir.is_dir():
         return base_dir
@@ -70,7 +78,7 @@ def find_existing_archive_directory(base_dir: Path, max_suffix: int = 10) -> Pat
     return None
 
 
-def find_existing_archive_candidate(base_target: Path, max_suffix: int = 10) -> Path | None:
+def find_existing_archive_candidate(base_target: Path, max_suffix: int = ARCHIVE_FIND_MAX_SUFFIX) -> Path | None:
     """archive 대상 경로(base + __N) 중 실제 존재 경로를 탐색.
 
     NFS 환경에서 exists() 호출은 네트워크 I/O를 발생시키므로 max_suffix를 작게 유지.
@@ -91,7 +99,7 @@ def find_existing_in_archive_unit_dirs(
     archive_root_dir: Path,
     source_unit_name: str,
     rel_path: str,
-    max_suffix: int = 5,
+    max_suffix: int = ARCHIVE_FIND_MAX_SUFFIX,
 ) -> Path | None:
     """archive unit 디렉토리에서 파일 존재 여부 탐색.
 
@@ -101,7 +109,7 @@ def find_existing_in_archive_unit_dirs(
     base_dir = archive_root_dir / source_unit_name
     base_target = base_dir / rel
 
-    found = find_existing_archive_candidate(base_target, max_suffix=10)
+    found = find_existing_archive_candidate(base_target, max_suffix=max_suffix)
     if found is not None:
         return found
 
@@ -109,7 +117,7 @@ def find_existing_in_archive_unit_dirs(
         candidate_dir = archive_root_dir / f"{source_unit_name}__{idx}"
         if not candidate_dir.exists():
             break
-        found = find_existing_archive_candidate(candidate_dir / rel, max_suffix=10)
+        found = find_existing_archive_candidate(candidate_dir / rel, max_suffix=max_suffix)
         if found is not None:
             return found
     return None
@@ -123,7 +131,7 @@ def is_source_missing_error(exc: Exception) -> bool:
     return "[Errno 2]" in str(exc)
 
 
-def cleanup_empty_tree(root: Path, max_depth: int = 5) -> None:
+def cleanup_empty_tree(root: Path, max_depth: int = ARCHIVE_CLEANUP_MAX_DEPTH) -> None:
     """하위가 비어 있으면 상향식으로 빈 디렉토리를 정리.
 
     NFS 환경에서 os.walk는 느리므로 max_depth를 제한한다.
@@ -165,7 +173,7 @@ def cleanup_empty_tree(root: Path, max_depth: int = 5) -> None:
     _cleanup_recursive(root, 0)
 
 
-def cleanup_empty_parent_chain(start: Path | None, *, stop_at: Path | None = None, max_levels: int = 8) -> None:
+def cleanup_empty_parent_chain(start: Path | None, *, stop_at: Path | None = None, max_levels: int = ARCHIVE_CLEANUP_MAX_PARENT_LEVELS) -> None:
     """비어 있는 부모 디렉토리를 상향식으로 정리한다.
 
     `stop_at` 디렉토리는 경계로 취급하고 삭제하지 않는다.
@@ -288,13 +296,13 @@ def should_archive_manifest(
     if archive_requested is not None:
         if isinstance(archive_requested, str):
             normalized = archive_requested.strip().lower()
-            if normalized in {"1", "true", "t", "yes", "y", "on"}:
+            if normalized in TRUTHY_STRINGS:
                 if is_staging and not _staging_transfer_allows_archive(manifest, transfer_tool, config=config):
                     return False
                 if not is_staging and not _production_auto_bootstrap_gate():
                     return False
                 return True
-            if normalized in {"0", "false", "f", "no", "n", "off", ""}:
+            if normalized in FALSY_STRINGS:
                 return False
         if not bool(archive_requested):
             return False

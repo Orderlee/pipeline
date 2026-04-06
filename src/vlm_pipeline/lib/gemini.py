@@ -12,6 +12,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+from .env_utils import int_env as _int_env_impl
 from .gemini_prompts import IMAGE_PROMPT, VIDEO_PROMPT
 
 DEFAULT_VIDEO_EXTENSIONS = {".mp4", ".mov", ".mkv", ".avi", ".webm"}
@@ -198,13 +199,7 @@ def _load_vertex_ai() -> tuple[Any, Any, Any]:
     return vertexai, GenerativeModel, Part
 
 
-def _int_env(name: str, default: int, minimum: int = 0) -> int:
-    raw_value = os.getenv(name)
-    try:
-        parsed = int(raw_value) if raw_value is not None else int(default)
-    except (TypeError, ValueError):
-        parsed = int(default)
-    return max(minimum, parsed)
+_int_env = _int_env_impl
 
 
 def _float_env(name: str, default: float, minimum: float = 0.0) -> float:
@@ -216,9 +211,12 @@ def _float_env(name: str, default: float, minimum: float = 0.0) -> float:
     return max(minimum, parsed)
 
 
-def _is_vertex_rate_limit_error(exc: BaseException) -> bool:
+def is_vertex_rate_limit_error(exc: BaseException) -> bool:
     message = str(exc).lower()
     return "429" in message or "resource exhausted" in message
+
+
+_is_vertex_rate_limit_error = is_vertex_rate_limit_error
 
 
 class GeminiAnalyzer:

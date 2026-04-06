@@ -40,6 +40,7 @@ Staging은 `docker compose --profile staging`로만 기동합니다.
 - DuckDB는 단일 writer 원칙을 지킵니다.
 - MinIO 버킷은 `vlm-raw`, `vlm-labels`, `vlm-processed`, `vlm-dataset` 고정입니다.
 - 라벨 JSON source of truth는 `vlm-labels`입니다.
+- GCP auto-bootstrap manifest는 `pending -> processed -> completed(summary)`로 compact하며, `_DONE` 이후에는 chunk별 processed manifest 대신 source unit/signature summary 1개만 남깁니다.
 - 주요 설계 판단과 운영 규칙은 채팅만으로 끝내지 말고 `docs/`에 남깁니다.
 - 새 작업은 `AGENTS.md -> docs/index.md -> 관련 하위 index` 순서로 탐색합니다.
 
