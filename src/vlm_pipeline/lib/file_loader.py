@@ -7,6 +7,8 @@ Layer 1: 순수 Python, Dagster 의존 없음.
 from datetime import datetime
 from io import BytesIO
 from pathlib import Path
+from tempfile import gettempdir
+from uuid import uuid4
 
 from PIL import Image
 
@@ -18,6 +20,11 @@ try:
     register_heif_opener()
 except Exception:  # noqa: BLE001
     pass
+
+
+def build_nonexistent_temp_path(suffix: str, *, prefix: str = "vlm_") -> Path:
+    """충돌 없는 임시 파일 경로를 생성한다 (파일 자체는 만들지 않음)."""
+    return Path(gettempdir()) / f"{prefix}{uuid4().hex}{suffix}"
 
 
 def load_image_once(path: str | Path) -> dict:

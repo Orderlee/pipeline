@@ -236,6 +236,7 @@ CREATE TABLE IF NOT EXISTS staging_dispatch_requests (
     processed_at         TIMESTAMP,
     completed_at         TIMESTAMP,
     error_message        TEXT,
+    ls_task_status       VARCHAR DEFAULT 'pending',  -- pending | created | skipped
     created_at           TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 

@@ -13,6 +13,8 @@ from pathlib import Path
 from tempfile import NamedTemporaryFile, gettempdir
 from uuid import uuid4
 
+from vlm_pipeline.lib.env_utils import coerce_float, int_env
+from vlm_pipeline.lib.file_loader import build_nonexistent_temp_path
 from vlm_pipeline.lib.gemini import GeminiAnalyzer, extract_clean_json_text
 from vlm_pipeline.lib.staging_vertex import (
     merge_overlapping_events,
@@ -485,7 +487,7 @@ def find_dispatch_video_classification_candidates(
 # ── generic utilities ──
 
 def _build_nonexistent_temp_path(suffix: str) -> Path:
-    return Path(gettempdir()) / f"vlm_gemini_{uuid4().hex}{suffix}"
+    return build_nonexistent_temp_path(suffix, prefix="vlm_gemini_")
 
 
 def _target_preview_bitrate_kbps(
@@ -505,20 +507,6 @@ def _target_preview_bitrate_kbps(
     return max(120, min(2500, bitrate_kbps))
 
 
-def int_env(name: str, default: int, *, minimum: int = 0) -> int:
-    raw_value = (os.getenv(name) or "").strip()
-    try:
-        parsed = int(raw_value) if raw_value else int(default)
-    except (TypeError, ValueError):
-        parsed = int(default)
-    return max(int(minimum), parsed)
-
-
-def coerce_float(value: float | int | str | None) -> float:
-    try:
-        return float(value or 0.0)
-    except (TypeError, ValueError):
-        return 0.0
 
 
 def cleanup_temp(path: Path | None) -> None:
