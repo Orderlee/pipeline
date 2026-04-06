@@ -1,4 +1,4 @@
-"""Staging 기본 dispatch ingress sensor backed by piaspace-agent polling API.
+"""Staging 기본 dispatch ingress sensor backed by  -agent polling API.
 
 파일 기반 dispatch_sensor 경로는 staging에서 레거시/호환 용도로만 유지한다.
 """

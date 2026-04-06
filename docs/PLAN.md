@@ -1,7 +1,7 @@
 # Staging 빈 Dispatch 요청 대기 처리
 
 ## Summary
-`staging`의 `piaspace-agent` polling ingress에서 `labeling_method`, `outputs`, `run_mode`, `categories`, `classes`가 모두 비어 있는 요청은 reject하지 않고 **대기(waiting)** 로 처리합니다. 대기 상태에서는 incoming 폴더를 그대로 두고, dispatch run/manifest/DB tracking row는 만들지 않습니다.
+`staging`의 ` -agent` polling ingress에서 `labeling_method`, `outputs`, `run_mode`, `categories`, `classes`가 모두 비어 있는 요청은 reject하지 않고 **대기(waiting)** 로 처리합니다. 대기 상태에서는 incoming 폴더를 그대로 두고, dispatch run/manifest/DB tracking row는 만들지 않습니다.
 
 문서 파일 경로는 `docs/staging_agent_waiting_dispatch_plan.md`로 고정합니다.
 

@@ -27,13 +27,13 @@
 
 ### Production
 
-- `production_agent_dispatch_sensor`가 `piaspace-agent:8080`의 production API를 polling하는 기본 ingress입니다.
+- `production_agent_dispatch_sensor`가 ` -agent:8080`의 production API를 polling하는 기본 ingress입니다.
 - `.dispatch/pending/*.json` 파일 ingress는 `dispatch_sensor`가 처리합니다.
 - 성공 시 dispatch manifest 생성 + `dispatch_stage_job` run request를 발행합니다.
 
 ### Staging
 
-- `staging_agent_dispatch_sensor`가 `piaspace-agent:8081`의 staging API를 polling합니다.
+- `staging_agent_dispatch_sensor`가 ` -agent:8081`의 staging API를 polling합니다.
 - payload가 실행 조건을 만족하면 동일한 dispatch 코어 로직으로 manifest/run request를 생성합니다.
 - payload가 비어 있으면 `waiting_for_dispatch_params`로 ack만 보내고 run을 생성하지 않습니다.
 - 파일 기반 `dispatch_sensor`는 staging에서 레거시/호환 경로로만 유지됩니다.

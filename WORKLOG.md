@@ -6,7 +6,7 @@
 - **목적**: Gemini 라벨 검수용 Label Studio 컨테이너 기동 준비
 - **조치**:
     - `docker/.env`에 LS 관련 환경변수 추가 (`LS_PORT=8084`, `LS_API_KEY`, `WEBHOOK_HOST`, `LS_WEBHOOK_PORT=8003`)
-    - 포트 `8080`은 `piaspace-agent`가 점유 중이므로 `8084`로 변경
+    - 포트 `8080`은 ` -agent`가 점유 중이므로 `8084`로 변경
     - `docker-compose.labelstudio.yaml`은 기존 파이프라인과 완전 분리 구조 확인 완료
 - **다음 단계**:
     1. `docker compose -f docker-compose.yaml -f docker-compose.labelstudio.yaml up -d labelstudio`
