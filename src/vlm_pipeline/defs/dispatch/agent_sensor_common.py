@@ -49,7 +49,7 @@ def normalize_agent_dispatch_request(
     if not str(normalized.get("image_profile") or "").strip():
         normalized["image_profile"] = "current"
     if not str(normalized.get("requested_by") or "").strip():
-        normalized["requested_by"] = " -agent"
+        normalized["requested_by"] = "agent"
     return normalized
 
 

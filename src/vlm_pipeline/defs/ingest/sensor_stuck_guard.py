@@ -11,7 +11,7 @@ from dagster import DefaultSensorStatus, RunRequest, SkipReason, sensor
 from dagster._core.storage.dagster_run import DagsterRunStatus, RunsFilter
 
 from vlm_pipeline.defs.dispatch.service import resolve_dispatch_request_id_from_tags
-from vlm_pipeline.lib.env_utils import int_env
+from vlm_pipeline.lib.env_utils import has_any_duckdb_writer_tag, int_env
 from vlm_pipeline.resources.config import PipelineConfig
 from vlm_pipeline.resources.runtime_settings import load_stuck_run_guard_settings
 
@@ -151,7 +151,7 @@ def stuck_run_guard_sensor(context):
             continue
 
         tags = getattr(run, "tags", {}) or {}
-        if str(tags.get("duckdb_writer", "")).lower() != "true":
+        if not has_any_duckdb_writer_tag(tags):
             continue
 
         inspected += 1

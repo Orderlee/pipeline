@@ -3,7 +3,7 @@
 Codex MCP 서브에이전트(ai-engineer, data-engineer, data-scientist, ml-engineer, mlops-engineer, machine-learning-engineer) 관점에서 **영상 프레임 추출** 및 **YOLO-World** 파라미터 권장값을 정리한 테스트 결과 문서입니다.
 
 - **작업 범위:** **이미지 추출** + **YOLO-World** 만 (Gemini·captioning·전체 staging dispatch 제외)
-- **테스트 데이터:** `/home/user/mou/staging/tmp_data_2` 내 영상
+- **테스트 데이터:** `staging/tmp_data_2` 내 영상
 - **흐름:** 영상 → ffmpeg 프레임 추출(JPEG) → (선택) YOLO-World-L detection
 
 ### 프리셋 이름이 의미하는 것 (interval 기반)
@@ -49,7 +49,7 @@ Codex MCP 서브에이전트(ai-engineer, data-engineer, data-scientist, ml-engi
 
 | 항목 | 값 |
 |------|-----|
-| 영상 경로 | `/home/user/mou/staging/tmp_data_2` |
+| 영상 경로 | `staging/tmp_data_2` |
 | 영상 파일 수 | **26개** (mp4 등) |
 | 폴더 구성 | `fall_down`, `source-d`, `smoking`, `violence`, `weapon` |
 | 샘플 메타 (fall_down 1건) | 1920×1080, 30fps, duration ≈ 21.1초 |
@@ -58,7 +58,7 @@ Codex MCP 서브에이전트(ai-engineer, data-engineer, data-scientist, ml-engi
 
 ### 2.1 이미지 추출에 사용된 영상 파일 목록 (상세)
 
-경로 기준: `/home/user/mou/staging/tmp_data_2` (아래는 상대 경로). **길이** = 재생 시간(초), **파일 크기** = MB.
+경로 기준: `staging/tmp_data_2` (아래는 상대 경로). **길이** = 재생 시간(초), **파일 크기** = MB.
 
 | 상대 경로 | 재생 길이(초) | 해상도 | fps | 파일 크기(MB) |
 |-----------|---------------|--------|-----|---------------|
@@ -142,13 +142,13 @@ Codex 서브에이전트별로 “영상에서 이미지 추출 후 YOLO-World�
 
 ```bash
 # 이미지 추출 + 용량·시간 측정 (YOLO 제외)
-PYTHONPATH=src python3 scripts/staging_video_extract_yolo_bench.py --video-dir /home/user/mou/staging/tmp_data_2 --max-videos 6 --no-yolo
+PYTHONPATH=src python3 scripts/staging_video_extract_yolo_bench.py --video-dir staging/tmp_data_2 --max-videos 6 --no-yolo
 
 # YOLO 포함 시 (localhost:8001 서버 필요)
-PYTHONPATH=src python3 scripts/staging_video_extract_yolo_bench.py --video-dir /home/user/mou/staging/tmp_data_2 --yolo-url http://localhost:8001
+PYTHONPATH=src python3 scripts/staging_video_extract_yolo_bench.py --video-dir staging/tmp_data_2 --yolo-url http://localhost:8001
 
 # worker 값별 비교 (추출 시간만, 1/2/4 병렬)
-PYTHONPATH=src python3 scripts/staging_video_extract_yolo_bench.py --video-dir /home/user/mou/staging/tmp_data_2 --workers 1 2 4 --no-yolo
+PYTHONPATH=src python3 scripts/staging_video_extract_yolo_bench.py --video-dir staging/tmp_data_2 --workers 1 2 4 --no-yolo
 ```
 
 ### 5.2 샘플 영상 기준 예상치 (참고)
@@ -168,7 +168,7 @@ PYTHONPATH=src python3 scripts/staging_video_extract_yolo_bench.py --video-dir /
 
 ## 6. 이미지 추출 시 발생 용량 + worker 비교 (실측)
 
-`/home/user/mou/staging/tmp_data_2` 영상으로 **interval 기반** 이미지 추출 실측.  
+`staging/tmp_data_2` 영상으로 **interval 기반** 이미지 추출 실측.  
 (스크립트: `scripts/staging_video_extract_yolo_bench.py`, YOLO 사용 시: `conf=0.25`, `iou=0.45`, 배치 8장/요청)
 
 ### 6.1 interval 기반 추출 (1초당 1프레임) — 많이/적게 비교
@@ -208,17 +208,17 @@ PYTHONPATH=src python3 scripts/staging_video_extract_yolo_bench.py --video-dir /
 | interval_0.5s_q90 | 274 | 86.43 MB | **87.7** | **66.8** | **88.8** |
 | interval_1s_q85 | 139 | 37.89 MB | **70.2** | **51.5** | **65.1** |
 
-- 벤치 재실행: `PYTHONPATH=src python3 scripts/staging_video_extract_yolo_bench.py --video-dir /home/user/mou/staging/tmp_data_2 --max-videos 6 --no-yolo --workers 1 2 4` (전 프리셋) 또는 특정 프리셋만 `--preset-names interval_0.5s_q90 interval_1s_q85`.
+- 벤치 재실행: `PYTHONPATH=src python3 scripts/staging_video_extract_yolo_bench.py --video-dir staging/tmp_data_2 --max-videos 6 --no-yolo --workers 1 2 4` (전 프리셋) 또는 특정 프리셋만 `--preset-names interval_0.5s_q90 interval_1s_q85`.
 - **worker 패턴 (본 호스트):** `interval_0.5s_q90`·`interval_1s_q85` 에서 workers=2가 최단, workers=4는 경합으로 역전. `interval_2s`/`interval_1s_q90` 은 본 측정에선 workers=4까지 완만히 단축. **NFS 등 다른 환경에서는 w4 악화가 난 사례가 있어**, 배포 전 동일 스크립트로 재벤치 권장.
 
 ### 6.4 실행 방법
 
 ```bash
 # interval 기반 많이/적게 비교 (workers 1,2,4, 전 프리셋)
-PYTHONPATH=src python3 scripts/staging_video_extract_yolo_bench.py --video-dir /home/user/mou/staging/tmp_data_2 --max-videos 6 --no-yolo --workers 1 2 4
+PYTHONPATH=src python3 scripts/staging_video_extract_yolo_bench.py --video-dir staging/tmp_data_2 --max-videos 6 --no-yolo --workers 1 2 4
 
 # 특정 프리셋만 (시간 절약)
-PYTHONPATH=src python3 scripts/staging_video_extract_yolo_bench.py --video-dir /home/user/mou/staging/tmp_data_2 --max-videos 6 --no-yolo --workers 1 2 4 --preset-names interval_0.5s_q90 interval_1s_q85
+PYTHONPATH=src python3 scripts/staging_video_extract_yolo_bench.py --video-dir staging/tmp_data_2 --max-videos 6 --no-yolo --workers 1 2 4 --preset-names interval_0.5s_q90 interval_1s_q85
 ```
 
 ---
@@ -228,7 +228,7 @@ PYTHONPATH=src python3 scripts/staging_video_extract_yolo_bench.py --video-dir /
 - **cwd:** 이 repo 루트 (`/home/user/work_p/Datapipeline-Data-data_pipeline`)를 `codex` 도구 호출 시 `cwd`로 전달하면 `.codex/config.toml` 및 `.codex/agents/` 에이전트가 로드됩니다.
 - **활용할 서브에이전트:** ai-engineer, data-engineer, data-scientist, ml-engineer, mlops-engineer, machine-learning-engineer.
 - **예시 프롬프트:**  
-  “`/home/user/mou/staging/tmp_data_2` 영상으로 프레임 추출 + YOLO-World 검출할 때, 처리 시간과 검출 품질 균형을 위해 `max_frames_per_video`, `jpeg_quality`, `confidence_threshold`, `batch_size` 조합을 추천해 주고, 각 파라미터별로 짧은 근거를 달아줘.”
+  “`staging/tmp_data_2` 영상으로 프레임 추출 + YOLO-World 검출할 때, 처리 시간과 검출 품질 균형을 위해 `max_frames_per_video`, `jpeg_quality`, `confidence_threshold`, `batch_size` 조합을 추천해 주고, 각 파라미터별로 짧은 근거를 달아줘.”
 
 실측 재현은 `staging_video_extract_yolo_bench.py` + `--yolo-url` 로 동일 조건을 맞출 수 있습니다.
 
@@ -263,7 +263,7 @@ PYTHONPATH=src python3 scripts/staging_video_extract_yolo_bench.py --video-dir /
 다음 작업을 수행해줘.
 
 1. **테스트 실행**  
-   - 영상 경로: /home/user/mou/staging/tmp_data_2 (문서 §2.1에 파일 목록·길이·크기 있음)  
+   - 영상 경로: staging/tmp_data_2 (문서 §2.1에 파일 목록·길이·크기 있음)  
    - 스크립트: `PYTHONPATH=src python3 scripts/staging_video_extract_yolo_bench.py`  
    - 필요 시 `--max-videos 6` 또는 `--workers 1 2 4`, `--no-yolo` / `--yolo-url http://localhost:8001` 등으로 실행해 실측값을 보강해도 됨.
 

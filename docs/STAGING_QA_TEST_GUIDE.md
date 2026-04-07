@@ -21,8 +21,8 @@ staging 에서는 일반 운영 센서 흐름과 다르게 `dispatch` 중심으�
 
 기본(권장) ingress는 `staging_agent_dispatch_sensor` 입니다.
 
-1. 테스트 폴더를 `/home/user/mou/staging/incoming/<folder_name>` 에 넣습니다.
-2. ` -agent`가 pending 요청을 제공합니다.
+1. 테스트 폴더를 `staging/incoming/<folder_name>` 에 넣습니다.
+2. `agent`가 pending 요청을 제공합니다.
 3. `staging_agent_dispatch_sensor`가 API polling으로 요청을 가져옵니다.
 4. 공통 dispatch 코어가 manifest 생성 + `staging_dispatch_requests`/`staging_pipeline_runs` 기록을 수행합니다.
 5. `dispatch_stage_job` run request를 생성해 실행합니다.
@@ -70,9 +70,9 @@ docker compose -f docker/docker-compose.yaml --profile staging up -d postgres da
 
 - Dagster UI: `http://localhost:3031`
 - staging DuckDB: `/data/staging.duckdb` inside `dagster-staging`
-- staging incoming root: `/home/user/mou/staging/incoming`
-- staging archive root: `/home/user/mou/staging/archive`
-- staging archive pending root(레거시 파일 ingress 보조): `/home/user/mou/staging/archive_pending`
+- staging incoming root: `staging/incoming`
+- staging archive root: `staging/archive`
+- staging archive pending root(레거시 파일 ingress 보조): `staging/archive_pending`
 
 ### 3. 외부 의존성 확인
 
@@ -100,7 +100,7 @@ docker compose -f docker/docker-compose.yaml --profile staging up -d postgres da
 
 ### 방법 A. 제공된 스크립트 사용
 
-이미 준비된 폴더가 `/home/user/mou/staging/tmp_data_2`, `/home/user/mou/staging/source-d` 에 있다면 아래 스크립트를 쓰는 게 가장 빠릅니다.
+이미 준비된 폴더가 `staging/tmp_data_2`, `staging/source-d` 에 있다면 아래 스크립트를 쓰는 게 가장 빠릅니다.
 
 `timestamp` 테스트:
 
@@ -128,8 +128,8 @@ python3 scripts/staging_test_dispatch.py --folder source-d --round 1 --outputs b
 
 ### 방법 B. 수동 trigger JSON 생성 (레거시 호환)
 
-1. 테스트 폴더를 `/home/user/mou/staging/incoming/<folder_name>` 에 복사합니다.
-2. 아래 형태의 JSON 을 `/home/user/mou/staging/incoming/.dispatch/pending/<request_id>.json` 로 저장합니다.
+1. 테스트 폴더를 `staging/incoming/<folder_name>` 에 복사합니다.
+2. 아래 형태의 JSON 을 `staging/incoming/.dispatch/pending/<request_id>.json` 로 저장합니다.
 
 ```json
 {
@@ -160,8 +160,8 @@ python3 scripts/staging_test_dispatch.py --folder source-d --round 1 --outputs b
 
 질문하신 조건은 현재 로직상 아래처럼 테스트하면 됩니다.
 
-1. `/home/user/mou/staging/incoming/source-d`
-2. `/home/user/mou/staging/incoming/tmp_data_2`
+1. `staging/incoming/source-d`
+2. `staging/incoming/tmp_data_2`
 
 두 폴더를 모두 `incoming` 에 복사합니다.
 
@@ -179,13 +179,13 @@ python3 scripts/staging_test_dispatch.py --folder source-d --round 1 --outputs b
 }
 ```
 
-위 JSON을 `/home/user/mou/staging/incoming/.dispatch/pending/` 에 넣거나, agent 요청으로 동일 payload를 보내면 기대 동작은 아래와 같습니다.
+위 JSON을 `staging/incoming/.dispatch/pending/` 에 넣거나, agent 요청으로 동일 payload를 보내면 기대 동작은 아래와 같습니다.
 
 - `tmp_data_2` 만 `dispatch_stage_job` 대상이 됨
 - `tmp_data_2` 는 incoming 경로에서 manifest 생성 후 ingest 진행
 - `tmp_data_2` 는 처리 중 `archive` 로 이동
 - `source-d` 은 trigger JSON 이 없으므로 처리되지 않음
-- `source-d` 은 `/home/user/mou/staging/incoming/source-d` 에 그대로 남아 있음
+- `source-d` 은 `staging/incoming/source-d` 에 그대로 남아 있음
 
 즉 현재 staging 로직은 "폴더가 incoming에 있다고 자동 실행"되지 않고, "dispatch 요청이 있는 폴더만 실행"됩니다.
 
@@ -240,8 +240,8 @@ python3 scripts/staging_test_dispatch.py --folder source-d --round 1 --outputs b
 
 기대 결과:
 
-- `tmp_data_2` 는 처리 시작 후 최종적으로 `/home/user/mou/staging/archive/tmp_data_2` 로 이동
-- `source-d` 은 `/home/user/mou/staging/incoming/source-d` 에 그대로 남아 있어야 함
+- `tmp_data_2` 는 처리 시작 후 최종적으로 `staging/archive/tmp_data_2` 로 이동
+- `source-d` 은 `staging/incoming/source-d` 에 그대로 남아 있어야 함
 - `tmp_data_2` 에 대해서만 `raw_files`, `video_metadata`, `labels`, `processed_clips`, `image_metadata`, `image_labels` 변화가 발생
 - `source-d` 에 대해서는 trigger 를 만들기 전까지 DB 변화가 없어야 함
 - `source-d` 폴더는 이후 별도 trigger JSON 을 넣으면 그 시점에 처리 가능해야 함
@@ -250,10 +250,10 @@ python3 scripts/staging_test_dispatch.py --folder source-d --round 1 --outputs b
 
 성공 시 우선 확인할 파일 위치는 아래입니다.
 
-- (파일 ingress일 때) trigger 처리 성공: `/home/user/mou/staging/incoming/.dispatch/processed/<request_id>.json`
-- (파일 ingress일 때) trigger 처리 실패: `/home/user/mou/staging/incoming/.dispatch/failed/<request_id>.json`
-- dispatch manifest: `/home/user/mou/staging/incoming/.manifests/dispatch/`
-- archive 이동 결과: `/home/user/mou/staging/archive/<folder_name>/`
+- (파일 ingress일 때) trigger 처리 성공: `staging/incoming/.dispatch/processed/<request_id>.json`
+- (파일 ingress일 때) trigger 처리 실패: `staging/incoming/.dispatch/failed/<request_id>.json`
+- dispatch manifest: `staging/incoming/.manifests/dispatch/`
+- archive 이동 결과: `staging/archive/<folder_name>/`
 
 ## DB 기준 확인 포인트
 
@@ -405,7 +405,7 @@ dispatch ingress 파서는 `outputs` 배열에서 **허용 키만 남기고** �
 `2개 폴더 동시 투입 + trigger 1개` 시나리오에서는 아래도 추가로 확인합니다.
 
 7. trigger 를 생성한 폴더만 `archive` 로 이동했는지 확인
-8. trigger 를 생성하지 않은 폴더는 `/home/user/mou/staging/incoming/` 에 그대로 남아 있는지 확인
+8. trigger 를 생성하지 않은 폴더는 `staging/incoming/` 에 그대로 남아 있는지 확인
 9. trigger 를 생성하지 않은 폴더는 DB row 가 아직 생성되지 않았는지 확인
 
 ## Lineage 종료 후 보고서 제출
