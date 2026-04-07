@@ -18,7 +18,7 @@
 
 ## 3. 증빙
 
-- `/home/pia/mou/staging/incoming/.dispatch/failed/` 목록: (empty at check time)
+- `staging/incoming/.dispatch/failed/` 목록: (empty at check time)
 
 ## 4. 이슈
 

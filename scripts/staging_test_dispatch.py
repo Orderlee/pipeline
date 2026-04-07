@@ -21,7 +21,7 @@ from datetime import datetime
 from pathlib import Path
 
 # ── 경로 설정 ──
-STAGING_ROOT = Path("/home/pia/mou/staging")
+STAGING_ROOT = Path("staging")
 SOURCE_FOLDERS = {
     "tmp_data_2": STAGING_ROOT / "tmp_data_2",
     "GS건설": STAGING_ROOT / "GS건설",

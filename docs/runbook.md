@@ -31,7 +31,7 @@ ss -tln | grep 3030
 - **확인:** 재기동 후 heartbeat 충돌 로그 없음, sensor tick 정상 순환
 
 ### STARTED run이 장시간 점유 (backpressure 문제)
-- **원인:** `duckdb_writer=true` 슬롯 경쟁. worker 프로세스가 없는데 UI에 `STARTED` 잔류
+- **원인:** `duckdb_writer=true`(legacy dispatch) 또는 `duckdb_raw_writer` / `duckdb_label_writer` / `duckdb_yolo_writer` 슬롯 경쟁. worker 프로세스가 없는데 UI에 `STARTED` 잔류
 - **즉시 조치:**
   ```bash
   # Dagster instance API로 CANCELING → CANCELED 처리
@@ -382,13 +382,13 @@ rm -rf docker/data/dagster_home_staging/storage
 ```
 
 **절대 지우면 안 되는 것:**
-- `/home/pia/mou/staging/incoming`
-- `/home/pia/mou/staging/archive`
+- `staging/incoming`
+- `staging/archive`
 
 **staging 컨테이너 볼륨 마운트 필수:**
 ```yaml
-- /home/pia/mou/staging/incoming:/nas/staging/incoming
-- /home/pia/mou/staging/archive:/nas/staging/archive
+- staging/incoming:/nas/staging/incoming
+- staging/archive:/nas/staging/archive
 ```
 
 ---

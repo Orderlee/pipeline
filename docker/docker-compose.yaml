@@ -23,26 +23,26 @@ x-common-env: &common-env
   VIDEO_FFPROBE_RETRY_DELAY_MS: "250"
   DAGSTER_HOME: /app/dagster_home
   PYTHONPATH: /:/src/python:/src/vlm
-  DATAOPS_ASSET_PATH_PREFIX_FROM: /home/pia/mou/nas_192tb;/home/pia/mou/archive;/home/pia/mou/incoming
+  DATAOPS_ASSET_PATH_PREFIX_FROM: nas_192tb;archive;incoming
   DATAOPS_ASSET_PATH_PREFIX_TO: /nas
 
 x-prod-volumes: &prod-volumes
   - ./app/dagster_home:/app/dagster_home
   - ./data:/data
   - type: bind
-    source: ${DATASETS_HOST_PATH:-/home/pia/mou/nas_192tb/datasets}
+    source: ${DATASETS_HOST_PATH:-nas_192tb/datasets}
     target: /nas/datasets
     read_only: false
   - type: bind
-    source: ${PROJECTS_HOST_PATH:-/home/pia/mou/nas_192tb/datasets/projects}
+    source: ${PROJECTS_HOST_PATH:-nas_192tb/datasets/projects}
     target: /nas/datasets/projects
     read_only: true
   - type: bind
-    source: ${ARCHIVE_HOST_PATH:-/home/pia/mou/archive}
+    source: ${ARCHIVE_HOST_PATH:-archive}
     target: /nas/archive
     read_only: false
   - type: bind
-    source: ${INCOMING_HOST_PATH:-/home/pia/mou/incoming}
+    source: ${INCOMING_HOST_PATH:-incoming}
     target: /nas/incoming
     read_only: false
   - /home/pia/test_data:/test_data
@@ -56,19 +56,19 @@ x-staging-volumes: &staging-volumes
   - ${STAGING_REPO_PATH:-/volume2/datapipeline-staging}/docker/app:/app
   - ${STAGING_REPO_PATH:-/volume2/datapipeline-staging}/docker/data:/data
   - type: bind
-    source: ${DATASETS_HOST_PATH:-/home/pia/mou/nas_192tb/datasets}
+    source: ${DATASETS_HOST_PATH:-nas_192tb/datasets}
     target: /nas/datasets
     read_only: false
   - type: bind
-    source: ${PROJECTS_HOST_PATH:-/home/pia/mou/nas_192tb/datasets/projects}
+    source: ${PROJECTS_HOST_PATH:-nas_192tb/datasets/projects}
     target: /nas/datasets/projects
     read_only: true
   - type: bind
-    source: ${STAGING_ARCHIVE_HOST_PATH:-/home/pia/mou/staging/archive}
+    source: ${STAGING_ARCHIVE_HOST_PATH:-staging/archive}
     target: /nas/staging/archive
     read_only: false
   - type: bind
-    source: ${STAGING_INCOMING_HOST_PATH:-/home/pia/mou/staging/incoming}
+    source: ${STAGING_INCOMING_HOST_PATH:-staging/incoming}
     target: /nas/staging/incoming
     read_only: false
   - /home/pia/test_data:/test_data
@@ -210,7 +210,7 @@ services:
       DATAOPS_PIPELINE_ROOT: /nas/datasets/projects
       DATAOPS_NAS_ROOT: /nas/datasets/projects
       DATAOPS_NAS_ROOTS: /nas/datasets/projects;/nas/incoming
-      DATAOPS_ASSET_PATH_PREFIX_FROM: /home/pia/mou/nas_192tb;/home/pia/mou/staging/archive;/home/pia/mou/staging/incoming
+      DATAOPS_ASSET_PATH_PREFIX_FROM: nas_192tb;staging/archive;staging/incoming
       DATAOPS_ASSET_PATH_PREFIX_TO: /nas
     volumes: *staging-volumes
     depends_on:
@@ -289,12 +289,14 @@ services:
       - "${YOLO_PORT:-8001}:8001"
     environment:
       YOLO_MODEL_PATH: /data/models/yolo/yolov8l-worldv2.pt
-      YOLO_DEVICE: "cuda:1"
+      # host GPU 1만 노출하고, 컨테이너 내부에서는 단일 GPU를 cuda:0으로 사용
+      YOLO_DEVICE: "cuda:0"
       YOLO_IMGSZ: "640"
       YOLO_PORT: "8001"
       YOLO_MAX_BATCH: "8"
-      YOLO_DEFAULT_CLASSES: ${YOLO_DEFAULT_CLASSES:-person,car,truck,bus,motorcycle,bicycle,fire,smoke,flame,knife,gun,bag,backpack,suitcase,helmet,safety vest,hard hat,traffic cone,barricade,dog,cat}
-      NVIDIA_VISIBLE_DEVICES: "all"
+      YOLO_DEFAULT_CLASSES: ${YOLO_DEFAULT_CLASSES:-person,car,truck,bus,motorcycle,bicycle,fire,smoke,flame,cigarette,smoking,knife,gun,bat,baseball bat,sword,dagger,bag,backpack,suitcase,helmet,safety vest,hard hat,traffic cone,barricade,dog,cat}
+      CUDA_VISIBLE_DEVICES: "1"
+      NVIDIA_VISIBLE_DEVICES: "1"
     volumes:
       - ./data/models:/data/models:ro
     deploy:
@@ -331,7 +333,8 @@ services:
       SAM3_MAX_MASKS_PER_PROMPT: "50"
       SAM3_CHECKPOINT_PATH: "/models/sam3.1_multiplex.pt"
       HF_TOKEN: ${HF_TOKEN:-}
-      NVIDIA_VISIBLE_DEVICES: "all"
+      CUDA_VISIBLE_DEVICES: "0"
+      NVIDIA_VISIBLE_DEVICES: "0"
     deploy:
       resources:
         reservations:

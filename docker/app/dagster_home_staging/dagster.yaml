@@ -13,6 +13,15 @@ run_coordinator:
       - key: duckdb_writer
         value: "true"
         limit: 1
+      - key: duckdb_raw_writer
+        value: "true"
+        limit: 1
+      - key: duckdb_label_writer
+        value: "true"
+        limit: 1
+      - key: duckdb_yolo_writer
+        value: "true"
+        limit: 1
 
 event_log_storage:
   module: dagster._core.storage.event_log

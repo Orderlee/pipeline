@@ -5,8 +5,10 @@ assets.py의 @asset clip_timestamp 래퍼에서 호출됩니다.
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 from vlm_pipeline.lib.env_utils import (
     dispatch_folder_for_source_unit,
@@ -29,12 +31,123 @@ from .label_helpers import (
     analyze_routed_video_events,
     build_gemini_label_key,
     cleanup_temp,
+    clone_gemini_analyzer,
     init_gemini_analyzer,
     int_env,
     materialize_video,
     prepare_gemini_video_for_request,
     serialize_gemini_events,
 )
+
+
+def _build_preview_metadata(
+    *,
+    video_path: Path,
+    gemini_video_path: Path,
+    duration_val: float | int | None,
+) -> dict[str, Any]:
+    max_dur = int_env("GEMINI_MAX_DURATION_SEC", 3600, minimum=60)
+    orig_dur = float(duration_val or 0.0)
+    return {
+        "original_bytes": int(video_path.stat().st_size),
+        "preview_bytes": int(gemini_video_path.stat().st_size),
+        "original_duration": orig_dur,
+        "trimmed": bool(orig_dur > max_dur),
+        "max_duration": max_dur,
+    }
+
+
+def _process_mvp_candidate(
+    *,
+    minio: MinIOResource,
+    analyzer,
+    video_prompt: str,
+    cand: dict[str, Any],
+) -> dict[str, Any]:
+    asset_id = cand["asset_id"]
+    raw_key = str(cand.get("raw_key") or "")
+    duration_val = cand.get("duration_sec")
+    temp_paths: list[Path] = []
+
+    try:
+        worker_analyzer = clone_gemini_analyzer(analyzer)
+        video_path, temp_path = materialize_video(minio, cand)
+        if temp_path is not None:
+            temp_paths.append(temp_path)
+        gemini_video_path, gemini_temp_path = prepare_gemini_video_for_request(
+            video_path,
+            duration_sec=duration_val,
+        )
+        if gemini_temp_path is not None:
+            temp_paths.append(gemini_temp_path)
+        label_key = build_gemini_label_key(raw_key)
+        response_text = worker_analyzer.analyze_video(
+            str(gemini_video_path),
+            prompt=video_prompt,
+            mime_type="video/mp4" if gemini_temp_path is not None else None,
+        )
+        label_bytes = extract_clean_json_text(response_text).encode("utf-8")
+        minio.ensure_bucket("vlm-labels")
+        minio.upload("vlm-labels", label_key, label_bytes, "application/json")
+        return {
+            "asset_id": asset_id,
+            "label_key": label_key,
+            "preview": (
+                _build_preview_metadata(
+                    video_path=video_path,
+                    gemini_video_path=gemini_video_path,
+                    duration_val=duration_val,
+                )
+                if gemini_temp_path is not None
+                else None
+            ),
+        }
+    except Exception as exc:  # noqa: BLE001
+        return {"asset_id": asset_id, "error": exc}
+    finally:
+        for path in reversed(temp_paths):
+            cleanup_temp(path)
+
+
+def _process_routed_candidate(
+    *,
+    context,
+    minio: MinIOResource,
+    analyzer,
+    video_prompt: str,
+    cand: dict[str, Any],
+) -> dict[str, Any]:
+    asset_id = cand["asset_id"]
+    raw_key = str(cand.get("raw_key") or "")
+    temp_paths: list[Path] = []
+
+    try:
+        worker_analyzer = clone_gemini_analyzer(analyzer)
+        video_path, temp_path = materialize_video(minio, cand)
+        if temp_path is not None:
+            temp_paths.append(temp_path)
+        events = analyze_routed_video_events(
+            context,
+            worker_analyzer,
+            video_path,
+            duration_sec=cand.get("duration_sec"),
+            temp_paths=temp_paths,
+            video_prompt=video_prompt,
+        )
+        label_key = build_gemini_label_key(raw_key)
+        minio.ensure_bucket("vlm-labels")
+        minio.upload(
+            "vlm-labels",
+            label_key,
+            serialize_gemini_events(events),
+            "application/json",
+        )
+        return {"asset_id": asset_id, "label_key": label_key}
+    except Exception as exc:  # noqa: BLE001
+        return {"asset_id": asset_id, "error": exc}
+    finally:
+        for path in reversed(temp_paths):
+            cleanup_temp(path)
 
 
 def clip_timestamp_mvp(
@@ -58,81 +171,65 @@ def clip_timestamp_mvp(
     analyzer = init_gemini_analyzer(context)
     video_prompt = VIDEO_EVENT_PROMPT
     total_candidates = len(candidates)
+    max_workers = min(total_candidates, int_env("GEMINI_MAX_WORKERS", 5, minimum=1))
     context.log.info(f"clip_timestamp 시작: 총 {total_candidates}건 처리 예정")
     processed = 0
     failed = 0
 
-    for idx, cand in enumerate(candidates, start=1):
-        asset_id = cand["asset_id"]
-        raw_key = str(cand.get("raw_key") or "")
-        temp_paths: list[Path] = []
-
-        try:
-            video_path, temp_path = materialize_video(minio, cand)
-            if temp_path is not None:
-                temp_paths.append(temp_path)
-            duration_val = cand.get("duration_sec")
-            gemini_video_path, gemini_temp_path = prepare_gemini_video_for_request(
-                video_path,
-                duration_sec=duration_val,
-            )
-            if gemini_temp_path is not None:
-                temp_paths.append(gemini_temp_path)
-            label_key = build_gemini_label_key(raw_key)
-
-            response_text = analyzer.analyze_video(
-                str(gemini_video_path),
-                prompt=video_prompt,
-                mime_type="video/mp4" if gemini_temp_path is not None else None,
-            )
-
-            cleaned = extract_clean_json_text(response_text)
-            label_bytes = cleaned.encode("utf-8")
-            minio.ensure_bucket("vlm-labels")
-            minio.upload("vlm-labels", label_key, label_bytes, "application/json")
-
-            db.update_auto_label_status(
-                asset_id,
-                "generated",
-                label_key=label_key,
-                labeled_at=datetime.now(),
-            )
-            processed += 1
-            if gemini_temp_path is not None:
-                max_dur = int_env("GEMINI_MAX_DURATION_SEC", 3600, minimum=60)
-                orig_dur = float(duration_val or 0)
-                trimmed = orig_dur > max_dur
-                context.log.info(
-                    "AUTO LABEL preview 사용: asset_id=%s original_bytes=%s preview_bytes=%s "
-                    "original_duration=%.0fs trimmed=%s max_duration=%ds",
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        future_map = {
+            executor.submit(
+                _process_mvp_candidate,
+                minio=minio,
+                analyzer=analyzer,
+                video_prompt=video_prompt,
+                cand=cand,
+            ): (idx, cand["asset_id"])
+            for idx, cand in enumerate(candidates, start=1)
+        }
+        for future in as_completed(future_map):
+            idx, asset_id = future_map[future]
+            result = future.result()
+            error = result.get("error")
+            if error is None:
+                label_key = str(result["label_key"])
+                preview_meta = result.get("preview")
+                db.update_auto_label_status(
                     asset_id,
-                    video_path.stat().st_size,
-                    gemini_video_path.stat().st_size,
-                    orig_dur,
-                    trimmed,
-                    max_dur,
+                    "generated",
+                    label_key=label_key,
+                    labeled_at=datetime.now(),
                 )
-            context.log.info(
-                f"clip_timestamp 진행: [{idx}/{total_candidates}] "
-                f"({idx * 100 // total_candidates}%) "
-                f"asset={asset_id} label_key={label_key} ✅"
-            )
+                processed += 1
+                if isinstance(preview_meta, dict):
+                    context.log.info(
+                        "AUTO LABEL preview 사용: asset_id=%s original_bytes=%s preview_bytes=%s "
+                        "original_duration=%.0fs trimmed=%s max_duration=%ds",
+                        asset_id,
+                        preview_meta["original_bytes"],
+                        preview_meta["preview_bytes"],
+                        float(preview_meta["original_duration"]),
+                        bool(preview_meta["trimmed"]),
+                        int(preview_meta["max_duration"]),
+                    )
+                context.log.info(
+                    f"clip_timestamp 진행: [{idx}/{total_candidates}] "
+                    f"({idx * 100 // total_candidates}%) "
+                    f"asset={asset_id} label_key={label_key} ✅"
+                )
+                continue
 
-        except Exception as exc:
             failed += 1
             db.update_auto_label_status(
                 asset_id,
                 "failed",
-                error=str(exc)[:500],
+                error=str(error)[:500],
             )
-            context.log.error(
+            context.log.info(
                 f"clip_timestamp 진행: [{idx}/{total_candidates}] "
                 f"({idx * 100 // total_candidates}%) "
-                f"asset={asset_id} ❌ {exc}"
+                f"asset={asset_id} ❌ {error}"
             )
-        finally:
-            for path in reversed(temp_paths):
-                cleanup_temp(path)
 
     summary = {"processed": processed, "failed": failed}
     context.add_output_metadata(summary)
@@ -185,43 +282,52 @@ def clip_timestamp_routed_impl(
     analyzer = init_gemini_analyzer(context)
     processed = 0
     failed = 0
-    for idx, cand in enumerate(candidates, start=1):
-        asset_id = cand["asset_id"]
-        raw_key = str(cand.get("raw_key") or "")
-        temp_paths: list[Path] = []
-        try:
-            video_path, temp_path = materialize_video(minio, cand)
-            if temp_path:
-                temp_paths.append(temp_path)
-            duration_val = cand.get("duration_sec")
-            label_key = build_gemini_label_key(raw_key)
-            events = analyze_routed_video_events(
-                context,
-                analyzer,
-                video_path,
-                duration_sec=duration_val,
-                temp_paths=temp_paths,
+    max_workers = min(len(candidates), int_env("GEMINI_MAX_WORKERS", 5, minimum=1))
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        future_map = {
+            executor.submit(
+                _process_routed_candidate,
+                context=context,
+                minio=minio,
+                analyzer=analyzer,
                 video_prompt=video_prompt,
-            )
-            label_bytes = serialize_gemini_events(events)
-            minio.ensure_bucket("vlm-labels")
-            minio.upload("vlm-labels", label_key, label_bytes, "application/json")
-            db.update_timestamp_status(
-                asset_id,
-                "completed",
-                label_key=label_key,
-                completed_at=datetime.now(),
-            )
-            processed += 1
-        except Exception as exc:
+                cand=cand,
+            ): (idx, cand["asset_id"])
+            for idx, cand in enumerate(candidates, start=1)
+        }
+        for future in as_completed(future_map):
+            idx, asset_id = future_map[future]
+            result = future.result()
+            error = result.get("error")
+            if error is None:
+                label_key = str(result["label_key"])
+                db.update_timestamp_status(
+                    asset_id,
+                    "completed",
+                    label_key=label_key,
+                    completed_at=datetime.now(),
+                )
+                processed += 1
+                context.log.info(
+                    "clip_timestamp 완료: [%d/%d] asset_id=%s label_key=%s ✅",
+                    idx,
+                    len(candidates),
+                    asset_id,
+                    label_key,
+                )
+                continue
+
             failed += 1
             db.update_timestamp_status(
-                asset_id, "failed", error=str(exc)[:500], completed_at=datetime.now()
+                asset_id, "failed", error=str(error)[:500], completed_at=datetime.now()
             )
-            context.log.error(f"clip_timestamp 실패: asset_id={asset_id}: {exc}")
-        finally:
-            for path in reversed(temp_paths):
-                cleanup_temp(path)
+            context.log.error(
+                "clip_timestamp 실패: [%d/%d] asset_id=%s: %s",
+                idx,
+                len(candidates),
+                asset_id,
+                error,
+            )
     return {
         "processed": processed,
         "failed": failed,

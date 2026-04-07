@@ -2,7 +2,7 @@
 
 ## 목적
 
-`staging`의 ` -agent` polling ingress에서 `labeling_method`, `outputs`, `run_mode`, `categories`, `classes`가 모두 비어 있는 요청은 reject하지 않고 **대기(waiting)** 로 처리한다.
+`staging`의 `agent` polling ingress에서 `labeling_method`, `outputs`, `run_mode`, `categories`, `classes`가 모두 비어 있는 요청은 reject하지 않고 **대기(waiting)** 로 처리한다.
 
 이 경우:
 

@@ -17,8 +17,8 @@ from vlm_pipeline.lib.gemini import (
     list_video_files,
 )
 
-DEFAULT_VIDEO_DIR = "/home/pia/mou/archive"
-DEFAULT_OUTPUT_DIR = "/home/pia/mou/archive/test"
+DEFAULT_VIDEO_DIR = "archive"
+DEFAULT_OUTPUT_DIR = "archive/test"
 DEFAULT_RECURSIVE = False
 DEFAULT_MODEL_NAME = "gemini-2.5-pro"
 DEFAULT_VIDEO_PROMPT = """

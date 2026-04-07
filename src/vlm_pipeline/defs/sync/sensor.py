@@ -11,7 +11,12 @@ import duckdb
 from dagster import DefaultSensorStatus, RunRequest, SkipReason, sensor
 from dagster._core.storage.dagster_run import DagsterRunStatus, RunsFilter
 
-from vlm_pipeline.lib.env_utils import default_duckdb_path, int_env, is_duckdb_lock_conflict
+from vlm_pipeline.lib.env_utils import (
+    default_duckdb_path,
+    has_any_duckdb_writer_tag,
+    int_env,
+    is_duckdb_lock_conflict,
+)
 from vlm_pipeline.resources.runtime_settings import load_motherduck_sensor_settings
 
 _SENSOR_SETTINGS = load_motherduck_sensor_settings()
@@ -108,7 +113,7 @@ def _build_table_sensor(table_name: str):
             if run.job_name == "motherduck_sync_job":
                 continue
             tags = getattr(run, "tags", {}) or {}
-            if str(tags.get("duckdb_writer", "")).lower() == "true":
+            if has_any_duckdb_writer_tag(tags):
                 return True
         return False
 

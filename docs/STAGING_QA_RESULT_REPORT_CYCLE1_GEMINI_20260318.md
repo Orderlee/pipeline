@@ -2,7 +2,7 @@
 
 **일시**: 2026-03-18  
 **환경**: dagster-staging (port 3031)  
-**테스트 데이터**: `/home/pia/mou/staging/tmp_data_2` (fall_down 7, smoking 5, violence 5, weapon 7, gs건설 1 = 25 비디오)  
+**테스트 데이터**: `staging/tmp_data_2` (fall_down 7, smoking 5, violence 5, weapon 7, gs건설 1 = 25 비디오)  
 **Dispatch 설정**: `outputs: ["timestamp", "captioning"]`, `request_id: qa_cycle1_gemini_002`
 
 ---

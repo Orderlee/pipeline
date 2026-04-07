@@ -6,7 +6,7 @@
 - **목적**: Gemini 라벨 검수용 Label Studio 컨테이너 기동 준비
 - **조치**:
     - `docker/.env`에 LS 관련 환경변수 추가 (`LS_PORT=8084`, `LS_API_KEY`, `WEBHOOK_HOST`, `LS_WEBHOOK_PORT=8003`)
-    - 포트 `8080`은 ` -agent`가 점유 중이므로 `8084`로 변경
+    - 포트 `8080`은 `agent`가 점유 중이므로 `8084`로 변경
     - `docker-compose.labelstudio.yaml`은 기존 파이프라인과 완전 분리 구조 확인 완료
 - **다음 단계**:
     1. `docker compose -f docker-compose.yaml -f docker-compose.labelstudio.yaml up -d labelstudio`
@@ -746,7 +746,7 @@
       sensor cursor, run history, run_key 기록이 남지 않게 정리.
   - 운영 기준:
     - 이 초기화는 staging 파이프라인 상태만 비우는 절차이며,
-      `/home/pia/mou/staging/incoming`, `/home/pia/mou/staging/archive` 원본 입력 폴더는 건드리지 않음.
+      `staging/incoming`, `staging/archive` 원본 입력 폴더는 건드리지 않음.
     - 재테스트 전에 결과만 비우고 입력은 유지해야 할 때는 이 순서를 그대로 따르면 됨.
   - 검증:
     - staging MinIO 버킷 4개 객체 수 `0`.
@@ -821,7 +821,7 @@
   - 산출물:
     - `STAGING_INCOMING_LABELING_REPORT.md`
   - 포함 내용:
-    - `/home/pia/mou/staging/incoming` 현재 적재 영상 `38개`, 총 `43.32h`, 총 `22.74GB`
+    - `staging/incoming` 현재 적재 영상 `38개`, 총 `43.32h`, 총 `22.74GB`
     - `Gemini 2.5 Pro` 기준 비용/시간 추정
     - `Gemini 2.5 Flash` 기준 비용/시간 추정
     - 달러와 원화를 함께 표기한 환산표
@@ -871,16 +871,16 @@
 
 - **staging incoming 경로 미인식 문제를 해결하고 실제 ingest 진행까지 확인**:
   - 증상:
-    - 호스트에는 `/home/pia/mou/staging/incoming` 아래 파일이 계속 이동 중이었지만,
+    - 호스트에는 `staging/incoming` 아래 파일이 계속 이동 중이었지만,
       staging 컨테이너 안에서는 `.manifests`만 보이고 실제 비디오 파일은 보이지 않음.
     - 이 때문에 manifest 생성이 안 되거나, staging이 멈춘 것처럼 보였음.
   - 원인:
     - `dagster-staging` 서비스에 staging 전용 bind mount가 빠져 있었음.
-    - 기본 공통 볼륨은 `/home/pia/mou/incoming -> /nas/incoming`, `/home/pia/mou/archive -> /nas/archive`만 연결하고 있었음.
+    - 기본 공통 볼륨은 `incoming -> /nas/incoming`, `archive -> /nas/archive`만 연결하고 있었음.
   - 조치:
     - `dagster-staging`에
-      - `/home/pia/mou/staging/incoming -> /nas/staging/incoming`
-      - `/home/pia/mou/staging/archive -> /nas/staging/archive`
+      - `staging/incoming -> /nas/staging/incoming`
+      - `staging/archive -> /nas/staging/archive`
       마운트를 추가.
     - 컨테이너 재기동 후 `/nas/staging/incoming/tmp_data/...` 실제 파일 가시성 확인.
     - `.manifests/pending`, `.manifests/processed` 생성과 `incoming_manifest_sensor`/`auto_bootstrap_manifest_sensor` 로그를 함께 점검.
@@ -1741,9 +1741,9 @@
     - 로컬 DuckDB 상태 확인: `raw_files = completed 1596`, `failed 0`, `duplicate_of 0`.
 
 - **실데이터 정리 수행 (incoming → archive)**:
-  - 대상: `/home/pia/mou/incoming/AX지원사업`
+  - 대상: `incoming/AX지원사업`
   - 결과:
-    - 이동: 1596건 → `/home/pia/mou/archive/2026/02/AX지원사업`
+    - 이동: 1596건 → `archive/2026/02/AX지원사업`
     - 잔류: 중복 4건(incoming 유지)
     - 실패: 0건
 
@@ -1864,7 +1864,7 @@
 ## 2026-02-13
 - **INGEST 실운영 장애 대응 및 경로 정렬**:
   - `docker/.env`:
-    - `INCOMING_HOST_PATH=/home/pia/mou/incoming`로 확정.
+    - `INCOMING_HOST_PATH=incoming`로 확정.
     - MotherDuck 동기화 운영값 추가:
       - `MOTHERDUCK_DB=pipeline_db`
       - `MOTHERDUCK_SYNC_ENABLED=true`
@@ -2044,7 +2044,7 @@
   - `docker/docker-compose.yaml`, `docker/.env` 정렬:
     - `DATAOPS_PIPELINE_ROOT`, `DATAOPS_NAS_ROOT` -> `/nas/datasets/projects`
     - `DATAOPS_NAS_ROOTS` -> `/nas/datasets/projects;/nas/incoming`
-    - `/nas/datasets/projects` bind mount 추가(`PROJECTS_HOST_PATH=/home/pia/mou/nas_192tb/datasets/projects`)
+    - `/nas/datasets/projects` bind mount 추가(`PROJECTS_HOST_PATH=nas_192tb/datasets/projects`)
     - `/nas/archive`, `/nas/incoming` 추가 마운트 유지
   - `/nas/datasets` 상위 마운트는 nested mountpoint 생성을 위해 writable로 조정.
 
@@ -2141,12 +2141,12 @@
 
 - **추가 작업 (오후 세션, 경로/실행 정렬)**:
   - `docker/docker-compose.yaml` 바인드 마운트 fallback 정렬:
-    - `PROJECTS_HOST_PATH` fallback을 `/home/pia/mou/nas_192tb/datasets/projects`로 통일
+    - `PROJECTS_HOST_PATH` fallback을 `nas_192tb/datasets/projects`로 통일
     - `INCOMING_HOST_PATH` fallback은 `/mnt/nas/incoming` 유지 (fallback 전용)
   - `docker/.env` 최종값 확인:
-    - `PROJECTS_HOST_PATH=/home/pia/mou/nas_192tb/datasets/projects`
-    - `ARCHIVE_HOST_PATH=/home/pia/mou/archive`
-    - `INCOMING_HOST_PATH=/home/pia/mou/incoming`
+    - `PROJECTS_HOST_PATH=nas_192tb/datasets/projects`
+    - `ARCHIVE_HOST_PATH=archive`
+    - `INCOMING_HOST_PATH=incoming`
   - 서비스 재기동:
     - `docker compose -f docker/docker-compose.yaml up -d app dagster`
     - 상태 확인: `pipeline-app-1`, `pipeline-dagster-1` 모두 `Up`
@@ -2160,7 +2160,7 @@
 - **Local/Docker 실행 동등성(Parity) 정리**:
   - 로컬/도커가 같은 DuckDB 파일을 사용하도록 기본값 통일.
   - `configs/global.yaml`:
-    - `nas_root`: `/home/pia/mou/nas_192tb/datasets/projects`
+    - `nas_root`: `nas_192tb/datasets/projects`
     - `duckdb_path`: `./docker/data/pipeline.duckdb`
   - `docker/.env`에 `DATAOPS_DUCKDB_PATH=/data/pipeline.duckdb` 명시.
   - `docker-compose.yaml`의 app/dagster에서 `DUCKDB_PATH`, `DATAOPS_DUCKDB_PATH`를 공통 참조로 정렬.

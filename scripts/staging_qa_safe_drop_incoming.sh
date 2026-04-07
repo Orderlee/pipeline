@@ -2,7 +2,7 @@
 # incoming 외부에 복사 완료 후 mv → 센서가 불완전 폴더를 잡지 않음
 # 사용: bash scripts/staging_qa_safe_drop_incoming.sh tmp_data_2
 set -euo pipefail
-STAGING="${STAGING_ROOT:-/home/pia/mou/staging}"
+STAGING="${STAGING_ROOT:-staging}"
 SRC_NAME="${1:?folder name under $STAGING e.g. tmp_data_2}"
 # QA_DROP_SOURCE: 대용량 폴더 대신 동일 폴더명의 소형 스모크 디렉터리 절대경로
 SRC="${QA_DROP_SOURCE:-$STAGING/$SRC_NAME}"

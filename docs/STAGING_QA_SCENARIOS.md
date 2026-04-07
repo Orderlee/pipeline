@@ -42,21 +42,21 @@
 | .manifests | `ls .manifests/pending/` | 비어있음 |
 | .dispatch | `ls .dispatch/pending/` | 비어있음 |
 | dagster-staging | `docker ps` | Up, 에러 없음 |
-| incoming 테스트 데이터 | `/home/pia/mou/staging/incoming/` | 테스트 폴더 존재 |
+| incoming 테스트 데이터 | `staging/incoming/` | 테스트 폴더 존재 |
 
 ### 테스트 데이터 준비
 
 ```bash
 # 테스트용 비디오 파일 (최소 3개, 다양한 크기)
 # 예시 폴더 구조:
-# /home/pia/mou/staging/incoming/test_smoke_001/
+# staging/incoming/test_smoke_001/
 #   ├── smoke_video_01.mp4
 #   ├── smoke_video_02.mp4
 #   └── smoke_video_03.mp4
-# /home/pia/mou/staging/incoming/test_fire_002/
+# staging/incoming/test_fire_002/
 #   ├── fire_video_01.mp4
 #   └── fire_video_02.mp4
-# /home/pia/mou/staging/incoming/test_mixed_003/
+# staging/incoming/test_mixed_003/
 #   ├── weapon_video_01.mp4
 #   ├── falldown_video_01.mp4
 #   └── violence_video_01.mp4
@@ -90,7 +90,7 @@
 | 3 | raw_files 적재 | `SELECT COUNT(*) FROM raw_files WHERE source_unit_name='test_smoke_001'` | 파일 수와 일치 |
 | 4 | video_metadata 적재 | `SELECT COUNT(*) FROM video_metadata vm JOIN raw_files rf ON vm.asset_id=rf.asset_id WHERE rf.source_unit_name='test_smoke_001'` | 비디오 파일 수와 일치 |
 | 5 | MinIO raw 업로드 | vlm-raw 버킷 객체 확인 | 파일 수와 일치 |
-| 6 | archive 이동 | `/home/pia/mou/staging/archive/test_smoke_001/` 존재 | 파일 이동 완료 |
+| 6 | archive 이동 | `staging/archive/test_smoke_001/` 존재 | 파일 이동 완료 |
 | 7 | labels 생성 | `SELECT COUNT(*) FROM labels l JOIN raw_files rf ON l.asset_id=rf.asset_id WHERE rf.source_unit_name='test_smoke_001'` | >= 0 (이벤트 수에 따라) |
 | 8 | vlm-labels JSON | vlm-labels 버킷 확인 | timestamp JSON 존재 |
 

@@ -16,7 +16,7 @@ CYAN='\033[0;36m'
 NC='\033[0m'
 
 COMPOSE_FILE="/home/pia/work_p/Datapipeline-Data-data_pipeline/docker/docker-compose.yaml"
-STAGING_ROOT="/home/pia/mou/staging"
+STAGING_ROOT="staging"
 
 info()  { echo -e "${CYAN}[INFO]${NC} $*"; }
 ok()    { echo -e "${GREEN}[OK]${NC} $*"; }
