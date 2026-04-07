@@ -5,6 +5,7 @@ assets.py / timestamp.py 등에서 공유하는 private helper 함수 모음.
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
 import os
 import subprocess
@@ -30,6 +31,16 @@ from vlm_pipeline.resources.minio import MinIOResource
 def init_gemini_analyzer(context) -> GeminiAnalyzer:
     """GeminiAnalyzer 초기화 (환경변수 기반)."""
     return GeminiAnalyzer()
+
+
+def clone_gemini_analyzer(analyzer: GeminiAnalyzer) -> GeminiAnalyzer:
+    """병렬 worker에서 사용할 GeminiAnalyzer 복제."""
+    return GeminiAnalyzer(
+        model_name=getattr(analyzer, "model_name", "gemini-2.5-flash"),
+        project=getattr(analyzer, "project", None),
+        location=getattr(analyzer, "location", None),
+        credentials_path=getattr(analyzer, "credentials_path", None),
+    )
 
 
 # ── video materialisation ──
@@ -120,58 +131,56 @@ def prepare_gemini_video_for_request(
     ]
 
     last_error = "gemini_preview_unknown_failure"
-    for attempt in attempts:
-        preview_path = _build_nonexistent_temp_path(".mp4")
-        bitrate_kbps = _target_preview_bitrate_kbps(
-            duration_sec=effective_duration,
-            target_bytes=int(attempt["target_bytes"]),
+    primary_attempt = attempts[0]
+    primary_result = _render_gemini_preview_attempt(
+        source_path=source_path,
+        duration_sec=effective_duration,
+        max_duration=max_duration,
+        needs_trim=needs_trim,
+        request_limit=request_limit,
+        attempt=primary_attempt,
+    )
+    if primary_result["preview_path"] is not None:
+        preview_path = primary_result["preview_path"]
+        return preview_path, preview_path
+    last_error = str(primary_result["error"] or last_error)
+
+    fallback_attempts = attempts[1:]
+    if not fallback_attempts:
+        raise RuntimeError(
+            f"{last_error}; original_size={source_size}bytes exceeds_safe_limit={safe_bytes}bytes"
         )
-        cmd = [
-            "ffmpeg",
-            "-hide_banner",
-            "-loglevel",
-            "error",
-            "-i",
-            str(source_path),
-        ]
-        if needs_trim:
-            cmd.extend(["-t", str(int(max_duration))])
-        cmd.extend([
-            "-map",
-            "0:v:0",
-            "-an",
-            "-vf",
-            (
-                f"fps={int(attempt['fps'])},"
-                f"scale=w={int(attempt['width'])}:h=-2:force_original_aspect_ratio=decrease"
-            ),
-            "-c:v",
-            "libx264",
-            "-preset",
-            "veryfast",
-            "-pix_fmt",
-            "yuv420p",
-            "-b:v",
-            f"{bitrate_kbps}k",
-            "-maxrate",
-            f"{bitrate_kbps}k",
-            "-bufsize",
-            f"{max(bitrate_kbps * 2, 256)}k",
-            "-movflags",
-            "+faststart",
-            str(preview_path),
-        ])
-        proc = subprocess.run(cmd, capture_output=True, check=False)
-        if proc.returncode == 0 and preview_path.exists() and preview_path.stat().st_size > 0:
-            if preview_path.stat().st_size <= request_limit:
-                return preview_path, preview_path
-            last_error = (
-                f"gemini_preview_too_large:{preview_path.stat().st_size}bytes"
+
+    fallback_results: list[dict[str, object]] = []
+    with ThreadPoolExecutor(max_workers=min(len(fallback_attempts), 2)) as executor:
+        futures = [
+            executor.submit(
+                _render_gemini_preview_attempt,
+                source_path=source_path,
+                duration_sec=effective_duration,
+                max_duration=max_duration,
+                needs_trim=needs_trim,
+                request_limit=request_limit,
+                attempt=attempt,
             )
-        else:
-            stderr = (proc.stderr or b"").decode("utf-8", errors="ignore").strip()
-            last_error = f"gemini_preview_ffmpeg_failed:{stderr or 'empty_output'}"
-        cleanup_temp(preview_path)
+            for attempt in fallback_attempts
+        ]
+        for future in as_completed(futures):
+            fallback_results.append(future.result())
+
+    successful = [row for row in fallback_results if row["preview_path"] is not None]
+    if successful:
+        successful.sort(key=lambda row: int(row["width"]), reverse=True)
+        chosen = successful[0]
+        for rejected in successful[1:]:
+            cleanup_temp(rejected["preview_path"])
+        preview_path = chosen["preview_path"]
+        if isinstance(preview_path, Path):
+            return preview_path, preview_path
+
+    fallback_errors = [str(row["error"]) for row in fallback_results if row.get("error")]
+    if fallback_errors:
+        last_error = "; ".join(fallback_errors)
 
     raise RuntimeError(
         f"{last_error}; original_size={source_size}bytes exceeds_safe_limit={safe_bytes}bytes"
@@ -221,34 +230,59 @@ def analyze_routed_video_events(
         len(chunk_plan),
     )
     merged_events: list[dict] = []
-    for chunk in chunk_plan:
-        chunk_path = extract_video_segment_path(
-            video_path,
-            start_sec=chunk.start_sec,
-            end_sec=chunk.end_sec,
-        )
-        temp_paths.append(chunk_path)
-        chunk_events = _analyze_single_video_events(
-            analyzer,
-            chunk_path,
-            duration_sec=chunk.duration_sec,
-            temp_paths=temp_paths,
-            video_prompt=video_prompt,
-        )
-        merged_events.extend(
-            offset_gemini_events(
-                chunk_events,
-                offset_sec=chunk.start_sec,
-                chunk_end_sec=chunk.end_sec,
+    chunk_workers = min(
+        len(chunk_plan),
+        int_env("GEMINI_CHUNK_MAX_WORKERS", 3, minimum=1),
+    )
+
+    def _analyze_chunk(chunk) -> dict[str, object]:
+        local_temp_paths: list[Path] = []
+        try:
+            local_analyzer = clone_gemini_analyzer(analyzer)
+            chunk_path = extract_video_segment_path(
+                video_path,
+                start_sec=chunk.start_sec,
+                end_sec=chunk.end_sec,
             )
-        )
+            local_temp_paths.append(chunk_path)
+            chunk_events = _analyze_single_video_events(
+                local_analyzer,
+                chunk_path,
+                duration_sec=chunk.duration_sec,
+                temp_paths=local_temp_paths,
+                video_prompt=video_prompt,
+            )
+            return {
+                "chunk_index": chunk.chunk_index,
+                "start_sec": chunk.start_sec,
+                "end_sec": chunk.end_sec,
+                "events": offset_gemini_events(
+                    chunk_events,
+                    offset_sec=chunk.start_sec,
+                    chunk_end_sec=chunk.end_sec,
+                ),
+                "event_count": len(chunk_events),
+            }
+        finally:
+            for path in reversed(local_temp_paths):
+                cleanup_temp(path)
+
+    chunk_results: list[dict[str, object]] = []
+    with ThreadPoolExecutor(max_workers=chunk_workers) as executor:
+        futures = [executor.submit(_analyze_chunk, chunk) for chunk in chunk_plan]
+        for future in as_completed(futures):
+            chunk_results.append(future.result())
+
+    chunk_results.sort(key=lambda row: int(row["chunk_index"]))
+    for chunk_result in chunk_results:
+        merged_events.extend(list(chunk_result["events"]))
         context.log.info(
             "clip_timestamp: chunk %d/%d start=%.3fs end=%.3fs events=%d",
-            chunk.chunk_index,
+            int(chunk_result["chunk_index"]),
             len(chunk_plan),
-            chunk.start_sec,
-            chunk.end_sec,
-            len(chunk_events),
+            float(chunk_result["start_sec"]),
+            float(chunk_result["end_sec"]),
+            int(chunk_result["event_count"]),
         )
 
     return merge_overlapping_events(merged_events)
@@ -505,6 +539,80 @@ def _target_preview_bitrate_kbps(
 
     bitrate_kbps = int((max(1, int(target_bytes)) * 8) / duration_value / 1000)
     return max(120, min(2500, bitrate_kbps))
+
+
+def _render_gemini_preview_attempt(
+    *,
+    source_path: Path,
+    duration_sec: float | int | None,
+    max_duration: int,
+    needs_trim: bool,
+    request_limit: int,
+    attempt: dict[str, int],
+) -> dict[str, object]:
+    preview_path = _build_nonexistent_temp_path(".mp4")
+    bitrate_kbps = _target_preview_bitrate_kbps(
+        duration_sec=duration_sec,
+        target_bytes=int(attempt["target_bytes"]),
+    )
+    cmd = [
+        "ffmpeg",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-i",
+        str(source_path),
+    ]
+    if needs_trim:
+        cmd.extend(["-t", str(int(max_duration))])
+    cmd.extend([
+        "-map",
+        "0:v:0",
+        "-an",
+        "-vf",
+        (
+            f"fps={int(attempt['fps'])},"
+            f"scale=w={int(attempt['width'])}:h=-2:force_original_aspect_ratio=decrease"
+        ),
+        "-c:v",
+        "libx264",
+        "-preset",
+        "veryfast",
+        "-pix_fmt",
+        "yuv420p",
+        "-b:v",
+        f"{bitrate_kbps}k",
+        "-maxrate",
+        f"{bitrate_kbps}k",
+        "-bufsize",
+        f"{max(bitrate_kbps * 2, 256)}k",
+        "-movflags",
+        "+faststart",
+        str(preview_path),
+    ])
+    proc = subprocess.run(cmd, capture_output=True, check=False)
+    if proc.returncode == 0 and preview_path.exists() and preview_path.stat().st_size > 0:
+        size_bytes = preview_path.stat().st_size
+        if size_bytes <= request_limit:
+            return {
+                "preview_path": preview_path,
+                "width": int(attempt["width"]),
+                "error": None,
+            }
+        cleanup_temp(preview_path)
+        return {
+            "preview_path": None,
+            "width": int(attempt["width"]),
+            "error": f"gemini_preview_too_large:{size_bytes}bytes",
+        }
+
+    stderr = (proc.stderr or b"").decode("utf-8", errors="ignore").strip()
+    cleanup_temp(preview_path)
+    return {
+        "preview_path": None,
+        "width": int(attempt["width"]),
+        "error": f"gemini_preview_ffmpeg_failed:{stderr or 'empty_output'}",
+    }
 
 
 

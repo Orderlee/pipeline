@@ -75,6 +75,37 @@ def default_duckdb_path() -> str:
         or "/data/pipeline.duckdb"
     )
 
+
+DUCKDB_LEGACY_WRITER_TAG = "duckdb_writer"
+DUCKDB_RAW_WRITER_TAG = "duckdb_raw_writer"
+DUCKDB_LABEL_WRITER_TAG = "duckdb_label_writer"
+DUCKDB_YOLO_WRITER_TAG = "duckdb_yolo_writer"
+DUCKDB_WRITER_TAG_KEYS = (
+    DUCKDB_LEGACY_WRITER_TAG,
+    DUCKDB_RAW_WRITER_TAG,
+    DUCKDB_LABEL_WRITER_TAG,
+    DUCKDB_YOLO_WRITER_TAG,
+)
+
+
+def build_duckdb_writer_tags(*tag_keys: str) -> dict[str, str]:
+    """Dagster run/job tag dict를 생성한다."""
+    normalized = [str(tag or "").strip() for tag in tag_keys if str(tag or "").strip()]
+    return {tag_key: "true" for tag_key in normalized}
+
+
+def is_enabled_run_tag(tags: Mapping[str, object] | None, key: str) -> bool:
+    """run tags에서 truthy writer flag 여부를 판별한다."""
+    if not tags:
+        return False
+    return str(tags.get(key, "")).strip().lower() == "true"
+
+
+def has_any_duckdb_writer_tag(tags: Mapping[str, object] | None) -> bool:
+    """legacy + lane 기반 DuckDB writer tag 중 하나라도 활성인지 확인한다."""
+    return any(is_enabled_run_tag(tags, key) for key in DUCKDB_WRITER_TAG_KEYS)
+
+
 IS_STAGING = bool_env("IS_STAGING", False)
 
 
@@ -198,9 +229,10 @@ _OUTPUT_DEPENDENCIES: dict[str, list[str]] = {
 # categories → classes 파생 (auto_labeling_unified_spec, staging spec flow)
 CATEGORY_TO_CLASSES: dict[str, list[str]] = {
     "smoke": ["smoke"],
+    "smoking": ["cigarette", "smoking"],
     "fire": ["fire", "flame"],
     "falldown": ["person_fallen"],
-    "weapon": ["knife", "gun", "weapon"],
+    "weapon": ["knife", "gun", "bat", "baseball bat", "sword", "dagger"],
     "violence": ["violence", "fight"],
 }
 

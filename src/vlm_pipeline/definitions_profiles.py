@@ -113,7 +113,6 @@ def _build_staging_definitions() -> Definitions:
         description="원본 미디어 수집 + inline 중복 검출",
     )
     gcs_download_job = build_gcs_download_job(
-        tags={"duckdb_writer": "true"},
         description="GCS 외부 데이터 수집",
     )
     dispatch_stage_job = build_dispatch_stage_job(

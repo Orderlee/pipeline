@@ -241,6 +241,7 @@ def normalize_and_archive(
     except ValueError:
         reencode_workers = DEFAULT_REENCODE_WORKERS
         reencode_threads = DEFAULT_REENCODE_THREADS
+    raw_insert_batch_size = 50
     candidate_records = [rec for rec in records if rec.get("status") == "registered"]
     total_candidates = len(candidate_records)
     processed_candidates = 0
@@ -268,6 +269,124 @@ def normalize_and_archive(
             "중복 파일 스킵(raw_files insert 생략): "
             f"{source_path} -> {duplicate_asset_id}"
         )
+
+    pending_db_rows: list[dict[str, Any]] = []
+    pending_checksums: dict[str, str] = {}
+
+    def _stage_upload_task(entry: dict[str, Any]) -> None:
+        asset_id = entry["asset_id"]
+        media_type = entry["media_type"]
+        raw_key = entry["raw_key"]
+        meta = entry["meta"]
+
+        if media_type == "image" and "image_metadata" in meta:
+            image_meta = dict(meta["image_metadata"])
+            image_meta.update(
+                {
+                    "image_bucket": DEFAULT_RAW_BUCKET,
+                    "image_key": raw_key,
+                    "image_role": "source_image",
+                    "checksum": meta.get("checksum"),
+                    "file_size": meta.get("file_size"),
+                }
+            )
+            db.insert_image_metadata(asset_id, image_meta)
+        elif media_type == "video" and "video_metadata" in meta:
+            db.insert_video_metadata(asset_id, meta["video_metadata"])
+
+        upload_tasks.append(
+            {
+                "filepath": entry["filepath"],
+                "source_path": entry["filepath"],
+                "asset_id": asset_id,
+                "media_type": media_type,
+                "raw_key": raw_key,
+                "db_record": entry["db_record"],
+                "meta": meta,
+                "reencode_required": (
+                    meta["video_metadata"].get("reencode_required", False)
+                    if media_type == "video"
+                    else False
+                ),
+                "reencode_threads": reencode_threads,
+            }
+        )
+
+    def _handle_pending_db_error(entry: dict[str, Any], exc: Exception) -> None:
+        filepath = entry["filepath"]
+        asset_id = entry["asset_id"]
+        media_type = entry["media_type"]
+        rel_path = entry.get("rel_path", "")
+        meta = entry.get("meta")
+        error_message = str(exc)
+        is_transient = _is_transient_error(exc)
+
+        context.log.error(f"normalize 실패: {filepath}: {exc}")
+        entry["record_ref"]["status"] = "failed"
+        if meta is not None:
+            _close_video_stream(meta)
+        if is_transient and retry_candidates is not None:
+            retry_candidates.append(
+                {
+                    "source_path": filepath,
+                    "rel_path": str(rel_path or Path(filepath).name),
+                    "media_type": media_type,
+                }
+            )
+
+        cleanup_error: Exception | None = None
+        try:
+            if db.has_raw_file(asset_id):
+                db.delete_asset_for_reingest(asset_id)
+        except Exception as cleanup_exc:  # noqa: BLE001
+            cleanup_error = cleanup_exc
+
+        if cleanup_error is not None:
+            context.log.warning(
+                "ingest 실패 레코드 정리 중 추가 오류: "
+                f"asset_id={asset_id}, err={cleanup_error}"
+            )
+
+        _append_ingest_rejection(
+            ingest_rejections,
+            source_path=filepath,
+            rel_path=rel_path,
+            media_type=media_type,
+            stage="db",
+            error_message=error_message,
+            retryable=is_transient,
+            error_code="duckdb_lock_conflict" if is_transient else None,
+        )
+
+    def _flush_pending_db_rows() -> None:
+        nonlocal pending_db_rows, pending_checksums
+        if not pending_db_rows:
+            return
+
+        batch_entries = pending_db_rows
+        pending_db_rows = []
+        pending_checksums = {}
+
+        try:
+            db.insert_raw_files_batch([entry["db_record"] for entry in batch_entries])
+        except Exception as batch_exc:  # noqa: BLE001
+            context.log.warning(
+                "raw_files batch insert 실패, 낱개 fallback: "
+                f"count={len(batch_entries)} err={batch_exc}"
+            )
+            for entry in batch_entries:
+                try:
+                    db.insert_raw_files_batch([entry["db_record"]])
+                    _stage_upload_task(entry)
+                except Exception as single_exc:  # noqa: BLE001
+                    _handle_pending_db_error(entry, single_exc)
+            return
+
+        for entry in batch_entries:
+            try:
+                _stage_upload_task(entry)
+            except Exception as exc:  # noqa: BLE001
+                _handle_pending_db_error(entry, exc)
 
     # 1) 메타 추출/중복검출/DB 등록은 순차 처리 (DuckDB lock 최소화)
     for rec in records:
@@ -334,45 +453,33 @@ def normalize_and_archive(
                     _mark_duplicate_skip(filepath, stale_asset_id, db_record, rec)
                     continue
 
-            # raw_files INSERT
+            pending_duplicate_asset_id = pending_checksums.get(str(meta["checksum"]))
+            if pending_duplicate_asset_id:
+                _close_video_stream(meta)
+                context.log.warning(
+                    f"중복 건너뜀: {filepath} (동일 batch 기존: {pending_duplicate_asset_id})"
+                )
+                _mark_duplicate_skip(filepath, pending_duplicate_asset_id, db_record, rec)
+                continue
+
             db_record["file_size"] = meta["file_size"]
             db_record["checksum"] = meta["checksum"]
             db_record["ingest_status"] = "uploading"
-            db.insert_raw_files_batch([db_record])
-
-            # image/video_metadata INSERT
-            if media_type == "image" and "image_metadata" in meta:
-                image_meta = dict(meta["image_metadata"])
-                image_meta.update(
-                    {
-                        "image_bucket": DEFAULT_RAW_BUCKET,
-                        "image_key": raw_key,
-                        "image_role": "source_image",
-                        "checksum": meta.get("checksum"),
-                        "file_size": meta.get("file_size"),
-                    }
-                )
-                db.insert_image_metadata(asset_id, image_meta)
-            elif media_type == "video" and "video_metadata" in meta:
-                db.insert_video_metadata(asset_id, meta["video_metadata"])
-
-            upload_tasks.append(
+            pending_db_rows.append(
                 {
                     "filepath": filepath,
-                    "source_path": filepath,   # 원본 NAS 경로 보존 (reencode 시 filepath 교체돼도 유지)
                     "asset_id": asset_id,
                     "media_type": media_type,
                     "raw_key": raw_key,
                     "db_record": db_record,
                     "meta": meta,
-                    "reencode_required": (
-                        meta["video_metadata"].get("reencode_required", False)
-                        if media_type == "video"
-                        else False
-                    ),
-                    "reencode_threads": reencode_threads,
+                    "rel_path": rel_path,
+                    "record_ref": rec,
                 }
             )
+            pending_checksums[str(meta["checksum"])] = str(asset_id)
+            if len(pending_db_rows) >= raw_insert_batch_size:
+                _flush_pending_db_rows()
         except Exception as e:
             context.log.error(f"normalize 실패: {filepath}: {e}")
             error_message = str(e)
@@ -420,6 +527,8 @@ def normalize_and_archive(
                 f"{processed_candidates}/{total_candidates} "
                 f"media_type={media_type} path={filepath}"
             )
+
+    _flush_pending_db_rows()
 
     context.log.info(f"upload_prepare:done tasks={len(upload_tasks)}")
     context.log.info("upload_execute:start")

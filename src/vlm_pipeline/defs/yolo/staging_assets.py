@@ -22,7 +22,7 @@ from vlm_pipeline.resources.minio import MinIOResource
         "limit": Field(int, default_value=500),
         "confidence_threshold": Field(float, default_value=0.25),
         "iou_threshold": Field(float, default_value=0.45),
-        "batch_size": Field(int, default_value=4),
+        "batch_size": Field(int, default_value=8),
     },
 )
 def staging_yolo_image_detection(

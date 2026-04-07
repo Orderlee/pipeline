@@ -66,12 +66,12 @@ NAS에 있는 이미지/비디오 미디어를 수집하고, 중복을 정리한
 | Dagster home | `/app/dagster_home` | `/app/dagster_home_staging` |
 | Workspace | `/app/workspace_prod.yaml` | `/app/workspace_staging.yaml` |
 | Main entrypoint | `src/vlm_pipeline/definitions.py` | `src/vlm_pipeline/definitions_staging.py` |
-| Dispatch ingress | `agent:8080` polling + JSON fallback | ` -agent:8081` polling |
+| Dispatch ingress | `agent:8080` polling + JSON fallback | `agent:8081` polling |
 
 핵심 차이:
 
 - **production**은 `production_agent_dispatch_sensor`를 기본 ingress로 사용하고, `.dispatch/pending/*.json`은 fallback 경로로 유지합니다.
-- **staging**은 `staging_agent_dispatch_sensor`가 ` -agent:8081`에서 pending 요청을 polling해서 시작합니다.
+- **staging**은 `staging_agent_dispatch_sensor`가 `agent:8081`에서 pending 요청을 polling해서 시작합니다.
 - staging의 파일 기반 `dispatch_sensor` 경로는 레거시/호환 목적이며 기본 ingress가 아닙니다.
 - staging은 `manual_label_import_job`, `prelabeled_import_job`, spec 기반 라우팅 등 검증용 흐름을 더 포함합니다.
 
@@ -80,7 +80,7 @@ NAS에 있는 이미지/비디오 미디어를 수집하고, 중복을 정리한
 ### Production
 
 ```text
- -agent:8080
+agent:8080
   -> production_agent_dispatch_sensor
   -> dispatch_stage_job
   -> raw_ingest
@@ -103,7 +103,7 @@ production 정책은 다음과 같습니다.
 ### Staging
 
 ```text
- -agent:8081
+agent:8081
   -> staging_agent_dispatch_sensor
   -> dispatch_stage_job
   -> raw_ingest
@@ -305,7 +305,7 @@ Docker Compose(`docker/docker-compose.yaml`)로 주요 서비스를 실행합니
 - `vlm-labels`만 라벨 JSON의 source of truth로 사용합니다.
 - 파일 단위 오류는 fail-forward로 처리하고, failure JSONL로 남깁니다.
 - archive 이동 후 source 폴더가 비면 incoming 쪽 빈 부모 폴더도 정리합니다.
-- DuckDB writer job은 `tags={"duckdb_writer": "true"}` 로 단일 writer를 강제합니다.
+- DuckDB writer lane은 `duckdb_writer`(legacy dispatch), `duckdb_raw_writer`, `duckdb_label_writer`, `duckdb_yolo_writer`로 분리합니다.
 
 ## Getting Started
 
@@ -343,6 +343,9 @@ cp docker/.env docker/.env.staging
 | `PROD_AGENT_BASE_URL` | production agent base URL (기본 `host.docker.internal:8080`) |
 | `STAGING_AGENT_POLLING_ENABLED` | staging agent polling 활성화 |
 | `STAGING_AGENT_BASE_URL` | staging agent base URL (기본 `host.docker.internal:8081`) |
+| `INGEST_UPLOAD_WORKERS` | raw ingest MinIO 업로드 worker 수 (`8` 권장) |
+| `GEMINI_MAX_WORKERS` | clip timestamp Gemini 병렬 worker 수 (`5` 권장) |
+| `GEMINI_CHUNK_MAX_WORKERS` | 긴 영상 chunk Gemini 병렬 worker 수 (`3` 권장) |
 
 ### 3. 인프라 실행
 
@@ -406,9 +409,9 @@ pytest tests/integration -q
 
 | 이름 | 환경 | 설명 |
 |------|------|------|
-| `production_agent_dispatch_sensor` | production | ` -agent` polling -> `dispatch_stage_job` |
+| `production_agent_dispatch_sensor` | production | `agent` polling -> `dispatch_stage_job` |
 | `dispatch_sensor` | production fallback | `.dispatch/pending/*.json` -> `dispatch_stage_job` |
-| `staging_agent_dispatch_sensor` | staging | ` -agent` polling -> `dispatch_stage_job` |
+| `staging_agent_dispatch_sensor` | staging | `agent` polling -> `dispatch_stage_job` |
 | `incoming_manifest_sensor` | both | pending manifest -> ingest |
 | `auto_bootstrap_manifest_sensor` | both | incoming 스캔 후 manifest 생성 |
 | `spec_resolve_sensor` | staging | spec 요청 -> routed job |
@@ -452,8 +455,8 @@ WHERE image_caption_text IS NOT NULL;
 
 ## 운영 팁
 
-- production에서 자동 라벨링은 ` -agent:8080` polling이 기본 ingress입니다 (`PROD_AGENT_POLLING_ENABLED=true`). `.dispatch/pending/*.json`은 fallback으로 유지됩니다.
-- staging은 ` -agent-staging:8081` 연결 상태와 `STAGING_AGENT_POLLING_ENABLED=true` 여부를 먼저 확인합니다.
+- production에서 자동 라벨링은 `agent:8080` polling이 기본 ingress입니다 (`PROD_AGENT_POLLING_ENABLED=true`). `.dispatch/pending/*.json`은 fallback으로 유지됩니다.
+- staging은 `agent-staging:8081` 연결 상태와 `STAGING_AGENT_POLLING_ENABLED=true` 여부를 먼저 확인합니다.
 - `필요없음` 요청은 staging에서 raw ingest 후, 같은 폴더 안의 기존 라벨 결과를 best-effort로 자동 import 할 수 있습니다.
 - `tmp_data_2` 같은 재테스트 전에는 DB / MinIO / `.dispatch` 상태를 정리한 뒤 다시 시작하는 것이 안전합니다.
 
