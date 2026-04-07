@@ -38,7 +38,8 @@ MAX_BATCH = int(os.environ.get("YOLO_MAX_BATCH", "8"))
 
 DEFAULT_SAFETY_CLASSES: list[str] = [
     "person", "car", "truck", "bus", "motorcycle", "bicycle",
-    "fire", "smoke", "flame", "knife", "gun",
+    "fire", "smoke", "flame", "cigarette", "smoking",
+    "knife", "gun", "bat", "baseball bat", "sword", "dagger",
     "bag", "backpack", "suitcase",
     "helmet", "safety vest", "hard hat",
     "traffic cone", "barricade",

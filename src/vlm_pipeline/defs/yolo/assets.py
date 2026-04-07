@@ -54,7 +54,7 @@ class YoloTargetClassResolution:
         "limit": Field(int, default_value=500),
         "confidence_threshold": Field(float, default_value=0.25),
         "iou_threshold": Field(float, default_value=0.45),
-        "batch_size": Field(int, default_value=4),
+        "batch_size": Field(int, default_value=8),
     },
 )
 def yolo_image_detection(
@@ -75,7 +75,7 @@ def yolo_image_detection(
         "limit": Field(int, default_value=500),
         "confidence_threshold": Field(float, default_value=0.25),
         "iou_threshold": Field(float, default_value=0.45),
-        "batch_size": Field(int, default_value=4),
+        "batch_size": Field(int, default_value=8),
     },
 )
 def dispatch_yolo_image_detection(
@@ -106,7 +106,7 @@ def _run_yolo_image_detection(
     limit = int(context.op_config.get("limit", 500))
     conf = float(context.op_config.get("confidence_threshold", 0.25))
     iou = float(context.op_config.get("iou_threshold", 0.45))
-    batch_size = int(context.op_config.get("batch_size", 4))
+    batch_size = int(context.op_config.get("batch_size", 8))
     tags = context.run.tags if context.run else {}
     requested_outputs = parse_requested_outputs(tags)
     resolution = _resolve_yolo_target_classes(tags, db)

@@ -20,6 +20,7 @@ from vlm_pipeline.lib.sam3_compare import (
     parse_yolo_coco_payload,
     summarize_benchmark_rows,
 )
+from vlm_pipeline.lib.yolo_thresholds import resolve_active_class_confidence_thresholds
 from vlm_pipeline.resources.duckdb import DuckDBResource
 from vlm_pipeline.resources.minio import MinIOResource
 
@@ -121,6 +122,7 @@ def _run_sam3_shadow_compare(context, db: DuckDBResource, minio: MinIOResource) 
                     image_id,
                 )
                 continue
+            prompt_score_thresholds = resolve_active_class_confidence_thresholds(prompts, score_threshold)
 
             sam_result = client.segment(
                 image_bytes,
@@ -128,6 +130,7 @@ def _run_sam3_shadow_compare(context, db: DuckDBResource, minio: MinIOResource) 
                 filename=PurePosixPath(image_key).name or "image.jpg",
                 score_threshold=score_threshold,
                 max_masks_per_prompt=max(1, max_masks_per_prompt),
+                per_prompt_score_thresholds=prompt_score_thresholds,
             )
             sam_detections = list(sam_result.get("detections") or [])
             grouped_sam = group_sam_detections_by_prompt(sam_detections)
@@ -145,6 +148,7 @@ def _run_sam3_shadow_compare(context, db: DuckDBResource, minio: MinIOResource) 
                 "image_key": image_key,
                 "image_role": candidate.get("image_role"),
                 "requested_classes": prompts,
+                "sam3_prompt_score_thresholds": prompt_score_thresholds,
                 "class_source": _extract_yolo_class_source(yolo_payload),
                 "yolo_labels_bucket": yolo_bucket,
                 "yolo_labels_key": yolo_key,

@@ -56,6 +56,7 @@ class SAM3Client:
         filename: str = "image.jpg",
         score_threshold: float = 0.0,
         max_masks_per_prompt: int = 50,
+        per_prompt_score_thresholds: dict[str, float] | None = None,
     ) -> dict[str, Any]:
         files = {"file": (filename, io.BytesIO(image_bytes), "image/jpeg")}
         data = {
@@ -63,6 +64,8 @@ class SAM3Client:
             "score_threshold": str(float(score_threshold)),
             "max_masks_per_prompt": str(int(max_masks_per_prompt)),
         }
+        if per_prompt_score_thresholds:
+            data["per_prompt_score_thresholds_json"] = json.dumps(per_prompt_score_thresholds, ensure_ascii=False)
         resp = self.session.post(
             f"{self.api_url}/segment",
             files=files,
