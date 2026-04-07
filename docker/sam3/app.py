@@ -7,7 +7,7 @@ import logging
 import os
 import threading
 import time
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, nullcontext
 from io import BytesIO
 from typing import Any
 
@@ -47,6 +47,13 @@ def _resolve_device() -> str:
     return "cpu"
 
 
+def _autocast_context():
+    torch = _load_torch()
+    if str(_device or "").lower().startswith("cuda"):
+        return torch.autocast(device_type="cuda", dtype=torch.bfloat16)
+    return nullcontext()
+
+
 def _load_model() -> None:
     global _model, _processor, _device, _model_loaded_at, _load_error
     try:
@@ -64,7 +71,7 @@ def _load_model() -> None:
         )
         if hasattr(_model, "to"):
             _model = _model.to(_device)
-        _processor = Sam3Processor(_model)
+        _processor = Sam3Processor(_model, device=_device)
         _model_loaded_at = time.time()
         _load_error = None
         logger.info("SAM3 model loaded")
@@ -83,6 +90,10 @@ def _to_numpy(value: Any) -> np.ndarray:
         value = value.detach()
     if hasattr(value, "cpu"):
         value = value.cpu()
+    if getattr(value, "dtype", None) is not None:
+        torch = _load_torch()
+        if value.dtype == torch.bfloat16:
+            value = value.float()
     if hasattr(value, "numpy"):
         return np.asarray(value.numpy())
     return np.asarray(value)
@@ -102,8 +113,21 @@ def _normalize_box(box: Any) -> list[float] | None:
     return [round(left, 2), round(top, 2), round(right, 2), round(bottom, 2)]
 
 
+def _coerce_mask_2d(mask: Any) -> np.ndarray | None:
+    array = np.asarray(mask)
+    array = np.squeeze(array)
+    while array.ndim > 2:
+        array = array[0]
+    if array.ndim != 2:
+        return None
+    return np.asarray(array, dtype=np.uint8)
+
+
 def _mask_to_bbox(mask: np.ndarray) -> list[float] | None:
-    ys, xs = np.where(mask > 0)
+    normalized_mask = _coerce_mask_2d(mask)
+    if normalized_mask is None:
+        return None
+    ys, xs = np.where(normalized_mask > 0)
     if len(xs) == 0 or len(ys) == 0:
         return None
     left = float(xs.min())
@@ -150,6 +174,30 @@ def _parse_prompts(raw_value: str | None) -> list[str]:
     return list(dict.fromkeys(prompts))
 
 
+def _parse_prompt_score_thresholds(raw_value: str | None) -> dict[str, float]:
+    rendered = str(raw_value or "").strip()
+    if not rendered:
+        return {}
+    try:
+        parsed = json.loads(rendered)
+    except Exception:
+        logger.warning("SAM3 per_prompt_score_thresholds_json parse failed", exc_info=True)
+        return {}
+    if not isinstance(parsed, dict):
+        return {}
+
+    thresholds: dict[str, float] = {}
+    for key, value in parsed.items():
+        prompt = str(key or "").strip().lower()
+        if not prompt:
+            continue
+        try:
+            thresholds[prompt] = float(value)
+        except (TypeError, ValueError):
+            continue
+    return thresholds
+
+
 def _resolve_cuda_device_index() -> int | None:
     rendered = str(_device or "").strip().lower()
     if not rendered.startswith("cuda"):
@@ -191,55 +239,61 @@ def _run_segmentation(
     *,
     score_threshold: float,
     max_masks_per_prompt: int,
+    per_prompt_score_thresholds: dict[str, float] | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, float]]:
     if _processor is None:
         raise RuntimeError(_load_error or "sam3_model_not_loaded")
 
-    inference_state = _processor.set_image(image)
     detections: list[dict[str, Any]] = []
     prompt_latencies_ms: dict[str, float] = {}
 
     with _predict_lock:
-        for prompt in prompts:
-            prompt_start = time.time()
-            output = _processor.set_text_prompt(state=inference_state, prompt=prompt)
-            prompt_latencies_ms[prompt] = round((time.time() - prompt_start) * 1000, 1)
+        with _autocast_context():
+            inference_state = _processor.set_image(image)
+            for prompt in prompts:
+                prompt_start = time.time()
+                output = _processor.set_text_prompt(state=inference_state, prompt=prompt)
+                prompt_latencies_ms[prompt] = round((time.time() - prompt_start) * 1000, 1)
+                prompt_threshold = float((per_prompt_score_thresholds or {}).get(prompt, score_threshold))
 
-            masks = _to_numpy(output.get("masks"))
-            boxes = _to_numpy(output.get("boxes"))
-            scores = _to_numpy(output.get("scores")).reshape(-1)
-            if masks.ndim == 2:
-                masks = np.expand_dims(masks, axis=0)
-            if boxes.ndim == 1 and boxes.size >= 4:
-                boxes = np.expand_dims(boxes, axis=0)
+                masks = _to_numpy(output.get("masks"))
+                boxes = _to_numpy(output.get("boxes"))
+                scores = _to_numpy(output.get("scores")).reshape(-1)
+                if masks.ndim == 2:
+                    masks = np.expand_dims(masks, axis=0)
+                if boxes.ndim == 1 and boxes.size >= 4:
+                    boxes = np.expand_dims(boxes, axis=0)
 
-            total_items = min(len(masks), len(scores) or len(masks))
-            if boxes.size and len(boxes) < total_items:
-                total_items = len(boxes)
+                total_items = min(len(masks), len(scores) or len(masks))
+                if boxes.size and len(boxes) < total_items:
+                    total_items = len(boxes)
 
-            kept = 0
-            for idx in range(total_items):
-                score = float(scores[idx]) if len(scores) > idx else 0.0
-                if score < score_threshold:
-                    continue
-                mask = np.asarray(masks[idx] > 0, dtype=np.uint8)
-                mask_bbox = _mask_to_bbox(mask)
-                if mask_bbox is None:
-                    continue
-                model_box = _normalize_box(boxes[idx]) if boxes.size else None
-                detections.append(
-                    {
-                        "prompt_class": prompt,
-                        "score": round(score, 4),
-                        "mask_bbox": mask_bbox,
-                        "model_box": model_box,
-                        "mask_rle": _encode_mask_rle(mask),
-                        "area": int(mask.sum()),
-                    }
-                )
-                kept += 1
-                if kept >= max_masks_per_prompt:
-                    break
+                kept = 0
+                for idx in range(total_items):
+                    score = float(scores[idx]) if len(scores) > idx else 0.0
+                    if score < prompt_threshold:
+                        continue
+                    mask = _coerce_mask_2d(np.asarray(masks[idx] > 0, dtype=np.uint8))
+                    if mask is None:
+                        continue
+                    mask_bbox = _mask_to_bbox(mask)
+                    if mask_bbox is None:
+                        continue
+                    model_box = _normalize_box(boxes[idx]) if boxes.size else None
+                    detections.append(
+                        {
+                            "prompt_class": prompt,
+                            "score": round(score, 4),
+                            "score_threshold": round(prompt_threshold, 4),
+                            "mask_bbox": mask_bbox,
+                            "model_box": model_box,
+                            "mask_rle": _encode_mask_rle(mask),
+                            "area": int(mask.sum()),
+                        }
+                    )
+                    kept += 1
+                    if kept >= max_masks_per_prompt:
+                        break
 
     return detections, prompt_latencies_ms
 
@@ -280,6 +334,7 @@ async def segment(
     prompts_json: str | None = Form(None),
     score_threshold: float = DEFAULT_SCORE_THRESHOLD,
     max_masks_per_prompt: int = DEFAULT_MAX_MASKS_PER_PROMPT,
+    per_prompt_score_thresholds_json: str | None = Form(None),
 ):
     if _processor is None:
         raise HTTPException(status_code=503, detail=_load_error or "sam3_model_not_loaded")
@@ -287,6 +342,7 @@ async def segment(
     prompts = _parse_prompts(prompts_json)
     if not prompts:
         raise HTTPException(status_code=400, detail="empty_prompts")
+    per_prompt_score_thresholds = _parse_prompt_score_thresholds(per_prompt_score_thresholds_json)
 
     try:
         image = Image.open(BytesIO(await file.read())).convert("RGB")
@@ -300,6 +356,7 @@ async def segment(
         prompts,
         score_threshold=float(score_threshold),
         max_masks_per_prompt=max(1, int(max_masks_per_prompt)),
+        per_prompt_score_thresholds=per_prompt_score_thresholds,
     )
     elapsed_ms = round((time.time() - total_start) * 1000, 1)
     return {
@@ -310,6 +367,7 @@ async def segment(
         "image_size": [image.size[0], image.size[1]],
         "device": _device,
         "gpu_memory_peak_gb": _gpu_peak_memory_gb(),
+        "per_prompt_score_thresholds": per_prompt_score_thresholds,
     }
 
 
