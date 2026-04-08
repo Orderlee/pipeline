@@ -23,26 +23,26 @@ x-common-env: &common-env
   VIDEO_FFPROBE_RETRY_DELAY_MS: "250"
   DAGSTER_HOME: /app/dagster_home
   PYTHONPATH: /:/src/python:/src/vlm
-  DATAOPS_ASSET_PATH_PREFIX_FROM: nas_192tb;archive;incoming
+  DATAOPS_ASSET_PATH_PREFIX_FROM: /home/pia/mou/nas_192tb;/home/pia/mou/archive;/home/pia/mou/incoming
   DATAOPS_ASSET_PATH_PREFIX_TO: /nas
 
 x-prod-volumes: &prod-volumes
   - ./app/dagster_home:/app/dagster_home
   - ./data:/data
   - type: bind
-    source: ${DATASETS_HOST_PATH:-nas_192tb/datasets}
+    source: ${DATASETS_HOST_PATH:-/home/pia/mou/nas_192tb/datasets}
     target: /nas/datasets
     read_only: false
   - type: bind
-    source: ${PROJECTS_HOST_PATH:-nas_192tb/datasets/projects}
+    source: ${PROJECTS_HOST_PATH:-/home/pia/mou/nas_192tb/datasets/projects}
     target: /nas/datasets/projects
     read_only: true
   - type: bind
-    source: ${ARCHIVE_HOST_PATH:-archive}
+    source: ${ARCHIVE_HOST_PATH:-/home/pia/mou/archive}
     target: /nas/archive
     read_only: false
   - type: bind
-    source: ${INCOMING_HOST_PATH:-incoming}
+    source: ${INCOMING_HOST_PATH:-/home/pia/mou/incoming}
     target: /nas/incoming
     read_only: false
   - /home/pia/test_data:/test_data
@@ -56,19 +56,19 @@ x-staging-volumes: &staging-volumes
   - ${STAGING_REPO_PATH:-/volume2/datapipeline-staging}/docker/app:/app
   - ${STAGING_REPO_PATH:-/volume2/datapipeline-staging}/docker/data:/data
   - type: bind
-    source: ${DATASETS_HOST_PATH:-nas_192tb/datasets}
+    source: ${DATASETS_HOST_PATH:-/home/pia/mou/nas_192tb/datasets}
     target: /nas/datasets
     read_only: false
   - type: bind
-    source: ${PROJECTS_HOST_PATH:-nas_192tb/datasets/projects}
+    source: ${PROJECTS_HOST_PATH:-/home/pia/mou/nas_192tb/datasets/projects}
     target: /nas/datasets/projects
     read_only: true
   - type: bind
-    source: ${STAGING_ARCHIVE_HOST_PATH:-staging/archive}
+    source: ${STAGING_ARCHIVE_HOST_PATH:-/home/pia/mou/staging/archive}
     target: /nas/staging/archive
     read_only: false
   - type: bind
-    source: ${STAGING_INCOMING_HOST_PATH:-staging/incoming}
+    source: ${STAGING_INCOMING_HOST_PATH:-/home/pia/mou/staging/incoming}
     target: /nas/staging/incoming
     read_only: false
   - /home/pia/test_data:/test_data
@@ -210,7 +210,7 @@ services:
       DATAOPS_PIPELINE_ROOT: /nas/datasets/projects
       DATAOPS_NAS_ROOT: /nas/datasets/projects
       DATAOPS_NAS_ROOTS: /nas/datasets/projects;/nas/incoming
-      DATAOPS_ASSET_PATH_PREFIX_FROM: nas_192tb;staging/archive;staging/incoming
+      DATAOPS_ASSET_PATH_PREFIX_FROM: /home/pia/mou/nas_192tb;/home/pia/mou/staging/archive;/home/pia/mou/staging/incoming
       DATAOPS_ASSET_PATH_PREFIX_TO: /nas
     volumes: *staging-volumes
     depends_on:

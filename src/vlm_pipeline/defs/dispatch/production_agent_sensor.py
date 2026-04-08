@@ -1,4 +1,4 @@
-"""Production optional dispatch ingress sensor backed by agent polling API.
+"""Production optional dispatch ingress sensor backed by piaspace-agent polling API.
 
 기본 운영 ingress는 file-based dispatch_sensor를 유지한다.
 이 sensor는 PROD_AGENT_POLLING_ENABLED=true일 때만 활성 동작한다.

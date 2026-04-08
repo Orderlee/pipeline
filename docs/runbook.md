@@ -382,13 +382,13 @@ rm -rf docker/data/dagster_home_staging/storage
 ```
 
 **절대 지우면 안 되는 것:**
-- `staging/incoming`
-- `staging/archive`
+- `/home/pia/mou/staging/incoming`
+- `/home/pia/mou/staging/archive`
 
 **staging 컨테이너 볼륨 마운트 필수:**
 ```yaml
-- staging/incoming:/nas/staging/incoming
-- staging/archive:/nas/staging/archive
+- /home/pia/mou/staging/incoming:/nas/staging/incoming
+- /home/pia/mou/staging/archive:/nas/staging/archive
 ```
 
 ---
@@ -420,3 +420,75 @@ python src/gemini/ls_tasks.py renew --project-name <project_name>
 ### LS → MinIO 접근 불가 (presigned URL 오류)
 - presigned URL은 `MINIO_ENDPOINT` 기준 생성 → LS 컨테이너에서 해당 주소 도달 가능한지 확인
 - `docker exec pipeline-labelstudio-1 curl -I <presigned_url>`
+
+---
+
+## 11. NAS (CIFS) 장애 대응
+
+### 증상: 파이프라인 hang (archive_finalize 멈춤, 파일 접근 타임아웃)
+
+**진단:**
+```bash
+# NAS 네트워크 연결 확인
+timeout 3 ping -c 3 172.168.47.36
+
+# NAS 파일 접근 테스트 (5초 타임아웃)
+timeout 5 stat /home/pia/mou/incoming/
+timeout 5 ls /home/pia/mou/archive/
+
+# CIFS 연결 통계 (reconnect 횟수, open files, 에러 확인)
+cat /proc/fs/cifs/Stats
+
+# 커널 CIFS 에러 로그
+sudo dmesg | grep -i cifs | tail -20
+```
+
+**주요 이상 징후:**
+- `open on server` 값이 음수 → CIFS 세션 상태 corruption
+- reconnect 횟수가 빠르게 증가 → SMB 서비스 불안정
+- `stat`/`ls` 명령이 타임아웃 → NAS I/O hang
+
+**즉시 조치: CIFS 재마운트**
+```bash
+sudo umount -l /home/pia/mou/incoming
+sudo umount -l /home/pia/mou/archive
+sudo umount -l /home/pia/mou/staging
+sudo mount -a
+# 검증
+timeout 5 ls /home/pia/mou/incoming/
+```
+
+**파이프라인 보호 메커니즘:**
+- `raw_ingest` 시작 시 NAS 헬스체크 (5초 타임아웃, 실패 시 skip)
+- `archive_finalize`의 `shutil.move`에 타임아웃 적용 (`ARCHIVE_MOVE_TIMEOUT_SEC`, 기본 300초)
+- 타임아웃 시 archive 건너뛰고 업로드 완료분은 `completed` 처리 → 후속 스텝 진행
+
+### CIFS 마운트 옵션 권장 설정
+
+현재 `/etc/fstab` 기본 옵션에 아래를 추가하면 NAS 장애 감지와 복원이 빨라진다:
+
+```
+# 추가 권장 옵션
+soft,echo_interval=30,actimeo=1,closetimeo=1
+```
+
+| 옵션 | 현재 | 권장 | 효과 |
+|------|------|------|------|
+| `soft` | 미설정 | 추가 | 응답 없을 때 에러 반환 (hard mount는 무한 대기) |
+| `echo_interval` | 60 | 30 | 연결 끊김 감지 주기 절반으로 단축 |
+| `actimeo` | 미설정 | 1 | 파일 속성 캐시 1초 (이미 적용 중) |
+
+**변경 방법 (sudo 필요):**
+```bash
+# /etc/fstab 편집 후
+sudo mount -o remount /home/pia/mou/incoming
+sudo mount -o remount /home/pia/mou/archive
+```
+
+### 관련 환경변수
+
+| 변수 | 기본값 | 용도 |
+|------|--------|------|
+| `ARCHIVE_MOVE_TIMEOUT_SEC` | 300 | archive shutil.move 타임아웃 (초) |
+| `INGEST_META_WORKERS` | 4 | 체크섬/ffprobe 병렬 워커 수 (최대 8) |
+| `INGEST_UPLOAD_WORKERS` | 4 | MinIO 업로드 병렬 워커 수 (최대 16) |

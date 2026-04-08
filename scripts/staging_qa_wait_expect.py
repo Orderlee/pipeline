@@ -123,7 +123,7 @@ def main() -> None:
         elif args.mode == "dispatch_failed":
             from pathlib import Path
 
-            pth = Path("staging/incoming/.dispatch/failed") / f"{args.request_id}.json"
+            pth = Path("/home/pia/mou/staging/incoming/.dispatch/failed") / f"{args.request_id}.json"
             if pth.is_file():
                 print(json.dumps({"ok": True, "failed_file": str(pth)}))
                 return

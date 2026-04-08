@@ -37,8 +37,12 @@ if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 if str(REPO / "src") not in sys.path:
     sys.path.insert(0, str(REPO / "src"))
+if str(REPO / "scripts") not in sys.path:
+    sys.path.insert(0, str(REPO / "scripts"))
 
-from vlm_pipeline.lib.env_utils import derive_classes_from_categories
+from manual_yolo_sam3_reporting import generate_report_assets, generate_time_resource_report
+from manual_yolo_sam3_resources import ModelResourceSampler
+from vlm_pipeline.lib.env_utils import CATEGORY_TO_CLASSES, derive_classes_from_categories
 from vlm_pipeline.lib.sam3 import SAM3Client
 from vlm_pipeline.lib.sam3_compare import (
     compare_prompt_boxes,
@@ -52,7 +56,7 @@ from vlm_pipeline.lib.video_frames import (
     plan_frame_timestamps,
     resolve_frame_sampling_policy,
 )
-from vlm_pipeline.lib.yolo_coco import build_coco_detection_payload
+from vlm_pipeline.lib.detection_coco import build_coco_detection_payload
 from vlm_pipeline.lib.yolo_thresholds import (
     filter_detections_by_class_confidence,
     resolve_active_class_confidence_thresholds,
@@ -61,7 +65,7 @@ from vlm_pipeline.lib.yolo_thresholds import (
 from vlm_pipeline.lib.yolo_world import YOLOWorldClient
 
 LOGGER = logging.getLogger("manual_yolo_sam3_compare")
-DEFAULT_INPUT_DIR = Path("incoming/tmp_data_2")
+DEFAULT_INPUT_DIR = Path("/home/pia/mou/incoming/tmp_data_2")
 DEFAULT_OUTPUT_ROOT = Path("/tmp/vlm_manual_compare")
 DEFAULT_VIDEO_GLOB = "*.mp4,*.MP4,*.mov,*.MOV"
 DEFAULT_CATEGORIES = "smoke,fire,smoking,falldown,weapon,violence"
@@ -115,6 +119,19 @@ class VideoTask:
     frame_records: list[FrameRecord]
 
 
+@dataclass(frozen=True)
+class ThresholdProfile:
+    profile_name: str
+    mode: str
+    config_path: str
+    category_thresholds: dict[str, float]
+    yolo_class_thresholds: dict[str, float]
+    yolo_effective_request_confidence_threshold: float
+    sam3_score_threshold: float
+    sam3_prompt_thresholds: dict[str, float] | None
+    notes: list[str]
+
+
 def parse_args() -> argparse.Namespace:
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     default_output_dir = DEFAULT_OUTPUT_ROOT / f"tmp_data_2_{timestamp}"
@@ -133,6 +150,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--jpeg-quality", type=int, default=90)
     parser.add_argument("--yolo-url", default="http://127.0.0.1:8001")
     parser.add_argument("--sam3-url", default="http://127.0.0.1:8002")
+    parser.add_argument("--category-thresholds-json", type=Path, default=None)
+    parser.add_argument("--resource-sample-interval-sec", type=float, default=1.0)
+    parser.add_argument("--resource-yolo-container", default="pipeline-yolo-1")
+    parser.add_argument("--resource-sam3-container", default="pipeline-sam3-1")
     parser.add_argument("--skip-yolo", action="store_true")
     parser.add_argument("--skip-sam3", action="store_true")
     parser.add_argument("--skip-visuals", action="store_true")
@@ -248,6 +269,105 @@ def parse_csv_list(raw_value: str) -> list[str]:
         seen.add(rendered)
         values.append(rendered)
     return values
+
+
+def _normalize_threshold_profile_payload(payload: dict[str, Any], benchmark_id: str) -> dict[str, Any]:
+    mode = str(payload.get("mode") or "category_override").strip().lower()
+    if mode not in {"baseline_model_defaults", "category_override", "legacy_current_code"}:
+        raise RuntimeError(f"invalid_threshold_profile_mode:{mode}")
+    category_thresholds: dict[str, float] = {}
+    for raw_key, raw_value in (payload.get("category_thresholds") or {}).items():
+        rendered_key = str(raw_key or "").strip().lower()
+        if not rendered_key:
+            continue
+        try:
+            category_thresholds[rendered_key] = float(raw_value)
+        except (TypeError, ValueError):
+            raise RuntimeError(f"invalid_category_threshold:{raw_key}={raw_value}")
+    notes = [str(item).strip() for item in (payload.get("notes") or []) if str(item).strip()]
+    return {
+        "profile_name": str(payload.get("profile_name") or benchmark_id),
+        "mode": mode,
+        "category_thresholds": category_thresholds,
+        "notes": notes,
+    }
+
+
+def load_threshold_profile(
+    *,
+    args: argparse.Namespace,
+    benchmark_id: str,
+    output_dir: Path,
+    requested_categories: list[str],
+    requested_classes: list[str],
+) -> ThresholdProfile:
+    if args.category_thresholds_json is not None:
+        raw_payload = json.loads(args.category_thresholds_json.read_text(encoding="utf-8"))
+    else:
+        raw_payload = {
+            "profile_name": benchmark_id,
+            "mode": "legacy_current_code",
+            "category_thresholds": {},
+            "notes": ["category-thresholds-json not provided; using current script defaults."],
+        }
+
+    normalized = _normalize_threshold_profile_payload(raw_payload, benchmark_id)
+    default_class_thresholds = resolve_active_class_confidence_thresholds(
+        requested_classes,
+        args.confidence_threshold,
+    )
+    yolo_class_thresholds = dict(default_class_thresholds)
+    sam3_prompt_thresholds: dict[str, float] | None = dict(default_class_thresholds)
+    sam3_score_threshold = float(args.confidence_threshold)
+
+    if normalized["mode"] == "baseline_model_defaults":
+        yolo_class_thresholds = dict(default_class_thresholds)
+        sam3_prompt_thresholds = None
+    elif normalized["mode"] == "category_override":
+        category_thresholds = normalized["category_thresholds"]
+        for category_name in requested_categories:
+            rendered = str(category_name or "").strip().lower()
+            if not rendered:
+                continue
+            threshold = category_thresholds.get(rendered)
+            if threshold is None:
+                continue
+            for class_name in CATEGORY_TO_CLASSES.get(rendered, [rendered]):
+                yolo_class_thresholds[class_name] = float(threshold)
+        sam3_prompt_thresholds = {
+            class_name: float(yolo_class_thresholds.get(class_name, args.confidence_threshold))
+            for class_name in requested_classes
+        }
+    else:
+        yolo_class_thresholds = dict(default_class_thresholds)
+        sam3_prompt_thresholds = dict(default_class_thresholds)
+
+    effective_request_threshold = resolve_effective_request_confidence_threshold(
+        args.confidence_threshold,
+        yolo_class_thresholds,
+    )
+    profile_payload = {
+        **normalized,
+        "requested_categories": requested_categories,
+        "requested_classes": requested_classes,
+        "yolo_class_thresholds": yolo_class_thresholds,
+        "yolo_effective_request_confidence_threshold": effective_request_threshold,
+        "sam3_score_threshold": sam3_score_threshold,
+        "sam3_prompt_thresholds": sam3_prompt_thresholds,
+    }
+    config_path = output_dir / "threshold_config.json"
+    _write_json(config_path, profile_payload)
+    return ThresholdProfile(
+        profile_name=str(profile_payload["profile_name"]),
+        mode=str(profile_payload["mode"]),
+        config_path=str(config_path),
+        category_thresholds=dict(profile_payload["category_thresholds"]),
+        yolo_class_thresholds=dict(profile_payload["yolo_class_thresholds"]),
+        yolo_effective_request_confidence_threshold=float(profile_payload["yolo_effective_request_confidence_threshold"]),
+        sam3_score_threshold=float(profile_payload["sam3_score_threshold"]),
+        sam3_prompt_thresholds=dict(profile_payload["sam3_prompt_thresholds"]) if isinstance(profile_payload["sam3_prompt_thresholds"], dict) else None,
+        notes=list(profile_payload["notes"]),
+    )
 
 
 def collect_videos(input_dir: Path, video_glob: str, max_videos: int) -> list[Path]:
@@ -792,17 +912,12 @@ def run_yolo_for_video(
     video_rel_path: Path,
     frame_records: list[FrameRecord],
     requested_classes: list[str],
+    threshold_profile: ThresholdProfile,
     yolo_client: YOLOWorldClient | None,
     failures_path: Path,
 ) -> tuple[int, int]:
-    active_class_confidence_thresholds = resolve_active_class_confidence_thresholds(
-        requested_classes,
-        args.confidence_threshold,
-    )
-    effective_request_confidence_threshold = resolve_effective_request_confidence_threshold(
-        args.confidence_threshold,
-        active_class_confidence_thresholds,
-    )
+    active_class_confidence_thresholds = dict(threshold_profile.yolo_class_thresholds)
+    effective_request_confidence_threshold = float(threshold_profile.yolo_effective_request_confidence_threshold)
 
     success_count = 0
     failed_count = 0
@@ -897,6 +1012,11 @@ def run_yolo_for_video(
                 payload["meta"]["frame_index"] = frame.frame_index
                 payload["meta"]["frame_sec"] = frame.frame_sec
                 payload["meta"]["frame_path"] = frame.frame_rel_path
+                payload["meta"]["threshold_profile"] = {
+                    "profile_name": threshold_profile.profile_name,
+                    "mode": threshold_profile.mode,
+                    "config_path": threshold_profile.config_path,
+                }
                 _write_json(frame.yolo_path, payload)
                 success_count += 1
             except Exception as exc:
@@ -920,6 +1040,7 @@ def run_sam3_for_video(
     args: argparse.Namespace,
     video_rel_path: Path,
     frame_records: list[FrameRecord],
+    threshold_profile: ThresholdProfile,
     sam3_client: SAM3Client | None,
     failures_path: Path,
 ) -> tuple[int, int]:
@@ -966,15 +1087,19 @@ def run_sam3_for_video(
             if not prompts:
                 raise RuntimeError("empty_prompts")
             image_bytes = frame.frame_path.read_bytes()
-            prompt_score_thresholds = resolve_active_class_confidence_thresholds(
-                prompts,
-                args.confidence_threshold,
+            prompt_score_thresholds = (
+                {
+                    prompt: float((threshold_profile.sam3_prompt_thresholds or {}).get(prompt, threshold_profile.sam3_score_threshold))
+                    for prompt in prompts
+                }
+                if threshold_profile.sam3_prompt_thresholds is not None
+                else None
             )
             sam_result = sam3_client.segment(
                 image_bytes,
                 prompts=prompts,
                 filename=frame.frame_path.name,
-                score_threshold=args.confidence_threshold,
+                score_threshold=threshold_profile.sam3_score_threshold,
                 max_masks_per_prompt=max(1, int(args.max_masks_per_prompt)),
                 per_prompt_score_thresholds=prompt_score_thresholds,
             )
@@ -995,6 +1120,12 @@ def run_sam3_for_video(
                 "sam3_device": sam_result.get("device"),
                 "gpu_memory_peak_gb": sam_result.get("gpu_memory_peak_gb"),
                 "detections": list(sam_result.get("detections") or []),
+                "threshold_profile": {
+                    "profile_name": threshold_profile.profile_name,
+                    "mode": threshold_profile.mode,
+                    "config_path": threshold_profile.config_path,
+                    "sam3_score_threshold": threshold_profile.sam3_score_threshold,
+                },
                 "generated_at": datetime.now().isoformat(),
             }
             _write_json(frame.sam3_path, payload)
@@ -1019,6 +1150,7 @@ def _run_yolo_worker(
     *,
     args: argparse.Namespace,
     requested_classes: list[str],
+    threshold_profile: ThresholdProfile,
     yolo_client: YOLOWorldClient | None,
     failures_path: Path,
     input_queue: Queue[VideoTask | object],
@@ -1042,13 +1174,14 @@ def _run_yolo_worker(
             )
             try:
                 video_yolo_success, video_yolo_failed = run_yolo_for_video(
-                    args=args,
-                    video_rel_path=task.video_rel_path,
-                    frame_records=task.frame_records,
-                    requested_classes=requested_classes,
-                    yolo_client=yolo_client,
-                    failures_path=failures_path,
-                )
+                args=args,
+                video_rel_path=task.video_rel_path,
+                frame_records=task.frame_records,
+                requested_classes=requested_classes,
+                threshold_profile=threshold_profile,
+                yolo_client=yolo_client,
+                failures_path=failures_path,
+            )
             except Exception as exc:
                 LOGGER.exception("YOLO worker 실패: %s", task.video_rel_path)
                 _append_jsonl(
@@ -1072,6 +1205,7 @@ def _run_yolo_worker(
 def _run_sam3_worker(
     *,
     args: argparse.Namespace,
+    threshold_profile: ThresholdProfile,
     sam3_client: SAM3Client | None,
     failures_path: Path,
     input_queue: Queue[VideoTask | object],
@@ -1093,12 +1227,13 @@ def _run_sam3_worker(
             )
             try:
                 video_sam3_success, video_sam3_failed = run_sam3_for_video(
-                    args=args,
-                    video_rel_path=task.video_rel_path,
-                    frame_records=task.frame_records,
-                    sam3_client=sam3_client,
-                    failures_path=failures_path,
-                )
+                args=args,
+                video_rel_path=task.video_rel_path,
+                frame_records=task.frame_records,
+                threshold_profile=threshold_profile,
+                sam3_client=sam3_client,
+                failures_path=failures_path,
+            )
             except Exception as exc:
                 LOGGER.exception("SAM3 worker 실패: %s", task.video_rel_path)
                 _append_jsonl(
@@ -1216,6 +1351,13 @@ def main() -> int:
     videos = collect_videos(input_dir, args.video_glob, args.max_videos)
     if not videos:
         raise RuntimeError(f"no_videos_found:{input_dir}")
+    threshold_profile = load_threshold_profile(
+        args=args,
+        benchmark_id=benchmark_id,
+        output_dir=output_dir,
+        requested_categories=categories,
+        requested_classes=requested_classes,
+    )
 
     LOGGER.info("입력 영상 %d건 발견: %s", len(videos), input_dir)
 
@@ -1223,6 +1365,15 @@ def main() -> int:
     sam3_client: SAM3Client | None = None
     yolo_health: dict[str, Any] | None = None
     sam3_health: dict[str, Any] | None = None
+    resource_sampler: ModelResourceSampler | None = None
+    resource_summary: dict[str, Any] = {
+        "resource_metrics_status": "not_started",
+        "sampling_started_at": None,
+        "sampling_completed_at": None,
+        "sampling_elapsed_sec": None,
+        "errors": [],
+        "models": {},
+    }
 
     try:
         if not args.skip_yolo:
@@ -1261,6 +1412,21 @@ def main() -> int:
             "sam3_url": args.sam3_url,
             "yolo_health": yolo_health,
             "sam3_health": sam3_health,
+            "category_thresholds_json": str(args.category_thresholds_json) if args.category_thresholds_json else None,
+            "resource_sample_interval_sec": args.resource_sample_interval_sec,
+            "resource_yolo_container": args.resource_yolo_container,
+            "resource_sam3_container": args.resource_sam3_container,
+            "threshold_profile": {
+                "profile_name": threshold_profile.profile_name,
+                "mode": threshold_profile.mode,
+                "config_path": threshold_profile.config_path,
+                "category_thresholds": threshold_profile.category_thresholds,
+                "yolo_class_thresholds": threshold_profile.yolo_class_thresholds,
+                "yolo_effective_request_confidence_threshold": threshold_profile.yolo_effective_request_confidence_threshold,
+                "sam3_score_threshold": threshold_profile.sam3_score_threshold,
+                "sam3_prompt_thresholds": threshold_profile.sam3_prompt_thresholds,
+                "notes": threshold_profile.notes,
+            },
         }
         _write_json(output_dir / "run_config.json", run_config)
 
@@ -1275,6 +1441,7 @@ def main() -> int:
             kwargs={
                 "args": args,
                 "requested_classes": requested_classes,
+                "threshold_profile": threshold_profile,
                 "yolo_client": yolo_client,
                 "failures_path": failures_path,
                 "input_queue": yolo_queue,
@@ -1288,6 +1455,7 @@ def main() -> int:
             target=_run_sam3_worker,
             kwargs={
                 "args": args,
+                "threshold_profile": threshold_profile,
                 "sam3_client": sam3_client,
                 "failures_path": failures_path,
                 "input_queue": sam3_queue,
@@ -1298,6 +1466,24 @@ def main() -> int:
         )
         yolo_thread.start()
         sam3_thread.start()
+        resource_sampler = ModelResourceSampler(
+            output_dir=output_dir,
+            sample_interval_sec=args.resource_sample_interval_sec,
+            yolo_container_name=args.resource_yolo_container,
+            sam3_container_name=args.resource_sam3_container,
+        )
+        try:
+            resource_sampler.start()
+        except Exception as exc:
+            resource_sampler = None
+            resource_summary = {
+                "resource_metrics_status": "degraded",
+                "sampling_started_at": None,
+                "sampling_completed_at": None,
+                "sampling_elapsed_sec": None,
+                "errors": [str(exc)],
+                "models": {},
+            }
 
         pipeline_error: Exception | None = None
         try:
@@ -1337,6 +1523,9 @@ def main() -> int:
         sam3_queue.join()
         yolo_thread.join()
         sam3_thread.join()
+        if resource_sampler is not None:
+            resource_summary = resource_sampler.stop()
+            resource_sampler = None
 
         if pipeline_error is not None:
             raise pipeline_error
@@ -1377,6 +1566,19 @@ def main() -> int:
                 "pair_row_count": len(pair_rows),
                 "requested_categories": categories,
                 "requested_classes": requested_classes,
+                "threshold_profile": {
+                    "profile_name": threshold_profile.profile_name,
+                    "mode": threshold_profile.mode,
+                    "config_path": threshold_profile.config_path,
+                    "category_thresholds": threshold_profile.category_thresholds,
+                    "yolo_class_thresholds": threshold_profile.yolo_class_thresholds,
+                    "yolo_effective_request_confidence_threshold": threshold_profile.yolo_effective_request_confidence_threshold,
+                    "sam3_score_threshold": threshold_profile.sam3_score_threshold,
+                    "sam3_prompt_thresholds": threshold_profile.sam3_prompt_thresholds,
+                    "notes": threshold_profile.notes,
+                },
+                "resource_usage": resource_summary,
+                "resource_metrics_status": resource_summary.get("resource_metrics_status"),
                 "completed_at": datetime.now().isoformat(),
                 "elapsed_sec": round(time.perf_counter() - start_time, 2),
             }
@@ -1393,6 +1595,8 @@ def main() -> int:
                 )
             )
         _write_json(summary_path, summary)
+        generate_report_assets(output_dir)
+        generate_time_resource_report(output_dir)
 
         LOGGER.info(
             "완료: videos=%d frames=%d compared=%d pair_rows=%d output=%s",
@@ -1404,6 +1608,11 @@ def main() -> int:
         )
         return 0
     finally:
+        if resource_sampler is not None:
+            try:
+                resource_sampler.stop()
+            except Exception:
+                pass
         if yolo_client is not None:
             yolo_client.close()
         if sam3_client is not None:

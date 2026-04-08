@@ -123,9 +123,9 @@ Staging은 `docker compose --profile staging`으로만 기동. Production과 **D
 
 - Docker network: `pipeline-network`
 - **호스트 ↔ 컨테이너 경로 매핑** (compose의 bind mount):
-  - `incoming` → `/nas/incoming`
-  - `archive` → `/nas/archive`
-  - `staging` → `/nas/staging` (staging only)
+  - `/home/pia/mou/incoming` → `/nas/incoming`
+  - `/home/pia/mou/archive` → `/nas/archive`
+  - `/home/pia/mou/staging` → `/nas/staging` (staging only)
   - 코드→실행 경로: `../src` → `/src/vlm` (read-only)
 - DuckDB **호스트 실제 경로**: `./docker/data/pipeline.duckdb`
 - YOLO 서버: GPU 1번 전용 (`cuda:1`, `NVIDIA_VISIBLE_DEVICES=1`)
@@ -151,7 +151,7 @@ Staging은 `docker compose --profile staging`으로만 기동. Production과 **D
 ## Label Studio 연동
 
 - compose: `docker compose -f docker-compose.yaml -f docker-compose.labelstudio.yaml up -d`
-- LS UI: `http://<HOST>:8084` (기본 8080이나 agent 충돌로 `LS_PORT=8084` 사용)
+- LS UI: `http://<HOST>:8084` (기본 8080이나 piaspace-agent 충돌로 `LS_PORT=8084` 사용)
 - 필수 env: `LS_API_KEY` (LS 계정 설정에서 발급), `WEBHOOK_HOST` (LS→webhook 접근 IP)
 - sensor `ls_task_create_sensor`: Dagster UI에서 수동 ON 필요 (default=STOPPED)
 - webhook 등록 (프로젝트별): `python src/gemini/ls_webhook.py register --project <id>`

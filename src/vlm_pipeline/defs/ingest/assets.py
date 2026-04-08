@@ -5,6 +5,7 @@ Layer 4: Dagster @asset, 같은 도메인의 ops.py만 import.
 
 import json
 import shutil
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -12,7 +13,6 @@ from pathlib import Path
 from dagster import AssetKey, asset
 
 from vlm_pipeline.defs.label.artifact_import_support import import_local_label_artifacts, resolve_local_artifact_source_dirs
-from vlm_pipeline.lib.phash import compute_phash
 from vlm_pipeline.resources.config import PipelineConfig
 from vlm_pipeline.resources.duckdb import DuckDBResource
 from vlm_pipeline.resources.minio import MinIOResource
@@ -26,15 +26,13 @@ from .archive import (
 from .compaction import compact_completed_manifest_group, is_gcp_compaction_candidate
 from .duplicate import collect_duplicate_asset_file_map
 
-# ── inline DEDUP 상수 ────────────────────────────────────────────
-INLINE_DEDUP_BACKLOG_MIN: int = 200
-INLINE_DEDUP_PHASH_THRESHOLD: int = 5
 from .hydration import (
     STALE_MANIFEST_ALL_MISSING_REASON,
     hydrate_manifest_files,
     manifest_hydration_failure_reason,
     raise_if_manifest_hydration_failed as check_manifest_hydration_failure,
 )
+from .inline_dedup import run_inline_dedup
 from .manifest import (
     build_retry_manifest,
     maybe_write_archive_done_marker,
@@ -395,173 +393,6 @@ def _dispatch_request_context(context) -> tuple[str | None, str | None, bool]:
     return request_id, folder_name, archive_only
 
 
-def _resolve_dedup_image_bytes(target: dict, minio: MinIOResource) -> tuple[bytes, str]:
-    """inline DEDUP 입력 소스 우선순위: archive_path -> source_path -> MinIO."""
-    for path_key in ("archive_path", "source_path"):
-        local_path = target.get(path_key)
-        if local_path and Path(local_path).is_file():
-            return Path(local_path).read_bytes(), path_key
-
-    raw_bucket = target.get("raw_bucket")
-    raw_key = target.get("raw_key")
-    if raw_bucket and raw_key:
-        return minio.download(raw_bucket, raw_key), "minio"
-
-    raise FileNotFoundError(
-        f"No source available: archive_path={target.get('archive_path')}, "
-        f"source_path={target.get('source_path')}, "
-        f"raw_bucket={target.get('raw_bucket')}, raw_key={target.get('raw_key')}"
-    )
-
-
-def _load_inline_dedup_targets(
-    db: DuckDBResource,
-    *,
-    prioritized_asset_ids: list[str],
-    limit: int,
-) -> list[dict]:
-    """현재 manifest 자산을 우선 처리하고, 남는 슬롯은 기존 backlog로 채운다."""
-    normalized_limit = max(1, int(limit))
-    prioritized_targets: list[dict] = []
-    prioritized_set = {str(asset_id).strip() for asset_id in prioritized_asset_ids if str(asset_id).strip()}
-
-    with db.connect() as conn:
-        columns = ["asset_id", "raw_bucket", "raw_key", "archive_path", "source_path"]
-
-        if prioritized_set:
-            placeholders = ", ".join("?" * len(prioritized_set))
-            rows = conn.execute(
-                f"""
-                SELECT asset_id, raw_bucket, raw_key, archive_path, source_path
-                FROM raw_files
-                WHERE asset_id IN ({placeholders})
-                  AND media_type = 'image'
-                  AND ingest_status = 'completed'
-                  AND phash IS NULL
-                ORDER BY created_at
-                """,
-                list(prioritized_set),
-            ).fetchall()
-            prioritized_targets = [dict(zip(columns, row)) for row in rows]
-
-        remaining_limit = max(0, normalized_limit - len(prioritized_targets))
-        if remaining_limit <= 0:
-            return prioritized_targets
-
-        params: list[object] = []
-        exclude_sql = ""
-        if prioritized_set:
-            placeholders = ", ".join("?" * len(prioritized_set))
-            exclude_sql = f"AND asset_id NOT IN ({placeholders})"
-            params.extend(list(prioritized_set))
-
-        rows = conn.execute(
-            f"""
-            SELECT asset_id, raw_bucket, raw_key, archive_path, source_path
-            FROM raw_files
-            WHERE media_type = 'image'
-              AND ingest_status = 'completed'
-              AND phash IS NULL
-              {exclude_sql}
-            ORDER BY created_at
-            LIMIT ?
-            """,
-            [*params, remaining_limit],
-        ).fetchall()
-        backlog_targets = [dict(zip(columns, row)) for row in rows]
-
-    return prioritized_targets + backlog_targets
-
-
-def _mark_inline_dedup_failure(db: DuckDBResource, asset_id: str, error_message: str) -> None:
-    with db.connect() as conn:
-        conn.execute(
-            """
-            UPDATE raw_files
-            SET error_message = ?, updated_at = ?
-            WHERE asset_id = ?
-            """,
-            [f"phash_failed:{error_message}", datetime.now(), asset_id],
-        )
-
-
-def _run_inline_dedup(
-    context,
-    db: DuckDBResource,
-    minio: MinIOResource,
-    uploaded: list[dict],
-) -> dict:
-    """INGEST 내부 hard-gate DEDUP.
-
-    현재 manifest에서 성공적으로 업로드된 이미지 자산을 우선 처리하고,
-    남는 슬롯이 있으면 기존 phash backlog도 함께 정리한다.
-    """
-    prioritized_asset_ids = [
-        str(item["asset_id"])
-        for item in uploaded
-        if str(item.get("media_type") or "").strip().lower() == "image"
-    ]
-    if not prioritized_asset_ids:
-        return {"computed": 0, "similar_found": 0, "failed": 0, "gated_failed": 0}
-
-    limit = max(len(prioritized_asset_ids), INLINE_DEDUP_BACKLOG_MIN)
-    threshold = INLINE_DEDUP_PHASH_THRESHOLD
-    targets = _load_inline_dedup_targets(
-        db,
-        prioritized_asset_ids=prioritized_asset_ids,
-        limit=limit,
-    )
-    if not targets:
-        return {"computed": 0, "similar_found": 0, "failed": 0, "gated_failed": 0}
-
-    prioritized_set = set(prioritized_asset_ids)
-    computed = 0
-    similar_found = 0
-    failed = 0
-    gated_failed = 0
-
-    for target in targets:
-        asset_id = str(target["asset_id"])
-        try:
-            image_bytes, source_label = _resolve_dedup_image_bytes(target, minio)
-            context.log.debug(f"inline DEDUP source: {asset_id} via {source_label}")
-
-            phash_hex = compute_phash(image_bytes)
-            db.update_phash(asset_id, phash_hex)
-            db.clear_error_message(asset_id)
-            computed += 1
-
-            candidates = db.find_similar_phash(
-                phash_hex=phash_hex,
-                threshold=threshold,
-                exclude_asset_id=asset_id,
-            )
-            if candidates:
-                best = candidates[0]
-                other_asset_id = str(best["asset_id"])
-                dist = int(best["distance"])
-                group_id = f"dup_{min(asset_id, other_asset_id)}_{max(asset_id, other_asset_id)}"
-                db.update_dup_group(asset_id, group_id)
-                db.update_dup_group(other_asset_id, group_id)
-                similar_found += 1
-                context.log.warning(
-                    f"inline DEDUP 유사 이미지 발견: {asset_id} ↔ {other_asset_id} (distance={dist})"
-                )
-        except Exception as exc:  # noqa: BLE001
-            failed += 1
-            if asset_id in prioritized_set:
-                gated_failed += 1
-            _mark_inline_dedup_failure(db, asset_id, str(exc))
-            context.log.error(f"inline DEDUP 실패: {asset_id}: {exc}")
-
-    return {
-        "computed": computed,
-        "similar_found": similar_found,
-        "failed": failed,
-        "gated_failed": gated_failed,
-    }
-
-
 def _build_raw_ingest_state(context) -> RawIngestState:
     request_id, folder_name, archive_only = _dispatch_request_context(context)
     return RawIngestState(
@@ -610,8 +441,45 @@ def _build_ingest_result_metadata(
     return meta
 
 
+NAS_HEALTH_TIMEOUT_SEC: int = 5
+
+
+def _check_nas_health(context, incoming_dir: str) -> bool:
+    """NAS incoming 경로에 stat을 시도하여 응답 가능 여부를 확인한다.
+
+    타임아웃 시 False를 반환하여 caller가 early return할 수 있게 한다.
+    """
+    target = Path(incoming_dir)
+
+    def _probe() -> bool:
+        target.stat()
+        return True
+
+    try:
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(_probe)
+            return future.result(timeout=NAS_HEALTH_TIMEOUT_SEC)
+    except FuturesTimeoutError:
+        context.log.error(
+            f"nas_health_check TIMEOUT: {incoming_dir} 에 {NAS_HEALTH_TIMEOUT_SEC}s 내 응답 없음"
+        )
+        return False
+    except OSError as exc:
+        context.log.error(f"nas_health_check FAILED: {incoming_dir} — {exc}")
+        return False
+
+
 def _step_load_and_hydrate(context, db, *, config, state):
     """manifest 로드 → archive 준비 → hydration 단계."""
+    state.stage = "nas_health_check"
+    if not _check_nas_health(context, config.incoming_dir):
+        return {
+            "processed": 0,
+            "failed": 0,
+            "skipped": True,
+            "skip_reason": "nas_unreachable",
+        }
+
     state.stage = "ensure_schema"
     context.log.info("ensure_schema:start")
     db.ensure_runtime_schema()
@@ -668,11 +536,23 @@ def _step_register_and_upload(context, db, minio, *, config, state, runtime_poli
         f"prepared={state.archive_prepared_for_upload} uploaded={len(state.uploaded)}"
     )
     if state.archive_requested:
-        state.archived, state.archive_unit_dir_hint = archive_uploaded_assets(
-            context=context, db=db, manifest=state.manifest,
-            uploaded=state.uploaded, archive_dir=target_archive_dir,
-            ingest_rejections=state.ingest_rejections,
-        )
+        try:
+            state.archived, state.archive_unit_dir_hint = archive_uploaded_assets(
+                context=context, db=db, manifest=state.manifest,
+                uploaded=state.uploaded, archive_dir=target_archive_dir,
+                ingest_rejections=state.ingest_rejections,
+            )
+        except OSError as exc:
+            if "archive_move_timeout" in str(exc):
+                context.log.error(
+                    f"archive_finalize TIMEOUT — 업로드 완료분을 completed로 전환하고 후속 진행: {exc}"
+                )
+                state.archived = complete_uploaded_assets_without_archive(
+                    context=context, db=db, manifest=state.manifest, uploaded=state.uploaded,
+                )
+                state.archive_unit_dir_hint = None
+            else:
+                raise
     else:
         state.archived = complete_uploaded_assets_without_archive(
             context=context, db=db, manifest=state.manifest, uploaded=state.uploaded,
@@ -714,7 +594,7 @@ def _step_post_ingest(context, db, minio, *, config, state, runtime_policy, targ
             f"duplicate_files={duplicate_files_count}, updated_assets={updated_assets}"
         )
 
-    dedup_summary = _run_inline_dedup(context, db, minio, state.uploaded)
+    dedup_summary = run_inline_dedup(context, db, minio, state.uploaded)
 
     state.stage = "done_marker"
     archive_done_marker_path = maybe_write_archive_done_marker(

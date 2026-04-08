@@ -480,16 +480,20 @@ class DuckDBLabelingMixin:
             ]
             return [dict(zip(columns, row)) for row in rows]
 
-    # ── YOLO detection 대상 이미지 조회 ──
+    # ── detection 대상 이미지 조회 (공통) ──
 
-    def find_yolo_pending_images(
+    def find_pending_images(
         self,
+        label_tool: str,
         limit: int = 500,
         folder_name: str | None = None,
         spec_id: str | None = None,
-        include_image_classification: bool = False,
+        include_classification_tool: str | None = None,
     ) -> list[dict[str, Any]]:
-        """image_labels에 아직 YOLO detection 결과가 없는 processed_clip_frame/raw_video_frame 조회."""
+        """image_labels에 아직 *label_tool* detection 결과가 없는 processed_clip_frame/raw_video_frame 조회.
+
+        ``include_classification_tool`` 을 지정하면 해당 tool의 결과도 누락된 이미지를 포함한다.
+        """
         with self.connect() as conn:
             raw_file_columns = self._table_columns(conn, "raw_files")
             query_filters: list[str] = []
@@ -505,25 +509,21 @@ class DuckDBLabelingMixin:
                 params.append(f"{folder_name}/%")
             query_cond = "\n".join(query_filters)
             params.append(max(1, int(limit)))
-            missing_detection_clause = """
-                  NOT EXISTS (
-                      SELECT 1
-                      FROM image_labels il
-                      WHERE il.image_id = im.image_id
-                        AND il.label_tool = 'yolo-world'
-                  )
-            """.strip()
-            missing_classification_clause = """
-                  NOT EXISTS (
-                      SELECT 1
-                      FROM image_labels il
-                      WHERE il.image_id = im.image_id
-                        AND il.label_tool = 'yolo-world-classification'
-                  )
-            """.strip()
-            pending_clause = missing_detection_clause
-            if include_image_classification:
-                pending_clause = f"({missing_detection_clause} OR {missing_classification_clause})"
+
+            missing_detection = (
+                f"NOT EXISTS ("
+                f"SELECT 1 FROM image_labels il "
+                f"WHERE il.image_id = im.image_id AND il.label_tool = '{label_tool}')"
+            )
+            if include_classification_tool:
+                missing_cls = (
+                    f"NOT EXISTS ("
+                    f"SELECT 1 FROM image_labels il "
+                    f"WHERE il.image_id = im.image_id AND il.label_tool = '{include_classification_tool}')"
+                )
+                pending_clause = f"({missing_detection} OR {missing_cls})"
+            else:
+                pending_clause = missing_detection
 
             rows = conn.execute(
                 f"""
@@ -553,6 +553,36 @@ class DuckDBLabelingMixin:
                 "frame_index", "frame_sec",
             ]
             return [dict(zip(columns, row)) for row in rows]
+
+    def find_yolo_pending_images(
+        self,
+        limit: int = 500,
+        folder_name: str | None = None,
+        spec_id: str | None = None,
+        include_image_classification: bool = False,
+    ) -> list[dict[str, Any]]:
+        """image_labels에 아직 YOLO detection 결과가 없는 processed_clip_frame/raw_video_frame 조회."""
+        return self.find_pending_images(
+            label_tool="yolo-world",
+            limit=limit,
+            folder_name=folder_name,
+            spec_id=spec_id,
+            include_classification_tool="yolo-world-classification" if include_image_classification else None,
+        )
+
+    def find_sam3_pending_images(
+        self,
+        limit: int = 500,
+        folder_name: str | None = None,
+        spec_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """image_labels에 아직 SAM3 detection 결과가 없는 processed_clip_frame/raw_video_frame 조회."""
+        return self.find_pending_images(
+            label_tool="sam3",
+            limit=limit,
+            folder_name=folder_name,
+            spec_id=spec_id,
+        )
 
     def find_sam3_shadow_candidates(
         self,

@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # 한 사이클(레거시 파일 ingress QA): safe_drop → archive_pending 대기 → 트리거
-# 사용: STAGING_ROOT=staging bash scripts/staging_qa_run_cycle.sh tmp_data_2 qa_c1_ts timestamp
+# 사용: STAGING_ROOT=/home/pia/mou/staging bash scripts/staging_qa_run_cycle.sh tmp_data_2 qa_c1_ts timestamp
 #       STAGING_ROOT=... bash scripts/staging_qa_run_cycle.sh GS건설 qa_x bbox captioning
 set -euo pipefail
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO"
-STAGING_ROOT="${STAGING_ROOT:-staging}"
+STAGING_ROOT="${STAGING_ROOT:-/home/pia/mou/staging}"
 export STAGING_ROOT
 FOLDER="${1:?folder e.g. tmp_data_2}"
 REQ="${2:?request_id}"

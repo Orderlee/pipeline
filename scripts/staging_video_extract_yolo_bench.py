@@ -6,7 +6,7 @@ YOLO 서버가 있으면 샘플 이미지로 검출 수·소요 시간을 추가
 
 사용:
   PYTHONPATH=src python3 scripts/staging_video_extract_yolo_bench.py
-  PYTHONPATH=src python3 scripts/staging_video_extract_yolo_bench.py --video-dir staging/tmp_data_2 --max-videos 5
+  PYTHONPATH=src python3 scripts/staging_video_extract_yolo_bench.py --video-dir /home/pia/mou/staging/tmp_data_2 --max-videos 5
   PYTHONPATH=src python3 scripts/staging_video_extract_yolo_bench.py --no-yolo
   PYTHONPATH=src python3 scripts/staging_video_extract_yolo_bench.py --preset-names interval_0.5s_q90 interval_1s_q85 --workers 1 2 4
 """
@@ -36,7 +36,7 @@ from vlm_pipeline.lib.video_frames import (
     plan_frame_timestamps,
 )
 
-DEFAULT_VIDEO_DIR = Path("staging/tmp_data_2")
+DEFAULT_VIDEO_DIR = Path("/home/pia/mou/staging/tmp_data_2")
 
 # image_profile 숫자: 1=보수적(current), 2=촘촘(dense) — video_frames API는 "current"|"dense" 사용
 PROFILE_NUM_TO_STR = {1: "current", 2: "dense"}

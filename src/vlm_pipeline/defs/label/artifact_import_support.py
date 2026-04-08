@@ -4,13 +4,23 @@ from __future__ import annotations
 
 import json
 import mimetypes
-import re
 from dataclasses import dataclass
 from datetime import datetime
-from hashlib import sha1
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from vlm_pipeline.defs.label.artifact_import_utils import (
+    artifact_identity as _artifact_identity,
+    derive_clip_key_from_image_key as _derive_clip_key_from_image_key,
+    derive_clip_stem_from_image_stem as _derive_clip_stem_from_image_stem,
+    derive_raw_stem_from_clip_stem as _derive_raw_stem_from_clip_stem,
+    is_bbox_payload as _is_bbox_payload,
+    is_image_caption_payload as _is_image_caption_payload,
+    normalize_unit_scoped_key as _normalize_unit_scoped_key,
+    now as _now,
+    parse_frame_index_from_stem as _parse_frame_index_from_stem,
+    stable_id as _stable_id,
+)
 from vlm_pipeline.defs.label.import_support import (
     EVENT_LABEL_DIR_NAMES,
     VIDEO_CLASSIFICATION_DIR_NAMES,
@@ -40,19 +50,6 @@ class _ArtifactImportSummary:
 def _mime_type_for_path(path: Path, default: str) -> str:
     guessed, _ = mimetypes.guess_type(str(path))
     return guessed or default
-
-
-def _now() -> datetime:
-    return datetime.now()
-
-
-def _stable_id(*parts: object) -> str:
-    rendered = "|".join(str(part or "") for part in parts)
-    return sha1(rendered.encode("utf-8")).hexdigest()
-
-
-def _artifact_identity(root: Path, path: Path) -> str:
-    return f"{root.name.lower()}/{path.relative_to(root).as_posix()}"
 
 
 def _coerce_source_unit_dirs(
@@ -153,22 +150,6 @@ def _scan_loose_artifact_json_paths(
     return discovered
 
 
-def _is_bbox_payload(payload: Any) -> bool:
-    if not isinstance(payload, dict):
-        return False
-    if "images" in payload and "annotations" in payload:
-        return True
-    return any(key in payload for key in ("detections", "boxes", "annotations", "objects"))
-
-
-def _is_image_caption_payload(payload: Any) -> bool:
-    if not isinstance(payload, dict):
-        return False
-    if not any(str(payload.get(key) or "").strip() for key in ("image_key", "image_id")):
-        return False
-    return bool(str(payload.get("caption_text") or "").strip())
-
-
 def _classify_loose_artifact_payload(payload: Any) -> str | None:
     label_format = detect_label_format(payload)
     if label_format == "image_classification_json":
@@ -182,47 +163,6 @@ def _classify_loose_artifact_payload(payload: Any) -> str | None:
     if _is_image_caption_payload(payload):
         return "image_caption"
     return None
-
-
-def _normalize_unit_scoped_key(source_unit_name: str, explicit_key: str | None, file_path: Path, source_unit_dir: Path) -> str:
-    raw_key = str(explicit_key or "").strip().replace("\\", "/")
-    if raw_key:
-        key_path = PurePosixPath(raw_key)
-        if key_path.parts and key_path.parts[0] == source_unit_name:
-            return str(key_path)
-        if len(key_path.parts) >= 2:
-            return str(PurePosixPath(source_unit_name, *key_path.parts[1:]))
-        return str(PurePosixPath(source_unit_name, raw_key))
-    return str(PurePosixPath(source_unit_name, file_path.relative_to(source_unit_dir).as_posix()))
-
-
-def _derive_clip_stem_from_image_stem(image_stem: str) -> str:
-    match = re.match(r"^(?P<clip>.+)_\d{8}$", image_stem)
-    if match:
-        return str(match.group("clip"))
-    return image_stem
-
-
-def _derive_raw_stem_from_clip_stem(clip_stem: str) -> str:
-    for pattern in (
-        r"^(?P<raw>.+)_e\d{3}_\d{8}_\d{8}$",
-        r"^(?P<raw>.+)_e\d{3}$",
-        r"^(?P<raw>.+)_\d{8}_\d{8}$",
-    ):
-        match = re.match(pattern, clip_stem)
-        if match:
-            return str(match.group("raw"))
-    return clip_stem
-
-
-def _parse_frame_index_from_stem(image_stem: str) -> int | None:
-    match = re.match(r"^.+_(\d{8})$", image_stem)
-    if not match:
-        return None
-    try:
-        return int(match.group(1))
-    except ValueError:
-        return None
 
 
 def _find_candidate_files(root: Path, *, stem: str, suffixes: tuple[str, ...], preferred_dir: str | None = None) -> list[Path]:
@@ -317,19 +257,6 @@ def _find_existing_image_row(
 
     stem = Path(str(payload.get("image_key") or json_path.stem)).stem or json_path.stem
     return db.find_image_metadata_by_stem(stem, source_unit_name=source_unit_name)
-
-
-def _derive_clip_key_from_image_key(image_key: str, clip_suffix: str) -> str:
-    key_path = PurePosixPath(str(image_key or "").strip())
-    stem = _derive_clip_stem_from_image_stem(key_path.stem or "clip")
-    parent = key_path.parent
-    if parent.name == "image":
-        clip_parent = parent.parent / "clips"
-    elif str(parent) and str(parent) != ".":
-        clip_parent = parent / "clips"
-    else:
-        clip_parent = PurePosixPath("clips")
-    return str(clip_parent / f"{stem}{clip_suffix}")
 
 
 def _ensure_processed_media_rows(

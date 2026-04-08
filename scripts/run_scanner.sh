@@ -5,14 +5,14 @@ set -euo pipefail
 #
 # Usage:
 #   ./scripts/run_scanner.sh
-#   ./scripts/run_scanner.sh --host-input-dir incoming
+#   ./scripts/run_scanner.sh --host-input-dir /home/pia/mou/incoming
 #   ./scripts/run_scanner.sh --container-prefix /nas/incoming
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 BOOTSTRAP_SCRIPT="${REPO_ROOT}/scripts/bootstrap_manifest.sh"
 
-HOST_INPUT_DIR="${DATAOPS_INCOMING_HOST_DIR:-incoming}"
+HOST_INPUT_DIR="${DATAOPS_INCOMING_HOST_DIR:-/home/pia/mou/incoming}"
 CONTAINER_PREFIX="${DATAOPS_INCOMING_CONTAINER_PREFIX:-/nas/incoming}"
 
 print_usage() {

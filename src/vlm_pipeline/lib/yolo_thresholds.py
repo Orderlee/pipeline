@@ -5,6 +5,8 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping
 from typing import Any
 
+from vlm_pipeline.lib.detection_common import normalize_classes
+
 YOLO_SERVER_DEFAULT_CLASSES: tuple[str, ...] = (
     "person",
     "car",
@@ -73,15 +75,7 @@ YOLO_CLASS_CONFIDENCE_THRESHOLDS: dict[str, float] = {
 
 
 def _normalize_class_names(values: Iterable[object] | None) -> list[str]:
-    seen: set[str] = set()
-    normalized: list[str] = []
-    for value in values or []:
-        rendered = str(value or "").strip().lower()
-        if not rendered or rendered in seen:
-            continue
-        seen.add(rendered)
-        normalized.append(rendered)
-    return normalized
+    return normalize_classes(values)
 
 
 def _coerce_confidence(value: object, fallback: float) -> float:
