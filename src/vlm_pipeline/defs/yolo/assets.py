@@ -10,39 +10,35 @@ YOLO 서버: docker/yolo/ (GPU 1 전용, 모델 상주).
 from __future__ import annotations
 
 import json
-from collections.abc import Iterable, Mapping
-from dataclasses import dataclass
+from collections.abc import Mapping
 from datetime import datetime
-from pathlib import PurePosixPath
-from uuid import uuid4
 
 from dagster import Field, asset
 
+from vlm_pipeline.lib.detection_common import (
+    flush_image_labels,
+    normalize_classes,
+    resolve_spec_bbox_classes,
+    resolve_target_classes,
+    stable_image_label_id,
+)
 from vlm_pipeline.lib.env_utils import (
     YOLO_OUTPUTS,
-    derive_classes_from_categories,
+    bool_env,
     dispatch_raw_key_prefix_folder,
     int_env,
     should_run_any_output,
 )
-from vlm_pipeline.lib.spec_config import load_persisted_spec_config, parse_requested_outputs
+from vlm_pipeline.lib.spec_config import parse_requested_outputs
 from vlm_pipeline.lib.yolo_thresholds import (
     filter_detections_by_class_confidence,
     resolve_active_class_confidence_thresholds,
     resolve_effective_request_confidence_threshold,
 )
-from vlm_pipeline.lib.yolo_coco import build_coco_detection_payload
+from vlm_pipeline.lib.detection_coco import build_coco_detection_payload
 from vlm_pipeline.lib.yolo_world import get_yolo_client
 from vlm_pipeline.resources.duckdb import DuckDBResource
 from vlm_pipeline.resources.minio import MinIOResource
-
-
-@dataclass(frozen=True)
-class YoloTargetClassResolution:
-    classes: list[str]
-    class_source: str
-    spec_id: str | None = None
-    resolved_config_id: str | None = None
 
 
 @asset(
@@ -99,9 +95,10 @@ def _run_yolo_image_detection(
     resolved_config_id_override: str | None = None,
 ) -> dict:
     """processed_clip_frame 이미지에 YOLO-World-L detection 실행."""
-    if not should_run_any_output(context, YOLO_OUTPUTS):
-        context.log.info("yolo_image_detection 스킵: outputs에 YOLO 계열 요청이 없습니다.")
-        return {"processed": 0, "failed": 0, "total_detections": 0, "skipped": True}
+    if not bool_env("ENABLE_YOLO_DETECTION", True):
+        if not should_run_any_output(context, YOLO_OUTPUTS):
+            context.log.info("yolo_image_detection 스킵: outputs에 YOLO 계열 요청이 없습니다.")
+            return {"processed": 0, "failed": 0, "total_detections": 0, "skipped": True}
 
     limit = int(context.op_config.get("limit", 500))
     conf = float(context.op_config.get("confidence_threshold", 0.25))
@@ -109,7 +106,7 @@ def _run_yolo_image_detection(
     batch_size = int(context.op_config.get("batch_size", 8))
     tags = context.run.tags if context.run else {}
     requested_outputs = parse_requested_outputs(tags)
-    resolution = _resolve_yolo_target_classes(tags, db)
+    resolution = resolve_target_classes(tags, db)
     folder_name = folder_name_override
     if folder_name is None and not spec_id_override:
         folder_name = dispatch_raw_key_prefix_folder(tags)
@@ -121,7 +118,7 @@ def _run_yolo_image_detection(
     store_image_classification = not bool(spec_id) and "classification_image" in requested_outputs
 
     if target_classes_override is not None:
-        target_classes = _normalize_yolo_classes(target_classes_override)
+        target_classes = normalize_classes(target_classes_override)
         class_source = class_source_override or ("explicit_target_classes" if target_classes else "server_default")
     else:
         target_classes = list(resolution.classes)
@@ -262,7 +259,7 @@ def _run_yolo_image_detection(
                 minio.upload("vlm-labels", labels_key, label_bytes, "application/json")
 
                 label_rows_buffer.append({
-                    "image_label_id": str(uuid4()),
+                    "image_label_id": stable_image_label_id(str(image_id), labels_key),
                     "image_id": image_id,
                     "source_clip_id": source_clip_id,
                     "labels_bucket": "vlm-labels",
@@ -296,7 +293,7 @@ def _run_yolo_image_detection(
                         "application/json",
                     )
                     label_rows_buffer.append({
-                        "image_label_id": str(uuid4()),
+                        "image_label_id": stable_image_label_id(str(image_id), classification_key),
                         "image_id": image_id,
                         "source_clip_id": source_clip_id,
                         "labels_bucket": "vlm-labels",
@@ -325,11 +322,11 @@ def _run_yolo_image_detection(
         )
 
         if len(label_rows_buffer) >= flush_threshold:
-            _flush_labels(db, label_rows_buffer, context)
+            flush_image_labels(db, label_rows_buffer, context, tool_name="YOLO")
             label_rows_buffer.clear()
 
     if label_rows_buffer:
-        _flush_labels(db, label_rows_buffer, context)
+        flush_image_labels(db, label_rows_buffer, context, tool_name="YOLO")
         label_rows_buffer.clear()
 
     summary = {
@@ -386,21 +383,10 @@ def bbox_labeling(
         context.log.info("bbox_labeling 스킵: spec_id 없음")
         return {"processed": 0, "failed": 0, "total_detections": 0, "skipped": True}
 
-    config_bundle = load_persisted_spec_config(db, spec_id)
-    resolved_config_id = str(config_bundle["resolved_config_id"] or "").strip() or None
-    spec_classes = _normalize_yolo_classes(config_bundle["spec"].get("classes") or [])
-    bbox_config = config_bundle["config_json"].get("bbox", {})
-    config_target_classes = _normalize_yolo_classes(bbox_config.get("target_classes") or [])
-
-    class_source = "server_default"
-    target_classes: list[str] = []
-    if config_target_classes:
-        allowed = set(config_target_classes)
-        target_classes = [value for value in spec_classes if value in allowed]
-        class_source = "spec_config_intersection" if target_classes else "server_default"
-    elif spec_classes:
-        target_classes = list(spec_classes)
-        class_source = "spec_classes"
+    bbox_resolution = resolve_spec_bbox_classes(db, spec_id)
+    target_classes = bbox_resolution.target_classes
+    class_source = bbox_resolution.class_source
+    resolved_config_id = bbox_resolution.resolved_config_id
 
     context.log.info(
         "bbox_labeling: "
@@ -427,14 +413,6 @@ def _build_yolo_label_key(image_key: str) -> str:
 def _build_image_classification_key(image_key: str) -> str:
     from vlm_pipeline.lib.key_builders import build_image_classification_key
     return build_image_classification_key(image_key)
-
-
-def _flush_labels(db: DuckDBResource, rows: list[dict], context) -> None:
-    try:
-        count = db.batch_insert_image_labels(rows)
-        context.log.debug(f"YOLO image_labels flush: {count}건")
-    except Exception as exc:
-        context.log.error(f"YOLO image_labels flush 실패: {exc}")
 
 
 def _build_coco_detection_payload(
@@ -512,86 +490,6 @@ def _build_image_classification_payload(
     }
 
 
-def _parse_tag_list(raw_value: object) -> list[str]:
-    if isinstance(raw_value, list):
-        return _normalize_yolo_classes(raw_value)
 
-    rendered = str(raw_value or "").strip()
-    if not rendered:
-        return []
-
-    try:
-        if rendered.startswith("["):
-            parsed = json.loads(rendered)
-            if isinstance(parsed, list):
-                return _normalize_yolo_classes(parsed)
-    except Exception:
-        pass
-
-    return _normalize_yolo_classes(rendered.split(","))
-
-
-def _normalize_yolo_classes(values: Iterable[object] | None) -> list[str]:
-    seen: set[str] = set()
-    normalized: list[str] = []
-    for value in values or []:
-        rendered = str(value or "").strip().lower()
-        if not rendered or rendered in seen:
-            continue
-        seen.add(rendered)
-        normalized.append(rendered)
-    return normalized
-
-
-def _resolve_yolo_target_classes(
-    tags: Mapping[str, str] | None,
-    db: DuckDBResource,
-) -> YoloTargetClassResolution:
-    if not tags:
-        return YoloTargetClassResolution(classes=[], class_source="server_default")
-
-    spec_id = str(tags.get("spec_id") or "").strip()
-    if spec_id:
-        config_bundle = load_persisted_spec_config(db, spec_id)
-        resolved_config_id = str(config_bundle["resolved_config_id"] or "").strip() or None
-        spec_classes = _normalize_yolo_classes(config_bundle["spec"].get("classes") or [])
-        bbox_config = config_bundle["config_json"].get("bbox", {})
-        config_target_classes = _normalize_yolo_classes(bbox_config.get("target_classes") or [])
-
-        if config_target_classes:
-            allowed = set(config_target_classes)
-            target_classes = [value for value in spec_classes if value in allowed]
-            if target_classes:
-                return YoloTargetClassResolution(
-                    classes=target_classes,
-                    class_source="spec_config_intersection",
-                    spec_id=spec_id,
-                    resolved_config_id=resolved_config_id,
-                )
-        if spec_classes:
-            return YoloTargetClassResolution(
-                classes=spec_classes,
-                class_source="spec_classes",
-                spec_id=spec_id,
-                resolved_config_id=resolved_config_id,
-            )
-        return YoloTargetClassResolution(
-            classes=[],
-            class_source="server_default",
-            spec_id=spec_id,
-            resolved_config_id=resolved_config_id,
-        )
-
-    tag_classes = _parse_tag_list(tags.get("classes"))
-    if tag_classes:
-        return YoloTargetClassResolution(classes=tag_classes, class_source="dispatch_tags")
-
-    categories = _parse_tag_list(tags.get("categories"))
-    derived_classes = _normalize_yolo_classes(derive_classes_from_categories(categories))
-    if derived_classes:
-        return YoloTargetClassResolution(
-            classes=derived_classes,
-            class_source="dispatch_categories_derived",
-        )
-
-    return YoloTargetClassResolution(classes=[], class_source="server_default")
+# Backward-compatible aliases for external imports.
+_normalize_yolo_classes = normalize_classes

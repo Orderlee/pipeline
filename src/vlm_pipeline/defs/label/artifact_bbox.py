@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from vlm_pipeline.lib.key_builders import build_yolo_label_key as _build_yolo_label_key
-from vlm_pipeline.lib.yolo_coco import convert_detection_payload_to_coco
+from vlm_pipeline.lib.detection_coco import convert_detection_payload_to_coco
 
 from vlm_pipeline.defs.label.artifact_import_support import (
     _ArtifactImportSummary,

@@ -117,7 +117,12 @@ def build_raw_video_image_key(raw_key: str, frame_index: int) -> str:
     return str(image_parent / f"{stem}_{int(frame_index):08d}.jpg")
 
 
-def build_sam3_segmentation_key(image_key: str) -> str:
+def build_sam3_detection_key(image_key: str) -> str:
+    """Build MinIO key for SAM3 detection (COCO) JSON.
+
+    Path segment remains ``sam3_segmentations/`` for backward compatibility
+    with existing stored objects.
+    """
     key_path = PurePosixPath(str(image_key or "").strip())
     stem = key_path.stem or "image"
     parent = key_path.parent
@@ -125,3 +130,6 @@ def build_sam3_segmentation_key(image_key: str) -> str:
     if str(raw_parent) and str(raw_parent) != ".":
         return str(raw_parent / "sam3_segmentations" / f"{stem}.json")
     return str(PurePosixPath("sam3_segmentations") / f"{stem}.json")
+
+
+build_sam3_segmentation_key = build_sam3_detection_key

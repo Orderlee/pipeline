@@ -7,12 +7,12 @@ import io
 import json
 from collections.abc import Mapping
 from datetime import datetime
-from hashlib import sha1
 from pathlib import PurePosixPath
 from typing import Any
 
 from dagster import Field, asset
 
+from vlm_pipeline.lib.detection_common import stable_image_label_id
 from vlm_pipeline.lib.sam3 import get_sam3_client
 from vlm_pipeline.lib.sam3_compare import (
     compare_prompt_boxes,
@@ -20,6 +20,8 @@ from vlm_pipeline.lib.sam3_compare import (
     parse_yolo_coco_payload,
     summarize_benchmark_rows,
 )
+from vlm_pipeline.lib.detection_coco import build_coco_detection_payload, convert_sam3_detections_for_coco
+from vlm_pipeline.lib.key_builders import build_sam3_detection_key
 from vlm_pipeline.lib.yolo_thresholds import resolve_active_class_confidence_thresholds
 from vlm_pipeline.resources.duckdb import DuckDBResource
 from vlm_pipeline.resources.minio import MinIOResource
@@ -136,50 +138,60 @@ def _run_sam3_shadow_compare(context, db: DuckDBResource, minio: MinIOResource) 
             grouped_sam = group_sam_detections_by_prompt(sam_detections)
 
             detected_at = datetime.now()
-            sam3_labels_key = _build_sam3_segmentation_key(image_key)
-            artifact_payload = {
-                "benchmark_id": benchmark_id,
-                "image_id": image_id,
-                "source_asset_id": candidate.get("source_asset_id"),
-                "source_clip_id": candidate.get("source_clip_id"),
-                "source_unit_name": candidate.get("source_unit_name"),
-                "raw_key": candidate.get("raw_key"),
-                "image_bucket": image_bucket,
-                "image_key": image_key,
-                "image_role": candidate.get("image_role"),
-                "requested_classes": prompts,
-                "sam3_prompt_score_thresholds": prompt_score_thresholds,
-                "class_source": _extract_yolo_class_source(yolo_payload),
-                "yolo_labels_bucket": yolo_bucket,
-                "yolo_labels_key": yolo_key,
-                "yolo_latency_ms": _extract_yolo_latency_ms(yolo_payload),
-                "sam3_total_latency_ms": float(sam_result.get("elapsed_ms") or 0.0),
-                "sam3_per_prompt_latency_ms": sam_result.get("per_prompt_latency_ms") or {},
-                "sam3_device": sam_result.get("device"),
-                "gpu_memory_peak_gb": sam_result.get("gpu_memory_peak_gb"),
-                "detections": sam_detections,
-                "generated_at": detected_at.isoformat(),
-            }
+            sam3_labels_key = build_sam3_detection_key(image_key)
+            coco_detections = convert_sam3_detections_for_coco(sam_detections)
+            class_source = _extract_yolo_class_source(yolo_payload) or "yolo_shadow"
+            coco_payload = build_coco_detection_payload(
+                image_id=image_id,
+                source_clip_id=candidate.get("source_clip_id"),
+                image_key=image_key,
+                image_width=0,
+                image_height=0,
+                detections=coco_detections,
+                requested_classes=prompts,
+                class_source=class_source,
+                resolved_config_id=None,
+                confidence_threshold=score_threshold,
+                iou_threshold=0.0,
+                detected_at=detected_at,
+                effective_request_confidence_threshold=score_threshold,
+                class_confidence_thresholds=prompt_score_thresholds,
+                elapsed_ms=sam_result.get("elapsed_ms"),
+                model_name="sam3.1",
+            )
+            coco_payload["meta"]["benchmark_id"] = benchmark_id
+            coco_payload["meta"]["source_unit_name"] = candidate.get("source_unit_name")
+            coco_payload["meta"]["raw_key"] = candidate.get("raw_key")
+            coco_payload["meta"]["image_role"] = candidate.get("image_role")
+            coco_payload["meta"]["yolo_labels_bucket"] = yolo_bucket
+            coco_payload["meta"]["yolo_labels_key"] = yolo_key
+            coco_payload["meta"]["yolo_latency_ms"] = _extract_yolo_latency_ms(yolo_payload)
+            coco_payload["meta"]["sam3_prompt_score_thresholds"] = prompt_score_thresholds
+            coco_payload["meta"]["sam3_total_latency_ms"] = float(sam_result.get("elapsed_ms") or 0.0)
+            coco_payload["meta"]["sam3_per_prompt_latency_ms"] = sam_result.get("per_prompt_latency_ms") or {}
+            coco_payload["meta"]["sam3_device"] = sam_result.get("device")
+            coco_payload["meta"]["gpu_memory_peak_gb"] = sam_result.get("gpu_memory_peak_gb")
+            annotation_count = len(coco_payload.get("annotations") or [])
             minio.upload(
                 "vlm-labels",
                 sam3_labels_key,
-                json.dumps(artifact_payload, ensure_ascii=False).encode("utf-8"),
+                json.dumps(coco_payload, ensure_ascii=False).encode("utf-8"),
                 "application/json",
             )
 
             label_rows.append(
                 {
-                    "image_label_id": _stable_sam3_image_label_id(image_id, sam3_labels_key),
+                    "image_label_id": stable_image_label_id(image_id, sam3_labels_key),
                     "image_id": image_id,
                     "source_clip_id": candidate.get("source_clip_id"),
                     "labels_bucket": "vlm-labels",
                     "labels_key": sam3_labels_key,
-                    "label_format": "sam3_segmentation_json",
+                    "label_format": "coco",
                     "label_tool": "sam3",
                     "label_source": "auto",
                     "review_status": "auto_generated",
                     "label_status": "completed",
-                    "object_count": len(sam_detections),
+                    "object_count": annotation_count,
                     "created_at": detected_at,
                 }
             )
@@ -271,19 +283,9 @@ def _run_sam3_shadow_compare(context, db: DuckDBResource, minio: MinIOResource) 
     return summary
 
 
-def _build_sam3_segmentation_key(image_key: str) -> str:
-    from vlm_pipeline.lib.key_builders import build_sam3_segmentation_key
-    return build_sam3_segmentation_key(image_key)
-
-
 def _build_sam3_benchmark_root(benchmark_id: str) -> str:
     normalized = str(benchmark_id or "").strip() or "unknown"
     return str(PurePosixPath("benchmarks") / "sam3_vs_yolo" / normalized)
-
-
-def _stable_sam3_image_label_id(image_id: str, labels_key: str) -> str:
-    token = "|".join([str(image_id or "").strip(), str(labels_key or "").strip()])
-    return sha1(token.encode("utf-8")).hexdigest()
 
 
 def _extract_yolo_class_source(payload: Mapping[str, Any]) -> str | None:
