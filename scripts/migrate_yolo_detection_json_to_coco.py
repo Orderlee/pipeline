@@ -33,7 +33,7 @@ SRC_ROOT = REPO_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from vlm_pipeline.lib.yolo_coco import convert_detection_payload_to_coco, is_coco_detection_payload
+from vlm_pipeline.lib.detection_coco import convert_detection_payload_to_coco, is_coco_detection_payload
 
 
 @dataclass(frozen=True)

@@ -5,6 +5,7 @@ assets.py의 @asset clip_timestamp 래퍼에서 호출됩니다.
 
 from __future__ import annotations
 
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
@@ -59,6 +60,7 @@ def _build_preview_metadata(
 
 def _process_mvp_candidate(
     *,
+    context,
     minio: MinIOResource,
     analyzer,
     video_prompt: str,
@@ -81,10 +83,16 @@ def _process_mvp_candidate(
         if gemini_temp_path is not None:
             temp_paths.append(gemini_temp_path)
         label_key = build_gemini_label_key(raw_key)
+        context.log.info("clip_timestamp Gemini 요청 시작: asset=%s", asset_id)
+        t0 = time.monotonic()
         response_text = worker_analyzer.analyze_video(
             str(gemini_video_path),
             prompt=video_prompt,
             mime_type="video/mp4" if gemini_temp_path is not None else None,
+        )
+        gemini_elapsed = time.monotonic() - t0
+        context.log.info(
+            "clip_timestamp Gemini 응답 수신: asset=%s (%.1fs)", asset_id, gemini_elapsed,
         )
         label_bytes = extract_clean_json_text(response_text).encode("utf-8")
         minio.ensure_bucket("vlm-labels")
@@ -126,6 +134,8 @@ def _process_routed_candidate(
         video_path, temp_path = materialize_video(minio, cand)
         if temp_path is not None:
             temp_paths.append(temp_path)
+        context.log.info("clip_timestamp Gemini 요청 시작: asset=%s", asset_id)
+        t0 = time.monotonic()
         events = analyze_routed_video_events(
             context,
             worker_analyzer,
@@ -133,6 +143,12 @@ def _process_routed_candidate(
             duration_sec=cand.get("duration_sec"),
             temp_paths=temp_paths,
             video_prompt=video_prompt,
+        )
+        gemini_elapsed = time.monotonic() - t0
+        event_count = len(events) if isinstance(events, (list, tuple)) else 0
+        context.log.info(
+            "clip_timestamp Gemini 응답 수신: asset=%s events=%d (%.1fs)",
+            asset_id, event_count, gemini_elapsed,
         )
         label_key = build_gemini_label_key(raw_key)
         minio.ensure_bucket("vlm-labels")
@@ -172,23 +188,32 @@ def clip_timestamp_mvp(
     video_prompt = VIDEO_EVENT_PROMPT
     total_candidates = len(candidates)
     max_workers = min(total_candidates, int_env("GEMINI_MAX_WORKERS", 5, minimum=1))
-    context.log.info(f"clip_timestamp 시작: 총 {total_candidates}건 처리 예정")
+    step_start = time.monotonic()
+    context.log.info(
+        "clip_timestamp 시작: 총 %d건, workers=%d, folder=%s",
+        total_candidates, max_workers, folder_name or "(all)",
+    )
     processed = 0
     failed = 0
 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        future_map = {
-            executor.submit(
+        submit_times: dict = {}
+        future_map: dict = {}
+        for idx, cand in enumerate(candidates, start=1):
+            f = executor.submit(
                 _process_mvp_candidate,
+                context=context,
                 minio=minio,
                 analyzer=analyzer,
                 video_prompt=video_prompt,
                 cand=cand,
-            ): (idx, cand["asset_id"])
-            for idx, cand in enumerate(candidates, start=1)
-        }
+            )
+            future_map[f] = (idx, cand["asset_id"])
+            submit_times[f] = time.monotonic()
+
         for future in as_completed(future_map):
             idx, asset_id = future_map[future]
+            elapsed = time.monotonic() - submit_times[future]
             result = future.result()
             error = result.get("error")
             if error is None:
@@ -213,9 +238,8 @@ def clip_timestamp_mvp(
                         int(preview_meta["max_duration"]),
                     )
                 context.log.info(
-                    f"clip_timestamp 진행: [{idx}/{total_candidates}] "
-                    f"({idx * 100 // total_candidates}%) "
-                    f"asset={asset_id} label_key={label_key} ✅"
+                    "clip_timestamp 진행: [%d/%d] asset=%s label_key=%s (%.1fs)",
+                    idx, total_candidates, asset_id, label_key, elapsed,
                 )
                 continue
 
@@ -225,15 +249,18 @@ def clip_timestamp_mvp(
                 "failed",
                 error=str(error)[:500],
             )
-            context.log.info(
-                f"clip_timestamp 진행: [{idx}/{total_candidates}] "
-                f"({idx * 100 // total_candidates}%) "
-                f"asset={asset_id} ❌ {error}"
+            context.log.error(
+                "clip_timestamp 실패: [%d/%d] asset=%s (%.1fs): %s",
+                idx, total_candidates, asset_id, elapsed, error,
             )
 
+    total_elapsed = time.monotonic() - step_start
     summary = {"processed": processed, "failed": failed}
     context.add_output_metadata(summary)
-    context.log.info(f"AUTO LABEL 완료: {summary}")
+    context.log.info(
+        "clip_timestamp 완료: processed=%d failed=%d 소요=%.0fs",
+        processed, failed, total_elapsed,
+    )
     return summary
 
 
@@ -282,21 +309,31 @@ def clip_timestamp_routed_impl(
     analyzer = init_gemini_analyzer(context)
     processed = 0
     failed = 0
-    max_workers = min(len(candidates), int_env("GEMINI_MAX_WORKERS", 5, minimum=1))
+    total_candidates = len(candidates)
+    max_workers = min(total_candidates, int_env("GEMINI_MAX_WORKERS", 5, minimum=1))
+    step_start = time.monotonic()
+    context.log.info(
+        "clip_timestamp 시작: 총 %d건, workers=%d, folder=%s",
+        total_candidates, max_workers, folder_name or "(backlog)",
+    )
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        future_map = {
-            executor.submit(
+        submit_times: dict = {}
+        future_map: dict = {}
+        for idx, cand in enumerate(candidates, start=1):
+            f = executor.submit(
                 _process_routed_candidate,
                 context=context,
                 minio=minio,
                 analyzer=analyzer,
                 video_prompt=video_prompt,
                 cand=cand,
-            ): (idx, cand["asset_id"])
-            for idx, cand in enumerate(candidates, start=1)
-        }
+            )
+            future_map[f] = (idx, cand["asset_id"])
+            submit_times[f] = time.monotonic()
+
         for future in as_completed(future_map):
             idx, asset_id = future_map[future]
+            elapsed = time.monotonic() - submit_times[future]
             result = future.result()
             error = result.get("error")
             if error is None:
@@ -309,11 +346,8 @@ def clip_timestamp_routed_impl(
                 )
                 processed += 1
                 context.log.info(
-                    "clip_timestamp 완료: [%d/%d] asset_id=%s label_key=%s ✅",
-                    idx,
-                    len(candidates),
-                    asset_id,
-                    label_key,
+                    "clip_timestamp 진행: [%d/%d] asset_id=%s label_key=%s (%.1fs)",
+                    idx, total_candidates, asset_id, label_key, elapsed,
                 )
                 continue
 
@@ -322,14 +356,18 @@ def clip_timestamp_routed_impl(
                 asset_id, "failed", error=str(error)[:500], completed_at=datetime.now()
             )
             context.log.error(
-                "clip_timestamp 실패: [%d/%d] asset_id=%s: %s",
-                idx,
-                len(candidates),
-                asset_id,
-                error,
+                "clip_timestamp 실패: [%d/%d] asset_id=%s (%.1fs): %s",
+                idx, total_candidates, asset_id, elapsed, error,
             )
-    return {
+
+    total_elapsed = time.monotonic() - step_start
+    summary = {
         "processed": processed,
         "failed": failed,
         "resolved_config_id": resolved_config_id,
     }
+    context.log.info(
+        "clip_timestamp 완료: processed=%d failed=%d 소요=%.0fs",
+        processed, failed, total_elapsed,
+    )
+    return summary
