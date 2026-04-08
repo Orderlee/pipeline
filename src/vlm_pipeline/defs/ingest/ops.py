@@ -25,11 +25,13 @@ from vlm_pipeline.lib.video_reencode import (
 from vlm_pipeline.resources.duckdb import DuckDBResource
 from vlm_pipeline.resources.minio import MinIOResource
 
-# ── 업로드 / 재인코딩 워커 상수 ──────────────────────────────────
+# ── 업로드 / 재인코딩 / 메타 추출 워커 상수 ──────────────────────
 DEFAULT_UPLOAD_WORKERS: int = 4
 MAX_UPLOAD_WORKERS: int = 16
 DEFAULT_REENCODE_WORKERS: int = 3
 DEFAULT_REENCODE_THREADS: int = 4
+DEFAULT_META_WORKERS: int = 4
+MAX_META_WORKERS: int = 8
 
 # ── MinIO content-type 기본값 ────────────────────────────────────
 DEFAULT_VIDEO_CONTENT_TYPE: str = "video/mp4"
@@ -388,10 +390,76 @@ def normalize_and_archive(
             except Exception as exc:  # noqa: BLE001
                 _handle_pending_db_error(entry, exc)
 
-    # 1) 메타 추출/중복검출/DB 등록은 순차 처리 (DuckDB lock 최소화)
-    for rec in records:
-        if rec.get("status") != "registered":
-            continue
+    # ── Phase A: NAS I/O 병렬 메타 추출 (sha256 + ffprobe) ──────
+    def _extract_meta(rec: dict) -> dict:
+        """NAS I/O 집약 작업: checksum, ffprobe, reencode 판정. 스레드 안전."""
+        filepath = rec["path"]
+        media_type = rec.get("media_type", "image")
+        try:
+            if media_type == "image":
+                meta = load_image_once(filepath)
+            else:
+                meta = load_video_once(
+                    filepath,
+                    include_file_stream=False,
+                    include_env_metadata=not defer_video_env_classification,
+                )
+                reencode_req, reencode_rsn = needs_reencode(
+                    meta["video_metadata"], Path(filepath)
+                )
+                meta["video_metadata"]["reencode_required"] = reencode_req
+                meta["video_metadata"]["reencode_reason"] = reencode_rsn
+            return {"rec": rec, "meta": meta, "error": None}
+        except Exception as exc:
+            return {"rec": rec, "meta": None, "error": exc}
+
+    meta_workers_raw = os.getenv("INGEST_META_WORKERS", str(DEFAULT_META_WORKERS))
+    try:
+        meta_workers = int(meta_workers_raw)
+    except ValueError:
+        meta_workers = DEFAULT_META_WORKERS
+    meta_workers = max(1, min(MAX_META_WORKERS, meta_workers))
+
+    meta_results: list[dict] = []
+    if total_candidates > 1 and meta_workers > 1:
+        context.log.info(f"meta_extract:parallel workers={meta_workers} candidates={total_candidates}")
+        with ThreadPoolExecutor(max_workers=meta_workers) as meta_pool:
+            futures = {
+                meta_pool.submit(_extract_meta, rec): rec
+                for rec in candidate_records
+            }
+            for future in as_completed(futures):
+                result = future.result()
+                meta_results.append(result)
+                processed_candidates += 1
+                r = result["rec"]
+                context.log.info(
+                    f"video_meta_extract progress={processed_candidates}/{total_candidates} "
+                    f"media_type={r.get('media_type', 'image')} path={r['path']}"
+                )
+                if result["error"] is None and result["meta"] and r.get("media_type") == "video":
+                    vm = result["meta"].get("video_metadata", {})
+                    if vm.get("reencode_required"):
+                        context.log.info(f"reencode_required: {r['path']} reason={vm.get('reencode_reason')}")
+    else:
+        for rec in candidate_records:
+            result = _extract_meta(rec)
+            meta_results.append(result)
+            processed_candidates += 1
+            context.log.info(
+                f"video_meta_extract progress={processed_candidates}/{total_candidates} "
+                f"media_type={rec.get('media_type', 'image')} path={rec['path']}"
+            )
+            if result["error"] is None and result["meta"] and rec.get("media_type") == "video":
+                vm = result["meta"].get("video_metadata", {})
+                if vm.get("reencode_required"):
+                    context.log.info(f"reencode_required: {rec['path']} reason={vm.get('reencode_reason')}")
+
+    # ── Phase B: 순차 중복검출 + DB 등록 (DuckDB lock 최소화) ──
+    for mr in meta_results:
+        rec = mr["rec"]
+        meta = mr["meta"]
+        error = mr["error"]
 
         filepath = rec["path"]
         asset_id = rec["asset_id"]
@@ -399,34 +467,43 @@ def normalize_and_archive(
         raw_key = rec["raw_key"]
         rel_path = rec.get("rel_path", "")
         db_record = rec.get("record", {})
-        stage_hint = "normalize"
-        meta: dict | None = None
+
+        if error is not None:
+            context.log.error(f"normalize 실패: {filepath}: {error}")
+            error_message = str(error)
+            rec["status"] = "failed"
+            is_transient = _is_transient_error(error)
+            if is_transient and retry_candidates is not None:
+                retry_candidates.append(
+                    {
+                        "source_path": filepath,
+                        "rel_path": str(rel_path or Path(filepath).name),
+                        "media_type": media_type,
+                    }
+                )
+            cleanup_error: Exception | None = None
+            try:
+                if db.has_raw_file(asset_id):
+                    db.delete_asset_for_reingest(asset_id)
+            except Exception as cleanup_exc:  # noqa: BLE001
+                cleanup_error = cleanup_exc
+            if cleanup_error is not None:
+                context.log.warning(
+                    f"ingest 실패 레코드 정리 중 추가 오류: asset_id={asset_id}, err={cleanup_error}"
+                )
+            _append_ingest_rejection(
+                ingest_rejections,
+                source_path=filepath,
+                rel_path=rel_path,
+                media_type=media_type,
+                stage="normalize",
+                error_message=error_message,
+                retryable=is_transient,
+                error_code="duckdb_lock_conflict" if is_transient else None,
+            )
+            continue
 
         try:
-            # 1-pass 로딩
-            if media_type == "image":
-                meta = load_image_once(filepath)
-            else:
-                # 대용량 파일 복사로 인한 로컬 디스크/메모리 I/O 병목 해소
-                # boto3의 멀티파트 네이티브 병렬 읽기(upload_file) 활용을 위해 Spooled stream을 비활성
-                meta = load_video_once(
-                    filepath,
-                    include_file_stream=False,
-                    include_env_metadata=not defer_video_env_classification,
-                )
-                # 인코딩 품질 판정 (원본 ffprobe 결과 재사용, 조건 통과 시만 추가 probe)
-                reencode_req, reencode_rsn = needs_reencode(
-                    meta["video_metadata"], Path(filepath)
-                )
-                meta["video_metadata"]["reencode_required"] = reencode_req
-                meta["video_metadata"]["reencode_reason"] = reencode_rsn
-                if reencode_req:
-                    context.log.info(
-                        f"reencode_required: {filepath} reason={reencode_rsn}"
-                    )
-
-            stage_hint = "db"
-            # 정확 중복 검출
             existing = db.find_by_checksum(meta["checksum"])
             if existing:
                 _close_video_stream(meta)
@@ -434,7 +511,6 @@ def normalize_and_archive(
                 _mark_duplicate_skip(filepath, str(existing["asset_id"]), db_record, rec)
                 continue
 
-            # 과거 실패(run 중단/환경오류) 레코드가 checksum을 점유 중이면 재시도 전 정리
             stale = db.find_any_by_checksum(meta["checksum"])
             if stale:
                 stale_status = str(stale.get("ingest_status", "")).strip().lower()
@@ -447,7 +523,6 @@ def normalize_and_archive(
                     )
                     db.delete_asset_for_reingest(stale_asset_id)
                 elif stale_status and stale_status != "completed":
-                    # 동일 batch 내 업로드중(uploading) 등은 중복으로 간주하고 스킵
                     _close_video_stream(meta)
                     context.log.warning(f"중복 건너뜀: {filepath} (기존: {stale_asset_id})")
                     _mark_duplicate_skip(filepath, stale_asset_id, db_record, rec)
@@ -495,37 +570,25 @@ def normalize_and_archive(
                         "media_type": media_type,
                     }
                 )
-
-            cleanup_error: Exception | None = None
+            cleanup_error_db: Exception | None = None
             try:
                 if db.has_raw_file(asset_id):
                     db.delete_asset_for_reingest(asset_id)
             except Exception as cleanup_exc:  # noqa: BLE001
-                cleanup_error = cleanup_exc
-
-            if cleanup_error is not None:
+                cleanup_error_db = cleanup_exc
+            if cleanup_error_db is not None:
                 context.log.warning(
-                    "ingest 실패 레코드 정리 중 추가 오류: "
-                    f"asset_id={asset_id}, err={cleanup_error}"
+                    f"ingest 실패 레코드 정리 중 추가 오류: asset_id={asset_id}, err={cleanup_error_db}"
                 )
-
-            rejection_stage = "db" if stage_hint == "db" else "normalize"
             _append_ingest_rejection(
                 ingest_rejections,
                 source_path=filepath,
                 rel_path=rel_path,
                 media_type=media_type,
-                stage=rejection_stage,
+                stage="db",
                 error_message=error_message,
                 retryable=is_transient,
                 error_code="duckdb_lock_conflict" if is_transient else None,
-            )
-        finally:
-            processed_candidates += 1
-            context.log.info(
-                "video_meta_extract progress="
-                f"{processed_candidates}/{total_candidates} "
-                f"media_type={media_type} path={filepath}"
             )
 
     _flush_pending_db_rows()

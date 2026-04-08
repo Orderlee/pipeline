@@ -268,15 +268,18 @@ def _stable_gemini_label_id(
 
 def _ffprobe_clip_meta(clip_path: Path) -> dict[str, Any]:
     """ffprobe로 clip의 duration, fps, frame_count, width, height, codec 추출."""
+    from vlm_pipeline.lib.video_loader import _run_ffprobe_with_retry
+
     cmd = [
         "ffprobe", "-v", "quiet", "-print_format", "json",
         "-show_format", "-show_streams", str(clip_path),
     ]
     try:
-        result = subprocess.run(cmd, capture_output=True, timeout=30, check=False)
+        result = _run_ffprobe_with_retry(cmd, timeout_sec=30)
+        stdout = result.stdout if isinstance(result.stdout, str) else (result.stdout or b"").decode("utf-8", errors="replace")
         if result.returncode != 0:
             return {}
-        data = json.loads(result.stdout)
+        data = json.loads(stdout)
     except Exception:
         return {}
 
@@ -636,15 +639,8 @@ def _materialize_object_path(
 
 
 def _materialize_video_path(minio: MinIOResource, candidate: dict) -> tuple[Path, Path | None]:
-    archive_path = Path(str(candidate.get("archive_path") or "").strip())
-    if archive_path.exists():
-        return archive_path, None
-    return _materialize_object_path(
-        minio,
-        str(candidate.get("raw_bucket") or "vlm-raw"),
-        str(candidate.get("raw_key") or ""),
-        fallback_name="video.mp4",
-    )
+    from vlm_pipeline.lib.media_utils import materialize_video_path
+    return materialize_video_path(minio, candidate)
 
 
 def _cleanup_temp_path(path: Path | None) -> None:

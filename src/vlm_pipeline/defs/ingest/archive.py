@@ -6,14 +6,18 @@ assets.py에서 분리된 archive 관련 헬퍼.
 from __future__ import annotations
 
 import shutil
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING
 
+from vlm_pipeline.lib.env_utils import int_env
 from vlm_pipeline.lib.runtime_profile import RuntimeProfile, resolve_runtime_profile
 
 if TYPE_CHECKING:
     from vlm_pipeline.resources.config import PipelineConfig
     from vlm_pipeline.resources.duckdb import DuckDBResource
+
+DEFAULT_ARCHIVE_MOVE_TIMEOUT_SEC: int = 300
 
 # ── archive 경로 충돌 해결 상수 ──────────────────────────────────
 ARCHIVE_MAX_SUFFIX_ATTEMPTS: int = 100
@@ -22,6 +26,21 @@ ARCHIVE_CLEANUP_MAX_DEPTH: int = 5
 ARCHIVE_CLEANUP_MAX_PARENT_LEVELS: int = 8
 TRUTHY_STRINGS: frozenset[str] = frozenset({"1", "true", "t", "yes", "y", "on"})
 FALSY_STRINGS: frozenset[str] = frozenset({"0", "false", "f", "no", "n", "off", ""})
+
+
+def _move_with_timeout(src: str, dst: str, timeout_sec: int | None = None) -> None:
+    """shutil.move를 스레드 기반 타임아웃으로 감싸 NAS hang 방지."""
+    if timeout_sec is None:
+        timeout_sec = int_env("ARCHIVE_MOVE_TIMEOUT_SEC", DEFAULT_ARCHIVE_MOVE_TIMEOUT_SEC, minimum=10)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(shutil.move, src, dst)
+        try:
+            future.result(timeout=timeout_sec)
+        except FuturesTimeoutError:
+            future.cancel()
+            raise OSError(
+                f"archive_move_timeout: {timeout_sec}s 초과 — src={src} dst={dst}"
+            ) from None
 
 
 def resolve_archive_source_unit_name(source_unit_name: str) -> str:
@@ -393,7 +412,7 @@ def prepare_manifest_for_archive_upload(
         return manifest, base_archive_unit_dir, False
 
     final_archive_unit_dir = resolve_unique_directory(base_archive_unit_dir)
-    shutil.move(str(source_unit_path), str(final_archive_unit_dir))
+    _move_with_timeout(str(source_unit_path), str(final_archive_unit_dir))
     cleanup_empty_parent_chain(
         source_unit_path.parent,
         stop_at=Path(source_dir_raw) if source_dir_raw else None,
@@ -561,7 +580,7 @@ def archive_uploaded_assets(
             final_unit_archive_dir = resolve_unique_directory(base_unit_archive_dir)
             archive_unit_dir_hint = final_unit_archive_dir
             try:
-                shutil.move(str(source_unit_path), str(final_unit_archive_dir))
+                _move_with_timeout(str(source_unit_path), str(final_unit_archive_dir))
                 context.log.info(
                     f"폴더 단위 아카이브 이동 완료: {source_unit_path} -> {final_unit_archive_dir}"
                 )
@@ -621,7 +640,7 @@ def _move_single_file(
     try:
         dest = resolve_unique_file(base_dest)
         dest.parent.mkdir(parents=True, exist_ok=True)
-        shutil.move(str(src), str(dest))
+        _move_with_timeout(str(src), str(dest))
         mark_fn(item, dest)
     except (OSError, shutil.Error) as exc:
         if dest is not None and dest.exists():
@@ -655,7 +674,7 @@ def _move_single_file_legacy(context, item: dict, archive_root_dir: Path, mark_f
     try:
         dest = resolve_unique_file(base_dest)
         dest.parent.mkdir(parents=True, exist_ok=True)
-        shutil.move(str(src), str(dest))
+        _move_with_timeout(str(src), str(dest))
         mark_fn(item, dest)
     except (OSError, shutil.Error) as exc:
         if dest is not None and dest.exists():

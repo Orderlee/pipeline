@@ -80,11 +80,13 @@ DUCKDB_LEGACY_WRITER_TAG = "duckdb_writer"
 DUCKDB_RAW_WRITER_TAG = "duckdb_raw_writer"
 DUCKDB_LABEL_WRITER_TAG = "duckdb_label_writer"
 DUCKDB_YOLO_WRITER_TAG = "duckdb_yolo_writer"
+DUCKDB_SAM3_WRITER_TAG = "duckdb_sam3_writer"
 DUCKDB_WRITER_TAG_KEYS = (
     DUCKDB_LEGACY_WRITER_TAG,
     DUCKDB_RAW_WRITER_TAG,
     DUCKDB_LABEL_WRITER_TAG,
     DUCKDB_YOLO_WRITER_TAG,
+    DUCKDB_SAM3_WRITER_TAG,
 )
 
 
@@ -201,6 +203,13 @@ YOLO_OUTPUTS = frozenset(
     [
         "bbox",
         "classification_image",
+    ]
+)
+
+SAM3_OUTPUTS = frozenset(
+    [
+        "bbox",
+        "segmentation",
     ]
 )
 

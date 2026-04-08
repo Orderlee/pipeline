@@ -50,19 +50,8 @@ def materialize_video(
     candidate: dict,
 ) -> tuple[Path, Path | None]:
     """비디오 파일을 로컬에 확보. archive_path 우선, MinIO fallback."""
-    archive_path = Path(str(candidate.get("archive_path") or "").strip())
-    if archive_path.exists():
-        return archive_path, None
-
-    raw_bucket = str(candidate.get("raw_bucket") or "vlm-raw")
-    raw_key = str(candidate.get("raw_key") or "")
-    suffix = Path(raw_key).suffix or ".mp4"
-    tmp = NamedTemporaryFile(delete=False, suffix=suffix)
-    try:
-        minio.download_fileobj(raw_bucket, raw_key, tmp)
-    finally:
-        tmp.close()
-    return Path(tmp.name), Path(tmp.name)
+    from vlm_pipeline.lib.media_utils import materialize_video_path
+    return materialize_video_path(minio, candidate)
 
 
 # ── label key builders (delegate to lib.key_builders) ──

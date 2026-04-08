@@ -28,12 +28,14 @@ def _build_production_definitions() -> Definitions:
         build_production_assets,
         build_production_sensors,
         build_sam3_shadow_compare_job,
+        build_sam3_standard_detection_job,
         build_yolo_standard_detection_job,
     )
     from vlm_pipeline.defs.sync.sensor import MOTHERDUCK_TABLE_SENSORS
 
     enable_manual_label_import = bool_env("ENABLE_MANUAL_LABEL_IMPORT", False)
     enable_yolo_detection = bool_env("ENABLE_YOLO_DETECTION", False)
+    enable_sam3_detection = bool_env("ENABLE_SAM3_DETECTION", False)
 
     mvp_stage_job = build_mvp_stage_job(
         description="[운영] 수집만 — 라벨링은 dispatch 트리거 JSON + dispatch_stage_job",
@@ -48,7 +50,7 @@ def _build_production_definitions() -> Definitions:
         description="클라우드 동기화 — DuckDB → MotherDuck",
     )
     dispatch_stage_job = build_dispatch_stage_job(
-        description="[운영 유일 자동 라벨링] `.dispatch/pending` 트리거 JSON → ingest + clip_* + YOLO",
+        description="[운영 유일 자동 라벨링] `.dispatch/pending` 트리거 JSON → ingest + clip_* + YOLO + SAM3",
         staging=False,
     )
     sam3_shadow_compare_job = build_sam3_shadow_compare_job(
@@ -75,11 +77,18 @@ def _build_production_definitions() -> Definitions:
                 description="YOLO (clip_to_frame deps) — ENABLE_YOLO_DETECTION 시에만 등록",
             )
         )
+    if enable_sam3_detection:
+        jobs.append(
+            build_sam3_standard_detection_job(
+                description="SAM3 bbox detection (clip_to_frame deps) — ENABLE_SAM3_DETECTION 시에만 등록",
+            )
+        )
 
     return Definitions(
         assets=build_production_assets(
             enable_manual_label_import=enable_manual_label_import,
             enable_yolo_detection=enable_yolo_detection,
+            enable_sam3_detection=enable_sam3_detection,
         ),
         jobs=jobs,
         schedules=[
@@ -102,11 +111,13 @@ def _build_staging_definitions() -> Definitions:
         build_prelabeled_import_job,
         build_sam3_shadow_compare_job,
         build_staging_assets,
+        build_staging_sam3_detection_job,
         build_staging_sensors,
         build_staging_yolo_detection_job,
     )
     from vlm_pipeline.defs.dispatch.sensor import dispatch_sensor
     from vlm_pipeline.defs.dispatch.staging_agent_sensor import staging_agent_dispatch_sensor
+    from vlm_pipeline.defs.sam.sensor import sam3_detection_sensor
     from vlm_pipeline.defs.spec.staging_sensor import spec_resolve_sensor
 
     ingest_job = build_ingest_job(
@@ -116,7 +127,7 @@ def _build_staging_definitions() -> Definitions:
         description="GCS 외부 데이터 수집",
     )
     dispatch_stage_job = build_dispatch_stage_job(
-        description="Staging dispatch — run_mode에 따라 처리 분기",
+        description="Staging dispatch — run_mode에 따라 처리 분기 (YOLO + SAM3 병렬)",
         staging=True,
     )
     auto_labeling_routed_job = build_auto_labeling_routed_job(
@@ -124,6 +135,9 @@ def _build_staging_definitions() -> Definitions:
     )
     yolo_detection_job = build_staging_yolo_detection_job(
         description="YOLO-World-L object detection (processed_clip_frame → image_labels)",
+    )
+    sam3_detection_job = build_staging_sam3_detection_job(
+        description="SAM3.1 text-prompted bbox detection (processed_clip_frame → image_labels)",
     )
     manual_label_import_job = build_manual_label_import_job(
         description="수동 라벨 JSON 임포트 (incoming 디렉터리)",
@@ -143,6 +157,7 @@ def _build_staging_definitions() -> Definitions:
             dispatch_stage_job,
             auto_labeling_routed_job,
             yolo_detection_job,
+            sam3_detection_job,
             sam3_shadow_compare_job,
             manual_label_import_job,
             prelabeled_import_job,
@@ -151,6 +166,7 @@ def _build_staging_definitions() -> Definitions:
             spec_resolve_sensor=spec_resolve_sensor,
             dispatch_ingress_sensor=staging_agent_dispatch_sensor,
             dispatch_json_sensor=dispatch_sensor,
+            sam3_detection_sensor=sam3_detection_sensor,
         ),
         resources=build_common_resources(),
     )
