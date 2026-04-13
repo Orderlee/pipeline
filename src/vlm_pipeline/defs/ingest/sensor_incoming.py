@@ -22,6 +22,7 @@ from .sensor_helpers import (
     move_superseded_manifests,
     parse_cursor,
     select_latest_per_source_unit,
+    supersede_by_stable_signature,
 )
 
 
@@ -106,9 +107,14 @@ def incoming_manifest_sensor(context):
     context.log.info(f"pending manifest 발견: {len(manifests)}개, entries: {len(manifest_entries)}개")
 
     selected_entries, superseded_entries = select_latest_per_source_unit(manifest_entries)
+    selected_entries, sig_superseded = supersede_by_stable_signature(selected_entries)
+    superseded_entries.extend(sig_superseded)
     superseded_count = move_superseded_manifests(superseded_entries, processed_dir, context)
 
-    context.log.info(f"selected: {len(selected_entries)}개, superseded: {len(superseded_entries)}개, previous_cursor: {len(previous_state)}개")
+    context.log.info(
+        f"selected: {len(selected_entries)}개, superseded: {len(superseded_entries)}개"
+        f" (sig_superseded: {len(sig_superseded)}개), previous_cursor: {len(previous_state)}개"
+    )
 
     stale_keys = [k for k in previous_state if k not in existing_manifest_keys]
     if stale_keys:

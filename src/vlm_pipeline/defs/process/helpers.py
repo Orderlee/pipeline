@@ -15,7 +15,12 @@ from uuid import uuid4
 
 from vlm_pipeline.lib.checksum import sha256_bytes
 from vlm_pipeline.lib.file_loader import build_nonexistent_temp_path
-from vlm_pipeline.lib.gemini import GeminiAnalyzer, extract_clean_json_text, is_vertex_rate_limit_error
+from vlm_pipeline.lib.gemini import (
+    GeminiAnalyzer,
+    extract_clean_json_text,
+    is_vertex_rate_limit_error,
+    load_clean_json,
+)
 from vlm_pipeline.lib.staging_vertex import (
     build_event_frame_relevance_prompt,
     build_event_frame_image_prompt,
@@ -697,8 +702,9 @@ def _load_gemini_label_event(
     cached = cache.get(normalized_key)
     if cached is None:
         raw_bytes = minio.download("vlm-labels", normalized_key)
-        cleaned = extract_clean_json_text(raw_bytes.decode("utf-8", errors="replace"))
-        cached = normalize_gemini_events(json.loads(cleaned))
+        cached = normalize_gemini_events(
+            load_clean_json(raw_bytes.decode("utf-8", errors="replace"))
+        )
         cache[normalized_key] = cached
 
     if 0 <= int(event_index) < len(cached):

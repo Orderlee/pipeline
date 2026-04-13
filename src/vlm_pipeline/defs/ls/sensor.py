@@ -1,4 +1,4 @@
-"""LS task 자동 생성 sensor.
+"""LS task 자동 생성 sensor + presigned URL 갱신 schedule.
 
 dispatch_stage_job이 완료된 후 (staging_dispatch_requests.status='completed'),
 아직 LS task가 생성되지 않은 요청을 감지하여 ls_task_create_job을 트리거합니다.
@@ -9,11 +9,14 @@ dispatch_stage_job이 완료된 후 (staging_dispatch_requests.status='completed
         AND COALESCE(ls_task_status, 'pending') = 'pending'
     → ls_task_create_job (folder_name 기준으로 ls_tasks.py create 실행)
     → ls_task_status = 'created' 업데이트
+
+presigned URL 갱신:
+  매일 05:00 KST — ls_tasks.py renew --all-projects 실행
+  만료 1일 이내 URL을 자동 갱신하여 라벨링 작업 중단 방지
 """
 
 from __future__ import annotations
 
-import json
 import os
 import subprocess
 import sys
@@ -24,6 +27,7 @@ import duckdb
 from dagster import (
     DefaultSensorStatus,
     RunRequest,
+    ScheduleDefinition,
     SkipReason,
     job,
     op,
@@ -31,6 +35,11 @@ from dagster import (
 )
 
 from vlm_pipeline.lib.env_utils import default_duckdb_path, int_env
+from vlm_pipeline.lib.minio_cross_sync import (
+    is_cross_sync_needed,
+    ls_minio_endpoint,
+    sync_folder_for_ls,
+)
 
 LS_TASKS_SCRIPT = Path(
     os.environ.get("LS_TASKS_SCRIPT", Path(__file__).parents[3] / "gemini" / "ls_tasks.py")
@@ -88,6 +97,9 @@ def create_ls_tasks(context) -> None:
     if not api_key:
         raise RuntimeError("LS_API_KEY 환경변수가 필요합니다.")
 
+    need_sync = is_cross_sync_needed()
+    target_ep = ls_minio_endpoint()
+
     for req in requests:
         request_id = req["request_id"]
         folder_name = req["folder_name"].rstrip("/")
@@ -95,10 +107,21 @@ def create_ls_tasks(context) -> None:
 
         context.log.info(f"ls task 생성 시작: request_id={request_id}, prefix={clip_prefix}")
         try:
+            # (A/C) staging이면 클립·라벨을 production MinIO로 복사
+            if need_sync:
+                n = sync_folder_for_ls(
+                    folder_name,
+                    target_endpoint=target_ep,
+                    log_fn=lambda msg: context.log.info(msg),
+                )
+                context.log.info(f"staging→production 동기화: {n}건 복사")
+
+            # (B) --minio-endpoint를 명시적으로 전달하여 LS가 production 버킷 참조
             result = subprocess.run(
                 [
                     sys.executable,
                     str(LS_TASKS_SCRIPT),
+                    "--minio-endpoint", target_ep,
                     "create",
                     "--prefix", clip_prefix,
                     "--api-key", api_key,
@@ -162,3 +185,48 @@ def ls_task_create_sensor(context):
         run_key=f"ls-task-create-{int(time.time())}",
         tags={"trigger": "ls_task_create_sensor", "pending_count": str(len(pending))},
     )
+
+
+# ---------------------------------------------------------------------------
+# Presigned URL 갱신 Job + Schedule
+# ---------------------------------------------------------------------------
+
+@op
+def renew_ls_presigned_urls(context) -> None:
+    """모든 LS project의 만료 임박 presigned URL 갱신."""
+    api_key = os.environ.get("LS_API_KEY", "")
+    if not api_key:
+        context.log.warning("LS_API_KEY 미설정 — presigned URL 갱신 건너뜀")
+        return
+
+    target_ep = ls_minio_endpoint()
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(LS_TASKS_SCRIPT),
+            "--minio-endpoint", target_ep,
+            "renew",
+            "--all-projects",
+            "--api-key", api_key,
+        ],
+        capture_output=True,
+        text=True,
+        timeout=600,
+    )
+    context.log.info(result.stdout)
+    if result.returncode != 0:
+        context.log.error(f"presigned URL 갱신 실패:\n{result.stderr}")
+        raise RuntimeError(f"ls_tasks.py renew 실패 (exit={result.returncode})")
+
+
+@job(name="ls_presign_renew_job", description="LS presigned URL 만료 임박 자동 갱신")
+def ls_presign_renew_job():
+    renew_ls_presigned_urls()
+
+
+ls_presign_renew_schedule = ScheduleDefinition(
+    name="ls_presign_renew_schedule",
+    job=ls_presign_renew_job,
+    cron_schedule="0 5 * * *",
+    execution_timezone="Asia/Seoul",
+)

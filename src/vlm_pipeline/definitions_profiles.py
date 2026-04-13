@@ -30,6 +30,8 @@ def _build_production_definitions() -> Definitions:
         build_sam3_shadow_compare_job,
         build_sam3_standard_detection_job,
         build_yolo_standard_detection_job,
+        ls_presign_renew_job,
+        ls_presign_renew_schedule,
     )
     from vlm_pipeline.defs.sync.sensor import MOTHERDUCK_TABLE_SENSORS
 
@@ -84,6 +86,8 @@ def _build_production_definitions() -> Definitions:
             )
         )
 
+    jobs.append(ls_presign_renew_job)
+
     return Definitions(
         assets=build_production_assets(
             enable_manual_label_import=enable_manual_label_import,
@@ -94,6 +98,7 @@ def _build_production_definitions() -> Definitions:
         schedules=[
             build_gcs_download_schedule(gcs_download_job),
             build_motherduck_daily_schedule(motherduck_sync_job),
+            ls_presign_renew_schedule,
         ],
         sensors=build_production_sensors(MOTHERDUCK_TABLE_SENSORS),
         resources=build_common_resources(),

@@ -133,6 +133,67 @@ def select_latest_per_source_unit(entries: list[dict]) -> tuple[list[dict], list
     return selected, superseded
 
 
+def _dispatch_origin_key(entry: dict) -> str:
+    """manifest의 출처 그룹 키를 반환.
+
+    같은 source_unit_path를 가리키더라도 chunked(auto_bootstrap)와
+    non-chunked(manual 등)는 서로 다른 출처로 구분한다.
+    """
+    key = str(entry.get("source_unit_dispatch_key", "")).strip()
+    idx = key.find("#chunk:")
+    if idx >= 0:
+        return f"{key[:idx]}#chunked"
+    return key
+
+
+def supersede_by_stable_signature(
+    selected: list[dict],
+) -> tuple[list[dict], list[dict]]:
+    """같은 stable_signature를 가진 manifest 중 서로 다른 출처의 중복 커버리지를 제거.
+
+    1차 dispatch_key 기반 supersede 이후, 같은 폴더(같은 signature)를 가리키는
+    서로 다른 출처(auto_bootstrap vs manual_reingest 등)의 manifest가 동시에
+    pending일 때 최신 세트만 남기고 나머지를 supersede한다.
+    """
+    sig_groups: dict[str, list[dict]] = {}
+    no_sig: list[dict] = []
+    for entry in selected:
+        sig = str(entry.get("stable_signature", "")).strip()
+        if not sig:
+            no_sig.append(entry)
+            continue
+        sig_groups.setdefault(sig, []).append(entry)
+
+    final_selected: list[dict] = list(no_sig)
+    extra_superseded: list[dict] = []
+
+    for _sig, group in sig_groups.items():
+        if len(group) <= 1:
+            final_selected.extend(group)
+            continue
+
+        origin_subgroups: dict[str, list[dict]] = {}
+        for e in group:
+            origin = _dispatch_origin_key(e)
+            origin_subgroups.setdefault(origin, []).append(e)
+
+        if len(origin_subgroups) <= 1:
+            final_selected.extend(group)
+            continue
+
+        best_origin = max(
+            origin_subgroups,
+            key=lambda k: max(int(e.get("mtime_ns", 0)) for e in origin_subgroups[k]),
+        )
+        for origin, subgroup in origin_subgroups.items():
+            if origin == best_origin:
+                final_selected.extend(subgroup)
+            else:
+                extra_superseded.extend(subgroup)
+
+    return final_selected, extra_superseded
+
+
 def resolve_superseded_path(processed_dir: Path, manifest_path: Path) -> Path:
     base = processed_dir / f"{manifest_path.stem}.superseded.json"
     if not base.exists():

@@ -62,6 +62,18 @@ class DuckDBIngestRawMixin:
             conn.executemany(sql, rows)
             return len(rows)
 
+    def find_existing_raw_keys(self, raw_keys: list[str]) -> set[str]:
+        """주어진 raw_key 목록 중 DB에 이미 존재하는 것들을 반환."""
+        if not raw_keys:
+            return set()
+        with self.connect() as conn:
+            placeholders = ", ".join("?" for _ in raw_keys)
+            rows = conn.execute(
+                f"SELECT DISTINCT raw_key FROM raw_files WHERE raw_key IN ({placeholders})",
+                raw_keys,
+            ).fetchall()
+            return {r[0] for r in rows}
+
     def find_by_checksum(self, checksum: str, completed_only: bool = True) -> dict[str, Any] | None:
         query = "SELECT * FROM raw_files WHERE checksum = ?"
         params: list[Any] = [checksum]
