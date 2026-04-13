@@ -1,0 +1,106 @@
+# =====================================================
+# 로컬 개발/테스트용 Docker Compose
+# GPU 서비스 제외, MinIO + PostgreSQL + Dagster만 실행
+# 사용법: docker compose -f docker/docker-compose.dev.yaml up -d
+# =====================================================
+
+name: pipeline-dev
+
+x-dev-env: &dev-env
+  MINIO_ENDPOINT: http://minio:9000
+  MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
+  MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin}
+  DUCKDB_PATH: /data/dev.duckdb
+  DATAOPS_DUCKDB_PATH: /data/dev.duckdb
+  DATAOPS_PIPELINE_ROOT: /nas/datasets/projects
+  DATAOPS_NAS_ROOT: /nas/datasets/projects
+  DATAOPS_NAS_ROOTS: /nas/datasets/projects;/nas/incoming
+  VIDEO_ENV_AUTO_DOWNLOAD: "false"
+  YOLO_API_URL: ""
+  SAM3_API_URL: ""
+  DAGSTER_HOME: /app/dagster_home
+  PYTHONPATH: /:/src/python:/src/vlm
+  IS_STAGING: "true"
+
+services:
+  # ===== MinIO (로컬 S3) =====
+  minio:
+    image: minio/minio:latest
+    ports:
+      - "${MINIO_API_PORT:-9000}:9000"
+      - "${MINIO_CONSOLE_PORT:-9001}:9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
+    volumes:
+      - minio_data:/data
+    command: server /data --console-address ":9001"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # ===== PostgreSQL (Dagster storage) =====
+  postgres:
+    image: postgres:15
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-airflow}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-airflow}
+      POSTGRES_DB: ${POSTGRES_DB:-airflow}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-airflow}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ===== Dagster Dev Server =====
+  dagster-dev:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    image: datapipeline:dev
+    user: root
+    working_dir: /app
+    command:
+      [
+        "/bin/bash", "-c",
+        "DAGSTER_HOME=/app/dagster_home dagster dev -w /app/workspace_staging.yaml -h 0.0.0.0 -p 3030",
+      ]
+    ports:
+      - "${DAGSTER_PORT:-3030}:3030"
+    environment:
+      <<: *dev-env
+      INCOMING_DIR: /nas/incoming
+      ARCHIVE_DIR: /nas/archive
+      MANIFEST_DIR: /nas/incoming/.manifests
+      DATAOPS_MINIO__ENDPOINT: http://minio:9000
+      DATAOPS_MINIO__ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
+      DATAOPS_MINIO__SECRET_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin}
+      DATAOPS_MINIO__BUCKET: raw-data
+    volumes:
+      - ./app/dagster_home_dev:/app/dagster_home
+      - ./data_dev:/data
+      - ../src/python:/src/python:ro
+      - ../src:/src/vlm:ro
+      - ../configs:/configs:ro
+      - ../scripts:/scripts:ro
+      - ${DEV_INCOMING_PATH:-./data_dev/incoming}:/nas/incoming
+      - ${DEV_ARCHIVE_PATH:-./data_dev/archive}:/nas/archive
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+
+volumes:
+  minio_data:
+  postgres_data:
+
+networks:
+  default:
+    name: pipeline-dev-network

@@ -25,6 +25,7 @@
   - [PLAN](PLAN.md)
   - [staging_agent_api_dispatch_plan](staging_agent_api_dispatch_plan.md)
 - 운영 참고
+  - [Label Studio 운영 가이드](references/label-studio-ops-guide.md)
   - [PRODUCTION_VS_STAGING](PRODUCTION_VS_STAGING.md)
   - [RUN_2f50c9bb_MOTHERDUCK_QUERY](RUN_2f50c9bb_MOTHERDUCK_QUERY.md)
   - [QA_PHASE3_REPORT](QA_PHASE3_REPORT.md)

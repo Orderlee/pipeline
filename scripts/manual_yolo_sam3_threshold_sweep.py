@@ -54,11 +54,18 @@ def build_profiles() -> list[tuple[str, dict]]:
             "01_baseline_model_defaults",
             {
                 "profile_name": "01_baseline_model_defaults",
-                "mode": "baseline_model_defaults",
-                "category_thresholds": {},
+                "mode": "category_override",
+                "category_thresholds": {
+                    "smoke": 0.20,
+                    "smoking": 0.20,
+                    "fire": 0.20,
+                    "falldown": 0.20,
+                    "weapon": 0.15,
+                    "violence": 0.20,
+                },
                 "notes": [
-                    "YOLO uses explicit per-class defaults from current code.",
-                    "SAM3 uses service default score threshold 0.25 without per-prompt overrides.",
+                    "Baseline rerun with lower thresholds across requested categories.",
+                    "Falldown starts low so it no longer matches the final run threshold.",
                 ],
             },
         ),
@@ -111,9 +118,9 @@ def build_profiles() -> list[tuple[str, dict]]:
             },
         ),
         (
-            "05_final_person_fallen_079",
+            "05_experiment_final",
             {
-                "profile_name": "05_final_person_fallen_079",
+                "profile_name": "05_experiment_final",
                 "mode": "category_override",
                 "category_thresholds": {
                     "smoke": 0.25,
@@ -123,7 +130,10 @@ def build_profiles() -> list[tuple[str, dict]]:
                     "weapon": 0.15,
                     "violence": 0.25,
                 },
-                "notes": ["Final run with person_fallen threshold fixed to 0.79."],
+                "notes": [
+                    "Final candidate profile based on prior runs.",
+                    "Only falldown is raised to 0.79 while other categories stay near default levels.",
+                ],
             },
         ),
     ]
