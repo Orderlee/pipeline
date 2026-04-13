@@ -29,6 +29,7 @@ x-common-env: &common-env
 x-prod-volumes: &prod-volumes
   - ./app/dagster_home:/app/dagster_home
   - ./data:/data
+  - ../src:/src/vlm:ro
   - type: bind
     source: ${DATASETS_HOST_PATH:-/home/pia/mou/nas_192tb/datasets}
     target: /nas/datasets
@@ -175,6 +176,61 @@ services:
     depends_on:
       - postgres
       - minio
+
+  # ===== Dispatch Webhook Server (optional profile) =====
+  dispatch-webhook:
+    profiles: ["webhook"]
+    <<: *prod-dagster-common
+    working_dir: /app
+    command:
+      [
+        "python3", "-m", "vlm_pipeline.defs.dispatch.webhook_server",
+      ]
+    ports:
+      - "${DISPATCH_WEBHOOK_PORT:-8090}:${DISPATCH_WEBHOOK_PORT:-8090}"
+    environment:
+      <<: *prod-dagster-env
+      DISPATCH_WEBHOOK_PORT: ${DISPATCH_WEBHOOK_PORT:-8090}
+      DISPATCH_WEBHOOK_SECRET: ${DISPATCH_WEBHOOK_SECRET:-}
+      INCOMING_DIR: ${INCOMING_DIR:-/nas/incoming}
+    depends_on:
+      - dagster-code-server
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:${DISPATCH_WEBHOOK_PORT:-8090}/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # ===== Staging Dispatch Webhook Server (optional profile) =====
+  dispatch-webhook-staging:
+    profiles: ["webhook-staging"]
+    image: datapipeline:gpu-cu124
+    user: root
+    working_dir: /app
+    command:
+      [
+        "python3", "-m", "vlm_pipeline.defs.dispatch.webhook_server",
+      ]
+    ports:
+      - "${DISPATCH_WEBHOOK_STAGING_PORT:-8091}:${DISPATCH_WEBHOOK_STAGING_PORT:-8091}"
+    env_file:
+      - .env.staging
+    environment:
+      <<: *common-env
+      IS_STAGING: "true"
+      DISPATCH_WEBHOOK_PORT: ${DISPATCH_WEBHOOK_STAGING_PORT:-8091}
+      DISPATCH_WEBHOOK_SECRET: ${DISPATCH_WEBHOOK_SECRET_STAGING:-}
+      INCOMING_DIR: /nas/staging/incoming
+      PYTHONPATH: /:/src/python:/src/vlm
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes: *staging-volumes
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:${DISPATCH_WEBHOOK_STAGING_PORT:-8091}/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
 
   # ===== Staging Dagster (dev 브랜치 검증용) =====
   # 소스 코드: /volume2/datapipeline-staging/ (dev 브랜치)

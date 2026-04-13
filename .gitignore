@@ -12,6 +12,7 @@ catalog/snapshots/
 
 # Environment & Configs
 .env
+.env.dev
 gmail-361002-cbcf95afec4a.json
 configs/global.yaml
 !configs/config.sample.yaml
@@ -24,6 +25,11 @@ __pycache__/
 venv/
 .pytest_cache/
 tests/
+!tests/
+tests/*
+!tests/unit/
+tests/unit/*
+!tests/unit/test_manual_yolo_sam3_threshold_profiles.py
 
 # IDE
 .vscode/
@@ -36,6 +42,8 @@ tests/
 
 # Docker
 docker/data/
+docker/data_dev/
+docker/app/dagster_home_dev/
 docker/app/credentials/
 docker/app/dagster_home/storage/
 docker/app/dagster_home_staging/storage/
@@ -52,6 +60,7 @@ pyproject.toml
 .worklog_logs/
 
 # 로컬 문서 메모
+WORKLOG.md
 CLAUDE2.md
 LABEL_STORAGE_POLICY.md
 ANTIGRAVITY.md

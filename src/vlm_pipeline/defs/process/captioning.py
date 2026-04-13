@@ -13,7 +13,7 @@ from vlm_pipeline.lib.env_utils import (
     requested_outputs_require_caption_labels,
     should_run_output,
 )
-from vlm_pipeline.lib.gemini import extract_clean_json_text
+from vlm_pipeline.lib.gemini import load_clean_json
 from vlm_pipeline.lib.spec_config import (
     is_standard_spec_run,
     load_persisted_spec_config,
@@ -71,8 +71,7 @@ def clip_captioning_mvp(
         try:
             json_bytes = minio.download("vlm-labels", auto_label_key)
             raw_text = json_bytes.decode("utf-8", errors="replace")
-            cleaned = extract_clean_json_text(raw_text)
-            events = json.loads(cleaned)
+            events = load_clean_json(raw_text)
 
             if not isinstance(events, list):
                 events = [events] if isinstance(events, dict) else []
@@ -216,8 +215,9 @@ def clip_captioning_routed_impl(
 
         try:
             json_bytes = minio.download("vlm-labels", label_key)
-            cleaned = extract_clean_json_text(json_bytes.decode("utf-8", errors="replace"))
-            events = normalize_gemini_events(json.loads(cleaned))
+            events = normalize_gemini_events(
+                load_clean_json(json_bytes.decode("utf-8", errors="replace"))
+            )
             label_rows = _build_gemini_label_rows(asset_id, label_key, events)
             inserted = db.replace_gemini_labels(asset_id, label_key, label_rows)
             labels_inserted += inserted

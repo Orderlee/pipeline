@@ -16,7 +16,7 @@ from uuid import uuid4
 
 from vlm_pipeline.lib.env_utils import coerce_float, int_env
 from vlm_pipeline.lib.file_loader import build_nonexistent_temp_path
-from vlm_pipeline.lib.gemini import GeminiAnalyzer, extract_clean_json_text
+from vlm_pipeline.lib.gemini import GeminiAnalyzer, extract_clean_json_text, load_clean_json
 from vlm_pipeline.lib.staging_vertex import (
     merge_overlapping_events,
     normalize_gemini_events,
@@ -302,8 +302,7 @@ def _analyze_single_video_events(
 # ── Gemini response parsing / serialisation ──
 
 def parse_gemini_events_response(response_text: str) -> list[dict]:
-    cleaned = extract_clean_json_text(response_text)
-    payload = json.loads(cleaned)
+    payload = load_clean_json(response_text)
     return normalize_gemini_events(payload)
 
 
@@ -408,7 +407,7 @@ def build_video_classification_prompt(candidate_classes: list[str]) -> str:
 
 
 def parse_video_classification_response(payload_text: str, candidate_classes: list[str]) -> dict[str, str | None]:
-    payload = json.loads(str(payload_text or "").strip())
+    payload = load_clean_json(payload_text)
     if not isinstance(payload, dict):
         raise ValueError("video_classification_response_not_object")
 

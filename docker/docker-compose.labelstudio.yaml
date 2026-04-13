@@ -51,7 +51,7 @@ services:
     command:
       [
         "/bin/bash", "-c",
-        "PYTHONPATH=/:/src/python:/src/vlm python /src/vlm/gemini/ls_webhook.py serve --host 0.0.0.0 --port ${LS_WEBHOOK_PORT:-8003}"
+        "PYTHONPATH=/:/src/python:/src/vlm python3 /src/vlm/gemini/ls_webhook.py serve --host 0.0.0.0 --port ${LS_WEBHOOK_PORT:-8003}"
       ]
     depends_on:
       - labelstudio

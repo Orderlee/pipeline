@@ -4,6 +4,8 @@
 
 ## 활성 계획
 
+- [운영-테스트 환경 분리 및 자동 배포 계획](운영_테스트_환경_분리_자동배포_계획.md) — GitHub Actions + self-hosted runner 자동 배포 (2026-04-10)
+- [MLOps 고도화 로드맵 & 3인 팀 R&R](mlops-roadmap-and-rr.md) — 12가지 고도화 항목, 의존성, 6개월 타임라인, R&R (2026-04-08)
 - [DuckDB Lock Contention 수정 실행 계획](duckdb-lock-fix-plan.md) — 센서 ensure_runtime_schema 1회 초기화로 전환 (2026-04-03)
 
 ## 현재 계획 문서

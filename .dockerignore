@@ -8,10 +8,12 @@
 .venv_torch/
 .worklog_logs/
 docker/data/
-docker/app/dagster_home/storage/
-docker/app/dagster_home/logs/
-docker/app/dagster_home_staging/storage/
-docker/app/dagster_home_staging/logs/
+docker/app/dagster_home/
+docker/app/dagster_home_staging/
+docker/app/credentials/
+docker/app/__pycache__/
+docker/app/.DS_Store
+docker/app/._.DS_Store
 tests/
 result/
 doc_2/

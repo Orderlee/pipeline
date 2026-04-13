@@ -495,6 +495,35 @@ def cmd_renew(args, minio, auth_headers: dict) -> None:
     print(f"\n[DONE] 갱신 {renewed} / 스킵 {skipped} / 오류 {error} (총 {len(existing)})")
 
 
+def cmd_renew_all(args, minio, auth_headers: dict) -> None:
+    """모든 project를 순회하며 만료 임박 presigned URL 갱신."""
+    resp = requests.get(f"{args.ls_url}/api/projects/", headers=auth_headers, params={"page_size": 1000})
+    resp.raise_for_status()
+    data = resp.json()
+    projects = data if isinstance(data, list) else data.get("results", [])
+
+    if not projects:
+        print("[INFO] LS에 project가 없습니다.")
+        return
+
+    total_renewed = total_skipped = total_error = 0
+
+    for project in projects:
+        title = project["title"]
+        print(f"\n{'='*60}")
+        print(f"[PROJECT] {title} (id={project['id']})")
+        print(f"{'='*60}")
+
+        args.project_name = title
+        try:
+            cmd_renew(args, minio, auth_headers)
+        except Exception as exc:
+            print(f"[ERROR] project '{title}' 갱신 실패: {exc}")
+            total_error += 1
+
+    print(f"\n[ALL DONE] {len(projects)}개 project 처리 완료")
+
+
 # ---------------------------------------------------------------------------
 # main
 # ---------------------------------------------------------------------------
@@ -518,7 +547,9 @@ def main() -> int:
 
     # renew
     p_renew = sub.add_parser("renew", help="만료 임박 presigned URL 갱신")
-    p_renew.add_argument("--project-name", required=True, help="LS project 이름 (폴더명)")
+    p_renew_group = p_renew.add_mutually_exclusive_group(required=True)
+    p_renew_group.add_argument("--project-name", help="LS project 이름 (폴더명)")
+    p_renew_group.add_argument("--all-projects", action="store_true", help="모든 project의 URL 일괄 갱신")
     p_renew.add_argument("--threshold", type=int, default=DEFAULT_RENEW_THRESHOLD, help="갱신 임계값(초), 기본 86400(1일)")
 
     args = parser.parse_args()
@@ -532,7 +563,10 @@ def main() -> int:
     if args.command == "create":
         cmd_create(args, minio, auth_headers)
     elif args.command == "renew":
-        cmd_renew(args, minio, auth_headers)
+        if args.all_projects:
+            cmd_renew_all(args, minio, auth_headers)
+        else:
+            cmd_renew(args, minio, auth_headers)
 
     return 0
 

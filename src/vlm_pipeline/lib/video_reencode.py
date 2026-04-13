@@ -138,10 +138,50 @@ def needs_reencode(video_meta: dict, file_path: Path) -> tuple[bool, str | None]
     return False, None
 
 
+def _probe_duration_sec(file_path: Path) -> float | None:
+    """ffprobe로 영상 길이(초)를 빠르게 조회. 실패 시 None."""
+    cmd = [
+        "ffprobe", "-v", "error",
+        "-show_entries", "format=duration",
+        "-of", "default=noprint_wrappers=1:nokey=1",
+        str(file_path),
+    ]
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        if proc.returncode == 0 and proc.stdout.strip():
+            return float(proc.stdout.strip())
+    except (subprocess.TimeoutExpired, OSError, ValueError):
+        pass
+    return None
+
+
+# 타임아웃 = max(기본값, 영상길이 × 배수) — 긴 영상도 안전하게 처리
+_REENCODE_TIMEOUT_MULTIPLIER = 3.0
+_REENCODE_TIMEOUT_MIN_SEC = 600
+_REENCODE_TIMEOUT_MAX_SEC = 7200
+
+
+def _compute_reencode_timeout(src_path: Path) -> int:
+    """영상 길이에 비례하는 타임아웃을 계산.
+
+    기본값(VIDEO_REENCODE_TIMEOUT_SEC)과 영상길이×배수 중 큰 값을 사용.
+    10분 영상 → 최소 1800초, 1시간 영상 → 최소 10800초(cap 7200초).
+    """
+    base_timeout = int_env("VIDEO_REENCODE_TIMEOUT_SEC", _REENCODE_TIMEOUT_MIN_SEC, 60)
+    duration = _probe_duration_sec(src_path)
+    if duration is None or duration <= 0:
+        return base_timeout
+
+    dynamic_timeout = int(duration * _REENCODE_TIMEOUT_MULTIPLIER)
+    timeout = max(base_timeout, dynamic_timeout)
+    return min(timeout, int_env("VIDEO_REENCODE_TIMEOUT_MAX_SEC", _REENCODE_TIMEOUT_MAX_SEC, 600))
+
+
 def reencode_to_tmp(src_path: Path, threads: int = 4) -> Path:
     """표준 스펙으로 재인코딩 → 로컬 임시 파일 경로 반환.
 
     호출자가 반환된 Path 사용 후 직접 삭제해야 합니다 (finally 블록 권장).
+    타임아웃은 영상 길이에 비례하여 자동 계산된다.
 
     Args:
         src_path: 원본 비디오 파일 경로
@@ -153,7 +193,7 @@ def reencode_to_tmp(src_path: Path, threads: int = 4) -> Path:
     Raises:
         RuntimeError: ffmpeg 타임아웃 / 실행 실패 / 비정상 종료 시
     """
-    timeout_sec = int_env("VIDEO_REENCODE_TIMEOUT_SEC", 600, 60)
+    timeout_sec = _compute_reencode_timeout(src_path)
     suffix = src_path.suffix or ".mp4"
 
     with NamedTemporaryFile(suffix=suffix, prefix="reencode_", delete=False) as tmp:

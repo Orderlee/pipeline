@@ -7,7 +7,9 @@ from __future__ import annotations
 
 import os
 import subprocess
+import threading
 from pathlib import Path
+from typing import IO, Callable
 
 from dagster import AssetKey, Field, asset
 
@@ -16,6 +18,38 @@ from vlm_pipeline.lib.env_utils import as_int
 DEFAULT_GCP_SCRIPT_PATH = "/gcp/download_from_gcs_rclone.py"
 DEFAULT_GCP_DOWNLOAD_DIR = "/nas/incoming/gcp"
 DEFAULT_GCP_BUCKETS = ["adlibhotel-event-bucket", "kkpolice-event-bucket"]
+
+_TERMINATE_GRACE_SEC = 5
+
+
+def _stream_to_logger(
+    stream: IO[str],
+    log_fn: Callable[[str], None],
+    lines_sink: list[str],
+    lock: threading.Lock,
+) -> None:
+    """자식 프로세스의 stdout/stderr를 라인 단위로 읽어 Dagster 로그에 실시간 전달."""
+    try:
+        for line in iter(stream.readline, ""):
+            stripped = line.rstrip("\n")
+            if stripped:
+                log_fn(stripped)
+            with lock:
+                lines_sink.append(line)
+    finally:
+        stream.close()
+
+
+def _terminate_process(proc: subprocess.Popen[str]) -> None:
+    """graceful terminate -> kill 패턴."""
+    if proc.poll() is not None:
+        return
+    proc.terminate()
+    try:
+        proc.wait(timeout=_TERMINATE_GRACE_SEC)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait(timeout=_TERMINATE_GRACE_SEC)
 
 
 @asset(
@@ -125,29 +159,44 @@ def gcs_download_to_incoming(context):
     timeout_sec = max(60, as_int(cfg.get("timeout_sec"), 60 * 60 * 6))
 
     context.log.info(f"Running GCP download: {' '.join(cmd)}")
+
+    proc = subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=os.environ.copy(),
+    )
+
+    stdout_lines: list[str] = []
+    stderr_lines: list[str] = []
+    lock = threading.Lock()
+
+    t_out = threading.Thread(
+        target=_stream_to_logger,
+        args=(proc.stdout, context.log.info, stdout_lines, lock),
+        daemon=True,
+    )
+    t_err = threading.Thread(
+        target=_stream_to_logger,
+        args=(proc.stderr, context.log.warning, stderr_lines, lock),
+        daemon=True,
+    )
+    t_out.start()
+    t_err.start()
+
     try:
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            env=os.environ.copy(),
-            timeout=timeout_sec,
-        )
-    except subprocess.TimeoutExpired as exc:
-        if exc.stdout:
-            context.log.warning(str(exc.stdout)[-4000:].strip())
-        if exc.stderr:
-            context.log.warning(str(exc.stderr)[-4000:].strip())
+        returncode = proc.wait(timeout=timeout_sec)
+    except subprocess.TimeoutExpired:
+        _terminate_process(proc)
         raise RuntimeError(f"gcs_download_to_incoming timeout after {timeout_sec}s")
+    finally:
+        t_out.join(timeout=10)
+        t_err.join(timeout=10)
 
-    if result.stdout:
-        context.log.info(result.stdout[-4000:].strip())
-    if result.stderr:
-        context.log.warning(result.stderr[-4000:].strip())
-
-    if result.returncode != 0:
+    if returncode != 0:
         raise RuntimeError(
-            f"gcs_download_to_incoming failed (exit={result.returncode})"
+            f"gcs_download_to_incoming failed (exit={returncode})"
         )
 
     return {

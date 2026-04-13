@@ -1,6 +1,220 @@
 # WORKLOG
 
 
+
+
+
+
+## 2026-04-13
+
+### 1. 운영 ingest / process 공통 구조 정리
+- **문제**: ingest와 process 공통 책임이 여러 모듈로 흩어져 있어, 운영 로직을 수정할 때 영향 범위와 설정 반영 지점을 한 번에 보기 어려웠음.
+- **원인**: raw ingest 실행 흐름, runtime env 해석, DuckDB schema 보정과 조회 helper가 각각 다른 레이어에 퍼져 있어 공통 동작을 건드릴 때 수정 포인트가 많아졌음.
+- **조치**:
+    - raw ingest에서 상태 생성과 실제 실행 파이프라인을 분리해 진입 구조를 명확히 정리함.
+    - runtime 설정 로더를 추가하고 ingest runtime policy, stuck guard가 같은 설정 해석 경로를 재사용하도록 맞춤.
+    - DuckDB resource에 dispatch/model/raw/image 조회 및 insert helper를 보강하고 schema ensure 흐름을 운영 기준으로 정돈함.
+    - 관련 파일:
+      - `src/vlm_pipeline/defs/ingest/assets.py`
+      - `src/vlm_pipeline/defs/ingest/runtime_policy.py`
+      - `src/vlm_pipeline/defs/process/assets.py`
+      - `src/vlm_pipeline/resources/duckdb_base.py`
+      - `src/vlm_pipeline/resources/duckdb_ingest.py`
+      - `src/vlm_pipeline/resources/runtime_settings.py`
+
+### 2. 프레임 추출 안정화 및 이미지 캡션 메타 확장
+- **문제**: 영상 말단 구간에서 프레임 추출이 비거나 불안정할 수 있었고, 이미지 캡션 결과도 텍스트만 남아 후속 추적에 필요한 저장 메타가 부족했음.
+- **원인**: ffmpeg 프레임 추출은 요청 시점이 영상 끝에 가까우면 empty output이 날 수 있었고, image caption 저장은 bucket/key/generated_at 같은 정본 추적 필드가 충분하지 않았음.
+- **조치**:
+    - ffmpeg frame extract에 fallback seek 후보와 retry 흐름을 넣어 말단 구간 empty output 상황을 완화함.
+    - image caption JSON을 별도 key로 저장하고 bucket, key, 생성 시각 메타를 image/process 경로에 함께 기록하도록 확장함.
+    - process 중 실패 시 업로드한 frame/image caption JSON을 함께 정리하도록 rollback 경로도 보강함.
+    - 관련 파일:
+      - `src/vlm_pipeline/defs/process/assets.py`
+      - `src/vlm_pipeline/lib/video_frames.py`
+      - `src/vlm_pipeline/resources/duckdb_base.py`
+      - `src/vlm_pipeline/resources/duckdb_ingest.py`
+      - `src/vlm_pipeline/sql/schema.sql`
+
+### 3. 수동 / 사전 라벨 import 경로 정리
+- **문제**: 수동 라벨 import와 사전 라벨링 데이터 적재가 서로 다른 코드 경로에서 중복 구현되어 있었고, staging에서 기존 라벨 결과를 재적재하는 전용 진입점도 부족했음.
+- **원인**: event label JSON 파싱, raw asset 매칭, label key 생성 로직이 manual import 안에 묶여 있었고, prelabeled 데이터는 raw ingest 이후 bbox/image caption까지 연결하는 공통 흐름이 정리되지 않았음.
+- **조치**:
+    - manual label import에서 공통 helper를 분리해 label 파일 순회, asset 매칭, event 추출, label 저장 규칙을 재사용 가능하게 정리함.
+    - staging 전용 prelabeled import job을 추가해 raw ingest 후 event / bbox / image caption artifact import까지 한 경로에서 처리하게 구성함.
+    - 사전 라벨링 이미지명에서 원본 raw stem을 찾는 정규식 패턴을 보강해 stem 추론 누락 케이스를 보완함.
+    - 관련 파일:
+      - `src/vlm_pipeline/definitions_staging.py`
+      - `src/vlm_pipeline/defs/label/import_support.py`
+      - `src/vlm_pipeline/defs/label/manual_import.py`
+      - `src/vlm_pipeline/defs/label/prelabeled_import.py`
+
+### 4. Staging dispatch 서비스 분리 및 흐름 정리
+- **문제**: staging dispatch 처리 로직이 sensor 안에 몰려 있어 중복 요청 체크, 실패 기록, manifest 작성, run 상태 연동을 한 번에 파악하기 어려웠음.
+- **원인**: dispatch request 준비, archive/manifest 경로 계산, DB 기록, in-flight run 검사 로직이 sensor 본문과 run status 처리 코드에 분산되어 유지보수성이 떨어졌음.
+- **조치**:
+    - dispatch request 준비, manifest 작성, DB 기록, run request 생성 로직을 service 레이어로 분리해 sensor 책임을 줄임.
+    - 중복 request_id, 같은 folder의 진행 중 run, 실패 request upsert 흐름을 DB helper와 공통 함수로 정리함.
+    - dispatch run status와 archive 판단 경로가 같은 tag 해석 함수를 사용하도록 맞춰 상태 전파를 일관되게 정리함.
+    - 관련 파일:
+      - `src/vlm_pipeline/defs/dispatch/sensor.py`
+      - `src/vlm_pipeline/defs/dispatch/sensor_run_status.py`
+      - `src/vlm_pipeline/defs/dispatch/service.py`
+      - `src/vlm_pipeline/defs/ingest/archive.py`
+      - `src/vlm_pipeline/lib/staging_dispatch.py`
+
+### 5. Staging 환경값 및 운영 보조 설정 정리
+- **문제**: staging 실행 시 DuckDB/MinIO/NAS 경로와 sensor guard 설정이 비어 있거나 분산되어 있어, 실제 테스트 환경을 재현할 때 수동 보정이 많이 필요했음.
+- **원인**: staging env 기본값, compose 공통 설정, stuck run guard / MotherDuck / GCS 관련 옵션이 파일마다 흩어져 있어 환경별 기준을 한 번에 맞추기 어려웠음.
+- **조치**:
+    - staging DuckDB, MinIO, incoming/archive/manifest 경로와 주요 timeout / in-flight / guard 옵션을 `.env.staging`에 구체값으로 정리함.
+    - docker compose에서 production dagster 공통 anchor를 분리해 prod/staging 공통점과 차이를 명확히 정리함.
+    - stuck run guard와 ingest feature flag가 runtime settings를 통해 같은 방식으로 로드되도록 맞춰 운영 보조 설정을 단일화함.
+    - 관련 파일:
+      - `docker/.env.staging`
+      - `docker/docker-compose.yaml`
+      - `src/vlm_pipeline/defs/ingest/runtime_policy.py`
+      - `src/vlm_pipeline/defs/ingest/sensor_stuck_guard.py`
+      - `src/vlm_pipeline/resources/runtime_settings.py`
+
+### 6. 운영 / 에이전트 문서 보강
+- **문제**: 운영과 staging 구분, 파이프라인 흐름, 자동화 에이전트 참고 문서가 서로 다른 수준으로 흩어져 있어 작업자마다 참조 경로가 달라질 수 있었음.
+- **원인**: 짧은 운영 컨텍스트와 장문 레퍼런스, 외부 에이전트용 진입 문서가 분리되어 있었지만 최근 변경사항이 한 번에 정리돼 있지 않았음.
+- **조치**:
+    - Codex/에이전트용 `AGENTS.md`를 추가해 운영 규칙, staging/prod 차이, 자주 쓰는 명령을 빠르게 확인할 수 있게 정리함.
+    - `ANTIGRAVITY.md`와 `CLAUDE2.md`를 보강해 에이전트 진입점과 장문 레퍼런스를 역할별로 구분해 둠.
+    - 관련 파일:
+      - `AGENTS.md`
+
+### 7. GitHub Actions CI/CD 파이프라인 구축 및 수정
+- **문제**: main 브랜치 push 시 자동 배포되는 "Deploy to Production" 워크플로우가 3회 연속 실패함.
+- **원인**:
+    - (Attempt 1) `COMPOSE_FILE` 경로와 `working-directory` 조합 오류로 `docker/docker/docker-compose.yaml`을 찾음.
+    - (Attempt 2) `docker/.env`가 `.gitignore`에 포함되어 runner 워크스페이스에 존재하지 않아 `docker compose up` 실패.
+    - (Attempt 3) runner 워크스페이스에서 `docker compose up` 실행 시 상대 경로 볼륨(`./data`, `./app/dagster_home`)이 runner 경로로 마운트되어 DuckDB·Dagster storage 접근 불가.
+- **조치**:
+    - runner 호스트의 production `.env`를 워크스페이스로 복사하는 `Restore production .env` step 추가.
+    - 필수 환경변수 4개(`MINIO_ROOT_USER`, `MINIO_ROOT_PASSWORD`, `DUCKDB_PATH`, `MOTHERDUCK_TOKEN`) 검증 step 추가.
+    - checkout된 소스를 production 디렉토리로 `rsync` 동기화 후, `docker compose up`은 production 경로에서 실행하도록 변경 (`PROD_DIR` 환경변수 도입).
+    - `dagster_home/`, `credentials/`는 런타임 상태이므로 rsync 대상에서 제외.
+    - `FORCE_JAVASCRIPT_ACTIONS_TO_NODE24=true` 추가로 Node.js 20 deprecation 경고 해소.
+    - `WORKLOG.md`를 `.gitignore`에 추가하여 git 추적 제거.
+    - 관련 파일:
+      - `.github/workflows/deploy-production.yml`
+      - `.gitignore`
+
+### 8. 당일 정리
+- **변경 통계**:
+    - 변경 파일 **278개**, +48032/-6606줄.
+- **관련 커밋**:
+    - `61010847`: fix: exclude dagster_home from rsync to avoid permission errors
+    - `12a4678f`: fix: run docker compose up from production directory
+    - `eea0d97f`: chore: stop tracking WORKLOG.md and add to .gitignore
+    - `0c483ed3`: fix: restore production .env in deploy workflow
+    - `23b3e1fb`: Merge remote-tracking branch 'origin/dev' into codex-main-sync
+- **서비스 상태**: 파이프라인 서비스 11개 컨테이너 중 11개 정상 가동.
+- **작업 환경**: Antigravity, Cursor, VSCode
+
+## 2026-04-10
+
+### 1. Staging dispatch 서비스 분리 및 흐름 정리
+- **문제**: staging dispatch 처리 로직이 sensor 안에 몰려 있어 중복 요청 체크, 실패 기록, manifest 작성, run 상태 연동을 한 번에 파악하기 어려웠음.
+- **원인**: dispatch request 준비, archive/manifest 경로 계산, DB 기록, in-flight run 검사 로직이 sensor 본문과 run status 처리 코드에 분산되어 유지보수성이 떨어졌음.
+- **조치**:
+    - dispatch request 준비, manifest 작성, DB 기록, run request 생성 로직을 service 레이어로 분리해 sensor 책임을 줄임.
+    - 중복 request_id, 같은 folder의 진행 중 run, 실패 request upsert 흐름을 DB helper와 공통 함수로 정리함.
+    - dispatch run status와 archive 판단 경로가 같은 tag 해석 함수를 사용하도록 맞춰 상태 전파를 일관되게 정리함.
+    - 관련 파일:
+      - `src/vlm_pipeline/defs/ingest/archive.py`
+
+### 2. Staging 환경값 및 운영 보조 설정 정리
+- **문제**: staging 실행 시 DuckDB/MinIO/NAS 경로와 sensor guard 설정이 비어 있거나 분산되어 있어, 실제 테스트 환경을 재현할 때 수동 보정이 많이 필요했음.
+- **원인**: staging env 기본값, compose 공통 설정, stuck run guard / MotherDuck / GCS 관련 옵션이 파일마다 흩어져 있어 환경별 기준을 한 번에 맞추기 어려웠음.
+- **조치**:
+    - staging DuckDB, MinIO, incoming/archive/manifest 경로와 주요 timeout / in-flight / guard 옵션을 `.env.staging`에 구체값으로 정리함.
+    - docker compose에서 production dagster 공통 anchor를 분리해 prod/staging 공통점과 차이를 명확히 정리함.
+    - stuck run guard와 ingest feature flag가 runtime settings를 통해 같은 방식으로 로드되도록 맞춰 운영 보조 설정을 단일화함.
+    - 관련 파일:
+      - `docker/.env.staging`
+      - `docker/docker-compose.yaml`
+
+### 3. 당일 정리
+- **변경 통계**:
+    - 변경 파일 **12개**, +811/-31줄.
+- **관련 커밋**:
+    - `c2fc43a5`: feat: dispatch webhook·GCP·ingest 보강 및 Docker·MLOps 문서
+- **서비스 상태**: 파이프라인 서비스 11개 컨테이너 중 11개 정상 가동.
+- **작업 환경**: Antigravity, Cursor, VSCode
+
+## 2026-04-09
+
+### 1. 프레임 추출 안정화 및 이미지 캡션 메타 확장
+- **문제**: 영상 말단 구간에서 프레임 추출이 비거나 불안정할 수 있었고, 이미지 캡션 결과도 텍스트만 남아 후속 추적에 필요한 저장 메타가 부족했음.
+- **원인**: ffmpeg 프레임 추출은 요청 시점이 영상 끝에 가까우면 empty output이 날 수 있었고, image caption 저장은 bucket/key/generated_at 같은 정본 추적 필드가 충분하지 않았음.
+- **조치**:
+    - ffmpeg frame extract에 fallback seek 후보와 retry 흐름을 넣어 말단 구간 empty output 상황을 완화함.
+    - image caption JSON을 별도 key로 저장하고 bucket, key, 생성 시각 메타를 image/process 경로에 함께 기록하도록 확장함.
+    - process 중 실패 시 업로드한 frame/image caption JSON을 함께 정리하도록 rollback 경로도 보강함.
+
+### 2. Staging dispatch 서비스 분리 및 흐름 정리
+- **문제**: staging dispatch 처리 로직이 sensor 안에 몰려 있어 중복 요청 체크, 실패 기록, manifest 작성, run 상태 연동을 한 번에 파악하기 어려웠음.
+- **원인**: dispatch request 준비, archive/manifest 경로 계산, DB 기록, in-flight run 검사 로직이 sensor 본문과 run status 처리 코드에 분산되어 유지보수성이 떨어졌음.
+- **조치**:
+    - dispatch request 준비, manifest 작성, DB 기록, run request 생성 로직을 service 레이어로 분리해 sensor 책임을 줄임.
+    - 중복 request_id, 같은 folder의 진행 중 run, 실패 request upsert 흐름을 DB helper와 공통 함수로 정리함.
+    - dispatch run status와 archive 판단 경로가 같은 tag 해석 함수를 사용하도록 맞춰 상태 전파를 일관되게 정리함.
+    - 관련 파일:
+      - `src/vlm_pipeline/defs/ingest/archive.py`
+
+### 3. 당일 정리
+- **변경 통계**:
+    - 변경 파일 **29개**, +3421/-879줄.
+- **관련 커밋**:
+    - `181a8fbc`: Merge pull request #36 from TeamPIA/feature/sanghoon
+    - `310ab685`: Merge branch 'dev' of https://github.com/TeamPIA/Datapipeline-Data-data_pipeline into feature/sanghoon
+    - `789e21ea`: feat: Label Studio 운영 준비 — presigned URL 자동 갱신, DuckDB lock retry, 운영 문서
+    - `5d0c6e37`: Merge pull request #35 from Orderlee/dev
+    - `93d326c2`: feat: Gemini JSON 파싱 보강·ingest/라벨/캡션 정리 및 문서·테스트 보완
+- **서비스 상태**: 파이프라인 서비스 10개 컨테이너 중 10개 정상 가동.
+- **작업 환경**: Antigravity, Cursor, VSCode
+
+## 2026-04-08
+
+### 1. 수동 / 사전 라벨 import 경로 정리
+- **문제**: 수동 라벨 import와 사전 라벨링 데이터 적재가 서로 다른 코드 경로에서 중복 구현되어 있었고, staging에서 기존 라벨 결과를 재적재하는 전용 진입점도 부족했음.
+- **원인**: event label JSON 파싱, raw asset 매칭, label key 생성 로직이 manual import 안에 묶여 있었고, prelabeled 데이터는 raw ingest 이후 bbox/image caption까지 연결하는 공통 흐름이 정리되지 않았음.
+- **조치**:
+    - manual label import에서 공통 helper를 분리해 label 파일 순회, asset 매칭, event 추출, label 저장 규칙을 재사용 가능하게 정리함.
+    - staging 전용 prelabeled import job을 추가해 raw ingest 후 event / bbox / image caption artifact import까지 한 경로에서 처리하게 구성함.
+    - 사전 라벨링 이미지명에서 원본 raw stem을 찾는 정규식 패턴을 보강해 stem 추론 누락 케이스를 보완함.
+
+### 2. Staging dispatch 서비스 분리 및 흐름 정리
+- **문제**: staging dispatch 처리 로직이 sensor 안에 몰려 있어 중복 요청 체크, 실패 기록, manifest 작성, run 상태 연동을 한 번에 파악하기 어려웠음.
+- **원인**: dispatch request 준비, archive/manifest 경로 계산, DB 기록, in-flight run 검사 로직이 sensor 본문과 run status 처리 코드에 분산되어 유지보수성이 떨어졌음.
+- **조치**:
+    - dispatch request 준비, manifest 작성, DB 기록, run request 생성 로직을 service 레이어로 분리해 sensor 책임을 줄임.
+    - 중복 request_id, 같은 folder의 진행 중 run, 실패 request upsert 흐름을 DB helper와 공통 함수로 정리함.
+    - dispatch run status와 archive 판단 경로가 같은 tag 해석 함수를 사용하도록 맞춰 상태 전파를 일관되게 정리함.
+    - 관련 파일:
+      - `src/vlm_pipeline/defs/ingest/archive.py`
+
+### 3. Staging 환경값 및 운영 보조 설정 정리
+- **문제**: staging 실행 시 DuckDB/MinIO/NAS 경로와 sensor guard 설정이 비어 있거나 분산되어 있어, 실제 테스트 환경을 재현할 때 수동 보정이 많이 필요했음.
+- **원인**: staging env 기본값, compose 공통 설정, stuck run guard / MotherDuck / GCS 관련 옵션이 파일마다 흩어져 있어 환경별 기준을 한 번에 맞추기 어려웠음.
+- **조치**:
+    - staging DuckDB, MinIO, incoming/archive/manifest 경로와 주요 timeout / in-flight / guard 옵션을 `.env.staging`에 구체값으로 정리함.
+    - docker compose에서 production dagster 공통 anchor를 분리해 prod/staging 공통점과 차이를 명확히 정리함.
+    - stuck run guard와 ingest feature flag가 runtime settings를 통해 같은 방식으로 로드되도록 맞춰 운영 보조 설정을 단일화함.
+
+### 4. 당일 정리
+- **변경 통계**:
+    - 변경 파일 **68개**, +4181/-6244줄.
+- **관련 커밋**:
+    - `d7e11cdb`: feat: NAS 헬스 센서 추가·ingest 보강 및 runbook·타임스탬프 정리
+    - `a3577695`: feat: 검출 공통 모듈·SAM/YOLO 센서 분리 및 문서 정리
+- **서비스 상태**: 파이프라인 서비스 10개 컨테이너 중 10개 정상 가동.
+- **작업 환경**: Cursor, VSCode
+
 ## 2026-04-07
 
 ### 1. Staging 환경값 및 운영 보조 설정 정리

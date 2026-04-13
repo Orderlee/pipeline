@@ -1,0 +1,141 @@
+name: Deploy to Production
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - "docs/**"
+      - "*.md"
+      - "tests/**"
+      - ".cursor/**"
+      - ".agent/**"
+      - ".github/copilot-instructions.md"
+
+  workflow_dispatch:
+    inputs:
+      skip_tests:
+        description: "테스트 건너뛰기"
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
+
+concurrency:
+  group: production-deploy
+  cancel-in-progress: false
+
+env:
+  PROD_DIR: /home/pia/work_p/Datapipeline-Data-data_pipeline/docker
+  COMPOSE_FILE: docker-compose.yaml
+  IMAGE_NAME: datapipeline:gpu-cu124
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+jobs:
+  # ===== Step 1: Unit Test =====
+  test:
+    runs-on: [self-hosted, production]
+    if: ${{ github.event.inputs.skip_tests != 'true' }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run unit tests
+        run: |
+          pip install -e ".[dev]" --quiet 2>/dev/null || true
+          python -m pytest tests/unit -q --tb=short 2>&1 || {
+            echo "::error::Unit tests failed — 배포를 중단합니다"
+            exit 1
+          }
+
+  # ===== Step 2: Build & Deploy =====
+  deploy:
+    runs-on: [self-hosted, production]
+    needs: [test]
+    if: always() && (needs.test.result == 'success' || needs.test.result == 'skipped')
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Restore production .env
+        run: |
+          ENV_SOURCE="/home/pia/work_p/Datapipeline-Data-data_pipeline/docker/.env"
+          ENV_TARGET="./docker/.env"
+          if [[ ! -f "$ENV_SOURCE" ]]; then
+            echo "::error::Production .env not found at $ENV_SOURCE"
+            exit 1
+          fi
+          cp "$ENV_SOURCE" "$ENV_TARGET"
+          echo "Production .env restored ($(wc -l < "$ENV_TARGET") lines)"
+
+      - name: Validate .env has required keys
+        working-directory: ./docker
+        run: |
+          required_keys="MINIO_ROOT_USER MINIO_ROOT_PASSWORD DUCKDB_PATH MOTHERDUCK_TOKEN"
+          missing=()
+          for key in $required_keys; do
+            if ! grep -q "^${key}=" .env; then
+              missing+=("$key")
+            fi
+          done
+          if [[ ${#missing[@]} -gt 0 ]]; then
+            echo "::error::Missing required env vars: ${missing[*]}"
+            exit 1
+          fi
+          echo "All required env vars present"
+
+      - name: Tag image with git SHA
+        run: echo "IMAGE_TAG=datapipeline:${GITHUB_SHA::8}" >> $GITHUB_ENV
+
+      - name: Build Docker image
+        working-directory: ./docker
+        run: |
+          docker compose build app
+          docker tag ${{ env.IMAGE_NAME }} ${{ env.IMAGE_TAG }}
+
+      - name: Sync source to production directory
+        run: |
+          PROD_ROOT="${{ env.PROD_DIR }}/.."
+          rsync -a --delete "${{ github.workspace }}/src/" "$PROD_ROOT/src/"
+          rsync -a --delete "${{ github.workspace }}/configs/" "$PROD_ROOT/configs/" 2>/dev/null || true
+          rsync -a --delete "${{ github.workspace }}/gcp/" "$PROD_ROOT/gcp/" 2>/dev/null || true
+          rsync -a --delete "${{ github.workspace }}/scripts/" "$PROD_ROOT/scripts/" 2>/dev/null || true
+          rsync -a --delete "${{ github.workspace }}/split_dataset/" "$PROD_ROOT/split_dataset/" 2>/dev/null || true
+          rsync -a --exclude='dagster_home/' --exclude='credentials/' "${{ github.workspace }}/docker/app/" "${{ env.PROD_DIR }}/app/"
+          rsync -a "${{ github.workspace }}/docker/Dockerfile" "${{ env.PROD_DIR }}/Dockerfile"
+          rsync -a "${{ github.workspace }}/docker/docker-compose.yaml" "${{ env.PROD_DIR }}/docker-compose.yaml"
+          echo "Source synced to production directory"
+
+      - name: Restart Dagster code-server
+        working-directory: ${{ env.PROD_DIR }}
+        run: |
+          docker compose up -d --no-deps dagster-code-server
+          echo "code-server 재시작 완료, gRPC 안정화 대기..."
+          sleep 15
+
+      - name: Restart Dagster daemon & webserver
+        working-directory: ${{ env.PROD_DIR }}
+        run: |
+          docker compose up -d --no-deps dagster-daemon
+          docker compose up -d --no-deps dagster
+          echo "Dagster 서비스 재시작 완료"
+
+      - name: Health check
+        run: |
+          echo "Dagster webserver 응답 대기..."
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:3030/server_info > /dev/null 2>&1; then
+              echo "Dagster webserver 정상 응답 (${i}초)"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "::warning::Dagster webserver가 60초 내 응답하지 않음 — 수동 확인 필요"
+
+      - name: Deploy summary
+        run: |
+          echo "### 배포 완료" >> $GITHUB_STEP_SUMMARY
+          echo "- **커밋**: ${GITHUB_SHA::8}" >> $GITHUB_STEP_SUMMARY
+          echo "- **이미지**: ${{ env.IMAGE_TAG }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **시간**: $(date '+%Y-%m-%d %H:%M:%S KST')" >> $GITHUB_STEP_SUMMARY
