@@ -14,7 +14,7 @@ from uuid import uuid4
 
 from vlm_pipeline.lib.env_utils import storage_raw_key_prefix_from_source_unit
 from vlm_pipeline.lib.file_loader import load_image_once
-from vlm_pipeline.lib.sanitizer import sanitize_filename, sanitize_path_component
+from vlm_pipeline.lib.sanitizer import make_unique_key, sanitize_filename, sanitize_path_component
 from vlm_pipeline.lib.validator import detect_media_type, validate_incoming
 from vlm_pipeline.lib.video_loader import load_video_once
 from vlm_pipeline.lib.video_reencode import (
@@ -126,11 +126,15 @@ def register_incoming(
         parts = [p for p in Path(str(raw or "")).parts if p not in ("", ".", "..")]
         return "/".join(sanitize_path_component(p) for p in parts if p)
 
+    # ── raw_key 충돌 방지: 배치 내 + DB 기존 키 모두 추적 ──────────
+    # 1차 패스: 모든 파일의 raw_key 후보를 먼저 계산
+    _pre_entries: list[tuple[dict, str, str, str, str, str, object]] = []
+    _candidate_keys: list[str] = []
+
     for entry in manifest.get("files", []):
         filepath = entry.get("path", "")
         rel_path = entry.get("rel_path", "")
         try:
-            # 검증
             vr = validate_incoming(filepath)
             if vr.level == "FAIL":
                 media_type = detect_media_type(filepath)
@@ -148,12 +152,10 @@ def register_incoming(
                 results.append({"path": filepath, "status": "failed", "message": vr.message})
                 continue
 
-            # 정규화
             original_name = Path(filepath).name
             sanitized_name = sanitize_filename(original_name)
             media_type = detect_media_type(filepath)
 
-            # raw_key 생성: source_unit_name/rel_path (폴더 구조 유지)
             if rel_path:
                 sanitized_rel_dir = _sanitize_path_parts(str(Path(rel_path).parent))
                 if sanitized_rel_dir:
@@ -165,36 +167,12 @@ def register_incoming(
 
             sanitized_source_unit_name = storage_raw_key_prefix_from_source_unit(source_unit_name)
             if sanitized_source_unit_name and source_unit_type != "file":
-                raw_key = f"{sanitized_source_unit_name}/{sanitized_rel}"
+                candidate_key = f"{sanitized_source_unit_name}/{sanitized_rel}"
             else:
-                raw_key = f"{sanitized_rel}"
+                candidate_key = f"{sanitized_rel}"
 
-            asset_id = str(uuid4())
-            record = {
-                "asset_id": asset_id,
-                "source_path": filepath,
-                "original_name": original_name,
-                "media_type": media_type,
-                "raw_key": raw_key,
-                "ingest_batch_id": batch_id,
-                "transfer_tool": manifest.get("transfer_tool", "manual"),
-                "ingest_status": "pending",
-                "error_message": vr.message if vr.level == "WARN" else None,
-            }
-            if source_unit_name:
-                record["source_unit_name"] = source_unit_name
-
-            results.append({
-                "asset_id": asset_id,
-                "path": filepath,
-                "original_name": original_name,
-                "sanitized_name": sanitized_name,
-                "media_type": media_type,
-                "raw_key": raw_key,
-                "rel_path": rel_path,
-                "status": "registered",
-                "record": record,
-            })
+            _candidate_keys.append(candidate_key)
+            _pre_entries.append((entry, filepath, rel_path, original_name, sanitized_name, media_type, vr))
 
         except Exception as e:
             context.log.error(f"처리 실패: {filepath}: {e}")
@@ -209,6 +187,60 @@ def register_incoming(
                 error_code="register_exception",
             )
             results.append({"path": filepath, "status": "failed", "message": str(e)})
+
+    # DB에서 후보 키들의 기존 존재 여부를 한 번에 조회하여 seen set 초기화
+    try:
+        _seen_keys: set[str] = db.find_existing_raw_keys(_candidate_keys) if _candidate_keys else set()
+    except Exception:  # noqa: BLE001
+        _seen_keys = set()
+
+    # 2차 패스: 고유 raw_key 확정 + 레코드 생성
+    for (_entry, filepath, rel_path, original_name, sanitized_name, media_type, vr) in _pre_entries:
+        sanitized_source_unit_name = storage_raw_key_prefix_from_source_unit(source_unit_name)
+        if rel_path:
+            sanitized_rel_dir = _sanitize_path_parts(str(Path(rel_path).parent))
+            sanitized_rel = f"{sanitized_rel_dir}/{sanitized_name}" if sanitized_rel_dir else sanitized_name
+        else:
+            sanitized_rel = sanitized_name
+
+        if sanitized_source_unit_name and source_unit_type != "file":
+            candidate_key = f"{sanitized_source_unit_name}/{sanitized_rel}"
+        else:
+            candidate_key = f"{sanitized_rel}"
+
+        raw_key = make_unique_key(candidate_key, _seen_keys)
+        if raw_key != candidate_key:
+            context.log.warning(
+                f"raw_key 충돌 감지, suffix 부여: {candidate_key} -> {raw_key} "
+                f"(original={original_name})"
+            )
+
+        asset_id = str(uuid4())
+        record = {
+            "asset_id": asset_id,
+            "source_path": filepath,
+            "original_name": original_name,
+            "media_type": media_type,
+            "raw_key": raw_key,
+            "ingest_batch_id": batch_id,
+            "transfer_tool": manifest.get("transfer_tool", "manual"),
+            "ingest_status": "pending",
+            "error_message": vr.message if vr.level == "WARN" else None,
+        }
+        if source_unit_name:
+            record["source_unit_name"] = source_unit_name
+
+        results.append({
+            "asset_id": asset_id,
+            "path": filepath,
+            "original_name": original_name,
+            "sanitized_name": sanitized_name,
+            "media_type": media_type,
+            "raw_key": raw_key,
+            "rel_path": rel_path,
+            "status": "registered",
+            "record": record,
+        })
 
     return results
 

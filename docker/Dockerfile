@@ -41,7 +41,12 @@ RUN pip3 install --upgrade pip setuptools wheel \
     && pip3 install --no-cache-dir -r requirements.txt
 
 # ===== 런타임 코드/설정 복사 =====
-COPY docker/app/ /app/
+COPY docker/app/dagster_defs.py /app/dagster_defs.py
+COPY docker/app/dagster_defs_staging.py /app/dagster_defs_staging.py
+COPY docker/app/workspace.yaml /app/workspace.yaml
+COPY docker/app/workspace_prod.yaml /app/workspace_prod.yaml
+COPY docker/app/workspace_staging.yaml /app/workspace_staging.yaml
+COPY docker/app/dg /app/dg
 COPY src/python/ /src/python/
 COPY src/ /src/vlm/
 COPY configs/ /configs/

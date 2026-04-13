@@ -411,7 +411,27 @@ def prepare_manifest_for_archive_upload(
             return _rewrite_manifest_paths(existing_archive_dir), existing_archive_dir, True
         return manifest, base_archive_unit_dir, False
 
-    final_archive_unit_dir = resolve_unique_directory(base_archive_unit_dir)
+    existing_archive_dir = find_existing_archive_directory(base_archive_unit_dir)
+    if existing_archive_dir is not None:
+        for child in source_unit_path.rglob("*"):
+            if not child.is_file():
+                continue
+            rel = child.relative_to(source_unit_path)
+            dest = existing_archive_dir / rel
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest = resolve_unique_file(dest)
+            _move_with_timeout(str(child), str(dest))
+        cleanup_empty_tree(source_unit_path)
+        cleanup_empty_parent_chain(
+            source_unit_path.parent,
+            stop_at=Path(source_dir_raw) if source_dir_raw else None,
+        )
+        context.log.info(
+            f"archive 선이동 완료(기존 디렉토리 병합): {source_unit_path} -> {existing_archive_dir}"
+        )
+        return _rewrite_manifest_paths(existing_archive_dir), existing_archive_dir, True
+
+    final_archive_unit_dir = base_archive_unit_dir
     _move_with_timeout(str(source_unit_path), str(final_archive_unit_dir))
     cleanup_empty_parent_chain(
         source_unit_path.parent,
@@ -571,23 +591,25 @@ def archive_uploaded_assets(
     if source_unit_type == "directory" and source_unit_name:
         base_unit_archive_dir = archive_root_dir / archive_unit_name
 
+        existing_archive = find_existing_archive_directory(base_unit_archive_dir)
+
         if (
             not is_chunked_manifest
             and source_unit_path
             and source_unit_path.exists()
             and len(uploaded) >= source_unit_total_file_count
+            and existing_archive is None
         ):
-            final_unit_archive_dir = resolve_unique_directory(base_unit_archive_dir)
-            archive_unit_dir_hint = final_unit_archive_dir
+            archive_unit_dir_hint = base_unit_archive_dir
             try:
-                _move_with_timeout(str(source_unit_path), str(final_unit_archive_dir))
+                _move_with_timeout(str(source_unit_path), str(base_unit_archive_dir))
                 context.log.info(
-                    f"폴더 단위 아카이브 이동 완료: {source_unit_path} -> {final_unit_archive_dir}"
+                    f"폴더 단위 아카이브 이동 완료: {source_unit_path} -> {base_unit_archive_dir}"
                 )
                 for item in uploaded:
                     sp = str(item.get("source_path", "")).strip()
                     rel_path = rel_path_by_source.get(sp) or Path(sp).name
-                    archived_path = final_unit_archive_dir / rel_path
+                    archived_path = base_unit_archive_dir / rel_path
                     if archived_path.exists():
                         _mark_archive_result(item, archived_path)
                     else:
@@ -599,7 +621,7 @@ def archive_uploaded_assets(
         if is_chunked_manifest:
             unit_archive_dir = base_unit_archive_dir
         else:
-            unit_archive_dir = resolve_unique_directory(base_unit_archive_dir)
+            unit_archive_dir = existing_archive if existing_archive is not None else base_unit_archive_dir
         archive_unit_dir_hint = unit_archive_dir
         try:
             unit_archive_dir.mkdir(parents=True, exist_ok=True)
@@ -609,16 +631,22 @@ def archive_uploaded_assets(
                 _mark_archive_result(item, None, f"archive_dir_prepare_failed:{exc}")
             return archived_items, archive_unit_dir_hint
 
-        for item in uploaded:
+        total = len(uploaded)
+        for idx, item in enumerate(uploaded, 1):
             _move_single_file(context, item, unit_archive_dir, rel_path_by_source,
                               archive_root_dir, archive_unit_name, _mark_archive_result)
+            if idx == 1 or idx == total or idx % 10 == 0:
+                context.log.info(f"archive progress={idx}/{total} success={len(archived_items)}")
 
         if source_unit_path:
             cleanup_empty_tree(source_unit_path)
         return archived_items, archive_unit_dir_hint
 
-    for item in uploaded:
+    total = len(uploaded)
+    for idx, item in enumerate(uploaded, 1):
         _move_single_file_legacy(context, item, archive_root_dir, _mark_archive_result)
+        if idx == 1 or idx == total or idx % 10 == 0:
+            context.log.info(f"archive progress={idx}/{total} success={len(archived_items)}")
 
     return archived_items, archive_unit_dir_hint
 

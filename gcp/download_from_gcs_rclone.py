@@ -652,6 +652,15 @@ def _archive_done_marker_exists(archive_dir: str, bucket: str, folder: str) -> b
     return False
 
 
+def _incoming_done_marker_exists(download_dir: str, folder: str) -> bool:
+    """incoming(다운로드 목적지)에 이미 _DONE 마커가 있으면 True."""
+    marker = Path(download_dir) / folder / DONE_MARKER_FILENAME
+    try:
+        return marker.exists()
+    except OSError:
+        return False
+
+
 def _build_gcloud_copy_cmd(src_pattern: str, dst: str, skip_existing: bool) -> List[str]:
     cmd = ["gcloud", "storage", "cp"]
     if skip_existing:
@@ -1099,6 +1108,13 @@ def _download_date_folders(
             summary.skipped += 1
             print(
                 f"[SKIP] archive done marker exists: bucket={bucket}, folder={folder}",
+            )
+            continue
+
+        if _incoming_done_marker_exists(download_dir, folder):
+            summary.skipped += 1
+            print(
+                f"[SKIP] incoming done marker exists: bucket={bucket}, folder={folder}",
             )
             continue
 

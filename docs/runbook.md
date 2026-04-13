@@ -30,20 +30,58 @@ ss -tln | grep 3030
   - `dagster.yaml`에서 `run_storage`, `event_log_storage`, `schedule_storage`, `local_artifact_storage` 모두 `/data/dagster_home_staging/storage`로 분리
 - **확인:** 재기동 후 heartbeat 충돌 로그 없음, sensor tick 정상 순환
 
-### STARTED run이 장시간 점유 (backpressure 문제)
-- **원인:** `duckdb_writer=true`(legacy dispatch) 또는 `duckdb_raw_writer` / `duckdb_label_writer` / `duckdb_yolo_writer` 슬롯 경쟁. worker 프로세스가 없는데 UI에 `STARTED` 잔류
+### STARTED/CANCELING run이 장시간 점유 (backpressure 문제)
+- **원인:** `duckdb_writer=true`(legacy dispatch) 또는 `duckdb_raw_writer` / `duckdb_label_writer` / `duckdb_yolo_writer` 슬롯 경쟁. worker 프로세스가 없는데 UI에 `STARTED` / `CANCELING` 잔류
 - **즉시 조치:**
   ```bash
-  # Dagster instance API로 CANCELING → CANCELED 처리
-  # 이후 sensor가 신규 run 발행 가능 상태로 복구
+  # 1) 비정상 run 상태 확인
+  docker exec pipeline-dagster-1 bash -lc "python3 - <<'PY'
+  from dagster import DagsterInstance
+  from dagster._core.storage.dagster_run import RunsFilter, DagsterRunStatus
+
+  inst = DagsterInstance.get()
+  runs = inst.get_runs(
+      filters=RunsFilter(statuses=[DagsterRunStatus.STARTED, DagsterRunStatus.CANCELING]),
+      limit=20,
+  )
+  for run in runs:
+      print(run.run_id, run.job_name, run.status)
+  PY"
+
+  # 2) 먼저 dry-run으로 terminalize 대상인지 점검
+  docker exec pipeline-dagster-1 bash -lc "
+    python3 /src/vlm/scripts/repair_stale_dagster_runs.py --dry-run \
+      41c4fe3d-0072-4a33-9af2-4acf0055c5f6 \
+      3dc73214-d91b-48fb-8e67-aff3f8a7a717 \
+      8e455842-55d5-4c4f-b90e-4200d682cf70
+  "
+
+  # 3) 실제 복구 실행
+  docker exec pipeline-dagster-1 bash -lc "
+    python3 /src/vlm/scripts/repair_stale_dagster_runs.py \
+      41c4fe3d-0072-4a33-9af2-4acf0055c5f6 \
+      3dc73214-d91b-48fb-8e67-aff3f8a7a717 \
+      8e455842-55d5-4c4f-b90e-4200d682cf70
+  "
+
+  # 4) 30~60초 뒤 queue가 다시 launch되는지 확인
+  docker exec pipeline-dagster-daemon-1 bash -lc "tail -n 200 /opt/dagster/logs/daemon.log | grep -E 'Launching run|QueuedRunCoordinator|backpressure' | tail -n 50"
   ```
 - **영구 조치:**
   ```
   STUCK_RUN_GUARD_ENABLED=true
   STUCK_RUN_GUARD_INTERVAL_SEC=120
   STUCK_RUN_GUARD_TIMEOUT_SEC=10800
+  STUCK_RUN_GUARD_ORPHANED_RUN_TIMEOUT_SEC=900
   STUCK_RUN_GUARD_AUTO_REQUEUE_ENABLED=true
   STUCK_RUN_GUARD_TARGET_JOBS=mvp_stage_job,ingest_job,motherduck_sync_job
+  ```
+- **디스크/빌드 캐시 점검:** `database or disk is full`, `disk I/O error`가 보이면 stale run 정리 전에 아래를 같이 확인
+  ```bash
+  df -h /
+  docker system df
+  docker image prune -f
+  docker builder prune -f
   ```
 
 ### git switch 차단 (staging runtime 파일 충돌)

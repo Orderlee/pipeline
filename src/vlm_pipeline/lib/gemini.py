@@ -342,12 +342,24 @@ def extract_clean_json_text(text: str) -> str:
     return cleaned.strip()
 
 
+def load_clean_json(text: str) -> Any:
+    cleaned = extract_clean_json_text(text)
+    decoder = json.JSONDecoder()
+    try:
+        return decoder.decode(cleaned)
+    except json.JSONDecodeError as exc:
+        if exc.msg != "Extra data":
+            raise
+        payload, _ = decoder.raw_decode(cleaned)
+        return payload
+
+
 def save_response_as_json(response_text: str, video_path: str) -> str:
     json_path = json_save_path_same_dir_as_video(video_path)
-    cleaned = extract_clean_json_text(response_text)
     try:
-        parsed = json.loads(cleaned)
+        parsed = load_clean_json(response_text)
     except json.JSONDecodeError:
+        cleaned = extract_clean_json_text(response_text)
         Path(json_path).write_text(cleaned, encoding="utf-8")
         return json_path
 
