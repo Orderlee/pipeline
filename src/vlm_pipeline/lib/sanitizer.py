@@ -76,6 +76,25 @@ def sanitize_path_component(name: str) -> str:
     return text or "unnamed"
 
 
+def make_unique_key(candidate: str, existing: set[str]) -> str:
+    """candidate가 existing에 이미 있으면 stem에 _2, _3 ... suffix를 붙여 고유 키 반환.
+
+    반환된 키는 existing에 자동 추가되므로, 연속 호출 시 배치 내 중복도 방지된다.
+    """
+    if candidate not in existing:
+        existing.add(candidate)
+        return candidate
+
+    stem, ext = os.path.splitext(candidate)
+    counter = 2
+    while True:
+        new_key = f"{stem}_{counter}{ext}"
+        if new_key not in existing:
+            existing.add(new_key)
+            return new_key
+        counter += 1
+
+
 def sanitize_filename(name: str) -> str:
     """파일명을 ASCII-safe slug로 정규화. 확장자 보존.
 

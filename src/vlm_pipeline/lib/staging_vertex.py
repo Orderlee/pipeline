@@ -6,6 +6,8 @@ import json
 from dataclasses import dataclass
 from typing import Any
 
+from .gemini import load_clean_json
+
 
 @dataclass(frozen=True)
 class VideoChunkWindow:
@@ -235,7 +237,7 @@ def build_event_frame_image_prompt(
 
 def parse_event_frame_relevance_response(payload_text: str) -> float:
     """Parse strict JSON response for frame-to-event relevance score."""
-    payload = json.loads(str(payload_text or "").strip())
+    payload = load_clean_json(payload_text)
     if not isinstance(payload, dict):
         raise ValueError("image_relevance_response_not_object")
 
@@ -257,7 +259,7 @@ def parse_event_frame_relevance_response(payload_text: str) -> float:
 
 def parse_event_frame_image_caption_response(payload_text: str) -> tuple[bool, str | None]:
     """Parse strict JSON response for event-frame relevance + caption."""
-    payload = json.loads(str(payload_text or "").strip())
+    payload = load_clean_json(payload_text)
     if not isinstance(payload, dict):
         raise ValueError("image_caption_response_not_object")
 

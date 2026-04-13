@@ -150,6 +150,31 @@ def fetch_task_detail(ls_url: str, headers: dict, task_id: int) -> dict:
 # DuckDB
 # ---------------------------------------------------------------------------
 
+def _connect_duckdb_with_retry(
+    db_path: str,
+    *,
+    max_retries: int = 5,
+    base_delay: float = 1.0,
+    max_delay: float = 30.0,
+    read_only: bool = False,
+):
+    """DuckDB 연결 시 lock 에러 발생하면 exponential backoff로 재시도."""
+    import duckdb
+    import time as _time
+    import random as _random
+
+    for attempt in range(max_retries + 1):
+        try:
+            return duckdb.connect(db_path, read_only=read_only)
+        except duckdb.IOException as exc:
+            if "lock" not in str(exc).lower() or attempt >= max_retries:
+                raise
+            delay = min(base_delay * (2 ** attempt) + _random.uniform(0, 1), max_delay)
+            print(f"[RETRY] DuckDB lock 감지, {delay:.1f}s 후 재시도 ({attempt + 1}/{max_retries})")
+            _time.sleep(delay)
+    raise RuntimeError("DuckDB 연결 재시도 초과")
+
+
 def update_labels_in_db(
     db_path: str,
     json_key: str,
@@ -161,8 +186,7 @@ def update_labels_in_db(
     반환값: 업데이트된 행 수 (removed/inserted 포함)
     """
     import hashlib
-    import duckdb
-    conn = duckdb.connect(db_path)
+    conn = _connect_duckdb_with_retry(db_path)
     try:
         rows = conn.execute(
             """
