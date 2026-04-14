@@ -1,10 +1,10 @@
-"""Staging → Production MinIO 선택적 동기화.
+"""Test data-plane -> production MinIO 선택적 동기화.
 
-LS 연동을 위해 staging MinIO(:9002)의 클립·라벨 JSON을
+LS 연동을 위해 test MinIO(:9002)의 클립·라벨 JSON을
 production MinIO(:9000)로 복사한다.
 
 환경변수:
-    MINIO_ENDPOINT      현재 환경의 MinIO (staging일 때 :9002)
+    MINIO_ENDPOINT      현재 환경의 MinIO (test일 때 :9002)
     LS_MINIO_ENDPOINT   LS가 바라보는 production MinIO (기본 :9000)
     MINIO_ACCESS_KEY    공통 access key
     MINIO_SECRET_KEY    공통 secret key
@@ -59,7 +59,7 @@ def sync_folder_for_ls(
     target_endpoint: str | None = None,
     log_fn: Callable[[str], None] | None = None,
 ) -> int:
-    """staging MinIO → production MinIO로 LS 관련 객체를 복사한다.
+    """test MinIO -> production MinIO로 LS 관련 객체를 복사한다.
 
     복사 대상:
         vlm-processed/{folder_name}/clips/*
@@ -112,7 +112,7 @@ def sync_folder_for_ls(
                 log_fn(f"목록 조회 실패 ({bucket}/{prefix}): {exc}")
 
     if log_fn:
-        log_fn(f"staging→production 동기화 완료: {copied}건")
+        log_fn(f"test→production 동기화 완료: {copied}건")
     return copied
 
 
