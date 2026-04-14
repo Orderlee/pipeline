@@ -6,6 +6,15 @@ from typing import ClassVar
 
 import duckdb
 
+from vlm_pipeline.resources.duckdb_ingest_dispatch import (
+    DISPATCH_MODEL_CONFIGS_TABLE,
+    DISPATCH_PIPELINE_RUNS_TABLE,
+    DISPATCH_REQUESTS_TABLE,
+    LEGACY_DISPATCH_MODEL_CONFIGS_TABLE,
+    LEGACY_DISPATCH_PIPELINE_RUNS_TABLE,
+    LEGACY_DISPATCH_REQUESTS_TABLE,
+)
+
 
 class DuckDBMigrationMixin:
     """스키마 진화·마이그레이션 전담 mixin.
@@ -29,9 +38,9 @@ class DuckDBMigrationMixin:
             self._ensure_labels_columns(conn, backfill=True)
             self._ensure_processed_clips_columns(conn, backfill=True)
             self._ensure_image_labels_table(conn, restore_backup=True)
-            self._ensure_staging_dispatch_columns(conn)
-            self._ensure_staging_model_configs(conn)
-            self._ensure_staging_pipeline_runs(conn)
+            self._ensure_dispatch_request_columns(conn)
+            self._ensure_dispatch_model_configs(conn)
+            self._ensure_dispatch_pipeline_runs(conn)
             self._ensure_raw_files_spec_columns(conn)
             self._ensure_video_metadata_stage_columns(conn)
             self._ensure_video_metadata_reencode_columns(conn)
@@ -55,9 +64,9 @@ class DuckDBMigrationMixin:
             self._ensure_labels_columns(conn, backfill=False)
             self._ensure_processed_clips_columns(conn, backfill=False)
             self._ensure_image_labels_table(conn, restore_backup=False)
-            self._ensure_staging_dispatch_columns(conn)
-            self._ensure_staging_model_configs(conn)
-            self._ensure_staging_pipeline_runs(conn)
+            self._ensure_dispatch_request_columns(conn)
+            self._ensure_dispatch_model_configs(conn)
+            self._ensure_dispatch_pipeline_runs(conn)
             self._ensure_raw_files_spec_columns(conn)
             self._ensure_video_metadata_stage_columns(conn)
             self._ensure_video_metadata_reencode_columns(conn)
@@ -109,9 +118,9 @@ class DuckDBMigrationMixin:
 
     @classmethod
     def _ensure_dispatch_support_schema(cls, conn: duckdb.DuckDBPyConnection) -> None:
-        cls._ensure_staging_dispatch_columns(conn)
-        cls._ensure_staging_model_configs(conn)
-        cls._ensure_staging_pipeline_runs(conn)
+        cls._ensure_dispatch_request_columns(conn)
+        cls._ensure_dispatch_model_configs(conn)
+        cls._ensure_dispatch_pipeline_runs(conn)
         cls._ensure_raw_files_spec_columns(conn)
         cls._ensure_video_metadata_stage_columns(conn)
 
@@ -687,14 +696,53 @@ class DuckDBMigrationMixin:
     # ── Staging 전용 테이블 보장 ──
 
     @classmethod
-    def _ensure_staging_dispatch_columns(cls, conn: duckdb.DuckDBPyConnection) -> None:
-        """staging_dispatch_requests에 YOLO 파라미터 컬럼이 없으면 추가."""
-        columns = cls._table_columns(conn, "staging_dispatch_requests")
+    def _legacy_col_expr(cls, legacy_columns: set[str], column_name: str, fallback_sql: str = "NULL") -> str:
+        if column_name in legacy_columns:
+            return column_name
+        return fallback_sql
+
+    @classmethod
+    def _ensure_dispatch_request_columns(cls, conn: duckdb.DuckDBPyConnection) -> None:
+        """dispatch_requests canonical 테이블과 legacy staging backfill을 보장한다."""
+        conn.execute(
+            f"""
+            CREATE TABLE IF NOT EXISTS {DISPATCH_REQUESTS_TABLE} (
+                request_id           VARCHAR PRIMARY KEY,
+                folder_name          VARCHAR,
+                run_mode             VARCHAR,
+                outputs              VARCHAR,
+                labeling_method      VARCHAR,
+                dispatch_mode        VARCHAR DEFAULT 'standard',
+                requested_labeling_method_raw VARCHAR,
+                categories           VARCHAR,
+                classes              VARCHAR,
+                image_profile        VARCHAR,
+                status               VARCHAR DEFAULT 'pending',
+                archive_pending_path VARCHAR,
+                archive_path         VARCHAR,
+                max_frames_per_video INTEGER,
+                jpeg_quality         INTEGER,
+                confidence_threshold DOUBLE,
+                iou_threshold        DOUBLE,
+                requested_by         VARCHAR,
+                requested_at         TIMESTAMP,
+                processed_at         TIMESTAMP,
+                completed_at         TIMESTAMP,
+                error_message        TEXT,
+                ls_task_status       VARCHAR DEFAULT 'pending',
+                created_at           TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+
+        columns = cls._table_columns(conn, DISPATCH_REQUESTS_TABLE)
         if not columns:
             return
 
         alter_specs = {
             "labeling_method": "VARCHAR",
+            "dispatch_mode": "VARCHAR DEFAULT 'standard'",
+            "requested_labeling_method_raw": "VARCHAR",
             "categories": "VARCHAR",
             "classes": "VARCHAR",
             "max_frames_per_video": "INTEGER",
@@ -702,20 +750,71 @@ class DuckDBMigrationMixin:
             "confidence_threshold": "DOUBLE",
             "iou_threshold": "DOUBLE",
             "completed_at": "TIMESTAMP",
+            "ls_task_status": "VARCHAR DEFAULT 'pending'",
         }
         for column_name, column_type in alter_specs.items():
             if column_name in columns:
                 continue
+            conn.execute(f"ALTER TABLE {DISPATCH_REQUESTS_TABLE} ADD COLUMN {column_name} {column_type}")
+
+        legacy_columns = cls._table_columns(conn, LEGACY_DISPATCH_REQUESTS_TABLE)
+        if not legacy_columns:
+            return
+        for column_name, column_type in alter_specs.items():
+            if column_name in legacy_columns:
+                continue
             conn.execute(
-                f"ALTER TABLE staging_dispatch_requests ADD COLUMN {column_name} {column_type}"
+                f"ALTER TABLE {LEGACY_DISPATCH_REQUESTS_TABLE} ADD COLUMN {column_name} {column_type}"
             )
 
-    @classmethod
-    def _ensure_staging_model_configs(cls, conn: duckdb.DuckDBPyConnection) -> None:
-        """staging_model_configs 테이블 보장 + 기본 시드 데이터 삽입."""
+        legacy_columns = cls._table_columns(conn, LEGACY_DISPATCH_REQUESTS_TABLE)
         conn.execute(
+            f"""
+            INSERT INTO {DISPATCH_REQUESTS_TABLE} (
+                request_id, folder_name, run_mode, outputs, labeling_method,
+                dispatch_mode, requested_labeling_method_raw,
+                categories, classes, image_profile, status,
+                archive_pending_path, archive_path,
+                max_frames_per_video, jpeg_quality, confidence_threshold, iou_threshold,
+                requested_by, requested_at, processed_at, completed_at,
+                error_message, ls_task_status, created_at
+            )
+            SELECT
+                request_id,
+                folder_name,
+                run_mode,
+                outputs,
+                {cls._legacy_col_expr(legacy_columns, 'labeling_method')},
+                COALESCE({cls._legacy_col_expr(legacy_columns, 'dispatch_mode', "'standard'")}, 'standard'),
+                {cls._legacy_col_expr(legacy_columns, 'requested_labeling_method_raw')},
+                {cls._legacy_col_expr(legacy_columns, 'categories')},
+                {cls._legacy_col_expr(legacy_columns, 'classes')},
+                {cls._legacy_col_expr(legacy_columns, 'image_profile')},
+                COALESCE(status, 'pending'),
+                {cls._legacy_col_expr(legacy_columns, 'archive_pending_path')},
+                {cls._legacy_col_expr(legacy_columns, 'archive_path')},
+                {cls._legacy_col_expr(legacy_columns, 'max_frames_per_video')},
+                {cls._legacy_col_expr(legacy_columns, 'jpeg_quality')},
+                {cls._legacy_col_expr(legacy_columns, 'confidence_threshold')},
+                {cls._legacy_col_expr(legacy_columns, 'iou_threshold')},
+                {cls._legacy_col_expr(legacy_columns, 'requested_by')},
+                {cls._legacy_col_expr(legacy_columns, 'requested_at')},
+                {cls._legacy_col_expr(legacy_columns, 'processed_at')},
+                {cls._legacy_col_expr(legacy_columns, 'completed_at')},
+                {cls._legacy_col_expr(legacy_columns, 'error_message')},
+                COALESCE({cls._legacy_col_expr(legacy_columns, 'ls_task_status')}, 'pending'),
+                COALESCE({cls._legacy_col_expr(legacy_columns, 'created_at')}, CURRENT_TIMESTAMP)
+            FROM {LEGACY_DISPATCH_REQUESTS_TABLE}
+            ON CONFLICT (request_id) DO NOTHING
             """
-            CREATE TABLE IF NOT EXISTS staging_model_configs (
+        )
+
+    @classmethod
+    def _ensure_dispatch_model_configs(cls, conn: duckdb.DuckDBPyConnection) -> None:
+        """dispatch_model_configs canonical 테이블 보장 + legacy backfill."""
+        conn.execute(
+            f"""
+            CREATE TABLE IF NOT EXISTS {DISPATCH_MODEL_CONFIGS_TABLE} (
                 config_id            VARCHAR PRIMARY KEY,
                 output_type          VARCHAR NOT NULL UNIQUE,
                 model_name           VARCHAR NOT NULL,
@@ -775,8 +874,8 @@ class DuckDBMigrationMixin:
         ]
         for row in seed_rows:
             conn.execute(
-                """
-                INSERT INTO staging_model_configs (
+                f"""
+                INSERT INTO {DISPATCH_MODEL_CONFIGS_TABLE} (
                     config_id, output_type, model_name, model_version,
                     default_max_frames, default_jpeg_quality,
                     default_confidence, default_iou,
@@ -787,12 +886,42 @@ class DuckDBMigrationMixin:
                 list(row),
             )
 
-    @classmethod
-    def _ensure_staging_pipeline_runs(cls, conn: duckdb.DuckDBPyConnection) -> None:
-        """staging_pipeline_runs 테이블 보장."""
+        legacy_columns = cls._table_columns(conn, LEGACY_DISPATCH_MODEL_CONFIGS_TABLE)
+        if not legacy_columns:
+            return
         conn.execute(
+            f"""
+            INSERT INTO {DISPATCH_MODEL_CONFIGS_TABLE} (
+                config_id, output_type, model_name, model_version,
+                default_max_frames, default_jpeg_quality,
+                default_confidence, default_iou,
+                extra_params, is_active, description, updated_at, created_at
+            )
+            SELECT
+                config_id,
+                output_type,
+                model_name,
+                {cls._legacy_col_expr(legacy_columns, 'model_version')},
+                COALESCE({cls._legacy_col_expr(legacy_columns, 'default_max_frames')}, 24),
+                COALESCE({cls._legacy_col_expr(legacy_columns, 'default_jpeg_quality')}, 90),
+                {cls._legacy_col_expr(legacy_columns, 'default_confidence')},
+                {cls._legacy_col_expr(legacy_columns, 'default_iou')},
+                {cls._legacy_col_expr(legacy_columns, 'extra_params')},
+                COALESCE({cls._legacy_col_expr(legacy_columns, 'is_active')}, TRUE),
+                {cls._legacy_col_expr(legacy_columns, 'description')},
+                COALESCE({cls._legacy_col_expr(legacy_columns, 'updated_at')}, CURRENT_TIMESTAMP),
+                COALESCE({cls._legacy_col_expr(legacy_columns, 'created_at')}, CURRENT_TIMESTAMP)
+            FROM {LEGACY_DISPATCH_MODEL_CONFIGS_TABLE}
+            ON CONFLICT (config_id) DO NOTHING
             """
-            CREATE TABLE IF NOT EXISTS staging_pipeline_runs (
+        )
+
+    @classmethod
+    def _ensure_dispatch_pipeline_runs(cls, conn: duckdb.DuckDBPyConnection) -> None:
+        """dispatch_pipeline_runs canonical 테이블 보장 + legacy backfill."""
+        conn.execute(
+            f"""
+            CREATE TABLE IF NOT EXISTS {DISPATCH_PIPELINE_RUNS_TABLE} (
                 run_id               VARCHAR PRIMARY KEY,
                 request_id           VARCHAR,
                 folder_name          VARCHAR,
@@ -810,6 +939,39 @@ class DuckDBMigrationMixin:
                 error_message        TEXT,
                 created_at           TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
+            """
+        )
+        legacy_columns = cls._table_columns(conn, LEGACY_DISPATCH_PIPELINE_RUNS_TABLE)
+        if not legacy_columns:
+            return
+        conn.execute(
+            f"""
+            INSERT INTO {DISPATCH_PIPELINE_RUNS_TABLE} (
+                run_id, request_id, folder_name,
+                step_name, step_order, step_status,
+                model_name, model_version, applied_params,
+                input_count, output_count, error_count,
+                started_at, completed_at, error_message, created_at
+            )
+            SELECT
+                run_id,
+                request_id,
+                folder_name,
+                step_name,
+                COALESCE({cls._legacy_col_expr(legacy_columns, 'step_order')}, 0),
+                COALESCE({cls._legacy_col_expr(legacy_columns, 'step_status')}, 'pending'),
+                {cls._legacy_col_expr(legacy_columns, 'model_name')},
+                {cls._legacy_col_expr(legacy_columns, 'model_version')},
+                {cls._legacy_col_expr(legacy_columns, 'applied_params')},
+                COALESCE({cls._legacy_col_expr(legacy_columns, 'input_count')}, 0),
+                COALESCE({cls._legacy_col_expr(legacy_columns, 'output_count')}, 0),
+                COALESCE({cls._legacy_col_expr(legacy_columns, 'error_count')}, 0),
+                {cls._legacy_col_expr(legacy_columns, 'started_at')},
+                {cls._legacy_col_expr(legacy_columns, 'completed_at')},
+                {cls._legacy_col_expr(legacy_columns, 'error_message')},
+                COALESCE({cls._legacy_col_expr(legacy_columns, 'created_at')}, CURRENT_TIMESTAMP)
+            FROM {LEGACY_DISPATCH_PIPELINE_RUNS_TABLE}
+            ON CONFLICT (run_id) DO NOTHING
             """
         )
 

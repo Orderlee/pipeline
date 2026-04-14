@@ -2,6 +2,11 @@
 
 문제 유형별 진단 및 즉시 조치 가이드.
 
+현재 branch-based runtime 기준:
+- `main` = production
+- `dev` = test
+- 이 문서에 남아 있는 과거 `staging` 표기는 특별한 언급이 없으면 현재 **test 데이터 plane** (`/data/staging.duckdb`, `/home/pia/mou/staging/...`)를 뜻합니다.
+
 **공통 도구:**
 ```bash
 # DuckDB 읽기 (락 회피)
@@ -23,11 +28,11 @@ docker compose restart dagster
 ss -tln | grep 3030
 ```
 
-### staging daemon heartbeat 충돌
-- **원인:** staging이 production과 동일한 Dagster runtime storage 공유
+### test daemon heartbeat 충돌
+- **원인:** test가 production과 동일한 Dagster runtime storage 공유
 - **영구 조치:**
-  - `dagster-staging`은 `DAGSTER_HOME=/app/dagster_home_staging` 사용
-  - `dagster.yaml`에서 `run_storage`, `event_log_storage`, `schedule_storage`, `local_artifact_storage` 모두 `/data/dagster_home_staging/storage`로 분리
+  - test runtime은 production과 별도 `DAGSTER_HOME`/storage를 사용
+  - runtime storage는 git working tree 밖으로 분리
 - **확인:** 재기동 후 heartbeat 충돌 로그 없음, sensor tick 정상 순환
 
 ### STARTED/CANCELING run이 장시간 점유 (backpressure 문제)
@@ -84,9 +89,9 @@ ss -tln | grep 3030
   docker builder prune -f
   ```
 
-### git switch 차단 (staging runtime 파일 충돌)
+### git switch 차단 (legacy test runtime 파일 충돌)
 - **원인:** `runs.db`, `schedules.db`, `.nux/`, `.telemetry/` 같은 runtime 파일이 git working tree 내 생성
-- **영구 조치:** staging Dagster storage를 `/data/dagster_home_staging/storage`로 유지. 브랜치 전환 전 staging 컨테이너 중지
+- **영구 조치:** test Dagster storage를 git working tree 밖으로 유지. 브랜치 전환 전 test 컨테이너 중지
 
 ---
 
@@ -144,11 +149,11 @@ ss -tln | grep 3030
   # 이후 운영 Dagster 재기동, stale run 정리, 재실행
   ```
 
-### staging DuckDB not found
+### test DuckDB not found
 - **대표 에러:** `DuckDB not found: /data/staging.duckdb`
 - **복구 방법:**
-  - 운영 상태 재현: `pipeline.duckdb → staging.duckdb` 복제
-  - 빈 staging 재테스트: `staging.duckdb` 삭제 후 스키마만 적용한 새 DB 생성
+  - 운영 상태 재현: `pipeline.duckdb -> staging.duckdb` 복제
+  - 빈 test 재테스트: `staging.duckdb` 삭제 후 스키마만 적용한 새 DB 생성
 
 ---
 
@@ -196,15 +201,15 @@ ss -tln | grep 3030
 
 ## 4. MinIO
 
-### endpoint 혼재 (9000 vs 9001)
-- **원인:** 콘솔 포트(9001)와 S3 API 포트(9000) 혼동
-- **조치:** `MINIO_ENDPOINT=http://172.168.47.36:9000`으로 통일 (docker-compose.yaml, .env.example, docker/.env)
-- `9002 = staging API`, `9003 = staging Console`
+### endpoint 혼재 (production 9000/9001, test 9002/9003)
+- **원인:** Console 포트와 S3 API 포트 혼동
+- **조치:** production은 `MINIO_ENDPOINT=http://172.168.47.36:9000`, test는 `MINIO_ENDPOINT=http://172.168.47.36:9002`로 유지
+- `9001 = production Console`, `9003 = test Console`
 
-### Console 다운로드 실패 (staging)
-- **원인:** 객체 손상 아님. `Console(9003) → API(9002)` 경로 또는 브라우저 세션 문제
+### Console 다운로드 실패 (test)
+- **원인:** 객체 손상 아님. `Console(9003) -> API(9002)` 경로 또는 브라우저 세션 문제
 - **진단 순서:**
-  1. staging endpoint(`9002`)에 있는지 확인
+  1. test endpoint(`9002`)에 있는지 확인
   2. `boto3.head_object()` / `get_object()`로 직접 확인
   3. presigned URL 또는 `download_file()`로 실제 다운로드 확인
 - **운영 기준:** Console 다운로드 실패만으로 객체 재생성/삭제 금지
@@ -324,10 +329,10 @@ gsutil ls gs://khon-kaen-rtsp-bucket/
   docker exec pipeline-dagster-1 python3 -c "from gemini.assets.config import VIDEO_PROMPT"
   ```
 
-### Gemini credentials not found (staging)
+### Gemini credentials not found (test)
 - **대표 에러:** `FileNotFoundError: Gemini credentials not found`
-- **원인:** `.env.staging`에 credential 경로 누락
-- **영구 조치:** `.env.staging`에 최소 아래 값 유지:
+- **원인:** `docker/.env.test`에 credential 경로 누락
+- **영구 조치:** `docker/.env.test`에 최소 아래 값 유지:
   ```
   GEMINI_PROJECT=<project>
   GEMINI_LOCATION=<location>
@@ -366,7 +371,7 @@ gsutil ls gs://khon-kaen-rtsp-bucket/
 
 ### YOLO 실행 순서 문제
 - **원인:** frame 생성 전 YOLO asset이 먼저 뜸
-- **영구 조치:** staging 전용 YOLO asset을 분리해 `raw_ingest → clip/frame 생성 → yolo_image_detection` 순서 보장
+- **영구 조치:** legacy test 전용 YOLO asset을 분리해 `raw_ingest -> clip/frame 생성 -> yolo_image_detection` 순서 보장
 
 ---
 
@@ -405,16 +410,16 @@ python3 /src/python/local_duckdb_to_motherduck_sync.py \
 
 ---
 
-## 10. Staging 초기화
+## 10. Test 초기화
 
-staging 재테스트를 위한 완전 초기화 순서:
+test 재테스트를 위한 완전 초기화 순서:
 ```bash
-# 1. dagster-staging 중지
-# 2. staging MinIO 객체 전부 삭제 (endpoint: 172.168.47.36:9002)
+# 1. test runtime 중지
+# 2. test MinIO 객체 전부 삭제 (endpoint: 172.168.47.36:9002)
 #    - vlm-raw, vlm-labels, vlm-processed, vlm-dataset
-# 3. staging DuckDB 삭제
+# 3. test DuckDB 삭제
 rm docker/data/staging.duckdb
-# 4. staging Dagster runtime DB 삭제
+# 4. test Dagster runtime DB 삭제
 rm -rf docker/data/dagster_home_staging/storage
 # 5. 재기동
 ```
@@ -423,7 +428,7 @@ rm -rf docker/data/dagster_home_staging/storage
 - `/home/pia/mou/staging/incoming`
 - `/home/pia/mou/staging/archive`
 
-**staging 컨테이너 볼륨 마운트 필수:**
+**test 데이터 plane 볼륨 마운트 필수:**
 ```yaml
 - /home/pia/mou/staging/incoming:/nas/staging/incoming
 - /home/pia/mou/staging/archive:/nas/staging/archive

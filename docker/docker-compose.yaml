@@ -1,16 +1,19 @@
 # =====================================================
 # Data Pipeline Docker Compose
-# Python + DuckDB + MinIO + Dagster + GPU 지원
+# Branch-based runtime: dev=test, main=production
 # =====================================================
 
-name: pipeline
-
 x-common-env: &common-env
+  PIPELINE_RUNTIME_ENV: ${PIPELINE_RUNTIME_ENV:-production}
   MINIO_ENDPOINT: ${MINIO_ENDPOINT:-http://172.168.47.36:9000}
-  MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
-  MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin}
+  MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-minioadmin}
+  MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-minioadmin}
   DUCKDB_PATH: ${DATAOPS_DUCKDB_PATH:-/data/pipeline.duckdb}
   DATAOPS_DUCKDB_PATH: ${DATAOPS_DUCKDB_PATH:-/data/pipeline.duckdb}
+  INCOMING_DIR: ${INCOMING_DIR:-/nas/incoming}
+  ARCHIVE_DIR: ${ARCHIVE_DIR:-/nas/archive}
+  ARCHIVE_PENDING_DIR: ${ARCHIVE_PENDING_DIR:-/nas/archive_pending}
+  MANIFEST_DIR: ${MANIFEST_DIR:-/nas/incoming/.manifests}
   DATAOPS_PIPELINE_ROOT: /nas/datasets/projects
   DATAOPS_NAS_ROOT: /nas/datasets/projects
   DATAOPS_NAS_ROOTS: /nas/datasets/projects;/nas/incoming
@@ -23,12 +26,12 @@ x-common-env: &common-env
   VIDEO_FFPROBE_RETRY_DELAY_MS: "250"
   DAGSTER_HOME: /app/dagster_home
   PYTHONPATH: /:/src/python:/src/vlm
-  DATAOPS_ASSET_PATH_PREFIX_FROM: /home/pia/mou/nas_192tb;/home/pia/mou/archive;/home/pia/mou/incoming
+  DATAOPS_ASSET_PATH_PREFIX_FROM: ${DATAOPS_ASSET_PATH_PREFIX_FROM:-/home/pia/mou/nas_192tb;/home/pia/mou/archive;/home/pia/mou/incoming}
   DATAOPS_ASSET_PATH_PREFIX_TO: /nas
 
-x-prod-volumes: &prod-volumes
-  - ./app/dagster_home:/app/dagster_home
-  - ./data:/data
+x-runtime-volumes: &runtime-volumes
+  - ${DAGSTER_HOME_HOST_PATH:-./app/dagster_home}:/app/dagster_home
+  - ${DOCKER_DATA_HOST_PATH:-./data}:/data
   - ../src:/src/vlm:ro
   - type: bind
     source: ${DATASETS_HOST_PATH:-/home/pia/mou/nas_192tb/datasets}
@@ -52,73 +55,40 @@ x-prod-volumes: &prod-volumes
     target: /root/.config/gcloud
     read_only: false
 
-# Staging 전용 볼륨 — 소스 코드를 별도 repo(dev 브랜치)에서 마운트
-x-staging-volumes: &staging-volumes
-  - ${STAGING_REPO_PATH:-/volume2/datapipeline-staging}/docker/app:/app
-  - ${STAGING_REPO_PATH:-/volume2/datapipeline-staging}/docker/data:/data
-  - type: bind
-    source: ${DATASETS_HOST_PATH:-/home/pia/mou/nas_192tb/datasets}
-    target: /nas/datasets
-    read_only: false
-  - type: bind
-    source: ${PROJECTS_HOST_PATH:-/home/pia/mou/nas_192tb/datasets/projects}
-    target: /nas/datasets/projects
-    read_only: true
-  - type: bind
-    source: ${STAGING_ARCHIVE_HOST_PATH:-/home/pia/mou/staging/archive}
-    target: /nas/staging/archive
-    read_only: false
-  - type: bind
-    source: ${STAGING_INCOMING_HOST_PATH:-/home/pia/mou/staging/incoming}
-    target: /nas/staging/incoming
-    read_only: false
-  - /home/pia/test_data:/test_data
-  - ${STAGING_REPO_PATH:-/volume2/datapipeline-staging}/src/python:/src/python:ro
-  - ${STAGING_REPO_PATH:-/volume2/datapipeline-staging}/src:/src/vlm:ro
-  - ${STAGING_REPO_PATH:-/volume2/datapipeline-staging}/configs:/configs:ro
-  - ${STAGING_REPO_PATH:-/volume2/datapipeline-staging}/split_dataset:/split_dataset:ro
-  - ${STAGING_REPO_PATH:-/volume2/datapipeline-staging}/gcp:/gcp:ro
-  - ${STAGING_REPO_PATH:-/volume2/datapipeline-staging}/scripts:/scripts:ro
-  - type: bind
-    source: ${GCLOUD_CONFIG_HOST_PATH:-/home/pia/.config/gcloud}
-    target: /root/.config/gcloud
-    read_only: false
-
-x-prod-dagster-env: &prod-dagster-env
+x-runtime-dagster-env: &runtime-dagster-env
   <<: *common-env
   DATAOPS_MINIO__ENDPOINT: ${MINIO_ENDPOINT:-http://172.168.47.36:9000}
-  DATAOPS_MINIO__ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
-  DATAOPS_MINIO__SECRET_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin}
+  DATAOPS_MINIO__ACCESS_KEY: ${MINIO_ACCESS_KEY:-minioadmin}
+  DATAOPS_MINIO__SECRET_KEY: ${MINIO_SECRET_KEY:-minioadmin}
   DATAOPS_MINIO__BUCKET: raw-data
 
-x-prod-dagster-common: &prod-dagster-common
-  image: datapipeline:gpu-cu124
+x-runtime-dagster-common: &runtime-dagster-common
+  image: ${IMAGE_NAME:-datapipeline:gpu-cu124}
   user: root
   env_file:
-    - .env
-  environment: *prod-dagster-env
+    - ${PIPELINE_ENV_FILE:-.env}
+  environment: *runtime-dagster-env
   extra_hosts:
     - "host.docker.internal:host-gateway"
-  volumes: *prod-volumes
+  volumes: *runtime-volumes
   gpus: all
   restart: unless-stopped
 
 services:
-  # ===== 메인 앱 (GPU 지원) =====
   app:
     build:
       context: ..
       dockerfile: docker/Dockerfile
-    image: datapipeline:gpu-cu124
+    image: ${IMAGE_NAME:-datapipeline:gpu-cu124}
     user: root
     command: ["sleep", "infinity"]
     ports:
       - "${APP_PORT:-0}:8000"
     env_file:
-      - .env
+      - ${PIPELINE_ENV_FILE:-.env}
     environment:
       <<: *common-env
-    volumes: *prod-volumes
+    volumes: *runtime-volumes
     deploy:
       resources:
         reservations:
@@ -127,45 +97,36 @@ services:
               count: all
               capabilities: [gpu]
     gpus: all
-    depends_on:
-      - minio
     restart: unless-stopped
 
-  # ===== Dagster Webserver (운영) =====
   dagster:
-    <<: *prod-dagster-common
+    <<: *runtime-dagster-common
     working_dir: /app/dagster_home
     command:
       [
         "/bin/bash",
         "-c",
-        "DAGSTER_HOME=/app/dagster_home dagster-webserver -h 0.0.0.0 -p 3030 -w /app/workspace_prod.yaml",
+        "DAGSTER_HOME=/app/dagster_home dagster-webserver -h 0.0.0.0 -p 3030 -w /app/workspace.yaml",
       ]
     ports:
       - "${DAGSTER_PORT:-3030}:3030"
     depends_on:
       - dagster-code-server
-      - postgres
-      - minio
 
-  # ===== Dagster Daemon (운영) =====
   dagster-daemon:
-    <<: *prod-dagster-common
+    <<: *runtime-dagster-common
     working_dir: /app/dagster_home
     command:
       [
         "/bin/bash",
         "-c",
-        "DAGSTER_HOME=/app/dagster_home dagster-daemon run -w /app/workspace_prod.yaml",
+        "DAGSTER_HOME=/app/dagster_home dagster-daemon run -w /app/workspace.yaml",
       ]
     depends_on:
       - dagster-code-server
-      - postgres
-      - minio
 
-  # ===== Dagster Code Server (운영) =====
   dagster-code-server:
-    <<: *prod-dagster-common
+    <<: *runtime-dagster-common
     working_dir: /app
     command:
       [
@@ -173,26 +134,17 @@ services:
         "-c",
         "DAGSTER_HOME=/app/dagster_home dagster api grpc -h 0.0.0.0 -p 4000 -f /app/dagster_defs.py -d /app -a defs",
       ]
-    depends_on:
-      - postgres
-      - minio
-
-  # ===== Dispatch Webhook Server (optional profile) =====
   dispatch-webhook:
     profiles: ["webhook"]
-    <<: *prod-dagster-common
+    <<: *runtime-dagster-common
     working_dir: /app
-    command:
-      [
-        "python3", "-m", "vlm_pipeline.defs.dispatch.webhook_server",
-      ]
+    command: ["python3", "-m", "vlm_pipeline.defs.dispatch.webhook_server"]
     ports:
       - "${DISPATCH_WEBHOOK_PORT:-8090}:${DISPATCH_WEBHOOK_PORT:-8090}"
     environment:
-      <<: *prod-dagster-env
+      <<: *runtime-dagster-env
       DISPATCH_WEBHOOK_PORT: ${DISPATCH_WEBHOOK_PORT:-8090}
       DISPATCH_WEBHOOK_SECRET: ${DISPATCH_WEBHOOK_SECRET:-}
-      INCOMING_DIR: ${INCOMING_DIR:-/nas/incoming}
     depends_on:
       - dagster-code-server
     healthcheck:
@@ -201,80 +153,6 @@ services:
       timeout: 10s
       retries: 3
 
-  # ===== Staging Dispatch Webhook Server (optional profile) =====
-  dispatch-webhook-staging:
-    profiles: ["webhook-staging"]
-    image: datapipeline:gpu-cu124
-    user: root
-    working_dir: /app
-    command:
-      [
-        "python3", "-m", "vlm_pipeline.defs.dispatch.webhook_server",
-      ]
-    ports:
-      - "${DISPATCH_WEBHOOK_STAGING_PORT:-8091}:${DISPATCH_WEBHOOK_STAGING_PORT:-8091}"
-    env_file:
-      - .env.staging
-    environment:
-      <<: *common-env
-      IS_STAGING: "true"
-      DISPATCH_WEBHOOK_PORT: ${DISPATCH_WEBHOOK_STAGING_PORT:-8091}
-      DISPATCH_WEBHOOK_SECRET: ${DISPATCH_WEBHOOK_SECRET_STAGING:-}
-      INCOMING_DIR: /nas/staging/incoming
-      PYTHONPATH: /:/src/python:/src/vlm
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    volumes: *staging-volumes
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:${DISPATCH_WEBHOOK_STAGING_PORT:-8091}/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-    restart: unless-stopped
-
-  # ===== Staging Dagster (dev 브랜치 검증용) =====
-  # 소스 코드: /volume2/datapipeline-staging/ (dev 브랜치)
-  # 운영 repo와 완전 분리 — git pull해도 운영에 영향 없음
-  dagster-staging:
-    profiles: ["staging"]
-    image: datapipeline:gpu-cu124
-    user: root
-    working_dir: /app/dagster_home_staging
-    command: ["/bin/bash", "-c", "DAGSTER_HOME=/app/dagster_home_staging /app/dg dev -w /app/workspace_staging.yaml -h 0.0.0.0 -p 3030"]
-    ports:
-      - "3031:3030"
-    env_file:
-      - .env.staging
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    environment:
-      <<: *common-env
-      IS_STAGING: "true"
-      ENABLE_YOLO_DETECTION: "true"
-      ENABLE_MANUAL_LABEL_IMPORT: "true"
-      DAGSTER_HOME: /app/dagster_home_staging
-      DATAOPS_DUCKDB_PATH: /data/staging.duckdb
-      DUCKDB_PATH: /data/staging.duckdb
-      INCOMING_DIR: /nas/staging/incoming
-      ARCHIVE_DIR: /nas/staging/archive
-      MANIFEST_DIR: /nas/staging/incoming/.manifests
-      MINIO_ENDPOINT: http://172.168.47.36:9002
-      DATAOPS_MINIO__ENDPOINT: http://172.168.47.36:9002
-      DATAOPS_MINIO__ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
-      DATAOPS_MINIO__SECRET_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin}
-      DATAOPS_MINIO__BUCKET: raw-data
-      DATAOPS_PIPELINE_ROOT: /nas/datasets/projects
-      DATAOPS_NAS_ROOT: /nas/datasets/projects
-      DATAOPS_NAS_ROOTS: /nas/datasets/projects;/nas/incoming
-      DATAOPS_ASSET_PATH_PREFIX_FROM: /home/pia/mou/nas_192tb;/home/pia/mou/staging/archive;/home/pia/mou/staging/incoming
-      DATAOPS_ASSET_PATH_PREFIX_TO: /nas
-    volumes: *staging-volumes
-    depends_on:
-      - postgres
-    gpus: all
-    restart: unless-stopped
-
-  # ===== MinIO (S3 호환 오브젝트 스토리지) =====
   minio:
     image: minio/minio:latest
     ports:
@@ -294,7 +172,6 @@ services:
       retries: 3
     restart: unless-stopped
 
-  # ===== Grafana (Dashboard) =====
   grafana:
     image: grafana/grafana:12.3.1-ubuntu
     ports:
@@ -312,7 +189,6 @@ services:
       - postgres
     restart: unless-stopped
 
-  # ===== PostgreSQL (Grafana / 메타데이터 DB) =====
   postgres:
     image: postgres:15
     ports:
@@ -329,12 +205,7 @@ services:
       timeout: 5s
       retries: 5
     restart: unless-stopped
-    networks:
-      default:
-        aliases:
-          - pipeline-postgres
 
-  # ===== YOLO-World Detection Server (GPU 1 전용) =====
   yolo:
     build:
       context: ./yolo
@@ -345,7 +216,6 @@ services:
       - "${YOLO_PORT:-8001}:8001"
     environment:
       YOLO_MODEL_PATH: /data/models/yolo/yolov8l-worldv2.pt
-      # host GPU 1만 노출하고, 컨테이너 내부에서는 단일 GPU를 cuda:0으로 사용
       YOLO_DEVICE: "cuda:0"
       YOLO_IMGSZ: "640"
       YOLO_PORT: "8001"
@@ -370,7 +240,6 @@ services:
       retries: 3
     restart: unless-stopped
 
-  # ===== SAM3 Shadow Compare Server (GPU 0 전용, optional profile) =====
   sam3:
     profiles: ["sam3"]
     build:
@@ -406,13 +275,7 @@ services:
       retries: 3
     restart: unless-stopped
 
-# ===== 볼륨 정의 =====
 volumes:
   minio_data:
   postgres_data:
   grafana_data:
-
-# ===== 네트워크 정의 =====
-networks:
-  default:
-    name: pipeline-network

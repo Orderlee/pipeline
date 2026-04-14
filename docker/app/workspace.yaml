@@ -1,4 +1,5 @@
 load_from:
-  - python_file:
-      relative_path: dagster_defs.py
-      attribute: defs
+  - grpc_server:
+      host: dagster-code-server
+      port: 4000
+      location_name: pipeline_defs

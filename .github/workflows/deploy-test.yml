@@ -1,8 +1,8 @@
-name: Deploy to Production
+name: Deploy to Test
 
 on:
   push:
-    branches: [main]
+    branches: [dev]
     paths-ignore:
       - "docs/**"
       - "*.md"
@@ -22,18 +22,18 @@ on:
           - "true"
 
 concurrency:
-  group: production-deploy
+  group: test-deploy
   cancel-in-progress: false
 
 env:
-  DEPLOY_ROOT: /home/pia/work_p/Datapipeline-Data-data_pipeline/docker
-  COMPOSE_PROJECT_NAME: pipeline-prod
+  DEPLOY_ROOT: /home/pia/work_p/Datapipeline-Data-data_pipeline_test/docker
+  COMPOSE_PROJECT_NAME: pipeline-test
   IMAGE_NAME: datapipeline:gpu-cu124
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
 jobs:
   test:
-    runs-on: [self-hosted, linux, deploy, production]
+    runs-on: [self-hosted, linux, deploy, test]
     if: ${{ github.event.inputs.skip_tests != 'true' }}
     steps:
       - name: Checkout code
@@ -43,12 +43,12 @@ jobs:
         run: |
           pip install -e ".[dev]" --quiet 2>/dev/null || true
           python -m pytest tests/unit -q --tb=short 2>&1 || {
-            echo "::error::Unit tests failed — 배포를 중단합니다"
+            echo "::error::Unit tests failed — test 배포를 중단합니다"
             exit 1
           }
 
   detect_image_rebuild:
-    runs-on: [self-hosted, linux, deploy, production]
+    runs-on: [self-hosted, linux, deploy, test]
     outputs:
       build_required: ${{ steps.detect.outputs.build_required }}
     steps:
@@ -93,7 +93,7 @@ jobs:
           echo "build_required=${build_required}" >> "$GITHUB_OUTPUT"
 
   deploy:
-    runs-on: [self-hosted, linux, deploy, production]
+    runs-on: [self-hosted, linux, deploy, test]
     timeout-minutes: 60
     needs: [test, detect_image_rebuild]
     if: always() && (needs.test.result == 'success' || needs.test.result == 'skipped')
@@ -104,14 +104,15 @@ jobs:
       - name: Tag image with git SHA
         run: echo "IMAGE_TAG=datapipeline:${GITHUB_SHA::8}" >> $GITHUB_ENV
 
-      - name: Deploy production stack
+      - name: Deploy test stack
         env:
           WORKSPACE_ROOT: ${{ github.workspace }}
           DEPLOY_ROOT: ${{ env.DEPLOY_ROOT }}
-          ENV_TARGET_NAME: .env
-          ENV_SOURCE: /home/pia/work_p/Datapipeline-Data-data_pipeline/docker/.env
-          HEALTHCHECK_URL: http://127.0.0.1:3030/server_info
-          DEPLOY_LABEL: production
+          ENV_TARGET_NAME: .env.test
+          ENV_SOURCE: /home/pia/work_p/Datapipeline-Data-data_pipeline_test/docker/.env.test
+          ENV_TEMPLATE_SOURCE: ${{ github.workspace }}/docker/.env.test
+          HEALTHCHECK_URL: http://127.0.0.1:3031/server_info
+          DEPLOY_LABEL: test
           IMAGE_NAME: ${{ env.IMAGE_NAME }}
           IMAGE_TAG: ${{ env.IMAGE_TAG }}
           BUILD_REQUIRED: ${{ needs.detect_image_rebuild.outputs.build_required }}
@@ -121,8 +122,8 @@ jobs:
 
       - name: Deploy summary
         run: |
-          echo "### Production deploy complete" >> $GITHUB_STEP_SUMMARY
+          echo "### Test deploy complete" >> $GITHUB_STEP_SUMMARY
           echo "- Commit: ${GITHUB_SHA::8}" >> $GITHUB_STEP_SUMMARY
           echo "- Build required: ${{ needs.detect_image_rebuild.outputs.build_required }}" >> $GITHUB_STEP_SUMMARY
-          echo "- Health: http://172.168.42.6:3030/server_info" >> $GITHUB_STEP_SUMMARY
+          echo "- Health: http://172.168.42.6:3031/server_info" >> $GITHUB_STEP_SUMMARY
           echo "- Time: $(date '+%Y-%m-%d %H:%M:%S %Z')" >> $GITHUB_STEP_SUMMARY

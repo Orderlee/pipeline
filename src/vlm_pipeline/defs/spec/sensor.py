@@ -1,7 +1,7 @@
 """Spec flow sensors — spec_resolve_sensor, ready_for_labeling_sensor.
 
 운영: spec_resolve는 config resolve + 상태 전이만, ready_for_labeling_sensor가 job 트리거.
-Staging 전용 신규 동작은 defs.spec.staging_sensor 사용.
+Legacy spec 신규 동작은 defs.spec.staging_sensor 호환 경로를 사용.
 """
 
 from __future__ import annotations

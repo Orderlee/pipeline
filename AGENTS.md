@@ -26,14 +26,14 @@ CCTV/보안 영상 수집 → 중복 제거 → Gemini(Vertex) 라벨링 → YOL
 
 ## 운영 환경 요약
 
-| 항목 | Production | Staging |
-|------|------------|---------|
-| Incoming | `/nas/incoming` | `/nas/staging/incoming` |
+| 항목 | Production (`main`) | Test (`dev`) |
+|------|----------------------|--------------|
+| Incoming host path | `/home/pia/mou/incoming` | `/home/pia/mou/staging/incoming` |
 | DuckDB | `/data/pipeline.duckdb` | `/data/staging.duckdb` |
 | Dagster UI | `3030` | `3031` |
-| env | `docker/.env` | `docker/.env.staging` |
+| env | `docker/.env` | `docker/.env.test` |
 
-Staging은 `docker compose --profile staging`로만 기동합니다.
+prod/test는 같은 compose 서비스 정의를 쓰고, branch와 env 파일만 다릅니다.
 
 ## 필수 규칙
 

@@ -1,11 +1,11 @@
-"""Production/Staging definitions 공통 조립 요소."""
+"""Production/Test definitions 공통 조립 요소."""
 
 from __future__ import annotations
 
 from dagster import EnvVar, ScheduleDefinition, define_asset_job
 
 from vlm_pipeline.defs.build.assets import build_dataset
-from vlm_pipeline.defs.dispatch.production_agent_sensor import production_agent_dispatch_sensor
+from vlm_pipeline.defs.dispatch.agent_sensor import dispatch_agent_sensor
 from vlm_pipeline.defs.dispatch.sensor import dispatch_sensor
 from vlm_pipeline.defs.dispatch.sensor_run_status import (
     dispatch_run_canceled_sensor,
@@ -35,10 +35,8 @@ from vlm_pipeline.defs.sam.detection_assets import (
     sam3_bbox_labeling,
     sam3_image_detection,
 )
-from vlm_pipeline.defs.sam.staging_detection_assets import staging_sam3_image_detection
 from vlm_pipeline.defs.sync.assets import motherduck_sync
 from vlm_pipeline.defs.yolo.assets import bbox_labeling, dispatch_yolo_image_detection, yolo_image_detection
-from vlm_pipeline.defs.yolo.staging_assets import staging_yolo_image_detection
 from vlm_pipeline.lib.env_utils import (
     DUCKDB_LABEL_WRITER_TAG,
     DUCKDB_LEGACY_WRITER_TAG,
@@ -56,22 +54,13 @@ CLIP_AUTO_LABEL_ASSETS = (
     clip_to_frame,
 )
 
-PRODUCTION_DISPATCH_STAGE_SELECTION = [
+RUNTIME_DISPATCH_STAGE_SELECTION = [
     raw_ingest,
     *CLIP_AUTO_LABEL_ASSETS,
     classification_video,
     raw_video_to_frame,
     dispatch_yolo_image_detection,
     dispatch_sam3_image_detection,
-]
-
-STAGING_DISPATCH_STAGE_SELECTION = [
-    raw_ingest,
-    *CLIP_AUTO_LABEL_ASSETS,
-    classification_video,
-    raw_video_to_frame,
-    staging_yolo_image_detection,
-    staging_sam3_image_detection,
 ]
 
 COMMON_INGEST_SENSORS = (
@@ -126,10 +115,10 @@ def build_gcs_download_job(*, description: str, tags: dict[str, str] | None = No
     )
 
 
-def build_dispatch_stage_job(*, description: str, staging: bool):
+def build_dispatch_stage_job(*, description: str):
     return define_asset_job(
         "dispatch_stage_job",
-        selection=STAGING_DISPATCH_STAGE_SELECTION if staging else PRODUCTION_DISPATCH_STAGE_SELECTION,
+        selection=RUNTIME_DISPATCH_STAGE_SELECTION,
         tags=build_duckdb_writer_tags(DUCKDB_LEGACY_WRITER_TAG),
         description=description,
     )
@@ -182,13 +171,20 @@ def build_yolo_standard_detection_job(*, description: str):
     )
 
 
-def build_staging_yolo_detection_job(*, description: str):
+def build_legacy_test_yolo_detection_job(*, description: str):
+    from vlm_pipeline.defs.yolo.staging_assets import staging_yolo_image_detection
+
     return define_asset_job(
         "yolo_detection_job",
         selection=[staging_yolo_image_detection],
         tags=build_duckdb_writer_tags(DUCKDB_YOLO_WRITER_TAG),
         description=description,
     )
+
+
+def build_staging_yolo_detection_job(*, description: str):
+    """Backward-compatible alias for legacy staging-named callers."""
+    return build_legacy_test_yolo_detection_job(description=description)
 
 
 def build_sam3_standard_detection_job(*, description: str):
@@ -200,13 +196,20 @@ def build_sam3_standard_detection_job(*, description: str):
     )
 
 
-def build_staging_sam3_detection_job(*, description: str):
+def build_legacy_test_sam3_detection_job(*, description: str):
+    from vlm_pipeline.defs.sam.staging_detection_assets import staging_sam3_image_detection
+
     return define_asset_job(
         "sam3_detection_job",
         selection=[staging_sam3_image_detection],
         tags=build_duckdb_writer_tags(DUCKDB_SAM3_WRITER_TAG),
         description=description,
     )
+
+
+def build_staging_sam3_detection_job(*, description: str):
+    """Backward-compatible alias for legacy staging-named callers."""
+    return build_legacy_test_sam3_detection_job(description=description)
 
 
 def build_auto_labeling_routed_job(*, description: str):
@@ -270,7 +273,7 @@ def build_motherduck_daily_schedule(job) -> ScheduleDefinition:
     )
 
 
-def build_production_assets(
+def build_runtime_assets(
     *,
     enable_manual_label_import: bool,
     enable_yolo_detection: bool,
@@ -297,10 +300,26 @@ def build_production_assets(
     return assets
 
 
-def build_staging_assets() -> list[object]:
+def build_production_assets(
+    *,
+    enable_manual_label_import: bool,
+    enable_yolo_detection: bool,
+    enable_sam3_detection: bool = False,
+) -> list[object]:
+    """Backward-compatible alias for callers not yet renamed."""
+    return build_runtime_assets(
+        enable_manual_label_import=enable_manual_label_import,
+        enable_yolo_detection=enable_yolo_detection,
+        enable_sam3_detection=enable_sam3_detection,
+    )
+
+
+def build_legacy_test_assets() -> list[object]:
     from vlm_pipeline.defs.label.prelabeled_import import prelabeled_import
+    from vlm_pipeline.defs.sam.staging_detection_assets import staging_sam3_image_detection
     from vlm_pipeline.defs.spec.assets import labeling_spec_ingest, pending_ingest
     from vlm_pipeline.defs.spec.staging_assets import activate_labeling_spec, config_sync, ingest_router
+    from vlm_pipeline.defs.yolo.staging_assets import staging_yolo_image_detection
 
     return [
         raw_ingest,
@@ -323,18 +342,28 @@ def build_staging_assets() -> list[object]:
     ]
 
 
-def build_production_sensors(motherduck_table_sensors: list[object] | tuple[object, ...]) -> list[object]:
+def build_staging_assets() -> list[object]:
+    """Backward-compatible alias for legacy staging-named callers."""
+    return build_legacy_test_assets()
+
+
+def build_runtime_sensors(motherduck_table_sensors: list[object] | tuple[object, ...]) -> list[object]:
     return [
         *COMMON_INGEST_SENSORS,
         dispatch_sensor,
-        production_agent_dispatch_sensor,
+        dispatch_agent_sensor,
         *COMMON_DISPATCH_STATUS_SENSORS,
         *motherduck_table_sensors,
         ls_task_create_sensor,
     ]
 
 
-def build_staging_sensors(
+def build_production_sensors(motherduck_table_sensors: list[object] | tuple[object, ...]) -> list[object]:
+    """Backward-compatible alias for callers not yet renamed."""
+    return build_runtime_sensors(motherduck_table_sensors)
+
+
+def build_legacy_test_sensors(
     *,
     spec_resolve_sensor,
     dispatch_ingress_sensor,
@@ -351,3 +380,19 @@ def build_staging_sensors(
     if sam3_detection_sensor is not None:
         sensors.append(sam3_detection_sensor)
     return sensors
+
+
+def build_staging_sensors(
+    *,
+    spec_resolve_sensor,
+    dispatch_ingress_sensor,
+    dispatch_json_sensor,
+    sam3_detection_sensor=None,
+) -> list[object]:
+    """Backward-compatible alias for legacy staging-named callers."""
+    return build_legacy_test_sensors(
+        spec_resolve_sensor=spec_resolve_sensor,
+        dispatch_ingress_sensor=dispatch_ingress_sensor,
+        dispatch_json_sensor=dispatch_json_sensor,
+        sam3_detection_sensor=sam3_detection_sensor,
+    )

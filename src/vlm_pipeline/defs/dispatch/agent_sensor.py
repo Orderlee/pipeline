@@ -1,8 +1,4 @@
-"""Legacy test-era dispatch ingress sensor backed by piaspace-agent polling API.
-
-현재 기본 prod/test runtime은 generic `dispatch_agent_sensor`를 사용하고,
-이 모듈은 과거 staging-named import 호환용으로만 남겨둔다.
-"""
+"""Environment-driven dispatch ingress sensor backed by agent polling API."""
 
 from __future__ import annotations
 
@@ -12,19 +8,19 @@ from typing import Any
 import requests
 from dagster import SensorEvaluationContext, SkipReason, sensor
 
-from vlm_pipeline.defs.dispatch.service import (
-    DispatchIngressRequest,
-    process_dispatch_ingress_request,
-    record_failed_dispatch_request,
-)
 from vlm_pipeline.defs.dispatch.agent_sensor_common import (
     build_agent_ack_payload,
     build_agent_request_id,
     normalize_agent_dispatch_request,
     should_wait_for_dispatch_params,
 )
+from vlm_pipeline.defs.dispatch.service import (
+    DispatchIngressRequest,
+    process_dispatch_ingress_request,
+    record_failed_dispatch_request,
+)
 from vlm_pipeline.resources.config import PipelineConfig
-from vlm_pipeline.resources.runtime_settings import load_test_agent_polling_settings
+from vlm_pipeline.resources.runtime_settings import load_dispatch_agent_polling_settings
 
 
 def _fetch_pending_dispatch_items(
@@ -74,7 +70,7 @@ def _post_dispatch_ack(
         response.raise_for_status()
     except Exception as exc:  # noqa: BLE001
         context.log.warning(
-            "legacy test agent ack 전송 실패: "
+            "dispatch agent ack 전송 실패: "
             f"delivery_id={delivery_id} status={status} request_id={request_id or ''} error={exc}"
         )
 
@@ -134,16 +130,16 @@ def _reject_dispatch_item(
 
 
 @sensor(
-    name="staging_agent_dispatch_sensor",
-    description="legacy test agent API polling -> dispatch_stage_job ingress",
-    minimum_interval_seconds=load_test_agent_polling_settings().interval_sec,
+    name="dispatch_agent_sensor",
+    description="environment-driven agent API polling -> dispatch_stage_job ingress",
+    minimum_interval_seconds=load_dispatch_agent_polling_settings().interval_sec,
     required_resource_keys={"db"},
     job_name="dispatch_stage_job",
 )
-def staging_agent_dispatch_sensor(context: SensorEvaluationContext):
-    settings = load_test_agent_polling_settings()
+def dispatch_agent_sensor(context: SensorEvaluationContext):
+    settings = load_dispatch_agent_polling_settings()
     if not settings.enabled:
-        yield SkipReason("TEST_AGENT_POLLING_ENABLED=false")
+        yield SkipReason("DISPATCH_AGENT_POLLING_ENABLED=false")
         return
 
     db_resource = getattr(context.resources, "db", None)
@@ -167,14 +163,14 @@ def staging_agent_dispatch_sensor(context: SensorEvaluationContext):
                 timeout=timeout,
             )
         except requests.RequestException as exc:
-            yield SkipReason(f"legacy test agent polling unavailable: {exc}")
+            yield SkipReason(f"dispatch agent polling unavailable: {exc}")
             return
         except ValueError as exc:
-            yield SkipReason(f"legacy test agent pending payload invalid: {exc}")
+            yield SkipReason(f"dispatch agent pending payload invalid: {exc}")
             return
 
         if not items:
-            yield SkipReason("legacy test agent pending queue empty")
+            yield SkipReason("dispatch agent pending queue empty")
             return
 
         yielded = False
@@ -183,7 +179,7 @@ def staging_agent_dispatch_sensor(context: SensorEvaluationContext):
             delivery_id = str(item.get("delivery_id") or "").strip()
             raw_request = item.get("request")
             if not delivery_id or not isinstance(raw_request, Mapping):
-                context.log.warning(f"legacy test agent payload 무시: invalid item shape={item}")
+                context.log.warning(f"dispatch agent payload 무시: invalid item shape={item}")
                 continue
 
             request_id: str | None = None
@@ -213,7 +209,7 @@ def staging_agent_dispatch_sensor(context: SensorEvaluationContext):
             if should_wait_for_dispatch_params(canonical_request):
                 folder_name = str(canonical_request.get("folder_name") or "").strip()
                 context.log.info(
-                    "legacy test agent dispatch waiting: "
+                    "dispatch agent waiting: "
                     f"delivery_id={delivery_id} request_id={request_id} "
                     f"folder={folder_name} reason=waiting_for_dispatch_params"
                 )
@@ -243,7 +239,7 @@ def staging_agent_dispatch_sensor(context: SensorEvaluationContext):
                 )
             except Exception as exc:  # noqa: BLE001
                 context.log.error(
-                    "legacy test agent dispatch 처리 실패(ack 보류): "
+                    "dispatch agent 처리 실패(ack 보류): "
                     f"delivery_id={delivery_id} request_id={request_id or ''} error={exc}"
                 )
                 continue
@@ -252,14 +248,14 @@ def staging_agent_dispatch_sensor(context: SensorEvaluationContext):
                 prepared = outcome.prepared
                 folder_name = prepared.folder_name if prepared is not None else ""
                 context.log.info(
-                    "legacy test agent folder in flight -> ack 보류: "
+                    "dispatch agent folder in flight -> ack 보류: "
                     f"delivery_id={delivery_id} folder={folder_name}"
                 )
                 continue
 
             if outcome.status == "duplicate_noop":
                 context.log.info(
-                    "legacy test agent duplicate request_id 감지: "
+                    "dispatch agent duplicate request_id 감지: "
                     f"delivery_id={delivery_id} request_id={outcome.request_id}"
                 )
                 _ack_dispatch_item(
@@ -275,43 +271,31 @@ def staging_agent_dispatch_sensor(context: SensorEvaluationContext):
                 continue
 
             if outcome.status == "rejected":
-                _reject_dispatch_item(
-                    db_resource=db_resource,
-                    canonical_request=canonical_request,
-                    request_id=outcome.request_id,
-                    reason=outcome.reason,
-                    context=context,
-                    session=session,
+                _ack_dispatch_item(
+                    context,
+                    session,
                     settings=settings,
                     timeout=timeout,
                     delivery_id=delivery_id,
+                    status="rejected",
+                    request_id=outcome.request_id,
+                    message=outcome.reason,
                 )
                 continue
 
-            if outcome.status != "run_request" or outcome.run_request is None or outcome.prepared is None:
-                context.log.error(
-                    "legacy test agent dispatch unexpected outcome(ack 보류): "
-                    f"delivery_id={delivery_id} status={outcome.status} request_id={outcome.request_id}"
+            if outcome.run_request is not None:
+                yielded = True
+                yield outcome.run_request
+                _ack_dispatch_item(
+                    context,
+                    session,
+                    settings=settings,
+                    timeout=timeout,
+                    delivery_id=delivery_id,
+                    status="accepted",
+                    request_id=outcome.request_id,
+                    message="run_request_created",
                 )
-                continue
-
-            prepared = outcome.prepared
-            context.log.info(
-                "legacy test agent dispatch accepted: "
-                f"delivery_id={delivery_id} request_id={prepared.request_id} folder={prepared.folder_name}"
-            )
-            _ack_dispatch_item(
-                context,
-                session,
-                settings=settings,
-                timeout=timeout,
-                delivery_id=delivery_id,
-                status="accepted",
-                request_id=prepared.request_id,
-                message="dispatch manifest created and run requested",
-            )
-            yielded = True
-            yield outcome.run_request
 
         if not yielded:
-            yield SkipReason("legacy test agent pending items handled without new run request")
+            yield SkipReason("dispatch agent request handled without launching run")

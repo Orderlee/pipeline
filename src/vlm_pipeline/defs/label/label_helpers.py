@@ -17,7 +17,7 @@ from uuid import uuid4
 from vlm_pipeline.lib.env_utils import coerce_float, int_env
 from vlm_pipeline.lib.file_loader import build_nonexistent_temp_path
 from vlm_pipeline.lib.gemini import GeminiAnalyzer, extract_clean_json_text, load_clean_json
-from vlm_pipeline.lib.staging_vertex import (
+from vlm_pipeline.lib.vertex_event_utils import (
     merge_overlapping_events,
     normalize_gemini_events,
     offset_gemini_events,

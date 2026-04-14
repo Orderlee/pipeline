@@ -3,10 +3,11 @@
 VLM(Vision-Language Model) 학습 데이터를 구축하기 위한 데이터 파이프라인입니다.
 NAS에 있는 이미지/비디오 미디어를 수집하고, 중복을 정리한 뒤, Gemini(Vertex) 기반 이벤트 라벨링과 YOLO-World 검출을 수행하고, 최종적으로 학습 데이터셋을 조립합니다. 전체 파이프라인은 **Dagster + DuckDB + MinIO** 기반으로 운영됩니다.
 
-현재 기준으로 이 저장소는 **production**과 **staging**을 분리해 운영합니다.
+현재 기준으로 이 저장소는 **branch-based runtime** 으로 운영합니다.
 
-- **production**: `/nas/incoming` 기반 수집, `piaspace-agent:8080` polling 기반 dispatch + `.dispatch/pending/*.json` fallback
-- **staging**: `/nas/staging/incoming` 기반 검증, `piaspace-agent:8081` polling 기반 dispatch
+- **`main` = production**: Dagster `http://172.168.42.6:3030/`, MinIO Console `http://172.168.47.36:9001/`, runtime MinIO endpoint `http://172.168.47.36:9000`
+- **`dev` = test**: Dagster `http://172.168.42.6:3031/`, MinIO Console `http://172.168.47.36:9003/`, runtime MinIO endpoint `http://172.168.47.36:9002`
+- test는 기존 staging 데이터 plane(`/data/staging.duckdb`, `/home/pia/mou/staging/...`)를 재사용하지만, **코드 로직은 production과 동일**합니다.
 
 문서 운영 기준은 역할을 분리합니다.
 
@@ -19,22 +20,19 @@ NAS에 있는 이미지/비디오 미디어를 수집하고, 중복을 정리한
 ```text
 ┌──────────────────────────────────────────────────────────────────────────────┐
 │ NAS                                                                          │
-│  Production: /nas/incoming, /nas/archive                                     │
-│  Staging:    /nas/staging/incoming, /nas/staging/archive                     │
+│  Production host bind: /home/pia/mou/incoming, /home/pia/mou/archive         │
+│  Test host bind:       /home/pia/mou/staging/incoming, /home/pia/mou/staging/archive │
 └───────────────────────────────┬──────────────────────────────────────────────┘
                                 │
                                 v
 ┌──────────────────────────────────────────────────────────────────────────────┐
 │ Dagster                                                                      │
 │                                                                              │
-│ Production                                                                   │
+│ Production / Test (same logic)                                               │
 │   incoming/manifest sensors -> ingest_job                                    │
-│   piaspace-agent polling -> production_agent_dispatch_sensor                │
-│   .dispatch/pending/*.json -> dispatch_sensor (fallback)                    │
-│                                                                              │
-│ Staging                                                                      │
-│   piaspace-agent polling -> staging_agent_dispatch_sensor                    │
-│   -> dispatch_stage_job / auto_labeling_routed_job / import jobs            │
+│   piaspace-agent polling -> dispatch_agent_sensor                            │
+│   .dispatch/pending/*.json -> dispatch_sensor (fallback)                     │
+│   -> dispatch_stage_job                                                      │
 └───────────────┬───────────────────────────────┬──────────────────────────────┘
                 │                               │
                 v                               v
@@ -44,7 +42,7 @@ NAS에 있는 이미지/비디오 미디어를 수집하고, 중복을 정리한
 │  vlm-labels                  │    │ video_metadata / image_metadata         │
 │  vlm-processed               │    │ labels / processed_clips / image_labels │
 │  vlm-dataset                 │    │ datasets / dataset_clips                │
-└──────────────────────────────┘    │ staging_* tracking / spec tables        │
+└──────────────────────────────┘    │ dispatch_* tracking tables              │
                                     └─────────────────────────────────────────┘
 ```
 
@@ -54,26 +52,26 @@ NAS에 있는 이미지/비디오 미디어를 수집하고, 중복을 정리한
 - **DuckDB**: 메타데이터와 라벨링 결과의 source of truth입니다.
 - **MotherDuck**: 운영 DuckDB의 선택적 클라우드 동기화 대상입니다.
 
-## Production vs Staging
+## Branch Runtime
 
-| 항목 | Production | Staging |
+| 항목 | Production (`main`) | Test (`dev`) |
 |------|------------|---------|
-| Dagster UI | `http://<host>:3030` | `http://<host>:3031` |
+| Dagster UI | `http://172.168.42.6:3030/` | `http://172.168.42.6:3031/` |
 | DuckDB | `/data/pipeline.duckdb` | `/data/staging.duckdb` |
-| Incoming | `/nas/incoming` | `/nas/staging/incoming` |
-| Archive | `/nas/archive` | `/nas/staging/archive` |
-| MinIO endpoint | `http://172.168.47.36:9000` | `http://172.168.47.36:9002` |
-| Dagster home | `/app/dagster_home` | `/app/dagster_home_staging` |
-| Workspace | `/app/workspace_prod.yaml` | `/app/workspace_staging.yaml` |
-| Main entrypoint | `src/vlm_pipeline/definitions.py` | `src/vlm_pipeline/definitions_staging.py` |
-| Dispatch ingress | `piaspace-agent:8080` polling + JSON fallback | `piaspace-agent:8081` polling |
+| Incoming host path | `/home/pia/mou/incoming` | `/home/pia/mou/staging/incoming` |
+| Archive host path | `/home/pia/mou/archive` | `/home/pia/mou/staging/archive` |
+| Runtime MinIO endpoint | `http://172.168.47.36:9000` | `http://172.168.47.36:9002` |
+| MinIO Console | `http://172.168.47.36:9001/` | `http://172.168.47.36:9003/` |
+| Dagster home (container) | `/app/dagster_home` | `/app/dagster_home` |
+| Workspace | `/app/workspace.yaml` | `/app/workspace.yaml` |
+| Main entrypoint | `src/vlm_pipeline/definitions.py` | `src/vlm_pipeline/definitions.py` |
+| Dispatch ingress | `piaspace-agent:8080` polling + JSON fallback | `piaspace-agent:8081` polling + JSON fallback |
 
 핵심 차이:
 
-- **production**은 `production_agent_dispatch_sensor`를 기본 ingress로 사용하고, `.dispatch/pending/*.json`은 fallback 경로로 유지합니다.
-- **staging**은 `staging_agent_dispatch_sensor`가 `piaspace-agent:8081`에서 pending 요청을 polling해서 시작합니다.
-- staging의 파일 기반 `dispatch_sensor` 경로는 레거시/호환 목적이며 기본 ingress가 아닙니다.
-- staging은 `manual_label_import_job`, `prelabeled_import_job`, spec 기반 라우팅 등 검증용 흐름을 더 포함합니다.
+- prod/test 모두 `dispatch_agent_sensor`와 `dispatch_sensor`를 같은 방식으로 사용합니다.
+- 차이는 branch, env 파일, host bind path, external endpoint뿐입니다.
+- 애플리케이션이 쓰는 실제 MinIO endpoint는 `9000/9002`이고, `9001/9003`은 사람용 Console 주소입니다.
 
 ## Data Flow
 
@@ -81,7 +79,7 @@ NAS에 있는 이미지/비디오 미디어를 수집하고, 중복을 정리한
 
 ```text
 piaspace-agent:8080
-  -> production_agent_dispatch_sensor
+  -> dispatch_agent_sensor
   -> dispatch_stage_job
   -> raw_ingest
   -> clip_timestamp
@@ -100,24 +98,24 @@ production 정책은 다음과 같습니다.
 - Gemini / clip / YOLO가 포함된 자동 라벨링은 **오직 `dispatch_stage_job`** 에서만 자동으로 실행됩니다.
 - `incoming/gcp/**`는 GCS 수집 스케줄로 들어오고, 일반 incoming 폴더는 dispatch 요청이 있어야 자동 라벨링으로 이어집니다.
 
-### Staging
+### Test (`dev`)
 
 ```text
 piaspace-agent:8081
-  -> staging_agent_dispatch_sensor
+  -> dispatch_agent_sensor
   -> dispatch_stage_job
   -> raw_ingest
-  -> spec_resolve_sensor
-  -> clip_timestamp / clip_captioning / clip_to_frame
-  -> bbox_labeling / activate_labeling_spec
+  -> clip_timestamp
+  -> clip_captioning
+  -> clip_to_frame
+  -> dispatch_yolo_image_detection
 ```
 
-staging의 주요 특징:
+test의 주요 특징:
 
-- 요청 ingress는 파일이 아니라 **API polling** 입니다.
-- fully-empty 요청은 waiting으로 남기고, 실행 메타가 채워질 때까지 run을 만들지 않습니다.
-- `필요없음` 계열 요청은 raw ingest를 수행하고, 같은 폴더 안에 라벨 결과가 있으면 자동 import까지 수행합니다.
-- `prelabeled_import_job`으로 완료된 라벨 데이터를 별도 수동 적재할 수도 있습니다.
+- branch는 `dev`이지만, 실행 로직은 production과 같습니다.
+- 요청 ingress는 test agent API(`:8081`) polling으로 받아옵니다.
+- host bind path와 DuckDB/MinIO endpoint만 test 자원을 바라봅니다.
 
 ## 단계별 요약
 
@@ -129,7 +127,7 @@ staging의 주요 특징:
 | CAPTIONING | `clip_captioning` | Gemini 이벤트 JSON을 labels row로 정규화 | `labels` |
 | FRAME | `clip_to_frame` | clip 기반 프레임 추출 및 top-1 이미지 caption 저장 | `vlm-processed`, `processed_clips`, `image_metadata` |
 | RAW FRAME | `raw_video_to_frame` | YOLO 전용 요청 시 raw video에서 직접 frame 추출 | `vlm-processed`, `image_metadata` |
-| YOLO | `staging_yolo_image_detection`, `yolo_image_detection`, `bbox_labeling` | YOLO-World detection 및 bbox JSON 저장 | `vlm-labels`, `image_labels` |
+| YOLO | `dispatch_yolo_image_detection`, `yolo_image_detection` | YOLO-World detection 및 bbox JSON 저장 | `vlm-labels`, `image_labels` |
 | BUILD | `build_dataset` | 학습 데이터셋 조립 | `vlm-dataset`, `datasets`, `dataset_clips` |
 | SYNC | `motherduck_sync` | DuckDB -> MotherDuck 동기화 | MotherDuck |
 
@@ -170,7 +168,7 @@ staging의 주요 특징:
 - `requested_outputs`
 - `image_profile`: `current` / `dense`
 - `duration_sec`, `fps`, `frame_count`
-- staging spec의 `frame_extraction.max_frames_per_video` hard cap
+- legacy spec flow의 `frame_extraction.max_frames_per_video` hard cap
 
 기본 규칙:
 
@@ -193,14 +191,14 @@ YOLO 서버는 `docker/yolo/` 아래 별도 서비스로 동작합니다.
 
 - dispatch의 `classes`가 실제 YOLO 요청에 연결됩니다.
 - 요청마다 `classes`를 전달하는 **request-scoped classes** 방식입니다.
-- production/staging가 같은 YOLO 서버를 써도 lock으로 전역 class 충돌을 막습니다.
+- production/test가 같은 YOLO 서버를 써도 lock으로 전역 class 충돌을 막습니다.
 - 결과 JSON에는 `requested_classes`, `requested_classes_count`, `class_source`를 함께 저장합니다.
 
 지원 클래스가 비어 있으면:
 
 1. dispatch `classes`
 2. 없으면 `categories -> derive_classes_from_categories()`
-3. staging spec이면 `spec.classes`와 bbox config 교집합
+3. legacy spec flow면 `spec.classes`와 bbox config 교집합
 4. 그래도 없으면 서버 기본 classes
 
 ## Database Schema
@@ -220,18 +218,18 @@ YOLO 서버는 `docker/yolo/` 아래 별도 서비스로 동작합니다.
 | `datasets` | 데이터셋 정의 |
 | `dataset_clips` | dataset ↔ clip 연결 |
 
-### staging 전용 추적 / spec 테이블
+### dispatch / spec 테이블
 
 | 테이블 | 설명 |
 |--------|------|
-| `staging_dispatch_requests` | staging dispatch 요청 추적 (YOLO 파라미터, labeling_method 포함) |
-| `staging_pipeline_runs` | staging run 단계별 상태 추적 (step_name, step_status, 처리 통계) |
-| `staging_model_configs` | output 타입별 모델 선택 + 기본 파라미터 (bbox/timestamp/captioning) |
+| `dispatch_requests` | dispatch 요청 추적 (YOLO 파라미터, labeling_method 포함) |
+| `dispatch_pipeline_runs` | dispatch run 단계별 상태 추적 (step_name, step_status, 처리 통계) |
+| `dispatch_model_configs` | output 타입별 모델 선택 + 기본 파라미터 (bbox/timestamp/captioning) |
 | `labeling_specs` | spec 수신 → 라우팅/재시도/완료 추적 (categories, classes, labeling_method) |
 | `labeling_configs` | config/parameters JSON 동기화 (버전 관리) |
 | `requester_config_map` | requester/team → config 매핑 (personal → team → fallback 우선순위) |
 
-현재 schema.sql 기준 총 14개 테이블 (운영 8 + staging/spec 6).
+현재 schema.sql 기준 핵심 테이블은 운영 테이블 + `dispatch_*` 추적 테이블 + legacy spec 테이블로 구성됩니다.
 
 현재 스키마에서 중요한 점:
 
@@ -245,16 +243,15 @@ YOLO 서버는 `docker/yolo/` 아래 별도 서비스로 동작합니다.
 ├── src/
 │   └── vlm_pipeline/
 │       ├── definitions.py              # production entrypoint
-│       ├── definitions_staging.py      # staging entrypoint
 │       ├── definitions_profiles.py     # profile 기반 공통 조립
 │       ├── definitions_common.py       # 공통 job/sensor 조립
 │       ├── defs/
-│       │   ├── dispatch/               # dispatch sensor / service / agent_sensor_common
+│       │   ├── dispatch/               # dispatch sensor / service / agent_sensor_common / agent_sensor
 │       │   ├── ingest/                 # raw ingest, archive, manifest
 │       │   ├── label/                  # assets + artifact_bbox/caption/classification, label_helpers, timestamp
 │       │   ├── process/                # assets(라우팅) + helpers, captioning, frame_extract, raw_frames
-│       │   ├── yolo/                   # YOLO assets / staging YOLO assets
-│       │   ├── spec/                   # staging spec assets / sensors / config_resolver
+│       │   ├── yolo/                   # YOLO assets
+│       │   ├── spec/                   # legacy spec assets / sensors / config_resolver
 │       │   ├── build/                  # dataset build
 │       │   ├── sam/                    # SAM3 segmentation
 │       │   ├── gcp/                    # GCS download
@@ -265,7 +262,7 @@ YOLO 서버는 `docker/yolo/` 아래 별도 서비스로 동작합니다.
 ├── docker/
 │   ├── docker-compose.yaml
 │   ├── .env
-│   ├── .env.staging
+│   ├── .env.test
 │   ├── app/
 │   └── yolo/
 ├── scripts/
@@ -280,13 +277,12 @@ Docker Compose(`docker/docker-compose.yaml`)로 주요 서비스를 실행합니
 
 | 서비스 | 포트 | 설명 |
 |--------|------|------|
-| `dagster` | `3030` | production Dagster webserver |
-| `dagster-staging` | `3031` | staging Dagster dev server |
-| `app` | - | production code/runtime container |
-| `dagster-daemon` | - | production sensor / schedule daemon |
-| `dagster-code-server` | - | production code server |
+| `dagster` | `3030` 또는 `3031` | production/test Dagster webserver |
+| `app` | - | production/test code/runtime container |
+| `dagster-daemon` | - | production/test sensor / schedule daemon |
+| `dagster-code-server` | - | production/test code server |
 | `yolo` | `8001` | YOLO-World inference server |
-| `minio` | `9000` / `9001` | production MinIO API / Console |
+| `minio` | 선택 실행 | 로컬 MinIO API / Console |
 | `postgres` | `5432` | Grafana datasource / metadata 보조 |
 | `grafana` | `3000` | 대시보드 |
 
@@ -318,16 +314,16 @@ Docker Compose(`docker/docker-compose.yaml`)로 주요 서비스를 실행합니
 
 ### 2. 환경 설정
 
-production:
+production (`main`):
 
 ```bash
 cp .env.example docker/.env
 ```
 
-staging:
+test (`dev`):
 
 ```bash
-cp docker/.env docker/.env.staging
+cp docker/.env.test docker/.env.test.local
 ```
 
 주요 환경변수:
@@ -339,28 +335,28 @@ cp docker/.env docker/.env.staging
 | `INCOMING_DIR` | incoming 경로 |
 | `GOOGLE_APPLICATION_CREDENTIALS` | Vertex 인증 |
 | `MOTHERDUCK_TOKEN` | MotherDuck 토큰 |
-| `PROD_AGENT_POLLING_ENABLED` | production agent polling 활성화 (`true` 권장) |
-| `PROD_AGENT_BASE_URL` | production agent base URL (기본 `host.docker.internal:8080`) |
-| `STAGING_AGENT_POLLING_ENABLED` | staging agent polling 활성화 |
-| `STAGING_AGENT_BASE_URL` | staging agent base URL (기본 `host.docker.internal:8081`) |
+| `DISPATCH_AGENT_POLLING_ENABLED` | agent polling 활성화 (`true` 권장) |
+| `DISPATCH_AGENT_BASE_URL` | agent base URL |
+| `DISPATCH_AGENT_PENDING_PATH` | pending API path |
+| `DISPATCH_AGENT_ACK_PATH` | ack API path |
 | `INGEST_UPLOAD_WORKERS` | raw ingest MinIO 업로드 worker 수 (`8` 권장) |
 | `GEMINI_MAX_WORKERS` | clip timestamp Gemini 병렬 worker 수 (`5` 권장) |
 | `GEMINI_CHUNK_MAX_WORKERS` | 긴 영상 chunk Gemini 병렬 worker 수 (`3` 권장) |
 
 ### 3. 인프라 실행
 
-production:
+production (`main`):
 
 ```bash
 cd docker
-docker compose up -d
+PIPELINE_ENV_FILE=.env COMPOSE_PROJECT_NAME=pipeline-prod docker compose up -d dagster-code-server dagster-daemon dagster
 ```
 
-staging:
+test (`dev`):
 
 ```bash
 cd docker
-docker compose --profile staging up -d dagster-staging
+PIPELINE_ENV_FILE=.env.test COMPOSE_PROJECT_NAME=pipeline-test docker compose up -d dagster-code-server dagster-daemon dagster
 ```
 
 ### 4. 환경 검증
@@ -394,32 +390,31 @@ pytest tests/integration -q
 | `manual_label_import_job` | 수동 라벨 import, env로 선택 등록 |
 | `yolo_standard_detection_job` | 표준 YOLO detection, env로 선택 등록 |
 
-### Staging Jobs
+### Test / Legacy Jobs
 
 | Job | 설명 |
 |-----|------|
-| `dispatch_stage_job` | staging dispatch run_mode 분기 |
-| `auto_labeling_routed_job` | spec 기반 auto labeling |
-| `yolo_detection_job` | staging YOLO detection |
+| `dispatch_stage_job` | prod/test 공통 dispatch run_mode 분기 |
+| `auto_labeling_routed_job` | legacy spec 기반 auto labeling |
+| `yolo_detection_job` | legacy test-side YOLO detection |
 | `manual_label_import_job` | incoming 수동 라벨 import |
-| `prelabeled_import_job` | raw + 완료 라벨 세트 수동 적재 |
+| `prelabeled_import_job` | legacy raw + 완료 라벨 세트 수동 적재 |
 | `ingest_job` | 수집 전용 |
 
 ### Sensors / Schedules
 
 | 이름 | 환경 | 설명 |
 |------|------|------|
-| `production_agent_dispatch_sensor` | production | `piaspace-agent` polling -> `dispatch_stage_job` |
-| `dispatch_sensor` | production fallback | `.dispatch/pending/*.json` -> `dispatch_stage_job` |
-| `staging_agent_dispatch_sensor` | staging | `piaspace-agent` polling -> `dispatch_stage_job` |
+| `dispatch_agent_sensor` | prod/test | `piaspace-agent` polling -> `dispatch_stage_job` |
+| `dispatch_sensor` | prod/test fallback | `.dispatch/pending/*.json` -> `dispatch_stage_job` |
 | `incoming_manifest_sensor` | both | pending manifest -> ingest |
 | `auto_bootstrap_manifest_sensor` | both | incoming 스캔 후 manifest 생성 |
-| `spec_resolve_sensor` | staging | spec 요청 -> routed job |
+| `spec_resolve_sensor` | legacy | spec 요청 -> routed job |
 | `dispatch_run_*_sensor` | both | dispatch run status finalizer |
 | `stuck_run_guard_sensor` | both | stuck / orphan run 정리 |
-| `motherduck_*_sensor` | production | 핵심 4개 테이블 증분 sync |
-| `gcs_download_schedule` | production | 매일 04:00 KST GCS 수집 |
-| `motherduck_daily_schedule` | production | 매일 05:00 KST full sync |
+| `motherduck_*_sensor` | prod/test | 핵심 4개 테이블 증분 sync |
+| `gcs_download_schedule` | prod/test | 매일 04:00 KST GCS 수집 |
+| `motherduck_daily_schedule` | prod/test | 매일 05:00 KST full sync |
 
 MotherDuck sensor 기본 watched tables:
 
@@ -455,20 +450,21 @@ WHERE image_caption_text IS NOT NULL;
 
 ## 운영 팁
 
-- production에서 자동 라벨링은 `piaspace-agent:8080` polling이 기본 ingress입니다 (`PROD_AGENT_POLLING_ENABLED=true`). `.dispatch/pending/*.json`은 fallback으로 유지됩니다.
-- staging은 `piaspace-agent-staging:8081` 연결 상태와 `STAGING_AGENT_POLLING_ENABLED=true` 여부를 먼저 확인합니다.
-- `필요없음` 요청은 staging에서 raw ingest 후, 같은 폴더 안의 기존 라벨 결과를 best-effort로 자동 import 할 수 있습니다.
+- production에서 자동 라벨링은 `piaspace-agent:8080` polling이 기본 ingress입니다 (`DISPATCH_AGENT_POLLING_ENABLED=true` 또는 legacy `PROD_AGENT_POLLING_ENABLED=true`). `.dispatch/pending/*.json`은 fallback으로 유지됩니다.
+- test에서는 `piaspace-agent-staging:8081` 연결 상태와 `DISPATCH_AGENT_POLLING_ENABLED=true` 여부를 먼저 확인합니다.
+- `필요없음` 요청은 test 데이터 plane에서 raw ingest 후, 같은 폴더 안의 기존 라벨 결과를 best-effort로 자동 import 할 수 있습니다.
 - `tmp_data_2` 같은 재테스트 전에는 DB / MinIO / `.dispatch` 상태를 정리한 뒤 다시 시작하는 것이 안전합니다.
 
 ## 참고 문서
 
 - `AGENTS.md`
+- `docs/references/deployment-guide.md`
+- `docs/runbook.md`
 - `CLAUDE.md`
 - `CLAUDE2.md`
-- `docs/PRODUCTION_VS_STAGING.md`
-- `docs/staging_agent_api_dispatch_plan.md`
-- `docs/staging_agent_waiting_dispatch_plan.md`
+- 역사 문서:
+  `docs/PRODUCTION_VS_STAGING.md`, `docs/staging_agent_api_dispatch_plan.md`, `docs/staging_agent_waiting_dispatch_plan.md`
 
 ---
 
-이 README는 현재 `definitions.py`, `definitions_staging.py`, `definitions_profiles.py`, `runtime_settings.py` 기준의 운영 흐름을 요약합니다. 세부 스키마나 플레이북은 `CLAUDE2.md`와 `src/vlm_pipeline/sql/schema.sql`을 함께 참고하세요.
+이 README는 현재 `definitions.py`, `definitions_profiles.py`, `runtime_settings.py`, `docker/.env.test` 기준의 운영 흐름을 요약합니다. 세부 스키마나 플레이북은 `CLAUDE2.md`와 `src/vlm_pipeline/sql/schema.sql`을 함께 참고하세요.

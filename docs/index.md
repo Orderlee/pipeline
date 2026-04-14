@@ -22,15 +22,23 @@
   - [Dispatch_Labeling_Method_체계_및_Skip_Import_설계안](logic/Dispatch_Labeling_Method_체계_및_Skip_Import_설계안.md)
   - [YOLO_World_자연어_프롬프트_연결_설계안](logic/YOLO_World_자연어_프롬프트_연결_설계안.md)
 - 실행 계획
+  - [운영-테스트 환경 분리 및 자동 배포 계획](exec-plans/운영_테스트_환경_분리_자동배포_계획.md)
   - [PLAN](PLAN.md)
-  - [staging_agent_api_dispatch_plan](staging_agent_api_dispatch_plan.md)
 - 운영 참고
+  - [배포 가이드](references/deployment-guide.md)
+  - [운영 트러블슈팅 런북](runbook.md)
   - [Label Studio 운영 가이드](references/label-studio-ops-guide.md)
-  - [PRODUCTION_VS_STAGING](PRODUCTION_VS_STAGING.md)
   - [RUN_2f50c9bb_MOTHERDUCK_QUERY](RUN_2f50c9bb_MOTHERDUCK_QUERY.md)
   - [QA_PHASE3_REPORT](QA_PHASE3_REPORT.md)
   - [QA_PHASE4_REPORT](QA_PHASE4_REPORT.md)
   - [Production khon/adlib 라벨·전처리 정리 Runbook](references/production-khon-adlib-label-preprocess-cleanup-runbook.md)
+
+## 역사 문서
+
+- branch-based `dev=test`, `main=production` 전환 전의 `staging` 명칭 문서는 역사 기록으로 유지합니다.
+- 대표 예시:
+  - [staging_agent_api_dispatch_plan](staging_agent_api_dispatch_plan.md)
+  - [PRODUCTION_VS_STAGING](PRODUCTION_VS_STAGING.md)
 
 ## 새 문서 작성 규칙
 

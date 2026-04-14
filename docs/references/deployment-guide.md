@@ -5,35 +5,30 @@
 ## 아키텍처 개요
 
 ```
-로컬 PC (dev 브랜치)
-  ├── 코드 수정 + pytest
-  ├── docker-compose.dev.yaml로 로컬 테스트
-  └── git push → main 브랜치 merge
+로컬 PC
+  ├── dev 브랜치 작업 + pytest
+  ├── docker-compose.dev.yaml로 로컬 확인
+  ├── dev push  -> test 자동 배포
+  └── main push -> production 자동 배포
          │
          ▼
-GitHub Actions (main push 트리거)
-  ├── Unit test 실행
-  └── Self-hosted runner가 운영 서버에서:
-         ├── Docker 이미지 빌드
-         ├── Dagster 서비스 순차 재시작
-         └── Health check
-         │
-         ▼
-운영 서버 (production만 실행)
-  └── 코드 직접 수정 금지
+GitHub Actions
+  ├── Unit test
+  ├── 변경 범위에 따라 이미지 재빌드 여부 판단
+  └── Self-hosted runner가 서버의 prod/test 루트에 각각 배포
 ```
 
 ## 브랜치 전략
 
 | 브랜치 | 용도 | 배포 |
 |--------|------|------|
-| `dev` | 개발/테스트 (로컬 PC) | 없음 |
-| `main` | 운영 배포 트리거 | push 시 자동 배포 |
+| `dev` | 테스트 환경 배포 브랜치 | push 시 test 자동 배포 |
+| `main` | 운영 배포 브랜치 | push 시 production 자동 배포 |
 | `feature/*` | 기능 개발 | dev에 merge |
 
 **규칙:**
 - 운영 서버에서 직접 커밋/push 금지
-- `dev`에서 충분히 테스트 후 `main`에 merge
+- `dev`에서 test 배포 검증 후 `main`에 merge
 - 긴급 수정: `main`에 직접 push 가능 (workflow_dispatch로 수동 배포도 가능)
 
 ## 로컬 개발 환경
@@ -82,6 +77,7 @@ RUNNER_TOKEN=<registration-token> bash scripts/deploy/setup-runner.sh
 ```
 
 GitHub repo Settings > Actions > Runners에서 토큰을 발급받아 입력합니다.
+기본 runner label은 `self-hosted,linux,deploy,production,test`를 권장합니다.
 
 ### 2. Runner 상태 확인
 
@@ -104,17 +100,24 @@ groups $USER | grep docker || sudo usermod -aG docker $USER
 
 ### 자동 배포 (일반)
 
-1. 로컬에서 `dev` 브랜치 작업 후 `main`에 merge
-2. GitHub Actions 자동 실행:
+1. `dev` push:
+   - test root에 sync
+   - `docker/.env.test` 또는 서버의 test env 파일 사용
+   - Dagster health check `http://172.168.42.6:3031/server_info`
+2. `main` push:
+   - production root에 sync
+   - 서버의 production `.env` 사용
+   - Dagster health check `http://172.168.42.6:3030/server_info`
+3. 공통 GitHub Actions 동작:
    - Unit test → 실패 시 배포 중단
-   - Docker 이미지 빌드 (git SHA 태깅)
+   - 변경 범위가 Docker/runtime 영역이면 이미지 재빌드
    - dagster-code-server 재시작 → 15초 대기
    - dagster-daemon + dagster 재시작
    - Health check (최대 60초)
 
 ### 수동 배포 (긴급)
 
-GitHub repo > Actions > "Deploy to Production" > "Run workflow" 클릭
+GitHub repo > Actions > "Deploy to Test" 또는 "Deploy to Production" > "Run workflow" 클릭
 - `skip_tests: true` 옵션으로 테스트 건너뛰기 가능
 
 ### 배포 제외 대상
@@ -141,20 +144,6 @@ bash scripts/deploy/rollback.sh datapipeline:abc12345
 - **Dagster run history**: `dagster_home/storage/` 볼륨으로 보존
 - **GPU 서비스 (YOLO, SAM3)**: 파이프라인 코드 변경과 무관 — 별도 재시작 불필요
 - **NAS 마운트**: 호스트 바인드 마운트이므로 배포와 무관
-- **.env 파일**: git에 포함되지 않으므로 운영 서버에서 직접 관리
-
-## Staging 정리 (선택)
-
-운영 서버에서 staging을 완전히 제거하려면:
-
-```bash
-# 1. staging 서비스 중지
-cd docker && docker compose --profile staging down
-
-# 2. staging 데이터 정리 (선택)
-rm -f docker/data/staging.duckdb
-rm -rf docker/app/dagster_home_staging/storage/
-```
-
-`docker-compose.yaml`에서 staging 관련 서비스(`dagster-staging`, `dispatch-webhook-staging`)와
-`x-staging-volumes`는 운영에 영향을 주지 않으므로 당장 제거하지 않아도 됩니다.
+- **env 파일**: production은 서버 로컬 `.env`, test는 `docker/.env.test` 기반으로 관리
+- **MinIO Console 주소**: production `9001`, test `9003`
+- **애플리케이션 endpoint**: production `9000`, test `9002`

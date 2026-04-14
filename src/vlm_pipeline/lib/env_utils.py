@@ -108,11 +108,8 @@ def has_any_duckdb_writer_tag(tags: Mapping[str, object] | None) -> bool:
     return any(is_enabled_run_tag(tags, key) for key in DUCKDB_WRITER_TAG_KEYS)
 
 
-IS_STAGING = bool_env("IS_STAGING", False)
-
-
 def dispatch_folder_for_source_unit(tags: Mapping[str, str] | None) -> str | None:
-    """staging dispatch run 태그에서 `raw_files.source_unit_name` 조회용 문자열.
+    """legacy test dispatch run 태그에서 `raw_files.source_unit_name` 조회용 문자열.
 
     manifest의 원본 폴더명(`folder_name_original`)이 DB에 그대로 저장되므로,
     sanitize된 `folder_name`보다 이쪽을 우선한다.
@@ -124,7 +121,7 @@ def dispatch_folder_for_source_unit(tags: Mapping[str, str] | None) -> str | Non
 
 
 def dispatch_raw_key_prefix_folder(tags: Mapping[str, str] | None) -> str | None:
-    """staging dispatch run 태그에서 `raw_key LIKE '<prefix>/%'` 용 첫 경로 세그먼트.
+    """legacy test dispatch run 태그에서 `raw_key LIKE '<prefix>/%'` 용 첫 경로 세그먼트.
 
     INGEST의 `raw_key`는 `sanitize_path_component` 기준이므로, 태그의 sanitize된
     `folder_name`을 우선하고 없으면 원본을 동일 규칙으로 정규화한다.
@@ -235,7 +232,7 @@ _OUTPUT_DEPENDENCIES: dict[str, list[str]] = {
     "captioning_image": ["timestamp_video", "captioning_video"],
 }
 
-# categories → classes 파생 (auto_labeling_unified_spec, staging spec flow)
+# categories → classes 파생 (auto_labeling_unified_spec, legacy spec flow)
 CATEGORY_TO_CLASSES: dict[str, list[str]] = {
     "smoke": ["smoke"],
     "smoking": ["cigarette", "smoking"],
@@ -272,6 +269,16 @@ def normalize_output_name(value: object) -> str:
     rendered = re.sub(r"_+", "_", rendered)
     rendered = rendered.strip("_")
     return _OUTPUT_NAME_ALIASES.get(rendered, rendered)
+
+
+def normalize_dispatch_method_token(value: object) -> str:
+    """커스텀 dispatch labeling_method 토큰을 alias 없이 정규화."""
+    rendered = str(value or "").strip().lower()
+    if not rendered:
+        return ""
+    rendered = rendered.replace("-", "_").replace(" ", "_")
+    rendered = re.sub(r"_+", "_", rendered)
+    return rendered.strip("_")
 
 
 def normalize_output_names(values: Iterable[object] | None) -> list[str]:
