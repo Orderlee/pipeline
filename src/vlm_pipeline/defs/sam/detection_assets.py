@@ -304,7 +304,7 @@ def _run_sam3_image_detection(
 @asset(
     name="sam3_bbox_labeling",
     deps=["clip_to_frame"],
-    description="Staging spec flow: requested_outputs에 bbox 포함 시 SAM3 bbox detection (YOLO bbox_labeling 병렬)",
+    description="Legacy spec flow: requested_outputs에 bbox 포함 시 SAM3 bbox detection (YOLO bbox_labeling 병렬)",
     group_name="sam3",
     config_schema={"limit": Field(int, default_value=200)},
 )
@@ -345,5 +345,4 @@ def sam3_bbox_labeling(
         class_source_override=class_source,
         resolved_config_id_override=resolved_config_id,
     )
-
 

@@ -1,7 +1,7 @@
 """Dispatch run status finalizers.
 
 dispatch_stage_job / archive-only ingest_job 종료 시
-staging_dispatch_requests, staging_pipeline_runs 상태를 마감한다.
+dispatch_requests, dispatch_pipeline_runs 상태를 마감한다.
 """
 
 from __future__ import annotations
@@ -30,12 +30,15 @@ def _resolve_dispatch_request_id(context: RunStatusSensorContext) -> str | None:
         return None
     if run.job_name not in _TARGET_JOBS:
         return None
-    if run.job_name == "ingest_job" and str(tags.get("dispatch_archive_only") or "").strip().lower() not in {
-        "1",
-        "true",
-        "yes",
-    }:
-        return None
+    if run.job_name == "ingest_job":
+        archive_only = str(tags.get("dispatch_archive_only") or "").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+        }
+        dispatch_mode = str(tags.get("dispatch_mode") or "").strip().lower()
+        if not archive_only and dispatch_mode != "ingest_only":
+            return None
     return request_id
 
 

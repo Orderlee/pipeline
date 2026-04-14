@@ -2,4 +2,4 @@ load_from:
   - grpc_server:
       host: dagster-code-server
       port: 4000
-      location_name: prod_defs
+      location_name: pipeline_defs

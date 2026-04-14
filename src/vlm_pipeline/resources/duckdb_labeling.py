@@ -77,7 +77,7 @@ class DuckDBLabelingMixin:
         label_key: str | None = None,
         completed_at: datetime | None = None,
     ) -> None:
-        """video_metadata stage column (staging spec flow). 컬럼 없으면 no-op."""
+        """video_metadata stage column (legacy spec flow). 컬럼 없으면 no-op."""
         with self.connect() as conn:
             if "timestamp_status" not in self._table_columns(conn, "video_metadata"):
                 return
@@ -156,7 +156,7 @@ class DuckDBLabelingMixin:
     def find_ready_for_labeling_timestamp_backlog(
         self, spec_id: str, limit: int = 50
     ) -> list[dict]:
-        """Staging spec flow: ready_for_labeling + spec_id, timestamp 미완료 비디오."""
+        """Legacy spec flow: ready_for_labeling + spec_id, timestamp 미완료 비디오."""
         with self.connect() as conn:
             cols = self._table_columns(conn, "raw_files")
             if "spec_id" not in cols:
@@ -218,7 +218,7 @@ class DuckDBLabelingMixin:
     def find_ready_for_labeling_caption_backlog(
         self, spec_id: str, limit: int = 100
     ) -> list[dict]:
-        """Staging spec flow: timestamp 완료 후 caption 정규화가 남은 비디오."""
+        """Legacy spec flow: timestamp 완료 후 caption 정규화가 남은 비디오."""
         with self.connect() as conn:
             cols = self._table_columns(conn, "raw_files")
             if "spec_id" not in cols:

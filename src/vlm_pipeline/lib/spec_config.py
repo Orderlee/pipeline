@@ -1,4 +1,4 @@
-"""Helpers for staging spec-flow run tags and spec config resolution.
+"""Helpers for legacy spec-flow run tags and spec config resolution.
 
 Tag-parsing utilities (pure) and DB-dependent config resolution helpers
 are co-located here since the DB functions only accept ``db: Any``
@@ -52,7 +52,7 @@ def resolve_and_persist_spec_config(db: Any, spec_id: str) -> dict[str, Any]:
 
 
 def load_persisted_spec_config(db: Any, spec_id: str) -> dict[str, Any]:
-    """Load config for downstream staged assets using persisted resolved_config_id."""
+    """Load config for downstream legacy spec assets using persisted resolved_config_id."""
     spec = db.get_labeling_spec_by_id(spec_id)
     if not spec:
         raise RuntimeError(f"spec_not_found:{spec_id}")
@@ -101,7 +101,7 @@ def is_unscoped_mvp_autolabel_run(tags: Mapping[str, str] | None) -> bool:
 
 
 def parse_requested_outputs(tags: Mapping[str, str] | None) -> list[str]:
-    """Parse requested outputs from run tags for routed staging jobs."""
+    """Parse requested outputs from run tags for routed legacy spec jobs."""
     if not tags:
         return []
     outputs_raw = (

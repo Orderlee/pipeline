@@ -73,7 +73,7 @@ def classification_video(
 ) -> dict:
     tags = context.run.tags if context.run else {}
     if is_standard_spec_run(tags):
-        context.log.info("classification_video 스킵: staging spec 흐름은 이번 범위에서 제외합니다.")
+        context.log.info("classification_video 스킵: legacy spec 흐름은 이번 범위에서 제외합니다.")
         return {"processed": 0, "failed": 0, "skipped": True}
 
     requested = parse_requested_outputs(tags)

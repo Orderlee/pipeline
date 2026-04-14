@@ -12,8 +12,8 @@ RUNNER_TAR="actions-runner-${RUNNER_ARCH}-${RUNNER_VERSION}.tar.gz"
 RUNNER_URL="https://github.com/actions/runner/releases/download/v${RUNNER_VERSION}/${RUNNER_TAR}"
 
 REPO_URL="https://github.com/Orderlee/Datapipeline-Data-data_pipeline"
-DEFAULT_RUNNER_NAME="prod-runner"
-DEFAULT_RUNNER_LABELS="self-hosted,production,linux"
+DEFAULT_RUNNER_NAME="pipeline-deploy-runner"
+DEFAULT_RUNNER_LABELS="self-hosted,linux,deploy,production,test"
 
 usage() {
     cat <<'EOF'

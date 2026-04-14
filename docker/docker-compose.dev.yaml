@@ -1,17 +1,18 @@
 # =====================================================
 # 로컬 개발/테스트용 Docker Compose
-# GPU 서비스 제외, MinIO + PostgreSQL + Dagster만 실행
-# 사용법: docker compose -f docker/docker-compose.dev.yaml up -d
+# prod/test와 같은 Dagster 구성(webserver + daemon + code-server)
 # =====================================================
 
-name: pipeline-dev
-
 x-dev-env: &dev-env
+  PIPELINE_RUNTIME_ENV: test
   MINIO_ENDPOINT: http://minio:9000
   MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
   MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin}
   DUCKDB_PATH: /data/dev.duckdb
   DATAOPS_DUCKDB_PATH: /data/dev.duckdb
+  INCOMING_DIR: /nas/incoming
+  ARCHIVE_DIR: /nas/archive
+  MANIFEST_DIR: /nas/incoming/.manifests
   DATAOPS_PIPELINE_ROOT: /nas/datasets/projects
   DATAOPS_NAS_ROOT: /nas/datasets/projects
   DATAOPS_NAS_ROOTS: /nas/datasets/projects;/nas/incoming
@@ -20,10 +21,12 @@ x-dev-env: &dev-env
   SAM3_API_URL: ""
   DAGSTER_HOME: /app/dagster_home
   PYTHONPATH: /:/src/python:/src/vlm
-  IS_STAGING: "true"
+  DATAOPS_MINIO__ENDPOINT: http://minio:9000
+  DATAOPS_MINIO__ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
+  DATAOPS_MINIO__SECRET_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin}
+  DATAOPS_MINIO__BUCKET: raw-data
 
 services:
-  # ===== MinIO (로컬 S3) =====
   minio:
     image: minio/minio:latest
     ports:
@@ -41,7 +44,6 @@ services:
       timeout: 10s
       retries: 3
 
-  # ===== PostgreSQL (Dagster storage) =====
   postgres:
     image: postgres:15
     ports:
@@ -58,8 +60,7 @@ services:
       timeout: 5s
       retries: 5
 
-  # ===== Dagster Dev Server =====
-  dagster-dev:
+  dagster-code-server:
     build:
       context: ..
       dockerfile: docker/Dockerfile
@@ -69,19 +70,31 @@ services:
     command:
       [
         "/bin/bash", "-c",
-        "DAGSTER_HOME=/app/dagster_home dagster dev -w /app/workspace_staging.yaml -h 0.0.0.0 -p 3030",
+        "DAGSTER_HOME=/app/dagster_home dagster api grpc -h 0.0.0.0 -p 4000 -f /app/dagster_defs.py -d /app -a defs",
+      ]
+    environment: *dev-env
+    volumes:
+      - ./app/dagster_home_dev:/app/dagster_home
+      - ./data_dev:/data
+      - ../src/python:/src/python:ro
+      - ../src:/src/vlm:ro
+      - ../configs:/configs:ro
+      - ../scripts:/scripts:ro
+      - ${DEV_INCOMING_PATH:-./data_dev/incoming}:/nas/incoming
+      - ${DEV_ARCHIVE_PATH:-./data_dev/archive}:/nas/archive
+
+  dagster:
+    image: datapipeline:dev
+    user: root
+    working_dir: /app/dagster_home
+    command:
+      [
+        "/bin/bash", "-c",
+        "DAGSTER_HOME=/app/dagster_home dagster-webserver -h 0.0.0.0 -p 3030 -w /app/workspace.yaml",
       ]
     ports:
       - "${DAGSTER_PORT:-3030}:3030"
-    environment:
-      <<: *dev-env
-      INCOMING_DIR: /nas/incoming
-      ARCHIVE_DIR: /nas/archive
-      MANIFEST_DIR: /nas/incoming/.manifests
-      DATAOPS_MINIO__ENDPOINT: http://minio:9000
-      DATAOPS_MINIO__ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
-      DATAOPS_MINIO__SECRET_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin}
-      DATAOPS_MINIO__BUCKET: raw-data
+    environment: *dev-env
     volumes:
       - ./app/dagster_home_dev:/app/dagster_home
       - ./data_dev:/data
@@ -92,15 +105,32 @@ services:
       - ${DEV_INCOMING_PATH:-./data_dev/incoming}:/nas/incoming
       - ${DEV_ARCHIVE_PATH:-./data_dev/archive}:/nas/archive
     depends_on:
-      postgres:
-        condition: service_healthy
-      minio:
-        condition: service_healthy
+      dagster-code-server:
+        condition: service_started
+
+  dagster-daemon:
+    image: datapipeline:dev
+    user: root
+    working_dir: /app/dagster_home
+    command:
+      [
+        "/bin/bash", "-c",
+        "DAGSTER_HOME=/app/dagster_home dagster-daemon run -w /app/workspace.yaml",
+      ]
+    environment: *dev-env
+    volumes:
+      - ./app/dagster_home_dev:/app/dagster_home
+      - ./data_dev:/data
+      - ../src/python:/src/python:ro
+      - ../src:/src/vlm:ro
+      - ../configs:/configs:ro
+      - ../scripts:/scripts:ro
+      - ${DEV_INCOMING_PATH:-./data_dev/incoming}:/nas/incoming
+      - ${DEV_ARCHIVE_PATH:-./data_dev/archive}:/nas/archive
+    depends_on:
+      dagster-code-server:
+        condition: service_started
 
 volumes:
   minio_data:
   postgres_data:
-
-networks:
-  default:
-    name: pipeline-dev-network
