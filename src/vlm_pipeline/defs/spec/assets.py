@@ -1,6 +1,6 @@
 """Spec flow assets — labeling_spec_ingest, config_sync, ingest_router, pending_ingest.
 
-Staging runtime profile 전용. ingest_router는 raw_ingest 이후에 실행한다.
+Legacy spec runtime 전용. ingest_router는 raw_ingest 이후에 실행한다.
 """
 
 from __future__ import annotations
@@ -26,7 +26,7 @@ def _normalize_labeling_method(method: list[str] | None) -> list[str]:
 
 @asset(
     name="labeling_spec_ingest",
-    description="외부 spec 수신 → labeling_specs upsert (staging spec flow)",
+    description="외부 spec 수신 → labeling_specs upsert (legacy spec flow)",
     group_name="spec",
     deps=[],
 )

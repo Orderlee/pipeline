@@ -210,15 +210,17 @@ CREATE TABLE IF NOT EXISTS image_labels (
 );
 
 -- ============================================================
--- 9. staging_dispatch_requests: Dispatch 요청 추적 (dispatch_sensor DDL과 동일)
+-- 9. dispatch_requests: Dispatch 요청 추적 (dispatch_sensor DDL과 동일)
 --    trigger JSON → archive 이동 + 파이프라인 실행
 -- ============================================================
-CREATE TABLE IF NOT EXISTS staging_dispatch_requests (
+CREATE TABLE IF NOT EXISTS dispatch_requests (
     request_id           VARCHAR PRIMARY KEY,
     folder_name          VARCHAR,
     run_mode             VARCHAR,
     outputs              VARCHAR,          -- 쉼표 구분: bbox, timestamp, captioning
     labeling_method      VARCHAR,
+    dispatch_mode        VARCHAR DEFAULT 'standard',
+    requested_labeling_method_raw VARCHAR,
     categories           VARCHAR,
     classes              VARCHAR,
     image_profile        VARCHAR,
@@ -241,10 +243,10 @@ CREATE TABLE IF NOT EXISTS staging_dispatch_requests (
 );
 
 -- ============================================================
--- 10. staging_model_configs: output 타입별 모델 선택 + 기본 파라미터
+-- 10. dispatch_model_configs: output 타입별 모델 선택 + 기본 파라미터
 --     outputs 값(bbox, timestamp, captioning)에 따라 사용 모델 결정
 -- ============================================================
-CREATE TABLE IF NOT EXISTS staging_model_configs (
+CREATE TABLE IF NOT EXISTS dispatch_model_configs (
     config_id            VARCHAR PRIMARY KEY,
     output_type          VARCHAR NOT NULL UNIQUE,  -- bbox | timestamp | captioning
     model_name           VARCHAR NOT NULL,         -- yolov8l-worldv2 | gemini-2.0-flash 등
@@ -264,10 +266,10 @@ CREATE TABLE IF NOT EXISTS staging_model_configs (
 );
 
 -- ============================================================
--- 11. staging_pipeline_runs: Dispatch 요청별 파이프라인 단계 진행 추적
+-- 11. dispatch_pipeline_runs: Dispatch 요청별 파이프라인 단계 진행 추적
 --     archive 이동 → 모델 실행 → 완료 전 과정 기록
 -- ============================================================
-CREATE TABLE IF NOT EXISTS staging_pipeline_runs (
+CREATE TABLE IF NOT EXISTS dispatch_pipeline_runs (
     run_id               VARCHAR PRIMARY KEY,
     request_id           VARCHAR,
     folder_name          VARCHAR,

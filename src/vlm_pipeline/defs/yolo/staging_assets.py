@@ -1,7 +1,7 @@
-"""Staging 전용 YOLO assets.
+"""Legacy test-era YOLO assets.
 
 dispatch_stage_job에서는 raw_ingest 완료 후 실제 frame 추출이 끝난 다음에만
-YOLO가 실행되도록 staging 전용 asset dependency를 분리한다.
+YOLO가 실행되도록 legacy test asset dependency를 분리한다.
 """
 
 from __future__ import annotations
@@ -16,7 +16,7 @@ from vlm_pipeline.resources.minio import MinIOResource
 @asset(
     name="staging_yolo_image_detection",
     deps=["clip_to_frame", "raw_video_to_frame"],
-    description="Dispatch 라인: frame 추출 완료 후 YOLO-World-L object detection (clip_to_frame과 deps 분리)",
+    description="Legacy test dispatch 라인: frame 추출 완료 후 YOLO-World-L object detection (clip_to_frame과 deps 분리)",
     group_name="yolo",
     config_schema={
         "limit": Field(int, default_value=500),

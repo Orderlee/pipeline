@@ -3,11 +3,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import os
 from typing import Literal
 
-from vlm_pipeline.lib.env_utils import bool_env
-
-RuntimeProfileName = Literal["production", "staging"]
+RuntimeProfileName = Literal["production", "test"]
 
 
 @dataclass(frozen=True)
@@ -15,13 +14,18 @@ class RuntimeProfile:
     """Resolved runtime profile for policy decisions."""
 
     name: RuntimeProfileName
-    is_staging: bool
+
+    @property
+    def is_test(self) -> bool:
+        return self.name == "test"
 
 
 def resolve_runtime_profile() -> RuntimeProfile:
     """Resolve runtime profile from environment once per call site."""
-    is_staging = bool_env("IS_STAGING", False)
-    return RuntimeProfile(
-        name="staging" if is_staging else "production",
-        is_staging=is_staging,
-    )
+    raw_name = str(os.getenv("PIPELINE_RUNTIME_ENV") or "").strip().lower()
+
+    if raw_name in {"production", "prod", "main"}:
+        return RuntimeProfile(name="production")
+    if raw_name in {"test", "dev", "staging"}:
+        return RuntimeProfile(name="test")
+    return RuntimeProfile(name="production")

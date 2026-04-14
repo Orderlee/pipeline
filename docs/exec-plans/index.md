@@ -10,10 +10,14 @@
 
 ## 현재 계획 문서
 
+- [운영-테스트 환경 분리 및 자동 배포 계획](운영_테스트_환경_분리_자동배포_계획.md)
 - [PLAN](../PLAN.md)
 - [CODEX_STAGING_AUTO_LABELING_UNIFIED_SPEC_TASK](../CODEX_STAGING_AUTO_LABELING_UNIFIED_SPEC_TASK.md)
 - [CODEX_STAGING_UNIFIED_SPEC_REVIEW](../CODEX_STAGING_UNIFIED_SPEC_REVIEW.md)
 - [CODEX_SUBAGENT_VIDEO_EXTRACT_YOLO_TEST](../CODEX_SUBAGENT_VIDEO_EXTRACT_YOLO_TEST.md)
+
+## 역사 계획 문서
+
 - [staging_agent_api_dispatch_plan](../staging_agent_api_dispatch_plan.md)
 - [staging_agent_waiting_dispatch_plan](../staging_agent_waiting_dispatch_plan.md)
 
