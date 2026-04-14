@@ -19,7 +19,7 @@ from vlm_pipeline.lib.spec_config import (
     load_persisted_spec_config,
     parse_requested_outputs,
 )
-from vlm_pipeline.lib.staging_vertex import normalize_gemini_events
+from vlm_pipeline.lib.vertex_event_utils import normalize_gemini_events
 from vlm_pipeline.resources.duckdb import DuckDBResource
 from vlm_pipeline.resources.minio import MinIOResource
 

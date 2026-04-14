@@ -1,7 +1,7 @@
-"""Staging 전용 spec_resolve_sensor — config 미조회, retry_count, RunRequest 직접 트리거.
+"""Legacy test-era spec_resolve_sensor — config 미조회, retry_count, RunRequest 직접 트리거.
 
 명세: config 조회는 3-5에서만. 매칭 시 retry_count+=1, spec_status 유지, auto_labeling_routed_job RunRequest.
-definitions_staging에서만 사용.
+현재 기본 prod/test runtime에는 연결하지 않고, 과거 spec 호환 경로로만 남겨둔다.
 """
 
 from __future__ import annotations
@@ -15,13 +15,13 @@ from vlm_pipeline.resources.duckdb import DuckDBResource
     name="spec_resolve_sensor",
     minimum_interval_seconds=60,
     job_name="auto_labeling_routed_job",
-    description="[Staging] pending_resolved → ready_for_labeling 전이 후 auto_labeling_routed_job 직접 트리거",
+    description="[Legacy] pending_resolved → ready_for_labeling 전이 후 auto_labeling_routed_job 직접 트리거",
 )
 def spec_resolve_sensor(
     context: SensorEvaluationContext,
     db: DuckDBResource,
 ) -> RunRequest | None:
-    """Staging: config 미조회, retry_count 증가, spec_status 유지, RunRequest 반환."""
+    """Legacy spec flow: config 미조회, retry_count 증가, spec_status 유지, RunRequest 반환."""
     db.ensure_runtime_schema()
     specs = db.list_specs_by_status("pending_resolved")
     if not specs:

@@ -362,7 +362,7 @@ def _run_yolo_image_detection(
 @asset(
     name="bbox_labeling",
     deps=["clip_to_frame"],
-    description="Staging spec flow: requested_outputs에 bbox 포함 시 frame_status=completed 대상 YOLO detection",
+    description="Legacy spec flow: requested_outputs에 bbox 포함 시 frame_status=completed 대상 YOLO detection",
     group_name="yolo",
     config_schema={"limit": Field(int, default_value=500)},
 )

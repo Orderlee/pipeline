@@ -1,7 +1,7 @@
-"""Staging 전용 spec flow assets — config_sync(version/삭제 반영), ingest_router(config 미조회), activate_labeling_spec.
+"""Legacy test-era spec flow assets — config_sync(version/삭제 반영), ingest_router(config 미조회), activate_labeling_spec.
 
 명세: 라우터는 pending/ready 분기만, config는 3-5(clip_timestamp)에서 조회.
-definitions_staging에서만 import하여 사용.
+현재 기본 prod/test runtime에는 연결하지 않고, 과거 spec 호환 경로로만 남겨둔다.
 """
 
 from __future__ import annotations
@@ -31,7 +31,7 @@ def _canonicalize_config_json(config_json: object) -> str:
 
 @asset(
     name="config_sync",
-    description="[Staging] config/parameters/*.json → labeling_configs 동기화. version+1, 삭제 시 is_active=false.",
+    description="[Legacy] config/parameters/*.json → labeling_configs 동기화. version+1, 삭제 시 is_active=false.",
     group_name="spec",
     deps=[],
 )
@@ -39,7 +39,7 @@ def config_sync(
     context,
     db: DuckDBResource,
 ) -> dict:
-    """Staging: 신규 INSERT, 변경 시 version+1, 삭제 시 is_active=false."""
+    """Legacy spec flow: 신규 INSERT, 변경 시 version+1, 삭제 시 is_active=false."""
     db.ensure_runtime_schema()
     config_dir = Path(CONFIG_PARAMETERS_DIR)
     if not config_dir.is_dir():
@@ -122,7 +122,7 @@ def config_sync(
 
 @asset(
     name="ingest_router",
-    description="[Staging] completed raw_files + labeling_specs 매칭 → pending_spec | ready_for_labeling (config 조회 없음)",
+    description="[Legacy Test] completed raw_files + labeling_specs 매칭 → pending_spec | ready_for_labeling (config 조회 없음)",
     group_name="spec",
     deps=[AssetKey("raw_ingest")],
 )
@@ -130,7 +130,7 @@ def ingest_router(
     context,
     db: DuckDBResource,
 ) -> dict:
-    """Staging: 라우터는 분기만. config는 clip_timestamp(3-5)에서 조회."""
+    """Legacy test flow: 라우터는 분기만. config는 clip_timestamp(3-5)에서 조회."""
     db.ensure_runtime_schema()
     if not getattr(db, "_table_exists", None):
         return {"routed": 0, "pending_spec": 0, "ready": 0, "failed": 0}
@@ -202,7 +202,7 @@ def ingest_router(
 
 @asset(
     name="activate_labeling_spec",
-    description="[Staging] routed job 전체 성공 시 spec_status를 active로 전환",
+    description="[Legacy Test] routed job 전체 성공 시 spec_status를 active로 전환",
     group_name="spec",
     deps=[AssetKey("bbox_labeling")],
 )

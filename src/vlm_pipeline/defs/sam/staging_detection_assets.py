@@ -1,7 +1,7 @@
-"""Staging 전용 SAM3 detection assets.
+"""Legacy test-era SAM3 detection assets.
 
 dispatch_stage_job에서는 raw_ingest 완료 후 실제 frame 추출이 끝난 다음에만
-SAM3가 실행되도록 staging 전용 asset dependency를 분리한다.
+SAM3가 실행되도록 legacy test asset dependency를 분리한다.
 """
 
 from __future__ import annotations
@@ -16,7 +16,7 @@ from vlm_pipeline.resources.minio import MinIOResource
 @asset(
     name="staging_sam3_image_detection",
     deps=["clip_to_frame", "raw_video_to_frame"],
-    description="Dispatch 라인: frame 추출 완료 후 SAM3.1 text-prompted bbox detection (staging 전용, YOLO 비교용)",
+    description="Legacy test dispatch 라인: frame 추출 완료 후 SAM3.1 text-prompted bbox detection (YOLO 비교용)",
     group_name="sam3",
     config_schema={
         "limit": Field(int, default_value=200),

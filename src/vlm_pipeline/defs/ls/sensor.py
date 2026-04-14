@@ -1,10 +1,10 @@
 """LS task 자동 생성 sensor + presigned URL 갱신 schedule.
 
-dispatch_stage_job이 완료된 후 (staging_dispatch_requests.status='completed'),
+dispatch_stage_job이 완료된 후 (dispatch_requests.status='completed'),
 아직 LS task가 생성되지 않은 요청을 감지하여 ls_task_create_job을 트리거합니다.
 
 처리 흐름:
-  staging_dispatch_requests
+  dispatch_requests
       WHERE status='completed'
         AND COALESCE(ls_task_status, 'pending') = 'pending'
     → ls_task_create_job (folder_name 기준으로 ls_tasks.py create 실행)
@@ -40,6 +40,7 @@ from vlm_pipeline.lib.minio_cross_sync import (
     ls_minio_endpoint,
     sync_folder_for_ls,
 )
+from vlm_pipeline.resources.duckdb_ingest_dispatch import DISPATCH_REQUESTS_TABLE
 
 LS_TASKS_SCRIPT = Path(
     os.environ.get("LS_TASKS_SCRIPT", Path(__file__).parents[3] / "gemini" / "ls_tasks.py")
@@ -54,16 +55,27 @@ def _fetch_pending_dispatch_requests(db_path: str) -> list[dict]:
     """ls_task_status='pending'이고 dispatch가 완료된 요청 목록."""
     conn = duckdb.connect(db_path, read_only=True)
     try:
+        columns = {
+            col[0]
+            for col in conn.execute(
+                f"SELECT column_name FROM information_schema.columns WHERE table_name = '{DISPATCH_REQUESTS_TABLE}'"
+            ).fetchall()
+        }
+        bucket_expr = "bucket" if "bucket" in columns else "'vlm-processed'"
         rows = conn.execute(
-            """
-            SELECT request_id, folder_name
-            FROM staging_dispatch_requests
+            f"""
+            SELECT request_id, folder_name, {bucket_expr} AS bucket
+            FROM {DISPATCH_REQUESTS_TABLE}
             WHERE status = 'completed'
               AND COALESCE(ls_task_status, 'pending') = 'pending'
             ORDER BY completed_at
             """
         ).fetchall()
-        return [{"request_id": r[0], "folder_name": r[1]} for r in rows if r[1]]
+        return [
+            {"request_id": r[0], "folder_name": r[1], "bucket": r[2] or "vlm-processed"}
+            for r in rows
+            if r[1]
+        ]
     finally:
         conn.close()
 
@@ -72,7 +84,7 @@ def _update_ls_task_status(db_path: str, request_id: str, status: str) -> None:
     conn = duckdb.connect(db_path)
     try:
         conn.execute(
-            "UPDATE staging_dispatch_requests SET ls_task_status = ? WHERE request_id = ?",
+            f"UPDATE {DISPATCH_REQUESTS_TABLE} SET ls_task_status = ? WHERE request_id = ?",
             [status, request_id],
         )
     finally:
@@ -85,7 +97,12 @@ def _update_ls_task_status(db_path: str, request_id: str, status: str) -> None:
 
 @op
 def create_ls_tasks(context) -> None:
-    """dispatch request 별로 ls_tasks.py create 실행."""
+    """dispatch request 별로 ls_tasks.py create --auto-detect 실행.
+
+    bucket 컬럼이 vlm-processed이면 {folder}/clips prefix를 우선 시도하고,
+    vlm-raw 등 다른 버킷이면 folder_name 자체를 prefix로 사용한다.
+    --auto-detect로 미디어 타입(비디오/이미지)을 자동 감지한다.
+    """
     db_path = default_duckdb_path()
     requests = _fetch_pending_dispatch_requests(db_path)
 
@@ -103,27 +120,34 @@ def create_ls_tasks(context) -> None:
     for req in requests:
         request_id = req["request_id"]
         folder_name = req["folder_name"].rstrip("/")
-        clip_prefix = f"{folder_name}/clips"
+        bucket = req.get("bucket", "vlm-processed")
 
-        context.log.info(f"ls task 생성 시작: request_id={request_id}, prefix={clip_prefix}")
+        if bucket == "vlm-processed":
+            prefix = f"{folder_name}/clips"
+        else:
+            prefix = folder_name
+
+        context.log.info(
+            f"ls task 생성 시작: request_id={request_id}, bucket={bucket}, prefix={prefix}"
+        )
         try:
-            # (A/C) staging이면 클립·라벨을 production MinIO로 복사
-            if need_sync:
+            if need_sync and bucket == "vlm-processed":
                 n = sync_folder_for_ls(
                     folder_name,
                     target_endpoint=target_ep,
                     log_fn=lambda msg: context.log.info(msg),
                 )
-                context.log.info(f"staging→production 동기화: {n}건 복사")
+                context.log.info(f"test→production 동기화: {n}건 복사")
 
-            # (B) --minio-endpoint를 명시적으로 전달하여 LS가 production 버킷 참조
             result = subprocess.run(
                 [
                     sys.executable,
                     str(LS_TASKS_SCRIPT),
                     "--minio-endpoint", target_ep,
+                    "--bucket", bucket,
                     "create",
-                    "--prefix", clip_prefix,
+                    "--prefix", prefix,
+                    "--auto-detect",
                     "--api-key", api_key,
                 ],
                 capture_output=True,
