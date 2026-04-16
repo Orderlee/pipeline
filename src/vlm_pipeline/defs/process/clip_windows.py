@@ -172,12 +172,24 @@ def plan_asset_event_clip_extraction_windows(
             if event_start_sec is None or event_end_sec is None or event_end_sec <= event_start_sec:
                 continue
             source_duration_sec = _coerce_float_or_none(candidate.get("video_duration_sec"))
-            base_start_sec, base_end_sec = resolve_event_clip_extraction_window(
-                event_start_sec=event_start_sec,
-                event_end_sec=event_end_sec,
-                source_duration_sec=source_duration_sec,
-                event_category=None,
-            )
+            # 이벤트 시작이 영상 길이를 넘어서면 추출 불가 → 플랜에서 제외 (fail-forward).
+            # 호출부(frame_extract)에서 window_plan 부재를 감지하여 해당 clip만 failed 처리한다.
+            if (
+                source_duration_sec is not None
+                and source_duration_sec > 0
+                and event_start_sec >= source_duration_sec
+            ):
+                continue
+            try:
+                base_start_sec, base_end_sec = resolve_event_clip_extraction_window(
+                    event_start_sec=event_start_sec,
+                    event_end_sec=event_end_sec,
+                    source_duration_sec=source_duration_sec,
+                    event_category=None,
+                )
+            except RuntimeError:
+                # 방어적: 어떤 엣지 케이스도 계획 함수 바깥으로 새어나가지 않게 한다.
+                continue
             planned_events.append(
                 {
                     "key": candidate_clip_window_plan_key(candidate),

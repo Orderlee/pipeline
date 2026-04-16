@@ -1,0 +1,60 @@
+name: Claude PR Review
+
+# pull_request_target 사용 이유:
+#   - fork에서 upstream으로 보낸 PR에서도 Secret 접근 가능
+#   - 단, 기본 checkout은 base 브랜치이므로 PR head를 명시적으로 checkout 필요
+# 보안 주의:
+#   - contents: read (write 금지) — Claude가 코드 push 불가
+#   - claude_args 에서 --allowedTools 로 도구 제한
+#   - PR 코드 실행 금지 (actions/checkout 만 수행, 별도 build/run 금지)
+on:
+  pull_request_target:
+    types: [opened, synchronize]
+    branches: [dev, main]
+    paths-ignore:
+      - "docs/**"
+      - "*.md"
+      - ".cursor/**"
+      - ".agent/**"
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: claude-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    if: github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      # pull_request_target 의 기본 checkout 은 base 브랜치이므로
+      # 리뷰 대상(PR head)을 명시적으로 checkout 한다.
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          claude_args: "--max-turns 5 --allowedTools Read,Grep,Glob"
+          prompt: |
+            You are reviewing a PR for a Dagster-based VLM data pipeline.
+            Read CLAUDE.md and REVIEW.md for project-specific rules.
+
+            Focus on:
+            1. Dagster conventions: @asset vs @op, import layer violations (L1-L5)
+            2. DuckDB safety: duckdb_writer tag, WAL handling
+            3. Error handling: per-file fail-forward, NFS graceful skip
+            4. Security: no credentials in code, env var exposure
+            5. Code quality: ruff (line-length 120), Python 3.10+ patterns
+            6. Test coverage: new logic needs unit tests
+            7. Conventional commits: PR title follows feat:/fix:/refactor: convention
+
+            Be concise. Use Korean if PR description is in Korean.
+            Approve if sound; request changes only for real issues.

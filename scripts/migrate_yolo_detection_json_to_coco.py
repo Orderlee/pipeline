@@ -69,8 +69,8 @@ def _load_dotenv_if_present(dotenv_path: Path, *, override: bool) -> None:
 
 def _load_target_env_defaults(target_env: str) -> None:
     _load_dotenv_if_present(REPO_ROOT / "docker" / ".env", override=False)
-    if target_env in {"test", "staging"}:
-        _load_dotenv_if_present(REPO_ROOT / "docker" / ".env.test", override=True)
+    if target_env == "staging":
+        _load_dotenv_if_present(REPO_ROOT / "docker" / ".env.staging", override=True)
 
 
 def _normalize_endpoint(endpoint: str) -> str:
@@ -83,7 +83,7 @@ def _normalize_endpoint(endpoint: str) -> str:
 
 
 def _resolve_runtime_settings(args: argparse.Namespace) -> RuntimeSettings:
-    default_db = "/data/staging.duckdb" if args.env in {"test", "staging"} else "/data/pipeline.duckdb"
+    default_db = "/data/staging.duckdb" if args.env == "staging" else "/data/pipeline.duckdb"
     db_path = str(args.db_path or os.getenv("DATAOPS_DUCKDB_PATH") or os.getenv("DUCKDB_PATH") or default_db)
 
     endpoint = str(args.minio_endpoint or os.getenv("MINIO_ENDPOINT") or "http://127.0.0.1:9000")
@@ -250,7 +250,7 @@ def _default_report_path(env_name: str) -> Path:
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Migrate legacy yolo_detection_json objects to COCO format.")
-    parser.add_argument("--env", choices=["production", "test", "staging"], required=True)
+    parser.add_argument("--env", choices=["production", "staging"], required=True)
 
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--dry-run", action="store_true", help="Conversion simulation only (default).")

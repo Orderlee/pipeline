@@ -1,17 +1,11 @@
-"""MinIO 미디어 → Label Studio task 자동 생성 및 presigned URL 갱신.
+"""MinIO clip → Label Studio task 자동 생성 및 presigned URL 갱신.
 
-흐름 (--auto-detect):
-  MinIO {bucket}/{prefix}/ 스캔
-    → 비디오 우선 검색, 없으면 이미지로 fallback
-    → media_type에 맞는 label_config로 LS project 생성
-    → presigned URL(7일) 생성
-    → LS task 생성 (중복 방지)
-    → 비디오이면 vlm-labels/*/events/ JSON prediction 즉시 attach
-
-흐름 (기존 호환):
+흐름:
   MinIO vlm-processed/*/clips/*.mp4
     → 폴더명 기준 LS project 찾기 or 생성
-    → presigned URL(7일) + LS task + prediction
+    → presigned URL(7일) 생성
+    → LS task 생성 (중복 방지)
+    → vlm-labels/*/events/ JSON 있으면 prediction 즉시 attach
 
 URL 갱신:
   기존 task의 presigned URL 만료 임박(기본 1일 이내) or 만료 시
@@ -19,14 +13,8 @@ URL 갱신:
     → task data 업데이트
 
 Usage:
-    # vlm-processed 클립 (기존)
+    # 새 task 생성
     python ls_tasks.py create --prefix hyundai_v2/01_27_collection_data
-
-    # vlm-raw 원본 영상 (auto-detect)
-    python ls_tasks.py --bucket vlm-raw create --prefix S-OIL/falldown --auto-detect
-
-    # vlm-processed 이미지 (auto-detect)
-    python ls_tasks.py create --prefix vanguardhealthcarevhc/falldown/image --auto-detect
 
     # URL 갱신
     python ls_tasks.py renew --project-name 01_27_collection_data
@@ -74,7 +62,6 @@ FROM_NAME = "videoLabels"
 TO_NAME = "video"
 
 VIDEO_EXTENSIONS = {".mp4", ".mov", ".mkv", ".avi", ".webm"}
-IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".webp"}
 
 # 클립 파일명 패턴: {base}_{8자리ms}_{8자리ms}
 _CLIP_PATTERN = re.compile(r"^(.+)_(\d{8})_(\d{8})$")
@@ -108,31 +95,6 @@ def list_clip_keys(client, bucket: str, prefix: str) -> list[str]:
             if Path(key).suffix.lower() in VIDEO_EXTENSIONS:
                 keys.append(key)
     return keys
-
-
-def list_media_keys(client, bucket: str, prefix: str) -> tuple[list[str], str]:
-    """prefix 하위 미디어 파일 목록 + 감지된 media_type 반환.
-
-    Returns:
-        (keys, media_type) — media_type은 "video" | "image" | "empty"
-    """
-    paginator = client.get_paginator("list_objects_v2")
-    video_keys: list[str] = []
-    image_keys: list[str] = []
-    for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
-        for obj in page.get("Contents", []):
-            key = obj["Key"]
-            suffix = Path(key).suffix.lower()
-            if suffix in VIDEO_EXTENSIONS:
-                video_keys.append(key)
-            elif suffix in IMAGE_EXTENSIONS:
-                image_keys.append(key)
-
-    if video_keys:
-        return video_keys, "video"
-    if image_keys:
-        return image_keys, "image"
-    return [], "empty"
 
 
 def generate_presigned_url(client, bucket: str, key: str, expires: int = DEFAULT_PRESIGN_EXPIRES) -> str:
@@ -210,12 +172,7 @@ def resolve_auth_headers(ls_url: str, token: str) -> dict[str, str]:
 # Label Studio project
 # ---------------------------------------------------------------------------
 
-def find_or_create_project(
-    ls_url: str,
-    headers: dict,
-    project_name: str,
-    media_type: str = "video",
-) -> tuple[int, bool]:
+def find_or_create_project(ls_url: str, headers: dict, project_name: str) -> tuple[int, bool]:
     """project_name으로 프로젝트 조회, 없으면 생성. (project_id, is_new) 반환."""
     resp = requests.get(f"{ls_url}/api/projects/", headers=headers)
     resp.raise_for_status()
@@ -226,18 +183,18 @@ def find_or_create_project(
             print(f"[INFO] 기존 project 사용: '{project_name}' (id={p['id']})")
             return p["id"], False
 
-    label_config = _label_config_for_media(media_type)
+    # 생성
     resp = requests.post(
         f"{ls_url}/api/projects/",
         headers={**headers, "Content-Type": "application/json"},
         json={
             "title": project_name,
-            "label_config": label_config,
+            "label_config": _default_label_config(),
         },
     )
     resp.raise_for_status()
     project_id = resp.json()["id"]
-    print(f"[INFO] 새 project 생성: '{project_name}' (id={project_id}, media_type={media_type})")
+    print(f"[INFO] 새 project 생성: '{project_name}' (id={project_id})")
     return project_id, True
 
 
@@ -263,30 +220,6 @@ def register_webhook(ls_url: str, headers: dict, project_id: int) -> None:
 
 
 def _default_label_config() -> str:
-    return _label_config_for_media("video")
-
-
-def _label_config_for_media(media_type: str) -> str:
-    """media_type에 맞는 LS label config 반환."""
-    if media_type == "image":
-        return """<View>
-  <Image name="image" value="$image" />
-  <Choices name="imageClass" toName="image" choice="multiple">
-    <Choice value="fall" />
-    <Choice value="fight" />
-    <Choice value="smoke" />
-    <Choice value="fire" />
-    <Choice value="unsafe_act" />
-  </Choices>
-  <RectangleLabels name="bbox" toName="image">
-    <Label value="fall" background="#e74c3c"/>
-    <Label value="fight" background="#e67e22"/>
-    <Label value="smoke" background="#95a5a6"/>
-    <Label value="fire" background="#e74c3c"/>
-    <Label value="unsafe_act" background="#f39c12"/>
-  </RectangleLabels>
-</View>"""
-
     return """<View>
   <TimelineLabels name="videoLabels" toName="video">
     <Label value="fall" background="#e74c3c"/>
@@ -303,11 +236,8 @@ def _label_config_for_media(media_type: str) -> str:
 # Label Studio tasks
 # ---------------------------------------------------------------------------
 
-def fetch_existing_task_stems(
-    ls_url: str, headers: dict, project_id: int, media_type: str = "video",
-) -> dict[str, dict]:
-    """{media_stem → task} 인덱스. media_type에 따라 data 필드를 참조."""
-    media_field = "image" if media_type == "image" else "video"
+def fetch_existing_task_stems(ls_url: str, headers: dict, project_id: int) -> dict[str, dict]:
+    """{clip_stem → task} 인덱스."""
     index: dict[str, dict] = {}
     page = 1
     while True:
@@ -322,8 +252,8 @@ def fetch_existing_task_stems(
         if not tasks:
             break
         for task in tasks:
-            url = task.get("data", {}).get(media_field, "") or task.get("data", {}).get("video", "")
-            stem = Path(urlparse(url).path).stem
+            video_url = task.get("data", {}).get("video", "")
+            stem = Path(urlparse(video_url).path).stem
             index[stem] = task
         if isinstance(data, list) or not data.get("next"):
             break
@@ -331,31 +261,24 @@ def fetch_existing_task_stems(
     return index
 
 
-def create_task(
-    ls_url: str, headers: dict, project_id: int, media_url: str, folder: str, media_type: str = "video",
-) -> dict:
-    """LS task 생성. media_type에 따라 data key가 달라진다."""
-    media_field = "image" if media_type == "image" else "video"
+def create_task(ls_url: str, headers: dict, project_id: int, video_url: str, folder: str) -> dict:
     resp = requests.post(
         f"{ls_url}/api/tasks/",
         headers={**headers, "Content-Type": "application/json"},
         json={
             "project": project_id,
-            "data": {media_field: media_url, "folder": folder},
+            "data": {"video": video_url, "folder": folder},
         },
     )
     resp.raise_for_status()
     return resp.json()
 
 
-def update_task_url(
-    ls_url: str, headers: dict, task_id: int, new_url: str, folder: str, media_type: str = "video",
-) -> None:
-    media_field = "image" if media_type == "image" else "video"
+def update_task_url(ls_url: str, headers: dict, task_id: int, new_url: str, folder: str) -> None:
     resp = requests.patch(
         f"{ls_url}/api/tasks/{task_id}/",
         headers={**headers, "Content-Type": "application/json"},
-        json={"data": {media_field: new_url, "folder": folder}},
+        json={"data": {"video": new_url, "folder": folder}},
     )
     resp.raise_for_status()
 
@@ -418,31 +341,6 @@ def extract_folder_name(prefix: str) -> str:
     return parts[-1] if parts else prefix
 
 
-def build_project_name(prefix: str) -> str:
-    """고객사명을 포함하는 LS 프로젝트명 생성.
-
-    clips, image, frames 같은 구조 폴더명은 건너뛰고,
-    top-level(고객사) + leaf(카테고리) 조합으로 프로젝트명을 만든다.
-    """
-    structural_dirs = {"clips", "image", "images", "frames", "video", "videos"}
-    parts = [p for p in prefix.rstrip("/").split("/") if p]
-    if not parts:
-        return prefix
-
-    meaningful = [p for p in parts if p.lower() not in structural_dirs]
-    if not meaningful:
-        meaningful = parts
-
-    if len(meaningful) == 1:
-        return meaningful[0]
-
-    client_name = meaningful[0]
-    sub_name = meaningful[-1]
-    if client_name == sub_name:
-        return client_name
-    return f"{client_name}__{sub_name}"
-
-
 # ---------------------------------------------------------------------------
 # Review state 관리
 # ---------------------------------------------------------------------------
@@ -478,84 +376,63 @@ def update_review_state(project_id: int, title: str, label_keys: list[str], task
 # create 커맨드
 # ---------------------------------------------------------------------------
 
-def _resolve_media_keys_and_type(args, minio, prefix: str) -> tuple[list[str], str]:
-    """--auto-detect 여부에 따라 미디어 키 목록과 타입을 결정한다.
-
-    auto-detect가 아니면 기존 동작(비디오만 검색)을 유지한다.
-    auto-detect이면 비디오 우선, 없으면 이미지로 fallback한다.
-    """
-    if getattr(args, "auto_detect", False):
-        keys, media_type = list_media_keys(minio, args.bucket, prefix)
-        return keys, media_type
-    return list_clip_keys(minio, args.bucket, prefix), "video"
-
-
 def cmd_create(args, minio, auth_headers: dict) -> None:
     prefix = args.prefix.rstrip("/")
-    auto_detect = getattr(args, "auto_detect", False)
+    folder_name = extract_folder_name(prefix)
+    project_id, is_new = find_or_create_project(args.ls_url, auth_headers, folder_name)
 
-    folder_name = build_project_name(prefix) if auto_detect else extract_folder_name(prefix)
-
-    print(f"[INFO] 미디어 목록 조회 중... (bucket={args.bucket}, prefix={prefix}, auto_detect={auto_detect})")
-    media_keys, media_type = _resolve_media_keys_and_type(args, minio, prefix)
-
-    if media_type == "empty" or not media_keys:
-        print(f"[SKIP] {prefix}에 미디어 파일 없음 (bucket={args.bucket})")
-        return
-
-    print(f"[INFO] {media_type} {len(media_keys)}개 발견")
-
-    project_id, is_new = find_or_create_project(args.ls_url, auth_headers, folder_name, media_type=media_type)
-
+    # 신규 project에만 webhook 자동 등록
     if is_new:
         try:
             register_webhook(args.ls_url, auth_headers, project_id)
         except Exception as exc:
             print(f"[WARN] webhook 등록 실패 (수동 등록 필요): {exc}")
 
+    print(f"[INFO] 클립 목록 조회 중... (bucket={args.bucket}, prefix={prefix})")
+    clip_keys = list_clip_keys(minio, args.bucket, prefix)
+    print(f"[INFO] 클립 {len(clip_keys)}개 발견")
+
     print("[INFO] 기존 task 인덱스 구성 중...")
-    existing = fetch_existing_task_stems(args.ls_url, auth_headers, project_id, media_type=media_type)
+    existing = fetch_existing_task_stems(args.ls_url, auth_headers, project_id)
     print(f"[INFO] 기존 task {len(existing)}개\n")
 
-    # Gemini JSON 인덱스 (비디오일 때만 prediction attach 시도)
-    json_index: dict[str, str] = {}
-    if media_type == "video":
-        prefix_parts = prefix.rstrip("/").split("/")
-        label_prefix = "/".join(prefix_parts[:-1]) if len(prefix_parts) > 1 else ""
-        json_index = list_event_json_keys(minio, args.label_bucket, label_prefix)
+    # Gemini JSON 인덱스: clips 한 단계 위 경로에서 탐색
+    prefix_parts = prefix.rstrip("/").split("/")
+    label_prefix = "/".join(prefix_parts[:-1]) if len(prefix_parts) > 1 else ""
+    json_index = list_event_json_keys(minio, args.label_bucket, label_prefix)
 
     created = skipped = error = 0
     collected_label_keys: list[str] = []
 
-    for key in media_keys:
+    for key in clip_keys:
         stem = Path(key).stem
         if stem in existing:
             skipped += 1
             continue
 
         try:
-            media_url = generate_presigned_url(minio, args.bucket, key, DEFAULT_PRESIGN_EXPIRES)
-            task = create_task(args.ls_url, auth_headers, project_id, media_url, folder_name, media_type=media_type)
+            video_url = generate_presigned_url(minio, args.bucket, key, DEFAULT_PRESIGN_EXPIRES)
+            task = create_task(args.ls_url, auth_headers, project_id, video_url, folder_name)
             task_id = task["id"]
 
-            pred_count = 0
-            if media_type == "video" and json_index:
-                m = _CLIP_PATTERN.match(stem)
-                base = m.group(1) if m else stem
-                clip_start_sec = int(m.group(2)) / 1000.0 if m else 0.0
-                clip_end_sec = int(m.group(3)) / 1000.0 if m else float("inf")
+            # prediction 즉시 attach + label_key 수집
+            m = _CLIP_PATTERN.match(stem)
+            base = m.group(1) if m else stem
+            clip_start_sec = int(m.group(2)) / 1000.0 if m else 0.0
+            clip_end_sec = int(m.group(3)) / 1000.0 if m else float("inf")
 
-                json_key = json_index.get(base)
-                if json_key:
-                    if json_key not in collected_label_keys:
-                        collected_label_keys.append(json_key)
-                    data = read_json_from_minio(minio, args.label_bucket, json_key)
-                    events = data if isinstance(data, list) else []
-                    if events:
-                        ls_result = gemini_events_to_ls_result(events, args.fps, clip_start_sec, clip_end_sec)
-                        if ls_result:
-                            create_prediction(args.ls_url, auth_headers, task_id, ls_result)
-                            pred_count = len(ls_result)
+            json_key = json_index.get(base)
+            pred_count = 0
+            if json_key:
+                if json_key not in collected_label_keys:
+                    collected_label_keys.append(json_key)
+                data = read_json_from_minio(minio, args.label_bucket, json_key)
+                events = data if isinstance(data, list) else []
+                if events:
+                    ls_result = gemini_events_to_ls_result(events, args.fps, clip_start_sec, clip_end_sec)
+                    if ls_result:
+                        create_prediction(args.ls_url, auth_headers, task_id, ls_result)
+                        pred_count = len(ls_result)
 
             pred_msg = f", prediction {pred_count}건" if pred_count else ""
             print(f"[CREATED]  task {task_id} ← {stem}{pred_msg}")
@@ -565,11 +442,12 @@ def cmd_create(args, minio, auth_headers: dict) -> None:
             print(f"[ERROR]    {key}: {exc}")
             error += 1
 
+    # Review state 파일 기록
     if collected_label_keys:
         update_review_state(project_id, folder_name, collected_label_keys, created)
         print(f"[INFO] review state 저장 완료 ({STATE_FILE.name})")
 
-    print(f"\n[DONE] 생성 {created} / 스킵(기존) {skipped} / 오류 {error} (총 {len(media_keys)})")
+    print(f"\n[DONE] 생성 {created} / 스킵(기존) {skipped} / 오류 {error} (총 {len(clip_keys)})")
 
 
 # ---------------------------------------------------------------------------
@@ -587,16 +465,16 @@ def cmd_renew(args, minio, auth_headers: dict) -> None:
 
     for stem, task in existing.items():
         task_id = task["id"]
-        task_data = task.get("data", {})
-        media_url = task_data.get("video", "") or task_data.get("image", "")
-        media_type = "image" if "image" in task_data and not task_data.get("video") else "video"
-        folder = task_data.get("folder", "")
+        video_url = task.get("data", {}).get("video", "")
+        folder = task.get("data", {}).get("folder", "")
 
-        if not media_url or not is_url_expiring(media_url, args.threshold):
+        if not is_url_expiring(video_url, args.threshold):
             skipped += 1
             continue
 
-        parsed = urlparse(media_url)
+        # MinIO key 복원: URL path에서 bucket 이후 경로
+        parsed = urlparse(video_url)
+        # path 형식: /bucket/key
         path_parts = parsed.path.lstrip("/").split("/", 1)
         if len(path_parts) < 2:
             print(f"[SKIP]     task {task_id} URL 파싱 실패")
@@ -606,7 +484,7 @@ def cmd_renew(args, minio, auth_headers: dict) -> None:
         bucket, key = path_parts[0], path_parts[1]
         try:
             new_url = generate_presigned_url(minio, bucket, key, DEFAULT_PRESIGN_EXPIRES)
-            update_task_url(args.ls_url, auth_headers, task_id, new_url, folder, media_type=media_type)
+            update_task_url(args.ls_url, auth_headers, task_id, new_url, folder)
             expiry = get_presigned_expiry(new_url)
             print(f"[RENEWED]  task {task_id} ← {stem} (만료: {expiry.strftime('%Y-%m-%d %H:%M UTC') if expiry else '?'})")
             renewed += 1
@@ -666,10 +544,6 @@ def main() -> int:
     # create
     p_create = sub.add_parser("create", help="새 task 생성")
     p_create.add_argument("--prefix", required=True, help="MinIO prefix (예: hyundai_v2/01_27_collection_data)")
-    p_create.add_argument(
-        "--auto-detect", action="store_true", dest="auto_detect",
-        help="미디어 타입 자동 감지 (비디오 우선, 없으면 이미지). 프로젝트명도 고객사 포함 형식으로 생성.",
-    )
 
     # renew
     p_renew = sub.add_parser("renew", help="만료 임박 presigned URL 갱신")
