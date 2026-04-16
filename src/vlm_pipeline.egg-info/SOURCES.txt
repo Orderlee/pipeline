@@ -16,6 +16,7 @@ src/vlm_pipeline/__init__.py
 src/vlm_pipeline/definitions.py
 src/vlm_pipeline/definitions_common.py
 src/vlm_pipeline/definitions_profiles.py
+src/vlm_pipeline/definitions_staging.py
 src/vlm_pipeline.egg-info/PKG-INFO
 src/vlm_pipeline.egg-info/SOURCES.txt
 src/vlm_pipeline.egg-info/dependency_links.txt

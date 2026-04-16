@@ -8,7 +8,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from dagster import SensorEvaluationContext, sensor
+from dagster import SensorDefinition, SensorEvaluationContext, sensor
 
 from vlm_pipeline.defs.dispatch.service import (
     DispatchIngressRequest,
@@ -16,6 +16,7 @@ from vlm_pipeline.defs.dispatch.service import (
     process_dispatch_ingress_request,
     record_failed_dispatch_request,
 )
+from vlm_pipeline.lib.env_utils import is_duckdb_lock_conflict
 from vlm_pipeline.resources.config import PipelineConfig
 
 
@@ -38,14 +39,18 @@ def _record_failed_and_move(
     move_dispatch_file(request_file, failed_dir, context=context)
 
 
-@sensor(
-    name="dispatch_sensor",
-    description="dispatch JSON 처리 후 dispatch_stage_job 트리거 (archive 이동은 raw_ingest에서 수행)",
-    minimum_interval_seconds=30,
-    required_resource_keys={"db"},
-    job_name="dispatch_stage_job",
-)
-def dispatch_sensor(context: SensorEvaluationContext):
+def build_dispatch_sensor(*, jobs) -> SensorDefinition:
+    """Builder — definitions.py에서 job 객체를 주입받아 SensorDefinition 생성."""
+    return sensor(
+        name="dispatch_sensor",
+        description="dispatch JSON 처리 후 dispatch 트리거 (dispatch_stage_job / ingest_job)",
+        minimum_interval_seconds=30,
+        required_resource_keys={"db"},
+        jobs=jobs,
+    )(_dispatch_sensor_fn)
+
+
+def _dispatch_sensor_fn(context: SensorEvaluationContext):
     config = PipelineConfig()
     incoming_dir = Path(config.incoming_dir)
     pending_dir = incoming_dir / ".dispatch" / "pending"
@@ -59,8 +64,14 @@ def dispatch_sensor(context: SensorEvaluationContext):
     if db_resource is None:
         return
 
-    db_resource.ensure_runtime_schema()
-    db_resource.ensure_dispatch_tracking_tables()
+    try:
+        db_resource.ensure_runtime_schema()
+        db_resource.ensure_dispatch_tracking_tables()
+    except Exception as exc:
+        if is_duckdb_lock_conflict(exc):
+            context.log.warning(f"DuckDB lock 충돌 — 다음 tick에서 재시도: {exc}")
+            return
+        raise
 
     requests = sorted(fpath for fpath in pending_dir.glob("*.json") if fpath.is_file())
 

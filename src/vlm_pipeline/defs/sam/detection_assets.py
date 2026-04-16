@@ -21,7 +21,6 @@ from dagster import Field, asset
 from vlm_pipeline.lib.detection_common import (
     flush_image_labels,
     normalize_classes,
-    resolve_spec_bbox_classes,
     resolve_target_classes,
     stable_image_label_id,
 )
@@ -41,44 +40,41 @@ from vlm_pipeline.resources.duckdb import DuckDBResource
 from vlm_pipeline.resources.minio import MinIOResource
 
 
-@asset(
+_SAM3_CONFIG_SCHEMA = {
+    "limit": Field(int, default_value=200),
+    "score_threshold": Field(float, default_value=0.0),
+    "max_masks_per_prompt": Field(int, default_value=50),
+}
+
+
+def _make_sam3_detection_asset(*, name: str, deps: list[str], description: str):
+    @asset(
+        name=name,
+        deps=deps,
+        description=description,
+        group_name="sam3",
+        config_schema=_SAM3_CONFIG_SCHEMA,
+    )
+    def _sam3_detection_asset(
+        context,
+        db: DuckDBResource,
+        minio: MinIOResource,
+    ) -> dict:
+        return _run_sam3_image_detection(context, db, minio)
+
+    return _sam3_detection_asset
+
+
+sam3_image_detection = _make_sam3_detection_asset(
     name="sam3_image_detection",
     deps=["clip_to_frame"],
     description="SAM3.1 text-prompted bbox detection → vlm-labels JSON + image_labels INSERT (YOLO 비교용)",
-    group_name="sam3",
-    config_schema={
-        "limit": Field(int, default_value=200),
-        "score_threshold": Field(float, default_value=0.0),
-        "max_masks_per_prompt": Field(int, default_value=50),
-    },
 )
-def sam3_image_detection(
-    context,
-    db: DuckDBResource,
-    minio: MinIOResource,
-) -> dict:
-    """processed_clip_frame 이미지에 SAM3.1 bbox detection 실행."""
-    return _run_sam3_image_detection(context, db, minio)
-
-
-@asset(
+dispatch_sam3_image_detection = _make_sam3_detection_asset(
     name="dispatch_sam3_image_detection",
     deps=["clip_to_frame", "raw_video_to_frame"],
     description="Dispatch 라인: frame 추출 완료 후 SAM3.1 text-prompted bbox detection (YOLO 비교용)",
-    group_name="sam3",
-    config_schema={
-        "limit": Field(int, default_value=200),
-        "score_threshold": Field(float, default_value=0.0),
-        "max_masks_per_prompt": Field(int, default_value=50),
-    },
 )
-def dispatch_sam3_image_detection(
-    context,
-    db: DuckDBResource,
-    minio: MinIOResource,
-) -> dict:
-    """dispatch_stage_job용 SAM3.1 bbox detection 실행."""
-    return _run_sam3_image_detection(context, db, minio)
 
 
 def _run_sam3_image_detection(
@@ -300,49 +296,4 @@ def _run_sam3_image_detection(
     context.log.info(f"SAM3 완료: {summary}")
     return summary
 
-
-@asset(
-    name="sam3_bbox_labeling",
-    deps=["clip_to_frame"],
-    description="Legacy spec flow: requested_outputs에 bbox 포함 시 SAM3 bbox detection (YOLO bbox_labeling 병렬)",
-    group_name="sam3",
-    config_schema={"limit": Field(int, default_value=200)},
-)
-def sam3_bbox_labeling(
-    context,
-    db: DuckDBResource,
-    minio: MinIOResource,
-) -> dict:
-    """run tag: spec_id, requested_outputs, resolved_config_id. bbox 요청 시 spec.classes × config.bbox.target_classes."""
-    tags = context.run.tags if context.run else {}
-    requested = parse_requested_outputs(tags)
-    if "bbox" not in requested:
-        context.log.info("sam3_bbox_labeling 스킵: requested_outputs에 bbox 없음")
-        return {"processed": 0, "failed": 0, "total_detections": 0, "skipped": True, "label_tool": "sam3"}
-
-    spec_id = str(tags.get("spec_id") or "").strip()
-    if not spec_id:
-        context.log.info("sam3_bbox_labeling 스킵: spec_id 없음")
-        return {"processed": 0, "failed": 0, "total_detections": 0, "skipped": True, "label_tool": "sam3"}
-
-    bbox_resolution = resolve_spec_bbox_classes(db, spec_id)
-    target_classes = bbox_resolution.target_classes
-    class_source = bbox_resolution.class_source
-    resolved_config_id = bbox_resolution.resolved_config_id
-
-    context.log.info(
-        "sam3_bbox_labeling: "
-        f"spec_id={spec_id} resolved_config_id={resolved_config_id} "
-        f"target_classes={','.join(target_classes) if target_classes else '(none)'} "
-        f"source={class_source}"
-    )
-    return _run_sam3_image_detection(
-        context,
-        db,
-        minio,
-        spec_id_override=spec_id,
-        target_classes_override=target_classes,
-        class_source_override=class_source,
-        resolved_config_id_override=resolved_config_id,
-    )
 

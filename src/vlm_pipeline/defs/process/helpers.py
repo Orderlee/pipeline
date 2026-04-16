@@ -21,7 +21,7 @@ from vlm_pipeline.lib.gemini import (
     is_vertex_rate_limit_error,
     load_clean_json,
 )
-from vlm_pipeline.lib.vertex_event_utils import (
+from vlm_pipeline.lib.vertex_chunking import (
     build_event_frame_relevance_prompt,
     build_event_frame_image_prompt,
     normalize_gemini_events,

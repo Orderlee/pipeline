@@ -15,14 +15,13 @@ from dagster import RunRequest, SensorEvaluationContext
 from dagster._core.storage.dagster_run import DagsterRunStatus, RunsFilter
 
 from vlm_pipeline.defs.ingest.archive import resolve_unique_directory
-from vlm_pipeline.lib.dispatch_payload import format_dispatch_storage_list, parse_dispatch_request_payload
 from vlm_pipeline.lib.sanitizer import sanitize_path_component
+from vlm_pipeline.lib.dispatch_payload import format_dispatch_storage_list, parse_dispatch_request_payload
 from vlm_pipeline.lib.yolo_thresholds import (
     resolve_active_class_confidence_thresholds,
     resolve_effective_request_confidence_threshold,
 )
 from vlm_pipeline.resources.config import PipelineConfig
-from vlm_pipeline.resources.runtime_settings import load_dispatch_ingest_only_labeling_methods
 
 _OUTPUT_TO_STEPS = {
     "bbox": [
@@ -63,7 +62,6 @@ _DISPATCH_RUN_JOBS = {"dispatch_stage_job", "ingest_job"}
 DispatchDuplicatePolicy = Literal["reject", "accept_noop"]
 DispatchInFlightPolicy = Literal["reject", "defer"]
 DispatchIngressStatus = Literal["run_request", "rejected", "duplicate_noop", "deferred"]
-DispatchMode = Literal["standard", "ingest_only"]
 
 
 @dataclass(frozen=True)
@@ -88,8 +86,6 @@ class PreparedDispatchRequest:
     requested_by: str | None
     requested_at: str | None
     archive_only: bool
-    dispatch_mode: DispatchMode
-    requested_labeling_method_raw: str | None
     storage_outputs: str
     storage_labeling_method: str
     storage_categories: str
@@ -179,10 +175,7 @@ def prepare_dispatch_request(req_data: Mapping[str, Any], *, incoming_dir: Path)
     if not request_id or not folder_name:
         raise ValueError("missing_request_id_or_folder")
 
-    payload = parse_dispatch_request_payload(
-        req_data,
-        ingest_only_labeling_methods=load_dispatch_ingest_only_labeling_methods(),
-    )
+    payload = parse_dispatch_request_payload(req_data)
     labeling_method = payload["labeling_method"]
     categories = payload["categories"]
     classes = payload["classes"]
@@ -199,8 +192,6 @@ def prepare_dispatch_request(req_data: Mapping[str, Any], *, incoming_dir: Path)
         requested_by=str(req_data.get("requested_by") or "").strip() or None,
         requested_at=str(req_data.get("requested_at") or "").strip() or None,
         archive_only=bool(payload.get("archive_only")),
-        dispatch_mode=str(payload.get("dispatch_mode") or "standard"),  # type: ignore[arg-type]
-        requested_labeling_method_raw=str(payload.get("requested_labeling_method_raw") or "").strip() or None,
         storage_outputs=format_dispatch_storage_list(labeling_method),
         storage_labeling_method=format_dispatch_storage_list(labeling_method),
         storage_categories=format_dispatch_storage_list(categories),
@@ -270,8 +261,6 @@ def build_dispatch_request_record(
         "run_mode": prepared.run_mode,
         "outputs": prepared.storage_outputs,
         "labeling_method": prepared.storage_labeling_method,
-        "dispatch_mode": prepared.dispatch_mode,
-        "requested_labeling_method_raw": prepared.requested_labeling_method_raw,
         "categories": prepared.storage_categories,
         "classes": prepared.storage_classes,
         "image_profile": prepared.image_profile,
@@ -351,14 +340,11 @@ def build_dispatch_run_request(
     sanitized_folder = sanitize_path_component(prepared.folder_name)
     common_tags = {
         "dispatch_request_id": prepared.request_id,
-        "dispatch_mode": prepared.dispatch_mode,
         "folder_name": sanitized_folder,
         "folder_name_original": prepared.folder_name,
         "image_profile": prepared.image_profile,
         "manifest_path": str(manifest_path),
     }
-    if prepared.requested_labeling_method_raw:
-        common_tags["requested_labeling_method_raw"] = prepared.requested_labeling_method_raw
     if prepared.categories:
         common_tags["categories"] = json.dumps(prepared.categories, ensure_ascii=False)
     if prepared.classes:
@@ -478,7 +464,7 @@ def process_dispatch_ingress_request(
         f"request_id={prepared.request_id} folder={prepared.folder_name} manifest={manifest_path.name}"
     )
 
-    model_defaults = db_resource.get_active_dispatch_model_configs(prepared.labeling_method)
+    model_defaults = db_resource.get_active_staging_model_configs(prepared.labeling_method)
     applied_params = resolve_dispatch_applied_params(ingress_request.payload, model_defaults)
 
     db_resource.insert_dispatch_request(
@@ -511,8 +497,6 @@ def process_dispatch_ingress_request(
 
 def record_failed_dispatch_request(db, request_id: str, data: Mapping[str, Any], error_message: str) -> None:
     try:
-        dispatch_mode: DispatchMode = "standard"
-        requested_labeling_method_raw: str | None = None
         try:
             prepared = prepare_dispatch_request(data, incoming_dir=Path("/"))
             outputs = prepared.storage_outputs
@@ -520,8 +504,6 @@ def record_failed_dispatch_request(db, request_id: str, data: Mapping[str, Any],
             categories = prepared.storage_categories
             classes = prepared.storage_classes
             run_mode = prepared.run_mode
-            dispatch_mode = prepared.dispatch_mode
-            requested_labeling_method_raw = prepared.requested_labeling_method_raw
         except ValueError:
             outputs_list = data.get("outputs") if isinstance(data.get("outputs"), list) else []
             labeling_list = data.get("labeling_method") if isinstance(data.get("labeling_method"), list) else []
@@ -529,7 +511,6 @@ def record_failed_dispatch_request(db, request_id: str, data: Mapping[str, Any],
             class_list = data.get("classes") if isinstance(data.get("classes"), list) else []
             outputs = format_dispatch_storage_list(labeling_list or outputs_list)
             labeling_method = format_dispatch_storage_list(labeling_list)
-            requested_labeling_method_raw = format_dispatch_storage_list(labeling_list) or None
             categories = format_dispatch_storage_list(category_list)
             classes = format_dispatch_storage_list(class_list)
             run_mode = str(data.get("run_mode") or "")
@@ -541,8 +522,6 @@ def record_failed_dispatch_request(db, request_id: str, data: Mapping[str, Any],
                 "run_mode": run_mode,
                 "outputs": outputs,
                 "labeling_method": labeling_method,
-                "dispatch_mode": dispatch_mode,
-                "requested_labeling_method_raw": requested_labeling_method_raw,
                 "categories": categories,
                 "classes": classes,
                 "image_profile": data.get("image_profile"),
