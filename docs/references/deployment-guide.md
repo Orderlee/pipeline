@@ -137,6 +137,28 @@ bash scripts/deploy/rollback.sh datapipeline:abc12345
 
 이전 배포의 이미지 태그는 GitHub Actions 실행 로그의 "Deploy summary"에서 확인할 수 있습니다.
 
+## workspace code location 변경 시 안전 절차
+
+[docker/app/workspace.yaml](../../docker/app/workspace.yaml) 의 loader(`python_file` → `grpc_server` 전환, `relative_path`/`attribute` 변경, `location_name` 지정 등)를 바꾸면 Dagster 가 인식하는 code location 식별자가 달라진다. 이전 식별자로 enqueue 돼 있던 queued run 은 daemon dequeue 시점에 `DagsterCodeLocationNotFoundError` 로 실패 처리되므로 배포 전 아래 순서를 반드시 지킬 것.
+
+1. **큐 비우기** — UI(`/runs` → Queued 필터) 또는 CLI 로 대기 중인 run 확인:
+   ```bash
+   docker exec docker-dagster-1 dagster run list --status QUEUED --limit 100
+   ```
+   비어 있지 않으면 UI 에서 각 run 을 검토 후 Terminate. (CLI 일괄 terminate 는 중요한 run 을 함께 죽일 위험이 있어 지양.)
+2. **workspace 파일 배포** — [docker/app/workspace.yaml](../../docker/app/workspace.yaml) 변경을 커밋·push (또는 runner 가 sync 하도록 대기).
+3. **컨테이너 재시작** — `dagster-code-server` → `dagster` → `dagster-daemon` 순서.
+4. **등록 확인** —
+   ```bash
+   curl -s http://127.0.0.1:3030/server_info | jq .
+   ```
+   응답에 새 location 이 보이고, 이어서 UI `Deployment` 탭에서 상태가 `Loaded` 여야 함.
+5. **daemon 로그 10 분 모니터링** —
+   ```bash
+   docker logs -f docker-dagster-daemon-1 2>&1 | grep -i "CodeLocationNotFound"
+   ```
+   동일 에러가 더는 출력되지 않으면 정상.
+
 ## 주의사항
 
 - **DuckDB**: 볼륨 마운트이므로 배포 시 영향 없음

@@ -442,7 +442,7 @@ def auto_bootstrap_manifest_sensor(context):
       1) 동일 signature가 stable_cycles 이상 연속 관측
       2) 마지막 수정 시각이 stable_age_sec 이상 경과
 
-    test profile: **incoming/gcp** 트리만 스캔 (트리거 JSON 없이 GCS 경로만).
+    staging profile: **incoming/gcp** 트리만 스캔 (트리거 JSON 없이 GCS 경로만).
 
     production: auto_bootstrap도 **incoming/gcp/** 만 스캔한다.
     `incoming/tmp_data_2` 같은 직접 드롭 폴더는 `.dispatch/pending` 트리거 JSON 없이는 처리하지 않는다.

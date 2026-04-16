@@ -1,4 +1,4 @@
-"""Dispatch payload normalization helpers for the active prod/test runtime."""
+"""Helpers for dispatch JSON payload normalization."""
 
 from __future__ import annotations
 
@@ -10,7 +10,6 @@ from vlm_pipeline.lib.env_utils import (
     VALID_OUTPUTS,
     YOLO_OUTPUTS,
     derive_classes_from_categories,
-    normalize_dispatch_method_token,
     normalize_output_name,
     resolve_outputs,
 )
@@ -40,7 +39,7 @@ _NO_LABELING_MARKERS = frozenset(
         "no_labeling",
         "labeling_not_required",
         "not_required",
-        "ff",  # 라벨링 없이 ingest(DB + MinIO)만 수행
+        "ff",  # ingest-only (DB/MinIO 적재만, 라벨링 skip)
     }
 )
 
@@ -95,21 +94,6 @@ def _normalize_output_list(value: Any) -> list[str]:
     return normalized
 
 
-def _normalize_dispatch_method_list(value: Any) -> list[str]:
-    if not isinstance(value, list):
-        return []
-
-    normalized: list[str] = []
-    seen: set[str] = set()
-    for item in value:
-        rendered = normalize_dispatch_method_token(item)
-        if not rendered or rendered in seen:
-            continue
-        seen.add(rendered)
-        normalized.append(rendered)
-    return normalized
-
-
 def _collect_invalid_output_values(
     raw_values: list[str],
     *,
@@ -149,56 +133,21 @@ def _finalize_outputs(values: list[str]) -> list[str]:
     return deduped
 
 
-def parse_dispatch_request_payload(
-    payload: Mapping[str, Any],
-    *,
-    ingest_only_labeling_methods: set[str] | frozenset[str] | None = None,
-) -> dict[str, Any]:
-    """Normalize legacy test dispatch JSON into routing-friendly values.
+def parse_dispatch_request_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
+    """Normalize dispatch JSON payload into routing-friendly values.
 
-    Priority:
+    Priority (older agents may still send outputs/run_mode instead of labeling_method):
     1. labeling_method
-    2. outputs (legacy)
-    3. run_mode (legacy)
+    2. outputs (backward compat)
+    3. run_mode (backward compat)
     """
-    raw_labeling_method_original = _normalize_string_list(payload.get("labeling_method"), lowercase=False)
-    raw_labeling_method_items = _normalize_dispatch_method_list(payload.get("labeling_method"))
+    raw_labeling_method_items = _normalize_string_list(payload.get("labeling_method"), lowercase=True)
     raw_outputs_items = _normalize_string_list(payload.get("outputs"), lowercase=True)
     raw_categories = _normalize_string_list(payload.get("categories"), lowercase=True)
     raw_classes = _normalize_string_list(payload.get("classes"), lowercase=True)
-    requested_labeling_method_raw = (
-        format_dispatch_storage_list(raw_labeling_method_original) or None
-    )
-    normalized_ingest_only_methods = {
-        normalize_dispatch_method_token(item)
-        for item in (ingest_only_labeling_methods or set())
-        if normalize_dispatch_method_token(item)
-    }
-    run_mode = str(payload.get("run_mode") or "").strip().lower()
-
-    ingest_only_requested = bool(raw_labeling_method_items) and any(
-        item in normalized_ingest_only_methods for item in raw_labeling_method_items
-    )
-    if ingest_only_requested:
-        non_ingest_only_values = [
-            item for item in raw_labeling_method_items if item not in normalized_ingest_only_methods
-        ]
-        if non_ingest_only_values or raw_outputs_items or run_mode:
-            raise ValueError("ingest_only_labeling_method_must_be_standalone")
-        return {
-            "categories": raw_categories,
-            "classes": raw_classes,
-            "labeling_method": ["skip"],
-            "outputs_str": "skip",
-            "run_mode": "",
-            "archive_only": True,
-            "dispatch_mode": "ingest_only",
-            "requested_labeling_method_raw": requested_labeling_method_raw,
-        }
-
     invalid_labeling_method = _collect_invalid_output_values(
         raw_labeling_method_items,
-        valid_values=VALID_LABELING_METHODS | normalized_ingest_only_methods,
+        valid_values=VALID_LABELING_METHODS,
     )
     invalid_outputs = _collect_invalid_output_values(
         raw_outputs_items,
@@ -227,12 +176,11 @@ def parse_dispatch_request_payload(
             "outputs_str": "skip",
             "run_mode": "",
             "archive_only": True,
-            "dispatch_mode": "standard",
-            "requested_labeling_method_raw": requested_labeling_method_raw,
         }
 
     raw_labeling_method = _normalize_output_list(payload.get("labeling_method"))
     raw_outputs = _normalize_output_list(payload.get("outputs"))
+    run_mode = str(payload.get("run_mode") or "").strip().lower()
 
     if raw_labeling_method:
         if invalid_labeling_method:
@@ -269,12 +217,4 @@ def parse_dispatch_request_payload(
         "outputs_str": ",".join(labeling_method),
         "run_mode": run_mode,
         "archive_only": False,
-        "dispatch_mode": "standard",
-        "requested_labeling_method_raw": requested_labeling_method_raw,
     }
-
-
-__all__ = [
-    "format_dispatch_storage_list",
-    "parse_dispatch_request_payload",
-]
