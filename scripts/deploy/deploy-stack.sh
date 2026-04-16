@@ -108,6 +108,10 @@ if [[ -n "${IMAGE_TAG}" ]]; then
     docker tag "${IMAGE_NAME}" "${IMAGE_TAG}"
 fi
 
+# 기존 컨테이너 정지 후 재시작 (포트 충돌 방지)
+compose stop dagster dagster-daemon dagster-code-server 2>/dev/null || true
+compose rm -f dagster dagster-daemon dagster-code-server 2>/dev/null || true
+
 compose up -d --no-deps dagster-code-server
 echo "code-server restart complete; waiting for gRPC stability..."
 sleep 15

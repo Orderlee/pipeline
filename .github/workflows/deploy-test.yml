@@ -10,6 +10,7 @@ on:
       - ".cursor/**"
       - ".agent/**"
       - ".github/copilot-instructions.md"
+      - ".github/workflows/claude*.yml"
   workflow_dispatch:
     inputs:
       skip_tests:
@@ -33,8 +34,10 @@ env:
 
 jobs:
   test:
+    # self-hosted runner 가 등록된 Orderlee 레포에서만 실행.
+    # TeamPIA(upstream)에는 runner 없음 → 워크플로우 파일이 공유되어도 여기서는 skip.
     runs-on: [self-hosted, linux, deploy, test]
-    if: ${{ github.event.inputs.skip_tests != 'true' }}
+    if: ${{ github.repository == 'Orderlee/Datapipeline-Data-data_pipeline' && github.event.inputs.skip_tests != 'true' }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -49,6 +52,7 @@ jobs:
 
   detect_image_rebuild:
     runs-on: [self-hosted, linux, deploy, test]
+    if: ${{ github.repository == 'Orderlee/Datapipeline-Data-data_pipeline' }}
     outputs:
       build_required: ${{ steps.detect.outputs.build_required }}
     steps:
@@ -96,7 +100,11 @@ jobs:
     runs-on: [self-hosted, linux, deploy, test]
     timeout-minutes: 60
     needs: [test, detect_image_rebuild]
-    if: always() && (needs.test.result == 'success' || needs.test.result == 'skipped')
+    if: |
+      always() &&
+      github.repository == 'Orderlee/Datapipeline-Data-data_pipeline' &&
+      (needs.test.result == 'success' || needs.test.result == 'skipped') &&
+      needs.detect_image_rebuild.result == 'success'
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -105,6 +113,7 @@ jobs:
         run: echo "IMAGE_TAG=datapipeline:${GITHUB_SHA::8}" >> $GITHUB_ENV
 
       - name: Deploy test stack
+        id: deploy
         env:
           WORKSPACE_ROOT: ${{ github.workspace }}
           DEPLOY_ROOT: ${{ env.DEPLOY_ROOT }}
@@ -127,3 +136,64 @@ jobs:
           echo "- Build required: ${{ needs.detect_image_rebuild.outputs.build_required }}" >> $GITHUB_STEP_SUMMARY
           echo "- Health: http://172.168.42.6:3031/server_info" >> $GITHUB_STEP_SUMMARY
           echo "- Time: $(date '+%Y-%m-%d %H:%M:%S %Z')" >> $GITHUB_STEP_SUMMARY
+
+      - name: Setup Claude Code CLI
+        if: always() && steps.deploy.outcome == 'success'
+        continue-on-error: true
+        run: |
+          # 이미 설치되어 있으면 skip
+          if command -v claude >/dev/null 2>&1; then
+            echo "claude CLI already installed: $(claude --version 2>/dev/null || echo unknown)"
+            exit 0
+          fi
+
+          # npm 확인 — 없으면 설치 불가 (runner 프로비저닝에서 해결해야 함)
+          if ! command -v npm >/dev/null 2>&1; then
+            echo "::warning::npm not found on runner. Skipping claude CLI install."
+            exit 0
+          fi
+
+          # user prefix에 설치 (sudo 불필요)
+          mkdir -p "${HOME}/.npm-global"
+          npm config set prefix "${HOME}/.npm-global"
+          npm install -g @anthropic-ai/claude-code 2>&1 || {
+            echo "::warning::claude CLI install failed. AI analysis will be skipped."
+            exit 0
+          }
+          echo "${HOME}/.npm-global/bin" >> "$GITHUB_PATH"
+
+      - name: AI Deploy Analysis
+        if: always() && steps.deploy.outcome == 'success'
+        continue-on-error: true
+        timeout-minutes: 5
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+        run: |
+          # claude CLI가 없으면 graceful skip
+          if ! command -v claude >/dev/null 2>&1; then
+            echo "### AI Deploy Analysis" >> $GITHUB_STEP_SUMMARY
+            echo "Skipped: claude CLI not available on runner." >> $GITHUB_STEP_SUMMARY
+            exit 0
+          fi
+
+          BEFORE="${{ github.event.before }}"
+          if [[ -z "${BEFORE}" || "${BEFORE}" == "0000000000000000000000000000000000000000" ]]; then
+            BEFORE="HEAD~1"
+          fi
+
+          DIFF_SUMMARY=$(git diff --stat "${BEFORE}" "${{ github.sha }}" 2>/dev/null || echo "diff unavailable")
+          COMMIT_LOG=$(git log --oneline "${BEFORE}".."${{ github.sha }}" 2>/dev/null || echo "log unavailable")
+
+          ANALYSIS=$(claude -p \
+            --max-turns 3 \
+            --allowedTools "Read,Grep,Glob" \
+            "Test deployment analysis for Dagster VLM pipeline.
+
+            Commits: ${COMMIT_LOG}
+            Changes: ${DIFF_SUMMARY}
+
+            Provide: 1) Risk level (high/medium/low) 2) DuckDB impact 3) Dagster definition impact 4) Docker/infra impact 5) Recommended verification steps.
+            Be concise." 2>/dev/null) || ANALYSIS="Claude analysis unavailable"
+
+          echo "### AI Deploy Analysis" >> $GITHUB_STEP_SUMMARY
+          echo "${ANALYSIS}" >> $GITHUB_STEP_SUMMARY

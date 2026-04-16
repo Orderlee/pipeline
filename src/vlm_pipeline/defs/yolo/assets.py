@@ -18,7 +18,6 @@ from dagster import Field, asset
 from vlm_pipeline.lib.detection_common import (
     flush_image_labels,
     normalize_classes,
-    resolve_spec_bbox_classes,
     resolve_target_classes,
     stable_image_label_id,
 )
@@ -41,46 +40,42 @@ from vlm_pipeline.resources.duckdb import DuckDBResource
 from vlm_pipeline.resources.minio import MinIOResource
 
 
-@asset(
+_YOLO_CONFIG_SCHEMA = {
+    "limit": Field(int, default_value=500),
+    "confidence_threshold": Field(float, default_value=0.25),
+    "iou_threshold": Field(float, default_value=0.45),
+    "batch_size": Field(int, default_value=8),
+}
+
+
+def _make_yolo_detection_asset(*, name: str, deps: list[str], description: str):
+    @asset(
+        name=name,
+        deps=deps,
+        description=description,
+        group_name="yolo",
+        config_schema=_YOLO_CONFIG_SCHEMA,
+    )
+    def _yolo_detection_asset(
+        context,
+        db: DuckDBResource,
+        minio: MinIOResource,
+    ) -> dict:
+        return _run_yolo_image_detection(context, db, minio)
+
+    return _yolo_detection_asset
+
+
+yolo_image_detection = _make_yolo_detection_asset(
     name="yolo_image_detection",
     deps=["clip_to_frame"],
     description="YOLO-World-L object detection → vlm-labels COCO JSON + image_labels INSERT",
-    group_name="yolo",
-    config_schema={
-        "limit": Field(int, default_value=500),
-        "confidence_threshold": Field(float, default_value=0.25),
-        "iou_threshold": Field(float, default_value=0.45),
-        "batch_size": Field(int, default_value=8),
-    },
 )
-def yolo_image_detection(
-    context,
-    db: DuckDBResource,
-    minio: MinIOResource,
-) -> dict:
-    """processed_clip_frame 이미지에 YOLO-World-L detection 실행."""
-    return _run_yolo_image_detection(context, db, minio)
-
-
-@asset(
+dispatch_yolo_image_detection = _make_yolo_detection_asset(
     name="dispatch_yolo_image_detection",
     deps=["clip_to_frame", "raw_video_to_frame"],
     description="Dispatch 라인: frame 추출 완료 후 YOLO-World-L object detection",
-    group_name="yolo",
-    config_schema={
-        "limit": Field(int, default_value=500),
-        "confidence_threshold": Field(float, default_value=0.25),
-        "iou_threshold": Field(float, default_value=0.45),
-        "batch_size": Field(int, default_value=8),
-    },
 )
-def dispatch_yolo_image_detection(
-    context,
-    db: DuckDBResource,
-    minio: MinIOResource,
-) -> dict:
-    """dispatch_stage_job용 YOLO-World-L detection 실행."""
-    return _run_yolo_image_detection(context, db, minio)
 
 
 def _run_yolo_image_detection(
@@ -357,52 +352,6 @@ def _run_yolo_image_detection(
     )
     context.log.info(f"YOLO 완료: {summary}")
     return summary
-
-
-@asset(
-    name="bbox_labeling",
-    deps=["clip_to_frame"],
-    description="Legacy spec flow: requested_outputs에 bbox 포함 시 frame_status=completed 대상 YOLO detection",
-    group_name="yolo",
-    config_schema={"limit": Field(int, default_value=500)},
-)
-def bbox_labeling(
-    context,
-    db: DuckDBResource,
-    minio: MinIOResource,
-) -> dict:
-    """run tag: spec_id, requested_outputs, resolved_config_id. bbox 요청 시 spec.classes × config.bbox.target_classes."""
-    tags = context.run.tags if context.run else {}
-    requested = parse_requested_outputs(tags)
-    if "bbox" not in requested:
-        context.log.info("bbox_labeling 스킵: requested_outputs에 bbox 없음")
-        return {"processed": 0, "failed": 0, "total_detections": 0, "skipped": True}
-
-    spec_id = str(tags.get("spec_id") or "").strip()
-    if not spec_id:
-        context.log.info("bbox_labeling 스킵: spec_id 없음")
-        return {"processed": 0, "failed": 0, "total_detections": 0, "skipped": True}
-
-    bbox_resolution = resolve_spec_bbox_classes(db, spec_id)
-    target_classes = bbox_resolution.target_classes
-    class_source = bbox_resolution.class_source
-    resolved_config_id = bbox_resolution.resolved_config_id
-
-    context.log.info(
-        "bbox_labeling: "
-        f"spec_id={spec_id} resolved_config_id={resolved_config_id} "
-        f"target_classes={','.join(target_classes) if target_classes else '(server default)'} "
-        f"source={class_source}"
-    )
-    return _run_yolo_image_detection(
-        context,
-        db,
-        minio,
-        spec_id_override=spec_id,
-        target_classes_override=target_classes,
-        class_source_override=class_source,
-        resolved_config_id_override=resolved_config_id,
-    )
 
 
 def _build_yolo_label_key(image_key: str) -> str:

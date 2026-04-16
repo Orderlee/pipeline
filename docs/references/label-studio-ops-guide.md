@@ -69,9 +69,14 @@ cd docker
 # postgres + 네트워크 먼저
 docker compose up -d postgres
 
-# LS + webhook 기동
+# LS + webhook 기동 (메인 이미지 datapipeline:gpu-cu124 가 로컬에 있어야 함)
 docker compose -f docker-compose.yaml -f docker-compose.labelstudio.yaml up -d
+
+# webhook 없이 LS·DB만 먼저 띄우기 (이미지 pull 실패 시)
+docker compose -f docker-compose.yaml -f docker-compose.labelstudio.yaml up -d postgres labelstudio
 ```
+
+`ls-webhook`은 `image: datapipeline:gpu-cu124`(로컬 빌드)를 씁니다. Docker Hub에 없어 `pull access denied`가 나면 저장소 루트에서 `docker compose -f docker/docker-compose.yaml build` 등으로 이미지를 만든 뒤 다시 `up` 하세요.
 
 ### 4. LS 초기 설정
 
@@ -272,6 +277,9 @@ Dagster run과 동시 실행되어도 대부분 자동 복구됩니다.
 
 | 증상 | 원인 | 해결 |
 |------|------|------|
+| `pull access denied for datapipeline` | `ls-webhook`이 로컬 전용 이미지 사용 | `docker compose -f docker/docker-compose.yaml build` 후 `up`, 또는 `up -d postgres labelstudio`만 실행 |
+| `pipeline-labelstudio-1` 없음 / 접속 불가 | 파이프라인 스택이 내려가 있음 | `docker compose … up -d postgres labelstudio` 또는 전체 스택 기동 |
+| `OperationalError: [Errno -3] Try again` (Postgres) | LS가 Postgres와 다른 Docker 네트워크에만 붙음 | `docker-compose.labelstudio.yaml`에서 `labelstudio`가 `default`+`pipeline-network` 모두 사용하는지 확인, `POSTGRE_HOST=postgres` |
 | LS에서 영상/이미지가 안 보임 | presigned URL 만료 | `ls_tasks.py renew --project-name <name>` |
 | webhook annotation 미수신 | webhook 미등록 또는 WEBHOOK_HOST 오류 | `ls_webhook.py list`로 확인, 필요시 `register` |
 | "database is locked" 에러 | Dagster와 동시 DuckDB write | 자동 재시도 대기 (최대 30초). 지속 시 Dagster run 확인 |

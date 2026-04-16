@@ -1,7 +1,7 @@
-"""DuckDB spec 도메인 — labeling_specs, labeling_configs, requester_config_map CRUD.
+"""DuckDB spec 도메인 — labeling_specs, labeling_configs, requester_config_map 조회.
 
-Legacy spec flow (auto_labeling_unified_spec) 전용.
-현재 기본 prod/test runtime에는 연결하지 않고 호환 경로에서만 사용한다.
+현재는 dispatch 요청의 spec_id → resolved_config 조회 (read + resolved_config 업데이트) 용도로만 사용된다.
+(`lib/spec_config.py` 에서 호출)
 """
 
 from __future__ import annotations
@@ -11,74 +11,8 @@ from datetime import datetime
 from typing import Any
 
 
-def _json_col(val: Any) -> str | None:
-    if val is None:
-        return None
-    if isinstance(val, str):
-        return val
-    return json.dumps(val, ensure_ascii=False)
-
-
 class DuckDBSpecMixin:
     """labeling_specs / labeling_configs / requester_config_map CRUD."""
-
-    def upsert_labeling_spec(
-        self,
-        spec_id: str,
-        *,
-        requester_id: str | None = None,
-        team_id: str | None = None,
-        source_unit_name: str | None = None,
-        categories: list[str] | None = None,
-        classes: list[str] | None = None,
-        labeling_method: list[str] | None = None,
-        spec_status: str = "pending",
-        retry_count: int = 0,
-        resolved_config_id: str | None = None,
-        resolved_config_scope: str | None = None,
-        last_error: str | None = None,
-    ) -> None:
-        now = datetime.now()
-        with self.connect() as conn:
-            conn.execute(
-                """
-                INSERT INTO labeling_specs (
-                    spec_id, requester_id, team_id, source_unit_name,
-                    categories, classes, labeling_method, spec_status,
-                    retry_count, resolved_config_id, resolved_config_scope,
-                    last_error, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT (spec_id) DO UPDATE SET
-                    requester_id = EXCLUDED.requester_id,
-                    team_id = EXCLUDED.team_id,
-                    source_unit_name = EXCLUDED.source_unit_name,
-                    categories = EXCLUDED.categories,
-                    classes = EXCLUDED.classes,
-                    labeling_method = EXCLUDED.labeling_method,
-                    spec_status = EXCLUDED.spec_status,
-                    retry_count = EXCLUDED.retry_count,
-                    resolved_config_id = EXCLUDED.resolved_config_id,
-                    resolved_config_scope = EXCLUDED.resolved_config_scope,
-                    last_error = EXCLUDED.last_error,
-                    updated_at = EXCLUDED.updated_at
-                """,
-                [
-                    spec_id,
-                    requester_id,
-                    team_id,
-                    source_unit_name,
-                    _json_col(categories),
-                    _json_col(classes),
-                    _json_col(labeling_method or []),
-                    spec_status,
-                    retry_count,
-                    resolved_config_id,
-                    resolved_config_scope,
-                    last_error,
-                    now,
-                    now,
-                ],
-            )
 
     def get_labeling_spec_by_id(self, spec_id: str) -> dict[str, Any] | None:
         with self.connect() as conn:
@@ -99,27 +33,6 @@ class DuckDBSpecMixin:
                     except json.JSONDecodeError:
                         pass
             return out
-
-    def list_specs_by_status(self, spec_status: str) -> list[dict[str, Any]]:
-        with self.connect() as conn:
-            if not self._table_exists(conn, "labeling_specs"):
-                return []
-            rows = conn.execute(
-                "SELECT * FROM labeling_specs WHERE spec_status = ? ORDER BY updated_at",
-                [spec_status],
-            ).fetchall()
-            cols = [d[0] for d in conn.description]
-            result = []
-            for row in rows:
-                out = dict(zip(cols, row))
-                for k in ("categories", "classes", "labeling_method"):
-                    if k in out and isinstance(out[k], str) and out[k]:
-                        try:
-                            out[k] = json.loads(out[k])
-                        except json.JSONDecodeError:
-                            pass
-                result.append(out)
-            return result
 
     def resolve_config_for_requester(
         self, requester_id: str | None, team_id: str | None
@@ -187,43 +100,6 @@ class DuckDBSpecMixin:
                 [resolved_config_id, resolved_config_scope, datetime.now(), spec_id],
             )
 
-    def update_spec_status(
-        self,
-        spec_id: str,
-        spec_status: str,
-        last_error: str | None = None,
-        *,
-        clear_last_error: bool = False,
-    ) -> None:
-        with self.connect() as conn:
-            if clear_last_error:
-                conn.execute(
-                    """
-                    UPDATE labeling_specs
-                    SET spec_status = ?, last_error = NULL, updated_at = ?
-                    WHERE spec_id = ?
-                    """,
-                    [spec_status, datetime.now(), spec_id],
-                )
-            elif last_error is not None:
-                conn.execute(
-                    """
-                    UPDATE labeling_specs
-                    SET spec_status = ?, last_error = ?, updated_at = ?
-                    WHERE spec_id = ?
-                    """,
-                    [spec_status, last_error, datetime.now(), spec_id],
-                )
-            else:
-                conn.execute(
-                    """
-                    UPDATE labeling_specs
-                    SET spec_status = ?, updated_at = ?
-                    WHERE spec_id = ?
-                    """,
-                    [spec_status, datetime.now(), spec_id],
-                )
-
     def increment_spec_retry_count(self, spec_id: str) -> int:
         with self.connect() as conn:
             conn.execute(
@@ -285,28 +161,6 @@ class DuckDBSpecMixin:
     def list_active_configs(self) -> list[dict[str, Any]]:
         return self.list_labeling_configs(include_inactive=False)
 
-    def upsert_labeling_config(
-        self,
-        config_id: str,
-        config_json: dict[str, Any],
-        version: int = 1,
-        is_active: bool = True,
-    ) -> None:
-        now = datetime.now()
-        with self.connect() as conn:
-            conn.execute(
-                """
-                INSERT INTO labeling_configs (config_id, config_json, version, is_active, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?)
-                ON CONFLICT (config_id) DO UPDATE SET
-                    config_json = EXCLUDED.config_json,
-                    version = EXCLUDED.version,
-                    is_active = EXCLUDED.is_active,
-                    updated_at = EXCLUDED.updated_at
-                """,
-                [config_id, _json_col(config_json), version, is_active, now, now],
-            )
-
     def set_labeling_config_active(self, config_id: str, is_active: bool) -> None:
         with self.connect() as conn:
             conn.execute(
@@ -317,40 +171,6 @@ class DuckDBSpecMixin:
                 """,
                 [is_active, datetime.now(), config_id],
             )
-
-    def get_spec_by_source_unit_name(
-        self, source_unit_name: str, statuses: list[str] | None = None
-    ) -> dict[str, Any] | None:
-        """source_unit_name으로 매칭되는 spec 1건 반환. statuses 제한 optional."""
-        with self.connect() as conn:
-            if not self._table_exists(conn, "labeling_specs"):
-                return None
-            if statuses:
-                placeholders = ", ".join("?" * len(statuses))
-                row = conn.execute(
-                    f"""
-                    SELECT * FROM labeling_specs
-                    WHERE source_unit_name = ? AND spec_status IN ({placeholders})
-                    ORDER BY updated_at DESC LIMIT 1
-                    """,
-                    [source_unit_name] + list(statuses),
-                ).fetchone()
-            else:
-                row = conn.execute(
-                    "SELECT * FROM labeling_specs WHERE source_unit_name = ? ORDER BY updated_at DESC LIMIT 1",
-                    [source_unit_name],
-                ).fetchone()
-            if row is None:
-                return None
-            cols = [d[0] for d in conn.description]
-            out = dict(zip(cols, row))
-            for k in ("categories", "classes", "labeling_method"):
-                if k in out and isinstance(out[k], str) and out[k]:
-                    try:
-                        out[k] = json.loads(out[k])
-                    except json.JSONDecodeError:
-                        pass
-            return out
 
     def get_active_map(self, requester_id: str | None, team_id: str | None) -> list[dict[str, Any]]:
         with self.connect() as conn:

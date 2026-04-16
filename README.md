@@ -242,16 +242,14 @@ YOLO 서버는 `docker/yolo/` 아래 별도 서비스로 동작합니다.
 .
 ├── src/
 │   └── vlm_pipeline/
-│       ├── definitions.py              # production entrypoint
-│       ├── definitions_profiles.py     # profile 기반 공통 조립
-│       ├── definitions_common.py       # 공통 job/sensor 조립
+│       ├── definitions.py              # 단일 Definitions entrypoint (production canonical)
+│       ├── definitions_production.py   # production job/sensor 조립
 │       ├── defs/
-│       │   ├── dispatch/               # dispatch sensor / service / agent_sensor_common / agent_sensor
+│       │   ├── dispatch/               # dispatch sensor / service / production_agent_sensor
 │       │   ├── ingest/                 # raw ingest, archive, manifest
 │       │   ├── label/                  # assets + artifact_bbox/caption/classification, label_helpers, timestamp
 │       │   ├── process/                # assets(라우팅) + helpers, captioning, frame_extract, raw_frames
 │       │   ├── yolo/                   # YOLO assets
-│       │   ├── spec/                   # legacy spec assets / sensors / config_resolver
 │       │   ├── build/                  # dataset build
 │       │   ├── sam/                    # SAM3 segmentation
 │       │   ├── gcp/                    # GCS download
@@ -335,10 +333,10 @@ cp docker/.env.test docker/.env.test.local
 | `INCOMING_DIR` | incoming 경로 |
 | `GOOGLE_APPLICATION_CREDENTIALS` | Vertex 인증 |
 | `MOTHERDUCK_TOKEN` | MotherDuck 토큰 |
-| `DISPATCH_AGENT_POLLING_ENABLED` | agent polling 활성화 (`true` 권장) |
-| `DISPATCH_AGENT_BASE_URL` | agent base URL |
-| `DISPATCH_AGENT_PENDING_PATH` | pending API path |
-| `DISPATCH_AGENT_ACK_PATH` | ack API path |
+| `PROD_AGENT_POLLING_ENABLED` | production agent polling 활성화 (`true` 권장, production env 전용) |
+| `PROD_AGENT_BASE_URL` | production agent base URL (기본 `http://host.docker.internal:8080`) |
+| `STAGING_AGENT_POLLING_ENABLED` | staging agent polling 활성화 (`true` 권장, test env 전용) |
+| `STAGING_AGENT_BASE_URL` | staging agent base URL (기본 `http://host.docker.internal:8081`) |
 | `INGEST_UPLOAD_WORKERS` | raw ingest MinIO 업로드 worker 수 (`8` 권장) |
 | `GEMINI_MAX_WORKERS` | clip timestamp Gemini 병렬 worker 수 (`5` 권장) |
 | `GEMINI_CHUNK_MAX_WORKERS` | 긴 영상 chunk Gemini 병렬 worker 수 (`3` 권장) |
@@ -390,26 +388,22 @@ pytest tests/integration -q
 | `manual_label_import_job` | 수동 라벨 import, env로 선택 등록 |
 | `yolo_standard_detection_job` | 표준 YOLO detection, env로 선택 등록 |
 
-### Test / Legacy Jobs
+### Common Jobs
 
 | Job | 설명 |
 |-----|------|
-| `dispatch_stage_job` | prod/test 공통 dispatch run_mode 분기 |
-| `auto_labeling_routed_job` | legacy spec 기반 auto labeling |
-| `yolo_detection_job` | legacy test-side YOLO detection |
+| `dispatch_stage_job` | dispatch 트리거 JSON → ingest + clip_* + YOLO + SAM3 |
 | `manual_label_import_job` | incoming 수동 라벨 import |
-| `prelabeled_import_job` | legacy raw + 완료 라벨 세트 수동 적재 |
 | `ingest_job` | 수집 전용 |
 
 ### Sensors / Schedules
 
 | 이름 | 환경 | 설명 |
 |------|------|------|
-| `dispatch_agent_sensor` | prod/test | `piaspace-agent` polling -> `dispatch_stage_job` |
-| `dispatch_sensor` | prod/test fallback | `.dispatch/pending/*.json` -> `dispatch_stage_job` |
-| `incoming_manifest_sensor` | both | pending manifest -> ingest |
+| `production_agent_dispatch_sensor` | prod/test | `piaspace-agent` polling (`/api/production/dispatch/*`) → `dispatch_stage_job` |
+| `dispatch_sensor` | prod/test fallback | `.dispatch/pending/*.json` → `dispatch_stage_job` |
+| `incoming_manifest_sensor` | both | pending manifest → ingest |
 | `auto_bootstrap_manifest_sensor` | both | incoming 스캔 후 manifest 생성 |
-| `spec_resolve_sensor` | legacy | spec 요청 -> routed job |
 | `dispatch_run_*_sensor` | both | dispatch run status finalizer |
 | `stuck_run_guard_sensor` | both | stuck / orphan run 정리 |
 | `motherduck_*_sensor` | prod/test | 핵심 4개 테이블 증분 sync |
@@ -450,8 +444,8 @@ WHERE image_caption_text IS NOT NULL;
 
 ## 운영 팁
 
-- production에서 자동 라벨링은 `piaspace-agent:8080` polling이 기본 ingress입니다 (`DISPATCH_AGENT_POLLING_ENABLED=true` 또는 legacy `PROD_AGENT_POLLING_ENABLED=true`). `.dispatch/pending/*.json`은 fallback으로 유지됩니다.
-- test에서는 `piaspace-agent-staging:8081` 연결 상태와 `DISPATCH_AGENT_POLLING_ENABLED=true` 여부를 먼저 확인합니다.
+- production에서 자동 라벨링은 `piaspace-agent:8080` polling이 기본 ingress입니다 (`PROD_AGENT_POLLING_ENABLED=true`). `.dispatch/pending/*.json`은 fallback으로 유지됩니다.
+- test에서는 `piaspace-agent-staging:8081` 연결 상태와 `STAGING_AGENT_POLLING_ENABLED=true` 여부를 먼저 확인합니다.
 - `필요없음` 요청은 test 데이터 plane에서 raw ingest 후, 같은 폴더 안의 기존 라벨 결과를 best-effort로 자동 import 할 수 있습니다.
 - `tmp_data_2` 같은 재테스트 전에는 DB / MinIO / `.dispatch` 상태를 정리한 뒤 다시 시작하는 것이 안전합니다.
 
@@ -467,4 +461,4 @@ WHERE image_caption_text IS NOT NULL;
 
 ---
 
-이 README는 현재 `definitions.py`, `definitions_profiles.py`, `runtime_settings.py`, `docker/.env.test` 기준의 운영 흐름을 요약합니다. 세부 스키마나 플레이북은 `CLAUDE2.md`와 `src/vlm_pipeline/sql/schema.sql`을 함께 참고하세요.
+이 README는 현재 `definitions.py`, `definitions_production.py`, `runtime_settings.py`, `docker/.env.test` 기준의 운영 흐름을 요약합니다. 세부 스키마나 플레이북은 `CLAUDE2.md`와 `src/vlm_pipeline/sql/schema.sql`을 함께 참고하세요.

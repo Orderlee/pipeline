@@ -1,6 +1,6 @@
 """GCP download asset.
 
-GCS -> /nas/incoming/gcp 다운로드 (auto_bootstrap·test 허용 경로와 일치).
+GCS -> /nas/incoming/gcp 다운로드 (auto_bootstrap·staging 허용 경로와 일치).
 """
 
 from __future__ import annotations

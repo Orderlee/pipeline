@@ -10,24 +10,87 @@ from collections.abc import Mapping
 from typing import Any
 
 import requests
-from dagster import SensorEvaluationContext, SkipReason, sensor
+from dagster import SensorDefinition, SensorEvaluationContext, SkipReason, sensor
 
 from vlm_pipeline.defs.dispatch.service import (
     DispatchIngressRequest,
     process_dispatch_ingress_request,
     record_failed_dispatch_request,
 )
-from vlm_pipeline.defs.dispatch.agent_sensor_common import (
-    build_agent_ack_payload,
-    build_agent_request_id,
-    normalize_agent_dispatch_request,
-    should_wait_for_dispatch_params,
-)
+from vlm_pipeline.lib.env_utils import is_duckdb_lock_conflict
+from vlm_pipeline.lib.sanitizer import sanitize_path_component
 from vlm_pipeline.resources.config import PipelineConfig
 from vlm_pipeline.resources.runtime_settings import load_production_agent_polling_settings
 
 _PROD_PENDING_PATH = "/api/production/dispatch/pending"
 _PROD_ACK_PATH = "/api/production/dispatch/ack"
+
+
+# ---------------------------------------------------------------------------
+# Agent payload helpers (module-private — originally in agent_sensor_common.py)
+# ---------------------------------------------------------------------------
+
+
+def _build_agent_request_id(delivery_id: str) -> str:
+    rendered = sanitize_path_component(delivery_id) or "unknown"
+    return f"agent_{rendered}"
+
+
+def _payload_field_has_value(value: Any) -> bool:
+    if isinstance(value, list):
+        return any(str(item or "").strip() for item in value)
+    return bool(str(value or "").strip())
+
+
+def _should_wait_for_dispatch_params(request_payload: Mapping[str, Any]) -> bool:
+    """Return True when dispatch-driving metadata is entirely empty."""
+    watched_fields = (
+        request_payload.get("labeling_method"),
+        request_payload.get("outputs"),
+        request_payload.get("run_mode"),
+        request_payload.get("categories"),
+        request_payload.get("classes"),
+    )
+    return not any(_payload_field_has_value(value) for value in watched_fields)
+
+
+def _normalize_agent_dispatch_request(
+    request_payload: Mapping[str, Any],
+    *,
+    delivery_id: str,
+) -> dict[str, Any]:
+    """Convert agent payload into canonical dispatch request payload."""
+    normalized = dict(request_payload)
+    source_unit_name = str(normalized.get("source_unit_name") or normalized.get("folder_name") or "").strip()
+    if not source_unit_name:
+        raise ValueError("missing_source_unit_name")
+
+    request_id = str(normalized.get("request_id") or "").strip()
+    if not request_id:
+        request_id = _build_agent_request_id(delivery_id)
+
+    normalized["request_id"] = request_id
+    normalized["folder_name"] = source_unit_name
+    if not str(normalized.get("image_profile") or "").strip():
+        normalized["image_profile"] = "current"
+    if not str(normalized.get("requested_by") or "").strip():
+        normalized["requested_by"] = "piaspace-agent"
+    return normalized
+
+
+def _build_agent_ack_payload(
+    *,
+    delivery_id: str,
+    status: str,
+    request_id: str | None,
+    message: str,
+) -> dict[str, Any]:
+    return {
+        "delivery_id": delivery_id,
+        "status": status,
+        "request_id": request_id,
+        "message": message,
+    }
 
 
 def _fetch_pending_dispatch_items(
@@ -64,7 +127,7 @@ def _post_dispatch_ack(
     try:
         response = session.post(
             f"{base_url}{_PROD_ACK_PATH}",
-            json=build_agent_ack_payload(
+            json=_build_agent_ack_payload(
                 delivery_id=delivery_id,
                 status=status,
                 request_id=request_id,
@@ -133,14 +196,18 @@ def _reject_dispatch_item(
     )
 
 
-@sensor(
-    name="production_agent_dispatch_sensor",
-    description="production optional agent API polling -> dispatch_stage_job ingress",
-    minimum_interval_seconds=load_production_agent_polling_settings().interval_sec,
-    required_resource_keys={"db"},
-    job_name="dispatch_stage_job",
-)
-def production_agent_dispatch_sensor(context: SensorEvaluationContext):
+def build_production_agent_dispatch_sensor(*, jobs) -> SensorDefinition:
+    """Builder — definitions.py에서 job 객체를 주입받아 SensorDefinition 생성."""
+    return sensor(
+        name="production_agent_dispatch_sensor",
+        description="production optional agent API polling -> dispatch ingress (dispatch_stage_job / ingest_job)",
+        minimum_interval_seconds=load_production_agent_polling_settings().interval_sec,
+        required_resource_keys={"db"},
+        jobs=jobs,
+    )(_production_agent_dispatch_sensor_fn)
+
+
+def _production_agent_dispatch_sensor_fn(context: SensorEvaluationContext):
     settings = load_production_agent_polling_settings()
     if not settings.enabled:
         yield SkipReason("PROD_AGENT_POLLING_ENABLED=false")
@@ -151,8 +218,14 @@ def production_agent_dispatch_sensor(context: SensorEvaluationContext):
         yield SkipReason("db resource unavailable")
         return
 
-    db_resource.ensure_runtime_schema()
-    db_resource.ensure_dispatch_tracking_tables()
+    try:
+        db_resource.ensure_runtime_schema()
+        db_resource.ensure_dispatch_tracking_tables()
+    except Exception as exc:
+        if is_duckdb_lock_conflict(exc):
+            yield SkipReason(f"DuckDB lock 충돌 — 다음 tick에서 재시도: {exc}")
+            return
+        raise
 
     config = PipelineConfig()
     timeout = (settings.connect_timeout_sec, settings.read_timeout_sec)
@@ -188,10 +261,10 @@ def production_agent_dispatch_sensor(context: SensorEvaluationContext):
             request_id: str | None = None
 
             try:
-                canonical_request = normalize_agent_dispatch_request(raw_request, delivery_id=delivery_id)
+                canonical_request = _normalize_agent_dispatch_request(raw_request, delivery_id=delivery_id)
                 request_id = str(canonical_request.get("request_id") or "").strip() or None
             except ValueError as exc:
-                fallback_request_id = build_agent_request_id(delivery_id)
+                fallback_request_id = _build_agent_request_id(delivery_id)
                 _reject_dispatch_item(
                     db_resource=db_resource,
                     canonical_request={
@@ -209,7 +282,7 @@ def production_agent_dispatch_sensor(context: SensorEvaluationContext):
                 )
                 continue
 
-            if should_wait_for_dispatch_params(canonical_request):
+            if _should_wait_for_dispatch_params(canonical_request):
                 folder_name = str(canonical_request.get("folder_name") or "").strip()
                 context.log.info(
                     "production agent dispatch waiting: "
@@ -235,7 +308,7 @@ def production_agent_dispatch_sensor(context: SensorEvaluationContext):
                     config=config,
                     ingress_request=DispatchIngressRequest(
                         payload=canonical_request,
-                        fallback_request_id=request_id or build_agent_request_id(delivery_id),
+                        fallback_request_id=request_id or _build_agent_request_id(delivery_id),
                         duplicate_policy="accept_noop",
                         in_flight_policy="defer",
                     ),

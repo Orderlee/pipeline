@@ -26,22 +26,22 @@ from .sensor_helpers import (
 )
 
 
-def _move_test_blocked_manifest(manifest_path: Path, processed_dir: Path, context) -> None:
-    destination = processed_dir / f"{manifest_path.stem}.test_blocked.json"
+def _move_staging_blocked_manifest(manifest_path: Path, processed_dir: Path, context) -> None:
+    destination = processed_dir / f"{manifest_path.stem}.staging_blocked.json"
     suffix = 2
     while destination.exists():
-        destination = processed_dir / f"{manifest_path.stem}.test_blocked__{suffix}.json"
+        destination = processed_dir / f"{manifest_path.stem}.staging_blocked__{suffix}.json"
         suffix += 1
 
     try:
         destination.parent.mkdir(parents=True, exist_ok=True)
         manifest_path.rename(destination)
         context.log.info(
-            f"test auto_bootstrap manifest 무시: {manifest_path.name} -> {destination.name}"
+            f"staging auto_bootstrap manifest 무시: {manifest_path.name} -> {destination.name}"
         )
     except OSError as exc:
         context.log.warning(
-            f"test auto_bootstrap manifest 이동 실패: {manifest_path} -> {destination}: {exc}"
+            f"staging auto_bootstrap manifest 이동 실패: {manifest_path} -> {destination}: {exc}"
         )
 
 
@@ -96,7 +96,7 @@ def incoming_manifest_sensor(context):
             ):
                 allowed_entries.append(entry)
                 continue
-            _move_test_blocked_manifest(entry["path"], processed_dir, context)
+            _move_staging_blocked_manifest(entry["path"], processed_dir, context)
             blocked_entries += 1
         manifest_entries = allowed_entries
         if blocked_entries > 0:

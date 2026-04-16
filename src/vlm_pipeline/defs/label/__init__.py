@@ -10,6 +10,5 @@ Modules:
     artifact_caption        Image caption JSON import
     artifact_classification Image classification JSON import
     manual_import           Manual label import asset
-    prelabeled_import       Pre-labeled data import asset
     sensor                  Label-stage sensors
 """

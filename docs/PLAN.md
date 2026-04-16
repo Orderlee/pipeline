@@ -1,12 +1,10 @@
 # Staging 빈 Dispatch 요청 대기 처리
 
 ## Summary
-`staging`의 `piaspace-agent` polling ingress에서 `labeling_method`, `outputs`, `run_mode`, `categories`, `classes`가 모두 비어 있는 요청은 reject하지 않고 **대기(waiting)** 로 처리합니다. 대기 상태에서는 incoming 폴더를 그대로 두고, dispatch run/manifest/DB tracking row는 만들지 않습니다.
-
-문서 파일 경로는 `docs/staging_agent_waiting_dispatch_plan.md`로 고정합니다.
+`piaspace-agent` polling ingress에서 `labeling_method`, `outputs`, `run_mode`, `categories`, `classes`가 모두 비어 있는 요청은 reject하지 않고 **대기(waiting)** 로 처리합니다. 대기 상태에서는 incoming 폴더를 그대로 두고, dispatch run/manifest/DB tracking row는 만들지 않습니다.
 
 ## Implementation Changes
-- `staging_agent_dispatch_sensor`에 **waiting 판별 함수**를 추가합니다.
+- `production_agent_dispatch_sensor`에 **waiting 판별 함수**를 추가합니다.
   - 입력: agent request payload
   - 조건: `labeling_method`, `outputs`, `run_mode`, `categories`, `classes`가 모두 비어 있음
   - 결과: waiting 처리
@@ -29,23 +27,6 @@
   - `source_unit_name` 없음 → `rejected`
   - incoming 폴더 없음 → `rejected`
   - payload shape 오류 → `rejected`
-
-## Documentation
-- 새 문서 파일 `docs/staging_agent_waiting_dispatch_plan.md`를 생성합니다.
-- 문서에는 아래를 명시합니다.
-  - waiting 대상 필드 조건
-  - waiting 시 manifest/DB/run이 생성되지 않음
-  - incoming 폴더는 그대로 유지됨
-  - 재개는 같은 `request_id` 재전송
-  - ack 예시:
-    ```json
-    {
-      "delivery_id": "dlv_20260326_0001",
-      "status": "accepted",
-      "request_id": "req_staging_20260326_0001",
-      "message": "waiting_for_dispatch_params"
-    }
-    ```
 
 ## Test Plan
 - 빈 요청 waiting
