@@ -2,9 +2,17 @@
 # Label Studio + Webhook Server
 # 별도 프로파일로 main compose와 독립 기동
 # 사용: docker compose -f docker-compose.yaml -f docker-compose.labelstudio.yaml up -d
+#
+# postgres는 메인 compose의 default 네트워크(pipeline_default)에만 붙어 있으므로,
+# labelstudio/ls-webhook도 default에 함께 연결해야 POSTGRE_HOST DNS가 동작한다.
+# (pipeline-network만 쓰면 [Errno -3] Try again / DB 연결 실패)
 # =====================================================
 
-name: pipeline
+# name: pipeline  ← 제거됨.
+# 이전에 name: pipeline 이 있으면 -f 로 메인 compose 와 합칠 때
+# dagster 등 모든 서비스의 프로젝트명이 "pipeline"으로 덮어써져
+# deploy 워크플로우의 프로젝트(pipeline-prod)와 포트 충돌 발생.
+# 프로젝트명은 COMPOSE_PROJECT_NAME env 또는 기본값(디렉토리명)으로 결정.
 
 services:
   # ===== Label Studio =====
@@ -19,13 +27,16 @@ services:
       POSTGRE_USER: ${POSTGRES_USER:-airflow}
       POSTGRE_PASSWORD: ${POSTGRES_PASSWORD:-airflow}
       POSTGRE_PORT: 5432
-      POSTGRE_HOST: pipeline-postgres
+      # Compose 서비스명 (default 네트워크에서 해석됨). pipeline-postgres는 별칭이 아님.
+      POSTGRE_HOST: postgres
     volumes:
       - labelstudio_data:/label-studio/data
     depends_on:
-      - postgres
+      postgres:
+        condition: service_healthy
     restart: unless-stopped
     networks:
+      - default
       - pipeline-network
 
   # ===== LS Webhook Server =====
@@ -57,6 +68,7 @@ services:
       - labelstudio
     restart: unless-stopped
     networks:
+      - default
       - pipeline-network
 
 volumes:

@@ -1,4 +1,4 @@
-"""운영 기준 ingest 정책 헬퍼."""
+"""운영/스테이징 ingest 정책 헬퍼."""
 
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ from .archive import (
 @dataclass(frozen=True)
 class IngestRuntimePolicy:
     runtime_profile: RuntimeProfile
-    is_test: bool
+    is_staging: bool
     defer_video_env_classification: bool
     premove_archive_enabled: bool
 
@@ -29,10 +29,13 @@ def resolve_ingest_runtime_policy(
 ) -> IngestRuntimePolicy:
     settings = load_ingest_feature_settings()
     profile = runtime_profile or resolve_runtime_profile()
+    is_staging = profile.is_staging
     return IngestRuntimePolicy(
         runtime_profile=profile,
-        is_test=profile.is_test,
-        defer_video_env_classification=settings.defer_video_env_classification,
+        is_staging=is_staging,
+        defer_video_env_classification=(
+            not is_staging and settings.defer_video_env_classification
+        ),
         premove_archive_enabled=settings.premove_archive_enabled,
     )
 
@@ -44,11 +47,19 @@ def auto_bootstrap_unit_allowed(
     config,
     runtime_profile: RuntimeProfile | None = None,
 ) -> bool:
+    profile = runtime_profile or resolve_runtime_profile()
     resolved_path = Path(unit_path).resolve()
+    if profile.is_staging:
+        gcp_root = (incoming_dir / "gcp").resolve()
+        try:
+            resolved_path.relative_to(gcp_root)
+            return True
+        except Exception:
+            return False
     return manifest_allows_auto_bootstrap_without_dispatch(
         {"source_unit_path": str(resolved_path)},
         config=config,
-        runtime_profile=runtime_profile or resolve_runtime_profile(),
+        runtime_profile=profile,
     )
 
 
@@ -58,7 +69,14 @@ def pending_manifest_allowed(
     config,
     runtime_profile: RuntimeProfile | None = None,
 ) -> bool:
-    return True
+    profile = runtime_profile or resolve_runtime_profile()
+    if not profile.is_staging:
+        return True
+    return should_archive_manifest(
+        payload,
+        config=config,
+        runtime_profile=profile,
+    )
 
 
 def auto_bootstrap_manifest_archive_requested(
@@ -80,11 +98,9 @@ def archive_only_artifact_import_allowed(
     runtime_profile: RuntimeProfile,
     archive_only: bool,
     folder_name: str | None,
-    dispatch_mode: str = "standard",
 ) -> bool:
     return (
         runtime_profile is not None
         and archive_only
-        and str(dispatch_mode or "").strip().lower() != "ingest_only"
         and bool(str(folder_name or "").strip())
     )

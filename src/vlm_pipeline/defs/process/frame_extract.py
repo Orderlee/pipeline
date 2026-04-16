@@ -42,7 +42,6 @@ from .helpers import (
     _materialize_video_path,
     _plan_asset_event_clip_extraction_windows,
     _reset_empty_output_failure,
-    _resolve_event_clip_extraction_window,
     _sort_process_candidates,
     _stable_clip_id,
     _track_empty_output_failure,
@@ -205,11 +204,30 @@ def clip_to_frame_mvp(
                 uploaded_clip_key = clip_key
 
             elif cf.event_start_sec is not None and cf.event_end_sec is not None and cf.event_end_sec > cf.event_start_sec:
+                # 이벤트 시작이 영상 길이를 넘어서면 추출 불가 → 해당 clip만 failed로 마크.
+                if (
+                    cf.source_video_duration_sec is not None
+                    and cf.source_video_duration_sec > 0
+                    and float(cf.event_start_sec) >= float(cf.source_video_duration_sec)
+                ):
+                    raise RuntimeError(
+                        "event_start_beyond_video_duration:"
+                        f"event_start={float(cf.event_start_sec):.3f}:"
+                        f"duration={float(cf.source_video_duration_sec):.3f}"
+                    )
+                window_plan = clip_window_plans.get(_candidate_clip_window_plan_key(cand), {})
+                if not window_plan or "extract_start_sec" not in window_plan or "extract_end_sec" not in window_plan:
+                    # 플랜이 skip된 candidate (event 전체가 duration 초과 등) → fail-forward
+                    raise RuntimeError(
+                        "clip_window_plan_missing:event_beyond_video_duration:"
+                        f"event_start={float(cf.event_start_sec):.3f}:"
+                        f"event_end={float(cf.event_end_sec):.3f}:"
+                        f"duration={cf.source_video_duration_sec}"
+                    )
                 video_path, temp_video_path = _materialize_video_path(
                     minio,
                     {"archive_path": cf.archive_path, "raw_bucket": cf.raw_bucket, "raw_key": cf.raw_key},
                 )
-                window_plan = clip_window_plans.get(_candidate_clip_window_plan_key(cand), {})
                 extracted_clip = _extract_video_clip_media(
                     context,
                     db,
@@ -221,28 +239,8 @@ def clip_to_frame_mvp(
                     event_start_sec=float(cf.event_start_sec),
                     event_end_sec=float(cf.event_end_sec),
                     source_duration_sec=cf.source_video_duration_sec,
-                    extract_start_sec=float(
-                        window_plan.get(
-                            "extract_start_sec",
-                            _resolve_event_clip_extraction_window(
-                                event_start_sec=cf.event_start_sec,
-                                event_end_sec=cf.event_end_sec,
-                                source_duration_sec=cf.source_video_duration_sec,
-                                event_category=None,
-                            )[0],
-                        )
-                    ),
-                    extract_end_sec=float(
-                        window_plan.get(
-                            "extract_end_sec",
-                            _resolve_event_clip_extraction_window(
-                                event_start_sec=cf.event_start_sec,
-                                event_end_sec=cf.event_end_sec,
-                                source_duration_sec=cf.source_video_duration_sec,
-                                event_category=None,
-                            )[1],
-                        )
-                    ),
+                    extract_start_sec=float(window_plan["extract_start_sec"]),
+                    extract_end_sec=float(window_plan["extract_end_sec"]),
                     window_strategy=str(window_plan.get("window_strategy") or "buffered"),
                     video_width=cand.get("video_width"),
                     video_height=cand.get("video_height"),
@@ -513,11 +511,30 @@ def clip_to_frame_routed_impl(
                 minio.upload("vlm-processed", clip_key, file_bytes, f"image/{codec}")
                 uploaded_clip_key = clip_key
             elif cf.event_start_sec is not None and cf.event_end_sec is not None and cf.event_end_sec > cf.event_start_sec:
+                # 이벤트 시작이 영상 길이를 넘어서면 추출 불가 → 해당 clip만 failed로 마크.
+                if (
+                    cf.source_video_duration_sec is not None
+                    and cf.source_video_duration_sec > 0
+                    and float(cf.event_start_sec) >= float(cf.source_video_duration_sec)
+                ):
+                    raise RuntimeError(
+                        "event_start_beyond_video_duration:"
+                        f"event_start={float(cf.event_start_sec):.3f}:"
+                        f"duration={float(cf.source_video_duration_sec):.3f}"
+                    )
+                window_plan = clip_window_plans.get(_candidate_clip_window_plan_key(cand), {})
+                if not window_plan or "extract_start_sec" not in window_plan or "extract_end_sec" not in window_plan:
+                    # 플랜이 skip된 candidate (event 전체가 duration 초과 등) → fail-forward
+                    raise RuntimeError(
+                        "clip_window_plan_missing:event_beyond_video_duration:"
+                        f"event_start={float(cf.event_start_sec):.3f}:"
+                        f"event_end={float(cf.event_end_sec):.3f}:"
+                        f"duration={cf.source_video_duration_sec}"
+                    )
                 video_path, temp_video_path = _materialize_video_path(
                     minio,
                     {"archive_path": cf.archive_path, "raw_bucket": cf.raw_bucket, "raw_key": cf.raw_key},
                 )
-                window_plan = clip_window_plans.get(_candidate_clip_window_plan_key(cand), {})
                 extracted_clip = _extract_video_clip_media(
                     context,
                     db,
@@ -529,28 +546,8 @@ def clip_to_frame_routed_impl(
                     event_start_sec=float(cf.event_start_sec),
                     event_end_sec=float(cf.event_end_sec),
                     source_duration_sec=cf.source_video_duration_sec,
-                    extract_start_sec=float(
-                        window_plan.get(
-                            "extract_start_sec",
-                            _resolve_event_clip_extraction_window(
-                                event_start_sec=cf.event_start_sec,
-                                event_end_sec=cf.event_end_sec,
-                                source_duration_sec=cf.source_video_duration_sec,
-                                event_category=event_category,
-                            )[0],
-                        )
-                    ),
-                    extract_end_sec=float(
-                        window_plan.get(
-                            "extract_end_sec",
-                            _resolve_event_clip_extraction_window(
-                                event_start_sec=cf.event_start_sec,
-                                event_end_sec=cf.event_end_sec,
-                                source_duration_sec=cf.source_video_duration_sec,
-                                event_category=event_category,
-                            )[1],
-                        )
-                    ),
+                    extract_start_sec=float(window_plan["extract_start_sec"]),
+                    extract_end_sec=float(window_plan["extract_end_sec"]),
                     window_strategy=str(window_plan.get("window_strategy") or "buffered"),
                     video_width=cand.get("video_width"),
                     video_height=cand.get("video_height"),

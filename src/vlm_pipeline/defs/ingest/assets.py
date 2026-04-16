@@ -52,8 +52,6 @@ class RawIngestState:
     request_id: str | None
     folder_name: str | None
     archive_only: bool
-    dispatch_mode: str = "standard"
-    requested_labeling_method_raw: str | None = None
     stage: str = "entered"
     manifest: dict | None = None
     transfer_tool: str = ""
@@ -242,7 +240,7 @@ def _maybe_compact_completed_gcp_manifests(
     return report
 
 
-def _run_archive_only_artifact_import(
+def _run_staging_archive_only_artifact_import(
     context,
     db: DuckDBResource,
     minio: MinIOResource,
@@ -255,7 +253,6 @@ def _run_archive_only_artifact_import(
         runtime_profile=runtime_profile,
         archive_only=state.archive_only,
         folder_name=state.folder_name,
-        dispatch_mode=state.dispatch_mode,
     ):
         return None
 
@@ -308,7 +305,7 @@ def _finalize_dispatch_success(db: DuckDBResource, state: RawIngestState) -> Non
         error_message=None,
         completed_at=completed_at,
     )
-    if state.archive_only or state.dispatch_mode == "ingest_only":
+    if state.archive_only:
         db.update_dispatch_request_status(
             state.request_id,
             "completed",
@@ -384,7 +381,7 @@ def _finalize_dispatch_failure(
         )
 
 
-def _dispatch_request_context(context) -> tuple[str | None, str | None, bool, str, str | None]:
+def _dispatch_request_context(context) -> tuple[str | None, str | None, bool]:
     tags = getattr(context.run, "tags", {}) or {}
     request_id = (
         str(tags.get("dispatch_request_id") or tags.get("dagster/run_key") or "").strip() or None
@@ -393,24 +390,16 @@ def _dispatch_request_context(context) -> tuple[str | None, str | None, bool, st
         str(tags.get("folder_name_original") or tags.get("folder_name") or "").strip() or None
     )
     archive_only = str(tags.get("dispatch_archive_only") or "").strip().lower() in TRUTHY_STRINGS
-    dispatch_mode = str(tags.get("dispatch_mode") or "standard").strip().lower() or "standard"
-    requested_labeling_method_raw = (
-        str(tags.get("requested_labeling_method_raw") or "").strip() or None
-    )
-    return request_id, folder_name, archive_only, dispatch_mode, requested_labeling_method_raw
+    return request_id, folder_name, archive_only
 
 
 def _build_raw_ingest_state(context) -> RawIngestState:
-    request_id, folder_name, archive_only, dispatch_mode, requested_labeling_method_raw = (
-        _dispatch_request_context(context)
-    )
+    request_id, folder_name, archive_only = _dispatch_request_context(context)
     return RawIngestState(
         manifest_path=context.run.tags.get("manifest_path"),
         request_id=request_id,
         folder_name=folder_name,
         archive_only=archive_only,
-        dispatch_mode=dispatch_mode,
-        requested_labeling_method_raw=requested_labeling_method_raw,
     )
 
 
@@ -430,8 +419,6 @@ def _build_ingest_result_metadata(
         "archived_count": archived_count,
         "archive_missing_count": max(0, uploaded_count - archived_count),
         "archive_requested": state.archive_requested,
-        "dispatch_mode": state.dispatch_mode,
-        "ingest_only": state.dispatch_mode == "ingest_only",
         "ingest_rejection_count": len(state.ingest_rejections),
         "retry_candidate_count": len(state.retry_candidates),
         "retry_manifest_created": bool(retry_manifest_path),
@@ -440,8 +427,6 @@ def _build_ingest_result_metadata(
         "dedup_similar_found": dedup_summary["similar_found"],
         "dedup_failed": dedup_summary["failed"],
     }
-    if state.requested_labeling_method_raw:
-        meta["requested_labeling_method_raw"] = state.requested_labeling_method_raw
     if local_artifact_summary:
         meta.update(
             {
@@ -583,7 +568,7 @@ def _step_register_and_upload(context, db, minio, *, config, state, runtime_poli
 def _step_post_ingest(context, db, minio, *, config, state, runtime_policy, target_archive_dir):
     """라벨 artifact import, retry manifest, inline dedup, done marker."""
     state.stage = "label_artifact_import"
-    local_artifact_summary = _run_archive_only_artifact_import(
+    local_artifact_summary = _run_staging_archive_only_artifact_import(
         context, db, minio, config=config, state=state,
         runtime_profile=runtime_policy.runtime_profile,
     )
@@ -645,28 +630,12 @@ def _run_raw_ingest_pipeline(
         )
 
         # 3) 후처리 (artifact import, retry, dedup, done marker)
-        if state.dispatch_mode == "ingest_only":
-            context.log.info(
-                "ingest-only dispatch 완료: raw DB 등록 + vlm-raw 업로드 후 "
-                "artifact import / retry manifest / dedup / done marker 단계를 건너뜁니다."
+        dedup_summary, retry_manifest_path, failure_log_path, archive_done_marker_path, local_artifact_summary = (
+            _step_post_ingest(
+                context, db, minio, config=config, state=state,
+                runtime_policy=runtime_policy, target_archive_dir=target_archive_dir,
             )
-            dedup_summary = {
-                "computed": 0,
-                "similar_found": 0,
-                "failed": 0,
-                "gated_failed": 0,
-            }
-            retry_manifest_path = None
-            failure_log_path = None
-            archive_done_marker_path = None
-            local_artifact_summary = None
-        else:
-            dedup_summary, retry_manifest_path, failure_log_path, archive_done_marker_path, local_artifact_summary = (
-                _step_post_ingest(
-                    context, db, minio, config=config, state=state,
-                    runtime_policy=runtime_policy, target_archive_dir=target_archive_dir,
-                )
-            )
+        )
 
         # 4) summary + output metadata 조립
         common_meta = _build_ingest_result_metadata(
@@ -748,8 +717,7 @@ def raw_ingest(
     context.log.info(
         "raw_ingest entered: "
         f"run_id={context.run.run_id}, request_id={state.request_id or ''}, "
-        f"folder={state.folder_name or ''}, dispatch_mode={state.dispatch_mode}, "
-        f"manifest_path={state.manifest_path or ''}"
+        f"folder={state.folder_name or ''}, manifest_path={state.manifest_path or ''}"
     )
     return _run_raw_ingest_pipeline(
         context,
