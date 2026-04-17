@@ -210,10 +210,10 @@ CREATE TABLE IF NOT EXISTS image_labels (
 );
 
 -- ============================================================
--- 9. staging_dispatch_requests: Dispatch 요청 추적 (dispatch_sensor DDL과 동일)
+-- 9. dispatch_requests: Dispatch 요청 추적 (dispatch_sensor DDL과 동일)
 --    trigger JSON → archive 이동 + 파이프라인 실행
 -- ============================================================
-CREATE TABLE IF NOT EXISTS staging_dispatch_requests (
+CREATE TABLE IF NOT EXISTS dispatch_requests (
     request_id           VARCHAR PRIMARY KEY,
     folder_name          VARCHAR,
     run_mode             VARCHAR,
@@ -264,10 +264,10 @@ CREATE TABLE IF NOT EXISTS staging_model_configs (
 );
 
 -- ============================================================
--- 11. staging_pipeline_runs: Dispatch 요청별 파이프라인 단계 진행 추적
+-- 11. dispatch_pipeline_runs: Dispatch 요청별 파이프라인 단계 진행 추적
 --     archive 이동 → 모델 실행 → 완료 전 과정 기록
 -- ============================================================
-CREATE TABLE IF NOT EXISTS staging_pipeline_runs (
+CREATE TABLE IF NOT EXISTS dispatch_pipeline_runs (
     run_id               VARCHAR PRIMARY KEY,
     request_id           VARCHAR,
     folder_name          VARCHAR,

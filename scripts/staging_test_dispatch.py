@@ -184,7 +184,7 @@ import duckdb, json
 conn = duckdb.connect('/data/staging.duckdb', read_only=True)
 try:
     row = conn.execute(
-        "SELECT request_id, folder_name, outputs, status, error_message FROM staging_dispatch_requests WHERE request_id = ?",
+        "SELECT request_id, folder_name, outputs, status, error_message FROM dispatch_requests WHERE request_id = ?",
         ['{request_id}']
     ).fetchone()
     if row:
@@ -216,7 +216,7 @@ def get_db_summary() -> dict:
 import duckdb, json
 conn = duckdb.connect('/data/staging.duckdb', read_only=True)
 summary = {}
-for table in ['raw_files', 'video_metadata', 'labels', 'processed_clips', 'image_metadata', 'image_labels', 'staging_dispatch_requests']:
+for table in ['raw_files', 'video_metadata', 'labels', 'processed_clips', 'image_metadata', 'image_labels', 'dispatch_requests']:
     try:
         count = conn.execute(f'SELECT COUNT(*) FROM {table}').fetchone()[0]
         summary[table] = count
@@ -224,7 +224,7 @@ for table in ['raw_files', 'video_metadata', 'labels', 'processed_clips', 'image
         summary[table] = -1
 # pipeline_runs
 try:
-    rows = conn.execute('SELECT step_name, step_status, COUNT(*) FROM staging_pipeline_runs GROUP BY step_name, step_status ORDER BY step_name').fetchall()
+    rows = conn.execute('SELECT step_name, step_status, COUNT(*) FROM dispatch_pipeline_runs GROUP BY step_name, step_status ORDER BY step_name').fetchall()
     summary['pipeline_runs'] = [{'step': r[0], 'status': r[1], 'count': r[2]} for r in rows]
 except:
     summary['pipeline_runs'] = []

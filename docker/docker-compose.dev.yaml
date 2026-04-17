@@ -65,7 +65,7 @@ services:
       context: ..
       dockerfile: docker/Dockerfile
     image: datapipeline:dev
-    user: root
+    user: "${DOCKER_USER:-0:0}"
     working_dir: /app
     command:
       [
@@ -74,8 +74,8 @@ services:
       ]
     environment: *dev-env
     volumes:
-      - ./app/dagster_home_dev:/app/dagster_home
-      - ./data_dev:/data
+      - ${DEV_DAGSTER_HOME_HOST_PATH:-./app/dagster_home_dev}:/app/dagster_home
+      - ${DEV_DATA_HOST_PATH:-./data_dev}:/data
       - ../src/python:/src/python:ro
       - ../src:/src/vlm:ro
       - ../configs:/configs:ro
@@ -85,7 +85,7 @@ services:
 
   dagster:
     image: datapipeline:dev
-    user: root
+    user: "${DOCKER_USER:-0:0}"
     working_dir: /app/dagster_home
     command:
       [
@@ -96,8 +96,8 @@ services:
       - "${DAGSTER_PORT:-3030}:3030"
     environment: *dev-env
     volumes:
-      - ./app/dagster_home_dev:/app/dagster_home
-      - ./data_dev:/data
+      - ${DEV_DAGSTER_HOME_HOST_PATH:-./app/dagster_home_dev}:/app/dagster_home
+      - ${DEV_DATA_HOST_PATH:-./data_dev}:/data
       - ../src/python:/src/python:ro
       - ../src:/src/vlm:ro
       - ../configs:/configs:ro
@@ -110,7 +110,7 @@ services:
 
   dagster-daemon:
     image: datapipeline:dev
-    user: root
+    user: "${DOCKER_USER:-0:0}"
     working_dir: /app/dagster_home
     command:
       [
@@ -119,8 +119,8 @@ services:
       ]
     environment: *dev-env
     volumes:
-      - ./app/dagster_home_dev:/app/dagster_home
-      - ./data_dev:/data
+      - ${DEV_DAGSTER_HOME_HOST_PATH:-./app/dagster_home_dev}:/app/dagster_home
+      - ${DEV_DATA_HOST_PATH:-./data_dev}:/data
       - ../src/python:/src/python:ro
       - ../src:/src/vlm:ro
       - ../configs:/configs:ro

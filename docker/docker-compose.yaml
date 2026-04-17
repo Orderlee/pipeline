@@ -50,6 +50,7 @@ x-runtime-volumes: &runtime-volumes
     target: /nas/incoming
     read_only: false
   - /home/pia/test_data:/test_data
+  - ./app/credentials:/app/credentials:ro
   - type: bind
     source: ${GCLOUD_CONFIG_HOST_PATH:-/home/pia/.config/gcloud}
     target: /root/.config/gcloud
@@ -64,7 +65,7 @@ x-runtime-dagster-env: &runtime-dagster-env
 
 x-runtime-dagster-common: &runtime-dagster-common
   image: ${IMAGE_NAME:-datapipeline:gpu-cu124}
-  user: root
+  user: "${DOCKER_USER:-0:0}"
   env_file:
     - ${PIPELINE_ENV_FILE:-.env}
   environment: *runtime-dagster-env
@@ -80,7 +81,7 @@ services:
       context: ..
       dockerfile: docker/Dockerfile
     image: ${IMAGE_NAME:-datapipeline:gpu-cu124}
-    user: root
+    user: "${DOCKER_USER:-0:0}"
     command: ["sleep", "infinity"]
     ports:
       - "${APP_PORT:-0}:8000"

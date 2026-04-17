@@ -15,7 +15,7 @@ from tempfile import NamedTemporaryFile, gettempdir
 from uuid import uuid4
 
 from vlm_pipeline.lib.env_utils import coerce_float, int_env
-from vlm_pipeline.lib.file_loader import build_nonexistent_temp_path
+from vlm_pipeline.lib.file_loader import build_nonexistent_temp_path, cleanup_temp_path
 from vlm_pipeline.lib.gemini import GeminiAnalyzer, extract_clean_json_text, load_clean_json
 from vlm_pipeline.lib.vertex_chunking import (
     merge_overlapping_events,
@@ -162,7 +162,7 @@ def prepare_gemini_video_for_request(
         successful.sort(key=lambda row: int(row["width"]), reverse=True)
         chosen = successful[0]
         for rejected in successful[1:]:
-            cleanup_temp(rejected["preview_path"])
+            cleanup_temp_path(rejected["preview_path"])
         preview_path = chosen["preview_path"]
         if isinstance(preview_path, Path):
             return preview_path, preview_path
@@ -254,7 +254,7 @@ def analyze_routed_video_events(
             }
         finally:
             for path in reversed(local_temp_paths):
-                cleanup_temp(path)
+                cleanup_temp_path(path)
 
     chunk_results: list[dict[str, object]] = []
     with ThreadPoolExecutor(max_workers=chunk_workers) as executor:
@@ -348,7 +348,7 @@ def extract_video_segment_path(
     if copy_proc.returncode == 0 and output_path.exists() and output_path.stat().st_size > 0:
         return output_path
 
-    cleanup_temp(output_path)
+    cleanup_temp_path(output_path)
     output_path = _build_nonexistent_temp_path(".mp4")
     reencode_cmd = [
         "ffmpeg",
@@ -378,7 +378,7 @@ def extract_video_segment_path(
     reencode_proc = subprocess.run(reencode_cmd, capture_output=True, check=False)
     if reencode_proc.returncode != 0 or not output_path.exists() or output_path.stat().st_size <= 0:
         stderr = (reencode_proc.stderr or copy_proc.stderr or b"").decode("utf-8", errors="ignore").strip()
-        cleanup_temp(output_path)
+        cleanup_temp_path(output_path)
         raise RuntimeError(f"ffmpeg_chunk_extract_failed:{stderr or 'empty_output'}")
     return output_path
 
@@ -587,7 +587,7 @@ def _render_gemini_preview_attempt(
                 "width": int(attempt["width"]),
                 "error": None,
             }
-        cleanup_temp(preview_path)
+        cleanup_temp_path(preview_path)
         return {
             "preview_path": None,
             "width": int(attempt["width"]),
@@ -595,7 +595,7 @@ def _render_gemini_preview_attempt(
         }
 
     stderr = (proc.stderr or b"").decode("utf-8", errors="ignore").strip()
-    cleanup_temp(preview_path)
+    cleanup_temp_path(preview_path)
     return {
         "preview_path": None,
         "width": int(attempt["width"]),
@@ -605,10 +605,3 @@ def _render_gemini_preview_attempt(
 
 
 
-def cleanup_temp(path: Path | None) -> None:
-    if path is None:
-        return
-    try:
-        path.unlink(missing_ok=True)
-    except Exception:
-        pass

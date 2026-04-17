@@ -10,6 +10,18 @@ import duckdb
 class DuckDBMigrationMixin:
     """스키마 진화·마이그레이션 전담 mixin.
 
+    schema.sql이 "최종 상태"를 정의하고, 이 mixin은 기존 DB를 schema.sql에 수렴시키는
+    upgrade 로직만 담당한다. 함수 분류:
+
+    - **Column backfill (idempotent ALTER)**: `_ensure_*_columns()` — 누락 컬럼
+      추가 + NULL → 기본값 채우기. 신규 환경에서는 schema.sql이 이미 해당 컬럼을
+      포함하므로 no-op.
+    - **Table repair / rebuild**: `_rebuild_image_metadata_table()` 등 — 데이터
+      보존 로직 포함, 운영 중단 상태에서만 호출.
+    - **Legacy rename (one-time, idempotent)**: `_ensure_dispatch_table_rename()` —
+      staging_* → dispatch_* 이행.
+    - **Seed**: `_ensure_staging_model_configs()` — 기본 config 3건 `ON CONFLICT DO NOTHING`.
+
     ``_table_exists``, ``_table_columns``, ``_load_schema_ddl``, ``connect`` 등은
     ``DuckDBBaseMixin`` 에서 제공된다(MRO 기준).
     """
@@ -22,6 +34,7 @@ class DuckDBMigrationMixin:
         """필수 스키마(raw_files 포함)를 보장한다."""
         ddl = self._load_schema_ddl(include_image_labels=False)
         with self.connect() as conn:
+            self._ensure_dispatch_table_rename(conn)
             conn.execute(ddl)
             self._ensure_image_metadata_columns(conn, backfill=True)
             self._ensure_image_metadata_indexes(conn, cleanup_old_indexes=True)
@@ -29,9 +42,9 @@ class DuckDBMigrationMixin:
             self._ensure_labels_columns(conn, backfill=True)
             self._ensure_processed_clips_columns(conn, backfill=True)
             self._ensure_image_labels_table(conn, restore_backup=True)
-            self._ensure_staging_dispatch_columns(conn)
+            self._ensure_dispatch_requests_columns(conn)
             self._ensure_staging_model_configs(conn)
-            self._ensure_staging_pipeline_runs(conn)
+            self._ensure_dispatch_pipeline_runs(conn)
             self._ensure_raw_files_spec_columns(conn)
             self._ensure_video_metadata_stage_columns(conn)
             self._ensure_video_metadata_reencode_columns(conn)
@@ -49,15 +62,16 @@ class DuckDBMigrationMixin:
             return
         ddl = self._load_schema_ddl(include_image_labels=False)
         with self.connect() as conn:
+            self._ensure_dispatch_table_rename(conn)
             conn.execute(ddl)
             self._ensure_image_metadata_columns(conn, backfill=False)
             self._ensure_video_metadata_frame_columns(conn, backfill=False)
             self._ensure_labels_columns(conn, backfill=False)
             self._ensure_processed_clips_columns(conn, backfill=False)
             self._ensure_image_labels_table(conn, restore_backup=False)
-            self._ensure_staging_dispatch_columns(conn)
+            self._ensure_dispatch_requests_columns(conn)
             self._ensure_staging_model_configs(conn)
-            self._ensure_staging_pipeline_runs(conn)
+            self._ensure_dispatch_pipeline_runs(conn)
             self._ensure_raw_files_spec_columns(conn)
             self._ensure_video_metadata_stage_columns(conn)
             self._ensure_video_metadata_reencode_columns(conn)
@@ -109,9 +123,10 @@ class DuckDBMigrationMixin:
 
     @classmethod
     def _ensure_dispatch_support_schema(cls, conn: duckdb.DuckDBPyConnection) -> None:
-        cls._ensure_staging_dispatch_columns(conn)
+        cls._ensure_dispatch_table_rename(conn)
+        cls._ensure_dispatch_requests_columns(conn)
         cls._ensure_staging_model_configs(conn)
-        cls._ensure_staging_pipeline_runs(conn)
+        cls._ensure_dispatch_pipeline_runs(conn)
         cls._ensure_raw_files_spec_columns(conn)
         cls._ensure_video_metadata_stage_columns(conn)
 
@@ -684,12 +699,38 @@ class DuckDBMigrationMixin:
         ).fetchone()
         return bool(row and row[0] > 0)
 
-    # ── Staging 전용 테이블 보장 ──
+    # ── Dispatch tracking 테이블 보장 ──
 
     @classmethod
-    def _ensure_staging_dispatch_columns(cls, conn: duckdb.DuckDBPyConnection) -> None:
-        """staging_dispatch_requests에 YOLO 파라미터 컬럼이 없으면 추가."""
-        columns = cls._table_columns(conn, "staging_dispatch_requests")
+    def _ensure_dispatch_table_rename(cls, conn: duckdb.DuckDBPyConnection) -> None:
+        """legacy `staging_*` → canonical `dispatch_*` 테이블명 이행.
+
+        - 과거 orphan `dispatch_requests` (2026-04-15 이전 dual-write 잔재) 가 남아 있으면 DROP
+        - staging_dispatch_requests → dispatch_requests RENAME
+        - staging_pipeline_runs → dispatch_pipeline_runs RENAME
+
+        idempotent: 이미 이행된 DB 에서는 no-op.
+        """
+        legacy_dispatch_exists = cls._table_exists(conn, "staging_dispatch_requests")
+        if legacy_dispatch_exists:
+            if cls._table_exists(conn, "dispatch_requests"):
+                conn.execute("DROP TABLE dispatch_requests")
+            conn.execute(
+                "ALTER TABLE staging_dispatch_requests RENAME TO dispatch_requests"
+            )
+
+        legacy_pipeline_runs_exists = cls._table_exists(conn, "staging_pipeline_runs")
+        if legacy_pipeline_runs_exists:
+            if cls._table_exists(conn, "dispatch_pipeline_runs"):
+                conn.execute("DROP TABLE dispatch_pipeline_runs")
+            conn.execute(
+                "ALTER TABLE staging_pipeline_runs RENAME TO dispatch_pipeline_runs"
+            )
+
+    @classmethod
+    def _ensure_dispatch_requests_columns(cls, conn: duckdb.DuckDBPyConnection) -> None:
+        """dispatch_requests 에 YOLO 파라미터 컬럼이 없으면 추가."""
+        columns = cls._table_columns(conn, "dispatch_requests")
         if not columns:
             return
 
@@ -707,7 +748,7 @@ class DuckDBMigrationMixin:
             if column_name in columns:
                 continue
             conn.execute(
-                f"ALTER TABLE staging_dispatch_requests ADD COLUMN {column_name} {column_type}"
+                f"ALTER TABLE dispatch_requests ADD COLUMN {column_name} {column_type}"
             )
 
     @classmethod
@@ -788,11 +829,11 @@ class DuckDBMigrationMixin:
             )
 
     @classmethod
-    def _ensure_staging_pipeline_runs(cls, conn: duckdb.DuckDBPyConnection) -> None:
-        """staging_pipeline_runs 테이블 보장."""
+    def _ensure_dispatch_pipeline_runs(cls, conn: duckdb.DuckDBPyConnection) -> None:
+        """dispatch_pipeline_runs 테이블 보장."""
         conn.execute(
             """
-            CREATE TABLE IF NOT EXISTS staging_pipeline_runs (
+            CREATE TABLE IF NOT EXISTS dispatch_pipeline_runs (
                 run_id               VARCHAR PRIMARY KEY,
                 request_id           VARCHAR,
                 folder_name          VARCHAR,
