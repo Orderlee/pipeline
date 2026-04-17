@@ -220,7 +220,6 @@ def _production_agent_dispatch_sensor_fn(context: SensorEvaluationContext):
 
     try:
         db_resource.ensure_runtime_schema()
-        db_resource.ensure_dispatch_tracking_tables()
     except Exception as exc:
         if is_duckdb_lock_conflict(exc):
             yield SkipReason(f"DuckDB lock 충돌 — 다음 tick에서 재시도: {exc}")
