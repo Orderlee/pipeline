@@ -174,7 +174,14 @@ def motherduck_sync(context):
             }
             context.add_output_metadata(summary)
             return summary
-        raise RuntimeError(f"motherduck sync failed (code={result.returncode})")
+        stderr_tail = (result.stderr or "").strip()[-2000:]
+        stdout_tail = (result.stdout or "").strip()[-2000:]
+        detail_parts = [f"motherduck sync failed (code={result.returncode})"]
+        if stderr_tail:
+            detail_parts.append(f"stderr tail:\n{stderr_tail}")
+        elif stdout_tail:
+            detail_parts.append(f"stdout tail:\n{stdout_tail}")
+        raise RuntimeError("\n".join(detail_parts))
 
     if trigger_table:
         context.log.info(f"motherduck_sync trigger_table={trigger_table}")

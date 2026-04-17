@@ -27,10 +27,11 @@ from vlm_pipeline.lib.spec_config import (
 from vlm_pipeline.resources.duckdb import DuckDBResource
 from vlm_pipeline.resources.minio import MinIOResource
 
+from vlm_pipeline.lib.file_loader import cleanup_temp_path
+
 from .label_helpers import (
     build_video_classification_key,
     build_video_classification_prompt,
-    cleanup_temp,
     find_dispatch_video_classification_candidates,
     init_gemini_analyzer,
     materialize_video,
@@ -176,7 +177,7 @@ def classification_video(
             )
         finally:
             for path in reversed(temp_paths):
-                cleanup_temp(path)
+                cleanup_temp_path(path)
 
     summary = {"processed": processed, "failed": failed, "predicted": processed}
     context.add_output_metadata(summary)

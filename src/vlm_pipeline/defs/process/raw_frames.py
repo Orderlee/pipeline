@@ -22,8 +22,9 @@ from vlm_pipeline.lib.video_frames import (
 from vlm_pipeline.resources.duckdb import DuckDBResource
 from vlm_pipeline.resources.minio import MinIOResource
 
+from vlm_pipeline.lib.file_loader import cleanup_temp_path
+
 from .helpers import (
-    _cleanup_temp_path,
     _coerce_float,
     _delete_minio_keys,
     _materialize_video_path,
@@ -154,7 +155,7 @@ def raw_video_to_frame_impl(
                 _delete_minio_keys(minio, "vlm-processed", uploaded_frame_keys)
             failed += 1
         finally:
-            _cleanup_temp_path(temp_video_path)
+            cleanup_temp_path(temp_video_path)
 
     summary = {"processed": processed, "failed": failed, "frames_extracted": total_frames}
     context.add_output_metadata(summary)

@@ -1,7 +1,7 @@
 """Dispatch run status finalizers.
 
 dispatch_stage_job / archive-only ingest_job 종료 시
-staging_dispatch_requests, staging_pipeline_runs 상태를 마감한다.
+dispatch_requests, dispatch_pipeline_runs 상태를 마감한다.
 """
 
 from __future__ import annotations
@@ -53,15 +53,38 @@ def _finalize_dispatch_request(
         db_path=os.getenv("DATAOPS_DUCKDB_PATH", "/data/pipeline.duckdb")
     )
 
-    db_resource.close_dispatch_request(
-        request_id,
-        status=status,
-        error_message=error_message,
-    )
+    try:
+        db_resource.close_dispatch_request(
+            request_id,
+            status=status,
+            error_message=error_message,
+        )
+    except Exception:
+        context.log.exception(
+            "dispatch run finalizer: close_dispatch_request FAILED "
+            f"request_id={request_id} run_id={context.dagster_run.run_id} "
+            f"job={context.dagster_run.job_name} status={status}"
+        )
+        return
+
+    aborted_raw = 0
+    if status in {"canceled", "failed"}:
+        try:
+            aborted_raw = db_resource.abort_in_progress_raw_files_for_dispatch(
+                request_id,
+                error_message=f"dispatch_{status}:run_id={context.dagster_run.run_id}",
+            )
+        except Exception:
+            context.log.exception(
+                "dispatch run finalizer: abort_in_progress_raw_files FAILED "
+                f"request_id={request_id} run_id={context.dagster_run.run_id}"
+            )
+
     context.log.info(
         "dispatch run finalizer: "
         f"request_id={request_id} run_id={context.dagster_run.run_id} "
-        f"job={context.dagster_run.job_name} status={status}"
+        f"job={context.dagster_run.job_name} status={status} "
+        f"aborted_raw_files={aborted_raw}"
     )
 
 

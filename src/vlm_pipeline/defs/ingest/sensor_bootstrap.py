@@ -1,4 +1,11 @@
-"""auto_bootstrap_manifest_sensor — incoming 미디어 파일 유입 시 안정화 후 pending manifest 자동 생성."""
+"""auto_bootstrap_manifest_sensor — incoming 미디어 파일 유입 시 안정화 후 pending manifest 자동 생성 (facade).
+
+실제 구현은 4개 submodule로 분리됨:
+- ``sensor_bootstrap_cursor``   — cursor v4 serialization (⚠️ 바이트 보존)
+- ``sensor_bootstrap_helpers``  — dir 순회, dispatch 트리거, done marker, gcp 판정, chunking
+- ``sensor_bootstrap_discover`` — incoming 디렉토리 탐색
+- ``sensor_bootstrap_scan``     — unit 파일 스캔, timeout budget, tick 선택
+"""
 
 from __future__ import annotations
 
@@ -19,415 +26,46 @@ from .runtime_policy import (
     auto_bootstrap_manifest_archive_requested,
     auto_bootstrap_unit_allowed,
 )
+from .sensor_bootstrap_cursor import (
+    _build_auto_bootstrap_cursor_payload,
+    _parse_auto_bootstrap_cursor,
+)
+from .sensor_bootstrap_discover import _discover_source_units
+from .sensor_bootstrap_helpers import (
+    _chunk_files,
+    _has_allowed_direct_file,
+    _has_done_marker,
+    _is_gcp_unit_path,
+    _iter_sorted_dir_entries,
+    _load_dispatch_requested_folders,
+    _source_unit_sort_key,
+)
+from .sensor_bootstrap_scan import (
+    _effective_auto_bootstrap_max_units_per_tick,
+    _effective_auto_bootstrap_scan_budget_sec,
+    _scan_discovered_units,
+    _scan_unit_media_files,
+    _select_units_for_tick,
+)
 
-def _build_auto_bootstrap_cursor_payload(
-    units: dict[str, dict],
-    scan_offset: int = 0,
-    discovery_offset: int = 0,
-) -> dict:
-    return {
-        "version": 4,
-        "scan_offset": max(scan_offset, 0),
-        "discovery_offset": max(discovery_offset, 0),
-        "units": units,
-    }
-
-
-def _parse_auto_bootstrap_cursor(
-    raw_cursor: str | None,
-) -> tuple[dict[str, dict], int, int]:
-    """Returns (previous_units, scan_offset, discovery_offset)."""
-    if not raw_cursor:
-        return {}, 0, 0
-    try:
-        data = json.loads(raw_cursor)
-    except json.JSONDecodeError:
-        return {}, 0, 0
-    if not isinstance(data, dict):
-        return {}, 0, 0
-
-    try:
-        scan_offset = int(data.get("scan_offset", 0))
-    except (TypeError, ValueError):
-        scan_offset = 0
-    try:
-        discovery_offset = int(data.get("discovery_offset", 0))
-    except (TypeError, ValueError):
-        discovery_offset = 0
-
-    units = data.get("units")
-    if not isinstance(units, dict):
-        return {}, max(scan_offset, 0), max(discovery_offset, 0)
-
-    parsed: dict[str, dict] = {}
-    for key, value in units.items():
-        if not isinstance(value, dict):
-            continue
-        signature = str(value.get("signature", ""))
-        manifested_signature = str(value.get("manifested_signature", ""))
-        try:
-            stable_cycles = int(value.get("stable_cycles", 0))
-        except (TypeError, ValueError):
-            stable_cycles = 0
-        parsed[str(key)] = {
-            "signature": signature,
-            "manifested_signature": manifested_signature,
-            "stable_cycles": max(stable_cycles, 0),
-        }
-    return parsed, max(scan_offset, 0), max(discovery_offset, 0)
-
-
-def _iter_sorted_dir_entries(path: Path) -> list[Path]:
-    try:
-        entries = list(path.iterdir())
-    except OSError:
-        return []
-    return sorted(entries, key=lambda row: row.name)
-
-
-def _load_dispatch_requested_folders(dispatch_pending_dir: Path) -> set[str]:
-    requested_folders: set[str] = set()
-    if not dispatch_pending_dir.exists():
-        return requested_folders
-
-    for request_path in sorted(dispatch_pending_dir.glob("*.json")):
-        try:
-            payload = json.loads(request_path.read_text(encoding="utf-8"))
-        except Exception:
-            continue
-        folder_name = str(payload.get("folder_name", "")).strip()
-        if folder_name:
-            requested_folders.add(folder_name)
-    return requested_folders
-
-
-def _has_allowed_direct_file(dir_path: Path, allowed_exts: set[str]) -> bool:
-    for entry in _iter_sorted_dir_entries(dir_path):
-        if entry.name.startswith("."):
-            continue
-        try:
-            if not entry.is_file():
-                continue
-        except OSError:
-            continue
-        if entry.suffix.lower() in allowed_exts:
-            return True
-    return False
-
-
-def _discover_source_units(
-    incoming_dir: Path,
-    allowed_exts: set[str],
-    budget_sec: int,
-    discovery_start_index: int = 0,
-    max_top_entries_per_tick: int = 0,
-    excluded_top_level_names: set[str] | None = None,
-) -> tuple[list[dict], int]:
-    """Discovery를 틱당 상한으로 나누어 NAS 지연 시 gRPC 타임아웃을 피한다.
-
-    max_top_entries_per_tick > 0 이면 상위 디렉터리에서 매 틱 최대 N개만 처리하고
-    다음 틱에서 이어서 처리한다. 0이면 기존처럼 예산(시간) 안에서 전부 처리한다.
-
-    Returns:
-        (discovered_units, next_discovery_offset)
-    """
-    discovered: list[dict] = []
-    seen_unit_keys: set[str] = set()
-    started_at = time.perf_counter()
-
-    def _add_unit(unit_type: str, unit_path: Path, unit_name: str, scan_recursive: bool) -> None:
-        unit_key = f"{unit_type}:{unit_path}"
-        if unit_key in seen_unit_keys:
-            return
-        seen_unit_keys.add(unit_key)
-        discovered.append(
-            {
-                "unit_key": unit_key,
-                "unit_type": unit_type,
-                "unit_name": unit_name,
-                "unit_path": str(unit_path),
-                "scan_recursive": scan_recursive,
-            }
-        )
-
-    top_entries = _iter_sorted_dir_entries(incoming_dir)
-    total_top = len(top_entries)
-    if max_top_entries_per_tick > 0 and total_top > 0:
-        end = min(discovery_start_index + max_top_entries_per_tick, total_top)
-        entries_to_process = top_entries[discovery_start_index:end]
-        next_discovery_offset = end if end < total_top else 0
-    else:
-        entries_to_process = top_entries
-        next_discovery_offset = 0
-
-    processed_in_slice = 0
-    for top_entry in entries_to_process:
-        if time.perf_counter() - started_at > budget_sec:
-            if max_top_entries_per_tick > 0:
-                next_discovery_offset = discovery_start_index + processed_in_slice
-            break
-        processed_in_slice += 1
-
-        top_name = top_entry.name
-        if top_name.startswith("."):
-            continue
-        if excluded_top_level_names and top_name in excluded_top_level_names:
-            continue
-
-        try:
-            is_dir = top_entry.is_dir()
-            is_file = top_entry.is_file()
-        except OSError:
-            continue
-
-        if is_file:
-            if top_entry.suffix.lower() in allowed_exts:
-                _add_unit(unit_type="file", unit_path=top_entry, unit_name=top_name, scan_recursive=False)
-            continue
-
-        if not is_dir:
-            continue
-
-        if top_name == "gcp":
-            for bucket_entry in _iter_sorted_dir_entries(top_entry):
-                if bucket_entry.name.startswith("."):
-                    continue
-                try:
-                    if not bucket_entry.is_dir():
-                        continue
-                except OSError:
-                    continue
-
-                bucket_unit_name = str(Path("gcp") / bucket_entry.name)
-                if _has_allowed_direct_file(bucket_entry, allowed_exts):
-                    _add_unit(
-                        unit_type="directory", unit_path=bucket_entry,
-                        unit_name=bucket_unit_name, scan_recursive=False,
-                    )
-
-                for date_entry in _iter_sorted_dir_entries(bucket_entry):
-                    if date_entry.name.startswith("."):
-                        continue
-                    try:
-                        if not date_entry.is_dir():
-                            continue
-                    except OSError:
-                        continue
-                    _add_unit(
-                        unit_type="directory", unit_path=date_entry,
-                        unit_name=str(Path(bucket_unit_name) / date_entry.name),
-                        scan_recursive=True,
-                    )
-            continue
-
-        if _has_allowed_direct_file(top_entry, allowed_exts):
-            _add_unit(unit_type="directory", unit_path=top_entry, unit_name=top_name, scan_recursive=False)
-
-        for child_entry in _iter_sorted_dir_entries(top_entry):
-            if child_entry.name.startswith("."):
-                continue
-            try:
-                if not child_entry.is_dir():
-                    continue
-            except OSError:
-                continue
-            _add_unit(
-                unit_type="directory", unit_path=child_entry,
-                unit_name=str(Path(top_name) / child_entry.name),
-                scan_recursive=True,
-            )
-
-    return sorted(discovered, key=_source_unit_sort_key), next_discovery_offset
-
-
-def _source_unit_sort_key(unit: dict) -> tuple[int, str]:
-    unit_type = str(unit.get("unit_type", ""))
-    scan_recursive = bool(unit.get("scan_recursive", True))
-    if unit_type == "file":
-        priority = 0
-    elif not scan_recursive:
-        priority = 1
-    else:
-        priority = 2
-    return priority, str(unit.get("unit_key", ""))
-
-
-def _scan_unit_media_files(unit: dict, allowed_exts: set[str]) -> list[dict]:
-    unit_type = str(unit.get("unit_type", ""))
-    unit_path = Path(str(unit.get("unit_path", "")))
-    files: list[dict] = []
-
-    if unit_type == "file":
-        try:
-            if not unit_path.is_file():
-                return []
-            if unit_path.suffix.lower() not in allowed_exts:
-                return []
-            stat = unit_path.stat()
-        except OSError:
-            return []
-        return [
-            {
-                "path": str(unit_path),
-                "size": int(stat.st_size),
-                "mtime_ns": int(stat.st_mtime_ns),
-                "rel_path": unit_path.name,
-            }
-        ]
-
-    try:
-        if not unit_path.is_dir():
-            return []
-    except OSError:
-        return []
-
-    scan_recursive = bool(unit.get("scan_recursive", True))
-    if scan_recursive:
-        for root, dirs, names in os.walk(unit_path):
-            dirs[:] = sorted([name for name in dirs if not name.startswith(".partial__")])
-            root_path = Path(root)
-            for name in sorted(names):
-                path_obj = root_path / name
-                if path_obj.suffix.lower() not in allowed_exts:
-                    continue
-                try:
-                    stat = path_obj.stat()
-                except OSError:
-                    continue
-                try:
-                    rel_path = str(path_obj.relative_to(unit_path))
-                except Exception:
-                    rel_path = path_obj.name
-                files.append(
-                    {
-                        "path": str(path_obj),
-                        "size": int(stat.st_size),
-                        "mtime_ns": int(stat.st_mtime_ns),
-                        "rel_path": rel_path,
-                    }
-                )
-    else:
-        for entry in _iter_sorted_dir_entries(unit_path):
-            if entry.name.startswith(".partial__"):
-                continue
-            try:
-                if not entry.is_file():
-                    continue
-            except OSError:
-                continue
-            if entry.suffix.lower() not in allowed_exts:
-                continue
-            try:
-                stat = entry.stat()
-            except OSError:
-                continue
-            files.append(
-                {
-                    "path": str(entry),
-                    "size": int(stat.st_size),
-                    "mtime_ns": int(stat.st_mtime_ns),
-                    "rel_path": entry.name,
-                }
-            )
-
-    files.sort(key=lambda row: row["path"])
-    return files
-
-
-def _scan_discovered_units(
-    units_to_scan: list[dict],
-    allowed_exts: set[str],
-    scan_budget_sec: int,
-) -> tuple[dict[str, dict], set[str], int, float, bool]:
-    units: dict[str, dict] = {}
-    scanned_unit_keys: set[str] = set()
-    scanned_unit_count = 0
-    scan_started = time.perf_counter()
-
-    for unit in units_to_scan:
-        # The sensor gRPC call has a hard deadline. Stop between units so the
-        # next tick can resume from the updated cursor instead of timing out.
-        if scanned_unit_count > 0 and (time.perf_counter() - scan_started) >= scan_budget_sec:
-            break
-
-        unit_files = _scan_unit_media_files(unit, allowed_exts)
-        scanned_unit_count += 1
-        scanned_unit_keys.add(str(unit["unit_key"]))
-        if not unit_files:
-            continue
-
-        total_size = sum(int(row.get("size", 0)) for row in unit_files)
-        max_mtime_ns = max(int(row.get("mtime_ns", 0)) for row in unit_files)
-        file_count = len(unit_files)
-        unit_key = str(unit["unit_key"])
-        units[unit_key] = {
-            "unit_type": str(unit["unit_type"]),
-            "unit_name": str(unit["unit_name"]),
-            "unit_path": str(unit["unit_path"]),
-            "files": unit_files,
-            "total_size": total_size,
-            "max_mtime_ns": max_mtime_ns,
-            "file_count": file_count,
-            "signature": f"{file_count}:{total_size}:{max_mtime_ns}",
-        }
-
-    elapsed_sec = time.perf_counter() - scan_started
-    scan_completed_window = scanned_unit_count >= len(units_to_scan)
-    return units, scanned_unit_keys, scanned_unit_count, elapsed_sec, scan_completed_window
-
-
-def _effective_auto_bootstrap_scan_budget_sec() -> int:
-    """gRPC 타임아웃(기본 180초) 내에서 스캔 예산. NAS 지연 시 DAGSTER_SENSOR_GRPC_TIMEOUT_SECONDS=300 등으로 상향."""
-    configured_timeout_sec = int_env("AUTO_BOOTSTRAP_UNIT_SCAN_TIMEOUT_SEC", 120, 15)
-    grpc_timeout_sec = int_env("DAGSTER_SENSOR_GRPC_TIMEOUT_SECONDS", 180, 60)
-    timeout_margin_sec = int_env("AUTO_BOOTSTRAP_SENSOR_TIMEOUT_MARGIN_SEC", 110, 5)
-    safe_upper_bound = max(5, grpc_timeout_sec - timeout_margin_sec)
-    return max(5, min(configured_timeout_sec, safe_upper_bound))
-
-
-def _effective_auto_bootstrap_max_units_per_tick() -> int:
-    configured_limit = int_env("AUTO_BOOTSTRAP_MAX_UNITS_PER_TICK", 5, 1)
-    safe_limit = int_env("AUTO_BOOTSTRAP_SAFE_MAX_UNITS_PER_TICK", 10, 1)
-    return max(1, min(configured_limit, safe_limit))
-
-
-def _select_units_for_tick(
-    discovered_units: list[dict],
-    scan_offset: int,
-    max_units_per_tick: int,
-) -> tuple[list[dict], int]:
-    if not discovered_units:
-        return [], 0
-    total = len(discovered_units)
-    limit = min(total, max(1, max_units_per_tick))
-    start = scan_offset % total
-    selected = [discovered_units[(start + index) % total] for index in range(limit)]
-    next_scan_offset = (start + limit) % total
-    return selected, next_scan_offset
-
-
-def _has_done_marker(unit_path: str, marker_name: str) -> bool:
-    return (Path(unit_path) / marker_name).exists()
-
-
-def _is_gcp_unit_path(unit_path: str, incoming_dir: Path) -> bool:
-    gcp_root = (incoming_dir / "gcp").resolve()
-    try:
-        Path(unit_path).resolve().relative_to(gcp_root)
-        return True
-    except Exception:
-        return False
-
-
-def _chunk_files(unit_files: list[dict], max_files_per_manifest: int) -> list[list[dict]]:
-    if max_files_per_manifest <= 0:
-        max_files_per_manifest = 1
-    if not unit_files:
-        return []
-    return [
-        unit_files[index:index + max_files_per_manifest]
-        for index in range(0, len(unit_files), max_files_per_manifest)
-    ]
+__all__ = [
+    "_build_auto_bootstrap_cursor_payload",
+    "_chunk_files",
+    "_discover_source_units",
+    "_effective_auto_bootstrap_max_units_per_tick",
+    "_effective_auto_bootstrap_scan_budget_sec",
+    "_has_allowed_direct_file",
+    "_has_done_marker",
+    "_is_gcp_unit_path",
+    "_iter_sorted_dir_entries",
+    "_load_dispatch_requested_folders",
+    "_parse_auto_bootstrap_cursor",
+    "_scan_discovered_units",
+    "_scan_unit_media_files",
+    "_select_units_for_tick",
+    "_source_unit_sort_key",
+    "auto_bootstrap_manifest_sensor",
+]
 
 
 @sensor(
@@ -520,10 +158,10 @@ def auto_bootstrap_manifest_sensor(context):
             )
         ]
         discovery_elapsed_sec = time.perf_counter() - discovery_started
-        
+
         # 파일 메타 정보 읽기 스캔에는 남은 예산을 사용합니다
         remaining_budget = max(5, scan_budget_sec - int(discovery_elapsed_sec))
-        
+
         units_to_scan, _ = _select_units_for_tick(
             discovered_units, scan_offset=previous_scan_offset, max_units_per_tick=max_units_per_tick,
         )

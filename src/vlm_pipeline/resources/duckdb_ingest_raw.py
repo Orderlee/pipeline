@@ -74,6 +74,25 @@ class DuckDBIngestRawMixin:
             ).fetchall()
             return {r[0] for r in rows}
 
+    def find_completed_source_paths(self, source_paths: list[str]) -> set[str]:
+        """이미 completed + archive_path 보유한 source_path만 반환 (batch)."""
+        cleaned = [str(p) for p in source_paths if str(p or "").strip()]
+        if not cleaned:
+            return set()
+        with self.connect() as conn:
+            placeholders = ", ".join("?" for _ in cleaned)
+            rows = conn.execute(
+                f"""
+                SELECT DISTINCT source_path
+                FROM raw_files
+                WHERE source_path IN ({placeholders})
+                  AND ingest_status = 'completed'
+                  AND archive_path IS NOT NULL
+                """,
+                cleaned,
+            ).fetchall()
+            return {r[0] for r in rows}
+
     def find_by_checksum(self, checksum: str, completed_only: bool = True) -> dict[str, Any] | None:
         query = "SELECT * FROM raw_files WHERE checksum = ?"
         params: list[Any] = [checksum]
@@ -199,6 +218,34 @@ class DuckDBIngestRawMixin:
                 rows,
             )
         return len(rows)
+
+    def abort_in_progress_raw_files_for_dispatch(
+        self,
+        request_id: str,
+        *,
+        error_message: str,
+    ) -> int:
+        """Cancel/Failure 시 호출. 해당 dispatch 의 raw_files 중 'pending'/'uploading'
+        상태인 row 만 'failed' 로 마감. 'completed'/'skipped'/'failed' 는 그대로 둔다."""
+        normalized_request_id = str(request_id or "").strip()
+        if not normalized_request_id:
+            return 0
+        like_pattern = f"dispatch_req_{normalized_request_id}_%"
+        now = datetime.now()
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                UPDATE raw_files
+                SET ingest_status = 'failed',
+                    error_message = ?,
+                    updated_at = ?
+                WHERE ingest_batch_id LIKE ?
+                  AND ingest_status IN ('pending', 'uploading')
+                RETURNING asset_id
+                """,
+                [error_message, now, like_pattern],
+            ).fetchall()
+            return len(rows)
 
     def count_unresolved_rows_for_source_unit(self, source_unit_path: str) -> int:
         normalized_path = str(source_unit_path or "").strip()
