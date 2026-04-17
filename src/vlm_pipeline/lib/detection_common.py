@@ -16,7 +16,6 @@ from dataclasses import dataclass
 from hashlib import sha1
 
 from vlm_pipeline.lib.env_utils import derive_classes_from_categories
-from vlm_pipeline.lib.spec_config import load_persisted_spec_config
 
 
 # ---------------------------------------------------------------------------
@@ -104,6 +103,9 @@ def resolve_target_classes(
 
     spec_id = str(tags.get("spec_id") or "").strip()
     if spec_id:
+        # Lazy import: defs/ 계층 의존을 함수 본문으로 미뤄 L1-2 layering 유지.
+        from vlm_pipeline.defs.spec.config_resolver import load_persisted_spec_config
+
         config_bundle = load_persisted_spec_config(db, spec_id)
         resolved_config_id = str(config_bundle["resolved_config_id"] or "").strip() or None
         spec_classes = normalize_classes(config_bundle["spec"].get("classes") or [])

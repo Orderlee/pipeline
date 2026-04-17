@@ -27,6 +27,16 @@ def build_nonexistent_temp_path(suffix: str, *, prefix: str = "vlm_") -> Path:
     return Path(gettempdir()) / f"{prefix}{uuid4().hex}{suffix}"
 
 
+def cleanup_temp_path(path: Path | None) -> None:
+    """임시 파일 삭제 — 존재하지 않으면 무시, 삭제 실패는 silent 처리."""
+    if path is None:
+        return
+    try:
+        path.unlink(missing_ok=True)
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def load_image_once(path: str | Path) -> dict:
     """파일을 1회 읽어서 checksum + verify + image_metadata 모두 추출.
 

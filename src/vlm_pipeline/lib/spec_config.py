@@ -1,78 +1,17 @@
-"""Helpers for staging spec-flow run tags and spec config resolution.
+"""Run tag 파싱 유틸 — 순수 함수(L1-2 계층, DB 의존 없음).
 
-Tag-parsing utilities (pure) and DB-dependent config resolution helpers
-are co-located here since the DB functions only accept ``db: Any``
-without importing from resources/ or defs/.
+DB 의존 헬퍼(`resolve_and_persist_spec_config`, `load_persisted_spec_config`)는
+L3+ 계층으로 이동: `vlm_pipeline.defs.spec.config_resolver`.
 """
 
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any
 
 from vlm_pipeline.lib.env_utils import (
     is_dispatch_yolo_only_requested,
     parse_outputs_raw,
 )
-
-
-# ---------------------------------------------------------------------------
-# DB-dependent spec config resolution
-# ---------------------------------------------------------------------------
-
-
-def resolve_and_persist_spec_config(db: Any, spec_id: str) -> dict[str, Any]:
-    """Resolve config for a spec at entry point and persist the resolved config id."""
-    spec = db.get_labeling_spec_by_id(spec_id)
-    if not spec:
-        raise RuntimeError(f"spec_not_found:{spec_id}")
-
-    config_id, scope = db.resolve_config_for_requester(
-        spec.get("requester_id"),
-        spec.get("team_id"),
-    )
-    if not config_id:
-        raise RuntimeError(
-            f"config_not_found:spec_id={spec_id}:requester_id={spec.get('requester_id')}:"
-            f"team_id={spec.get('team_id')}"
-        )
-
-    config = db.get_labeling_config(config_id)
-    if not config or not config.get("is_active"):
-        raise RuntimeError(f"config_payload_not_found:spec_id={spec_id}:config_id={config_id}")
-
-    resolved_scope = str(scope or "fallback")
-    db.update_spec_resolved_config(spec_id, config_id, resolved_scope)
-    return {
-        "spec": spec,
-        "resolved_config_id": config_id,
-        "resolved_config_scope": resolved_scope,
-        "config_json": config.get("config_json") or {},
-    }
-
-
-def load_persisted_spec_config(db: Any, spec_id: str) -> dict[str, Any]:
-    """Load config for downstream staged assets using persisted resolved_config_id."""
-    spec = db.get_labeling_spec_by_id(spec_id)
-    if not spec:
-        raise RuntimeError(f"spec_not_found:{spec_id}")
-
-    resolved_config_id = str(spec.get("resolved_config_id") or "").strip()
-    if not resolved_config_id:
-        raise RuntimeError(f"resolved_config_id_missing:{spec_id}")
-
-    config = db.get_labeling_config(resolved_config_id)
-    if not config or not config.get("is_active"):
-        raise RuntimeError(
-            f"resolved_config_payload_not_found:spec_id={spec_id}:config_id={resolved_config_id}"
-        )
-
-    return {
-        "spec": spec,
-        "resolved_config_id": resolved_config_id,
-        "resolved_config_scope": str(spec.get("resolved_config_scope") or ""),
-        "config_json": config.get("config_json") or {},
-    }
 
 
 def is_unscoped_mvp_autolabel_run(tags: Mapping[str, str] | None) -> bool:

@@ -13,10 +13,10 @@ from vlm_pipeline.lib.env_utils import (
     requested_outputs_require_caption_labels,
     should_run_output,
 )
+from vlm_pipeline.defs.spec.config_resolver import load_persisted_spec_config
 from vlm_pipeline.lib.gemini import load_clean_json
 from vlm_pipeline.lib.spec_config import (
     is_standard_spec_run,
-    load_persisted_spec_config,
     parse_requested_outputs,
 )
 from vlm_pipeline.lib.vertex_chunking import normalize_gemini_events

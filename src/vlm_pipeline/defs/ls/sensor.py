@@ -1,10 +1,10 @@
 """LS task 자동 생성 sensor + presigned URL 갱신 schedule.
 
-dispatch_stage_job이 완료된 후 (staging_dispatch_requests.status='completed'),
+dispatch_stage_job이 완료된 후 (dispatch_requests.status='completed'),
 아직 LS task가 생성되지 않은 요청을 감지하여 ls_task_create_job을 트리거합니다.
 
 처리 흐름:
-  staging_dispatch_requests
+  dispatch_requests
       WHERE status='completed'
         AND COALESCE(ls_task_status, 'pending') = 'pending'
     → ls_task_create_job (folder_name 기준으로 ls_tasks.py create 실행)
@@ -57,7 +57,7 @@ def _fetch_pending_dispatch_requests(db_path: str) -> list[dict]:
         rows = conn.execute(
             """
             SELECT request_id, folder_name
-            FROM staging_dispatch_requests
+            FROM dispatch_requests
             WHERE status = 'completed'
               AND COALESCE(ls_task_status, 'pending') = 'pending'
             ORDER BY completed_at
@@ -72,7 +72,7 @@ def _update_ls_task_status(db_path: str, request_id: str, status: str) -> None:
     conn = duckdb.connect(db_path)
     try:
         conn.execute(
-            "UPDATE staging_dispatch_requests SET ls_task_status = ? WHERE request_id = ?",
+            "UPDATE dispatch_requests SET ls_task_status = ? WHERE request_id = ?",
             [status, request_id],
         )
     finally:

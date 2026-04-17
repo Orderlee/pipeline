@@ -12,6 +12,7 @@ from pathlib import Path
 from vlm_pipeline.lib.validator import ALLOWED_EXTENSIONS
 
 STALE_MANIFEST_ALL_MISSING_REASON = "manifest_stale_all_missing"
+ALL_ALREADY_COMPLETED_REASON = "manifest_all_already_completed"
 GCP_AUTO_BOOTSTRAP_TRANSFER_TOOLS: frozenset[str] = frozenset({
     "auto_bootstrap_sensor",
     "ingest_retry_manifest",
@@ -74,13 +75,36 @@ def scan_manifest_source_unit_files(source_unit_path: Path) -> list[dict]:
     return files
 
 
-def reconcile_manifest_files_against_disk(context, manifest: dict, *, source_unit_path: Path) -> dict:
+def reconcile_manifest_files_against_disk(
+    context,
+    manifest: dict,
+    *,
+    source_unit_path: Path,
+    db=None,
+) -> dict:
     original_entries = [entry for entry in manifest.get("files", []) if isinstance(entry, dict)]
     if not original_entries:
         return manifest
 
     surviving_entries: list[dict] = []
     missing_rel_paths: list[str] = []
+    already_completed_rel_paths: list[str] = []
+
+    candidate_source_paths: list[str] = []
+    for entry in original_entries:
+        sp = str(entry.get("path", "")).strip()
+        if sp:
+            candidate_source_paths.append(sp)
+
+    completed_set: set[str] = set()
+    if db is not None and candidate_source_paths:
+        try:
+            completed_set = db.find_completed_source_paths(candidate_source_paths)
+        except Exception as exc:  # noqa: BLE001
+            context.log.warning(
+                f"find_completed_source_paths 조회 실패(필터 스킵): {exc}"
+            )
+            completed_set = set()
 
     for entry in original_entries:
         rel_path = _normalize_manifest_rel_path(entry, source_unit_path=source_unit_path)
@@ -88,6 +112,10 @@ def reconcile_manifest_files_against_disk(context, manifest: dict, *, source_uni
         candidate_path = Path(source_path) if source_path else None
         if candidate_path is None or not candidate_path.is_file():
             missing_rel_paths.append(rel_path or source_path or "<unknown>")
+            continue
+
+        if source_path in completed_set:
+            already_completed_rel_paths.append(rel_path or source_path)
             continue
 
         updated_entry = dict(entry)
@@ -100,7 +128,8 @@ def reconcile_manifest_files_against_disk(context, manifest: dict, *, source_uni
         surviving_entries.append(updated_entry)
 
     missing_count = len(missing_rel_paths)
-    if missing_count <= 0:
+    already_completed_count = len(already_completed_rel_paths)
+    if missing_count <= 0 and already_completed_count <= 0:
         return manifest
 
     original_file_count = len(original_entries)
@@ -112,22 +141,31 @@ def reconcile_manifest_files_against_disk(context, manifest: dict, *, source_uni
     manifest["missing_entry_count"] = missing_count
     manifest["stale_missing_samples"] = missing_rel_paths[:10]
     manifest["rehydrated_at"] = datetime.now().isoformat()
+    if already_completed_count > 0:
+        manifest["already_completed_file_count"] = already_completed_count
+        manifest["already_completed_samples"] = already_completed_rel_paths[:10]
 
-    if not surviving_entries:
+    if not surviving_entries and missing_count > 0 and already_completed_count == 0:
         manifest["stale_manifest_failure_reason"] = STALE_MANIFEST_ALL_MISSING_REASON
+    elif not surviving_entries and missing_count > 0:
+        # 일부 파일은 이미 completed, 일부는 사라짐 → 실패로 보지 않고 idempotent 종료 허용
+        # 단, 추적을 위해 부분 상태는 이미 manifest에 기록됨
+        pass
 
     context.log.warning(
-        "manifest stale file reconciliation: "
+        "manifest reconciliation: "
         f"source_unit_path={source_unit_path}, "
         f"original_file_count={original_file_count}, "
         f"existing_file_count={len(surviving_entries)}, "
         f"missing_count={missing_count}, "
-        f"missing_sample={missing_rel_paths[:5]}"
+        f"already_completed_count={already_completed_count}, "
+        f"missing_sample={missing_rel_paths[:5]}, "
+        f"already_completed_sample={already_completed_rel_paths[:5]}"
     )
     return manifest
 
 
-def hydrate_manifest_files(context, manifest: dict) -> dict:
+def hydrate_manifest_files(context, manifest: dict, *, db=None) -> dict:
     """files가 비어 있으면 source_unit_path를 기준으로 실제 파일 목록을 지연 생성한다."""
     source_unit_path_raw = str(manifest.get("source_unit_path", "")).strip()
     source_unit_path = Path(source_unit_path_raw) if source_unit_path_raw else None
@@ -140,6 +178,7 @@ def hydrate_manifest_files(context, manifest: dict) -> dict:
                 context,
                 manifest,
                 source_unit_path=source_unit_path,
+                db=db,
             )
         return manifest
 

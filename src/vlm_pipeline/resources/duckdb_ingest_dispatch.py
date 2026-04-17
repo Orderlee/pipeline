@@ -8,76 +8,29 @@ from uuid import uuid4
 
 
 class DuckDBIngestDispatchMixin:
-    """Dispatch tracking tables CRUD mixin."""
+    """Dispatch tracking tables CRUD mixin.
 
-    _dispatch_tables_ensured: ClassVar[bool] = False
+    dispatch_requests / dispatch_pipeline_runs DDL은 schema.sql + duckdb_migration 쪽에서
+    일원화하여 보장한다 (CLAUDE.md "schema.sql = 최종 상태" 원칙).
+    """
 
-    def ensure_dispatch_tracking_tables(self) -> None:
-        if DuckDBIngestDispatchMixin._dispatch_tables_ensured:
-            return
-        with self.connect() as conn:
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS staging_dispatch_requests (
-                    request_id           VARCHAR PRIMARY KEY,
-                    folder_name          VARCHAR,
-                    run_mode             VARCHAR,
-                    outputs              VARCHAR,
-                    labeling_method      VARCHAR,
-                    categories           VARCHAR,
-                    classes              VARCHAR,
-                    image_profile        VARCHAR,
-                    status               VARCHAR DEFAULT 'pending',
-                    archive_pending_path VARCHAR,
-                    archive_path         VARCHAR,
-                    max_frames_per_video INTEGER,
-                    jpeg_quality         INTEGER,
-                    confidence_threshold DOUBLE,
-                    iou_threshold        DOUBLE,
-                    requested_by         VARCHAR,
-                    requested_at         TIMESTAMP,
-                    processed_at         TIMESTAMP,
-                    completed_at         TIMESTAMP,
-                    error_message        TEXT,
-                    created_at           TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-                """
-            )
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS staging_pipeline_runs (
-                    run_id               VARCHAR PRIMARY KEY,
-                    request_id           VARCHAR,
-                    folder_name          VARCHAR,
-                    step_name            VARCHAR NOT NULL,
-                    step_order           INTEGER DEFAULT 0,
-                    step_status          VARCHAR DEFAULT 'pending',
-                    model_name           VARCHAR,
-                    model_version        VARCHAR,
-                    applied_params       VARCHAR,
-                    input_count          INTEGER DEFAULT 0,
-                    output_count         INTEGER DEFAULT 0,
-                    error_count          INTEGER DEFAULT 0,
-                    started_at           TIMESTAMP,
-                    completed_at         TIMESTAMP,
-                    error_message        TEXT,
-                    created_at           TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-                """
-            )
-        DuckDBIngestDispatchMixin._dispatch_tables_ensured = True
+    # 같은 request_id 에 대해 두 run_status sensor 가 순차 fire 될 때
+    # 앞선 terminal 마감을 뒷 sensor 가 덮어쓰지 않도록 하는 가드.
+    _TERMINAL_DISPATCH_STATUSES: ClassVar[frozenset[str]] = frozenset(
+        {"completed", "failed", "canceled"}
+    )
 
     def get_in_flight_dispatch_requests(self, folder_name: str) -> list[dict[str, Any]]:
         normalized_folder = str(folder_name or "").strip()
         if not normalized_folder:
             return []
         with self.connect() as conn:
-            if not self._table_exists(conn, "staging_dispatch_requests"):
+            if not self._table_exists(conn, "dispatch_requests"):
                 return []
             rows = conn.execute(
                 """
                 SELECT request_id, status
-                FROM staging_dispatch_requests
+                FROM dispatch_requests
                 WHERE folder_name = ?
                   AND status IN ('running', 'archive_moved')
                 ORDER BY processed_at DESC, created_at DESC
@@ -94,10 +47,10 @@ class DuckDBIngestDispatchMixin:
         if not normalized_request_id:
             return None
         with self.connect() as conn:
-            if not self._table_exists(conn, "staging_dispatch_requests"):
+            if not self._table_exists(conn, "dispatch_requests"):
                 return None
             row = conn.execute(
-                "SELECT status FROM staging_dispatch_requests WHERE request_id = ?",
+                "SELECT status FROM dispatch_requests WHERE request_id = ?",
                 [normalized_request_id],
             ).fetchone()
         return str(row[0]) if row and row[0] is not None else None
@@ -142,7 +95,7 @@ class DuckDBIngestDispatchMixin:
         with self.connect() as conn:
             conn.execute(
                 """
-                INSERT INTO staging_dispatch_requests (
+                INSERT INTO dispatch_requests (
                     request_id, folder_name, run_mode, outputs, labeling_method,
                     categories, classes, image_profile,
                     status, archive_pending_path, archive_path,
@@ -192,7 +145,7 @@ class DuckDBIngestDispatchMixin:
         with self.connect() as conn:
             conn.executemany(
                 """
-                INSERT INTO staging_pipeline_runs (
+                INSERT INTO dispatch_pipeline_runs (
                     run_id, request_id, folder_name,
                     step_name, step_order, step_status,
                     model_name, model_version, applied_params
@@ -206,7 +159,7 @@ class DuckDBIngestDispatchMixin:
         with self.connect() as conn:
             conn.execute(
                 """
-                INSERT INTO staging_dispatch_requests (
+                INSERT INTO dispatch_requests (
                     request_id, folder_name, run_mode, outputs, labeling_method,
                     categories, classes, image_profile,
                     max_frames_per_video, jpeg_quality,
@@ -251,11 +204,25 @@ class DuckDBIngestDispatchMixin:
             return
         now = datetime.now()
         with self.connect() as conn:
-            if not self._table_exists(conn, "staging_dispatch_requests"):
+            if not self._table_exists(conn, "dispatch_requests"):
                 return
+
+            current_row = conn.execute(
+                "SELECT status FROM dispatch_requests WHERE request_id = ?",
+                [normalized_request_id],
+            ).fetchone()
+            if current_row:
+                current_status = str(current_row[0] or "")
+                if (
+                    current_status in self._TERMINAL_DISPATCH_STATUSES
+                    and current_status != status
+                ):
+                    # race: 이미 마감된 terminal status 는 덮어쓰지 않음
+                    return
+
             conn.execute(
                 """
-                UPDATE staging_dispatch_requests
+                UPDATE dispatch_requests
                 SET status = ?,
                     error_message = ?,
                     archive_path = COALESCE(?, archive_path),
@@ -288,11 +255,11 @@ class DuckDBIngestDispatchMixin:
         if not normalized_request_id or not normalized_step_name:
             return
         with self.connect() as conn:
-            if not self._table_exists(conn, "staging_pipeline_runs"):
+            if not self._table_exists(conn, "dispatch_pipeline_runs"):
                 return
             conn.execute(
                 """
-                UPDATE staging_pipeline_runs
+                UPDATE dispatch_pipeline_runs
                 SET step_status = ?,
                     error_message = ?,
                     started_at = COALESCE(?, started_at),
@@ -331,11 +298,11 @@ class DuckDBIngestDispatchMixin:
         )
 
         with self.connect() as conn:
-            if not self._table_exists(conn, "staging_pipeline_runs"):
+            if not self._table_exists(conn, "dispatch_pipeline_runs"):
                 return
             conn.execute(
                 """
-                UPDATE staging_pipeline_runs
+                UPDATE dispatch_pipeline_runs
                 SET step_status = CASE
                         WHEN step_status IN ('completed', 'failed', 'canceled', 'skipped') THEN step_status
                         ELSE ?
