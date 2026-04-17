@@ -48,6 +48,9 @@ docker/app/credentials/
 docker/app/dagster_home/storage/
 docker/app/dagster_home_staging/storage/
 docker/app/dagster_home/history/
+docker/app/dagster_home*/.nux/
+docker/app/dagster_home*/.telemetry/
+docker/app/dagster_home*/schedules/
 
 # etc
 pyproject.toml
@@ -74,3 +77,6 @@ ANTIGRAVITY.md
 # NotebookLM Knowledge Sync Script
 scripts/export_for_notebooklm.py
 result/*.txt
+
+# 1회성 복구 스크립트 (날짜 suffix)
+scripts/recover_*_[0-9]*.py

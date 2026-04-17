@@ -19,19 +19,20 @@ from vlm_pipeline.lib.env_utils import (
     should_run_output,
 )
 from vlm_pipeline.lib.gemini import extract_clean_json_text
+from vlm_pipeline.defs.spec.config_resolver import resolve_and_persist_spec_config
 from vlm_pipeline.lib.gemini_prompts import VIDEO_EVENT_PROMPT
 from vlm_pipeline.lib.spec_config import (
     is_standard_spec_run,
     parse_requested_outputs,
-    resolve_and_persist_spec_config,
 )
 from vlm_pipeline.resources.duckdb import DuckDBResource
 from vlm_pipeline.resources.minio import MinIOResource
 
+from vlm_pipeline.lib.file_loader import cleanup_temp_path
+
 from .label_helpers import (
     analyze_routed_video_events,
     build_gemini_label_key,
-    cleanup_temp,
     clone_gemini_analyzer,
     init_gemini_analyzer,
     int_env,
@@ -114,7 +115,7 @@ def _process_mvp_candidate(
         return {"asset_id": asset_id, "error": exc}
     finally:
         for path in reversed(temp_paths):
-            cleanup_temp(path)
+            cleanup_temp_path(path)
 
 
 def _process_routed_candidate(
@@ -163,7 +164,7 @@ def _process_routed_candidate(
         return {"asset_id": asset_id, "error": exc}
     finally:
         for path in reversed(temp_paths):
-            cleanup_temp(path)
+            cleanup_temp_path(path)
 
 
 def clip_timestamp_mvp(

@@ -41,8 +41,8 @@ tables = [
     "processed_clips",
     "labels",
     "video_metadata",
-    "staging_pipeline_runs",
-    "staging_dispatch_requests",
+    "dispatch_pipeline_runs",
+    "dispatch_requests",
     "raw_files",
 ]
 try:
