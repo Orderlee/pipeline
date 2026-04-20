@@ -23,6 +23,21 @@ VIDEO_EXTENSIONS: set[str] = {
 }
 
 
+def is_macos_metadata_file(name: str) -> bool:
+    """macOS가 외장/네트워크 디스크에 남기는 메타파일(AppleDouble, Finder 설정) 여부.
+
+    - AppleDouble: `._filename` — 원본과 같은 확장자를 가져 확장자 필터를 통과함
+    - Finder/Spotlight: `.DS_Store`, `.AppleDouble`, `.Spotlight-V100` 등
+    """
+    if not name:
+        return False
+    if name == ".DS_Store" or name.startswith("._"):
+        return True
+    if name in {".AppleDouble", ".Spotlight-V100", ".Trashes", ".fseventsd"}:
+        return True
+    return False
+
+
 @dataclass
 class ValidationResult:
     """검증 결과."""

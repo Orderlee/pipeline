@@ -305,10 +305,12 @@ class DuckDBIngestDispatchMixin:
                 UPDATE dispatch_pipeline_runs
                 SET step_status = CASE
                         WHEN step_status IN ('completed', 'failed', 'canceled', 'skipped') THEN step_status
+                        WHEN started_at IS NULL THEN 'skipped'
                         ELSE ?
                     END,
                     error_message = CASE
                         WHEN step_status IN ('completed', 'failed', 'canceled', 'skipped') THEN error_message
+                        WHEN started_at IS NULL THEN COALESCE(error_message, 'never_started')
                         ELSE COALESCE(?, error_message)
                     END,
                     completed_at = CASE
