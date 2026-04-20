@@ -40,6 +40,7 @@ from vlm_pipeline.lib.minio_cross_sync import (
     ls_minio_endpoint,
     sync_folder_for_ls,
 )
+from vlm_pipeline.lib.sanitizer import sanitize_path_component
 
 LS_TASKS_SCRIPT = Path(
     os.environ.get("LS_TASKS_SCRIPT", Path(__file__).parents[3] / "gemini" / "ls_tasks.py")
@@ -102,10 +103,15 @@ def create_ls_tasks(context) -> None:
 
     for req in requests:
         request_id = req["request_id"]
-        folder_name = req["folder_name"].rstrip("/")
+        raw_folder = req["folder_name"].rstrip("/")
+        # dispatch가 MinIO에 쓰는 key는 sanitize_path_component로 정규화된 폴더명을 사용하므로
+        # LS 자동 생성 경로도 동일 규칙으로 prefix를 만들어야 clip/events 매칭이 일치한다.
+        folder_name = sanitize_path_component(raw_folder)
         clip_prefix = f"{folder_name}/clips"
 
-        context.log.info(f"ls task 생성 시작: request_id={request_id}, prefix={clip_prefix}")
+        context.log.info(
+            f"ls task 생성 시작: request_id={request_id}, folder_raw={raw_folder}, prefix={clip_prefix}"
+        )
         try:
             # (A/C) staging이면 클립·라벨을 production MinIO로 복사
             if need_sync:

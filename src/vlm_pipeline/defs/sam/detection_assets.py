@@ -16,7 +16,7 @@ import json
 from datetime import datetime
 from pathlib import PurePosixPath
 
-from dagster import Field, asset
+from dagster import Failure, Field, MetadataValue, asset
 
 from vlm_pipeline.lib.detection_common import (
     flush_image_labels,
@@ -90,9 +90,9 @@ def _run_sam3_image_detection(
 ) -> dict:
     """processed_clip_frame/raw_video_frame 이미지에 SAM3.1 bbox detection 실행.
 
-    SAM3 서버는 텍스트 프롬프트 기반 segmentation을 수행하고, mask에서 bbox를 추출한다.
-    결과 JSON에는 mask_bbox, model_box, mask_rle 등이 포함되며,
-    YOLO COCO bbox와 직접 비교 가능하다.
+    SAM3가 primary bbox 엔진. 텍스트 프롬프트 기반 segmentation을 수행하고 mask에서 bbox를 추출한다.
+    결과 JSON에는 mask_bbox, model_box, mask_rle 등이 포함되며, YOLO COCO bbox 포맷과 호환된다.
+    env ENABLE_SAM3_DETECTION=false 여도 outputs에 bbox/segmentation 요청이 있으면 실행된다.
     """
     if not bool_env("ENABLE_SAM3_DETECTION", False):
         if not should_run_any_output(context, SAM3_OUTPUTS):
@@ -140,11 +140,18 @@ def _run_sam3_image_detection(
     client = get_sam3_client()
 
     if not client.wait_until_ready(max_wait_sec=120):
-        context.log.error("SAM3 서버가 준비되지 않았습니다")
-        return {
-            "processed": 0, "failed": len(candidates), "total_detections": 0,
-            "error": "sam3_server_not_ready", "label_tool": "sam3",
-        }
+        context.log.error(
+            f"SAM3 서버가 준비되지 않았습니다: url={client.api_url} pending={len(candidates)}건"
+        )
+        raise Failure(
+            description="SAM3 서버 미준비 — primary bbox 엔진 연결 실패",
+            metadata={
+                "sam3_api_url": MetadataValue.text(client.api_url),
+                "pending_candidates": MetadataValue.int(len(candidates)),
+                "label_tool": MetadataValue.text("sam3"),
+                "error": MetadataValue.text("sam3_server_not_ready"),
+            },
+        )
 
     health = client.health()
     context.log.info(
@@ -176,6 +183,7 @@ def _run_sam3_image_detection(
     failed = 0
     total_detections = 0
     label_rows_buffer: list[dict] = []
+    completed_assets: set[str] = set()
     flush_threshold = int_env("SAM3_DB_FLUSH_THRESHOLD", 50, 10)
 
     minio.ensure_bucket("vlm-labels")
@@ -184,6 +192,7 @@ def _run_sam3_image_detection(
         image_id = str(cand["image_id"])
         image_key = str(cand["image_key"])
         source_clip_id = cand.get("source_clip_id")
+        source_asset_id = cand.get("source_asset_id")
 
         try:
             img_bytes = minio.download(
@@ -254,6 +263,8 @@ def _run_sam3_image_detection(
 
             processed += 1
             total_detections += annotation_count
+            if source_asset_id:
+                completed_assets.add(str(source_asset_id))
 
         except Exception as exc:
             failed += 1
@@ -272,6 +283,15 @@ def _run_sam3_image_detection(
     if label_rows_buffer:
         flush_image_labels(db, label_rows_buffer, context, tool_name="SAM3")
         label_rows_buffer.clear()
+
+    if completed_assets:
+        bbox_completed_at = datetime.now()
+        for asset_id in completed_assets:
+            try:
+                db.update_bbox_status(asset_id, "completed", completed_at=bbox_completed_at)
+            except Exception as exc:
+                context.log.warning(f"bbox_status 전이 실패: asset_id={asset_id}: {exc}")
+        context.log.info(f"video_metadata.bbox_status=completed 전이: {len(completed_assets)}건")
 
     summary = {
         "processed": processed,

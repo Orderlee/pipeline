@@ -17,12 +17,17 @@ from uuid import uuid4
 from vlm_pipeline.lib.env_utils import coerce_float, int_env
 from vlm_pipeline.lib.file_loader import build_nonexistent_temp_path, cleanup_temp_path
 from vlm_pipeline.lib.gemini import GeminiAnalyzer, extract_clean_json_text, load_clean_json
+from vlm_pipeline.lib.gemini_prompts import VIDEO_EVENT_SCHEMA
 from vlm_pipeline.lib.vertex_chunking import (
     merge_overlapping_events,
     normalize_gemini_events,
     offset_gemini_events,
     plan_overlapping_video_chunks,
 )
+
+import logging
+
+_helpers_logger = logging.getLogger(__name__)
 from vlm_pipeline.resources.minio import MinIOResource
 
 
@@ -291,12 +296,36 @@ def _analyze_single_video_events(
     )
     if gemini_temp_path is not None:
         temp_paths.append(gemini_temp_path)
-    response_text = analyzer.analyze_video(
-        str(gemini_video_path),
-        prompt=video_prompt,
-        mime_type="video/mp4" if gemini_temp_path is not None else None,
-    )
-    return parse_gemini_events_response(response_text)
+
+    mime_type = "video/mp4" if gemini_temp_path is not None else None
+    parse_retries = int_env("GEMINI_JSON_PARSE_RETRIES", 1, minimum=0)
+    attempts = parse_retries + 1
+
+    last_exc: json.JSONDecodeError | None = None
+    for attempt in range(1, attempts + 1):
+        response_text = analyzer.analyze_video(
+            str(gemini_video_path),
+            prompt=video_prompt,
+            mime_type=mime_type,
+            response_mime_type="application/json",
+            response_schema=VIDEO_EVENT_SCHEMA,
+        )
+        try:
+            return parse_gemini_events_response(response_text)
+        except json.JSONDecodeError as exc:
+            last_exc = exc
+            if attempt >= attempts:
+                break
+            _helpers_logger.warning(
+                "Gemini JSON parse failed, retrying (attempt=%d/%d) path=%s err=%s",
+                attempt,
+                attempts,
+                video_path,
+                exc,
+            )
+
+    assert last_exc is not None
+    raise last_exc
 
 
 # ── Gemini response parsing / serialisation ──

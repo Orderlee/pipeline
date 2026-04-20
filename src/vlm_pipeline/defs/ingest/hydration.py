@@ -9,7 +9,7 @@ import os
 from datetime import datetime
 from pathlib import Path
 
-from vlm_pipeline.lib.validator import ALLOWED_EXTENSIONS
+from vlm_pipeline.lib.validator import ALLOWED_EXTENSIONS, is_macos_metadata_file
 
 STALE_MANIFEST_ALL_MISSING_REASON = "manifest_stale_all_missing"
 ALL_ALREADY_COMPLETED_REASON = "manifest_all_already_completed"
@@ -61,6 +61,8 @@ def scan_manifest_source_unit_files(source_unit_path: Path) -> list[dict]:
                     sub_rel = f"{rel_prefix}{entry.name}/" if rel_prefix else f"{entry.name}/"
                     _scan_recursive(Path(entry.path), sub_rel)
                 elif entry.is_file(follow_symlinks=False):
+                    if is_macos_metadata_file(entry.name):
+                        continue
                     if Path(entry.name).suffix.lower() in allowed_exts:
                         rel = f"{rel_prefix}{entry.name}" if rel_prefix else entry.name
                         try:
