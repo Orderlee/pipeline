@@ -7,6 +7,7 @@ import time
 from pathlib import Path
 
 from vlm_pipeline.lib.env_utils import int_env
+from vlm_pipeline.lib.validator import is_macos_metadata_file
 
 from .sensor_bootstrap_helpers import _iter_sorted_dir_entries
 
@@ -19,6 +20,8 @@ def _scan_unit_media_files(unit: dict, allowed_exts: set[str]) -> list[dict]:
     if unit_type == "file":
         try:
             if not unit_path.is_file():
+                return []
+            if is_macos_metadata_file(unit_path.name):
                 return []
             if unit_path.suffix.lower() not in allowed_exts:
                 return []
@@ -43,9 +46,17 @@ def _scan_unit_media_files(unit: dict, allowed_exts: set[str]) -> list[dict]:
     scan_recursive = bool(unit.get("scan_recursive", True))
     if scan_recursive:
         for root, dirs, names in os.walk(unit_path):
-            dirs[:] = sorted([name for name in dirs if not name.startswith(".partial__")])
+            dirs[:] = sorted(
+                [
+                    name
+                    for name in dirs
+                    if not name.startswith(".partial__") and not is_macos_metadata_file(name)
+                ]
+            )
             root_path = Path(root)
             for name in sorted(names):
+                if is_macos_metadata_file(name):
+                    continue
                 path_obj = root_path / name
                 if path_obj.suffix.lower() not in allowed_exts:
                     continue
@@ -68,6 +79,8 @@ def _scan_unit_media_files(unit: dict, allowed_exts: set[str]) -> list[dict]:
     else:
         for entry in _iter_sorted_dir_entries(unit_path):
             if entry.name.startswith(".partial__"):
+                continue
+            if is_macos_metadata_file(entry.name):
                 continue
             try:
                 if not entry.is_file():
