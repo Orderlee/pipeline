@@ -127,3 +127,24 @@ Example output:
   }
 ]
 """.strip()
+
+
+VIDEO_EVENT_SCHEMA = {
+    "type": "array",
+    "items": {
+        "type": "object",
+        "properties": {
+            "category": {"type": "string"},
+            "duration": {"type": "number"},
+            "timestamp": {
+                "type": "array",
+                "items": {"type": "number"},
+                "min_items": 2,
+                "max_items": 2,
+            },
+            "ko_caption": {"type": "string"},
+            "en_caption": {"type": "string"},
+        },
+        "required": ["category", "duration", "timestamp", "ko_caption", "en_caption"],
+    },
+}

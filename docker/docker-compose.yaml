@@ -242,7 +242,6 @@ services:
     restart: unless-stopped
 
   sam3:
-    profiles: ["sam3"]
     build:
       context: ./sam3
       dockerfile: Dockerfile
