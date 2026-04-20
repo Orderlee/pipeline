@@ -28,7 +28,7 @@ concurrency:
 
 env:
   DEPLOY_ROOT: /home/pia/work_p/Datapipeline-Data-data_pipeline/docker
-  COMPOSE_PROJECT_NAME: pipeline-prod
+  COMPOSE_PROJECT_NAME: docker
   IMAGE_NAME: datapipeline:gpu-cu124
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
@@ -36,11 +36,11 @@ jobs:
   test:
     # self-hosted runner 가 등록된 Orderlee 레포에서만 실행.
     # TeamPIA(upstream)에는 runner 없음 → 워크플로우 파일이 공유되어도 여기서는 skip.
-    runs-on: [self-hosted, linux, deploy, production]
+    runs-on: [self-hosted, linux, production]
     if: ${{ github.repository == 'Orderlee/Datapipeline-Data-data_pipeline' && github.event.inputs.skip_tests != 'true' }}
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Run unit tests
         run: |
@@ -51,13 +51,13 @@ jobs:
           }
 
   detect_image_rebuild:
-    runs-on: [self-hosted, linux, deploy, production]
+    runs-on: [self-hosted, linux, production]
     if: ${{ github.repository == 'Orderlee/Datapipeline-Data-data_pipeline' }}
     outputs:
       build_required: ${{ steps.detect.outputs.build_required }}
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
@@ -97,7 +97,7 @@ jobs:
           echo "build_required=${build_required}" >> "$GITHUB_OUTPUT"
 
   deploy:
-    runs-on: [self-hosted, linux, deploy, production]
+    runs-on: [self-hosted, linux, production]
     timeout-minutes: 60
     needs: [test, detect_image_rebuild]
     if: |
@@ -107,7 +107,7 @@ jobs:
       needs.detect_image_rebuild.result == 'success'
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Tag image with git SHA
         run: echo "IMAGE_TAG=datapipeline:${GITHUB_SHA::8}" >> $GITHUB_ENV

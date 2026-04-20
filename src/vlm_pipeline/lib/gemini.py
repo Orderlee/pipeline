@@ -96,13 +96,6 @@ def _validate_credentials_file(path_value: str | Path, source_name: str) -> Path
     return candidate
 
 
-def _path_from_env(var_name: str) -> Path | None:
-    raw_value = (os.getenv(var_name) or "").strip()
-    if not raw_value:
-        return None
-    return _validate_credentials_file(raw_value, var_name)
-
-
 def _write_service_account_json(raw_json: str) -> Path:
     try:
         payload = json.loads(raw_json)
@@ -150,18 +143,41 @@ def _write_service_account_json(raw_json: str) -> Path:
     return temp_path
 
 
-def _default_credentials_path() -> Path | None:
+def _default_credentials_path() -> tuple[Path | None, list[str]]:
+    tried: list[str] = []
     for env_name in (
         "GEMINI_GOOGLE_APPLICATION_CREDENTIALS",
         "GOOGLE_APPLICATION_CREDENTIALS",
     ):
-        resolved = _path_from_env(env_name)
-        if resolved is not None:
-            return resolved
+        raw_value = (os.getenv(env_name) or "").strip()
+        if not raw_value:
+            tried.append(f"{env_name}: not set")
+            continue
+        try:
+            resolved = _validate_credentials_file(raw_value, env_name)
+        except FileNotFoundError as exc:
+            # env는 설정됐지만 실제 파일이 없음 — 다음 fallback으로 진행
+            logger.warning(
+                "Gemini credentials: %s set but file invalid, trying next source (%s)",
+                env_name,
+                exc,
+            )
+            tried.append(f"{env_name}={raw_value}: {exc}")
+            continue
+        return resolved, tried
 
     raw_json = (os.getenv("GEMINI_SERVICE_ACCOUNT_JSON") or "").strip()
     if raw_json:
-        return _write_service_account_json(raw_json)
+        try:
+            return _write_service_account_json(raw_json), tried
+        except ValueError as exc:
+            logger.warning(
+                "Gemini credentials: GEMINI_SERVICE_ACCOUNT_JSON invalid, trying bundled (%s)",
+                exc,
+            )
+            tried.append(f"GEMINI_SERVICE_ACCOUNT_JSON: {exc}")
+    else:
+        tried.append("GEMINI_SERVICE_ACCOUNT_JSON: not set")
 
     bundled = (
         Path(__file__).resolve().parents[2]
@@ -170,19 +186,30 @@ def _default_credentials_path() -> Path | None:
         / "gmail-361002-cbcf95afec4a.json"
     )
     if bundled.exists():
-        return bundled
-    return None
+        return bundled, tried
+    tried.append(f"bundled file: not found at {bundled}")
+    return None, tried
 
 
 def resolve_gemini_credentials_path(credentials_path: str | None = None) -> str:
     if credentials_path and str(credentials_path).strip():
-        return str(_validate_credentials_file(credentials_path, "credentials_path"))
+        try:
+            return str(_validate_credentials_file(credentials_path, "credentials_path"))
+        except FileNotFoundError as exc:
+            # 명시 인자는 엄격 유지(보안/과금 footgun 방지) — 다만 메시지를 풍부하게
+            raise FileNotFoundError(
+                f"{exc}. Explicit credentials_path arguments do not fall back to "
+                "environment-based sources; fix the path or drop the argument to use "
+                "GEMINI_GOOGLE_APPLICATION_CREDENTIALS / GEMINI_SERVICE_ACCOUNT_JSON."
+            ) from exc
 
-    credentials = _default_credentials_path()
+    credentials, tried = _default_credentials_path()
     if credentials is None:
+        reasons = "\n  - ".join(tried) if tried else "(no sources configured)"
         raise FileNotFoundError(
-            "Gemini credentials not found. Set GEMINI_GOOGLE_APPLICATION_CREDENTIALS, "
-            "GOOGLE_APPLICATION_CREDENTIALS, or GEMINI_SERVICE_ACCOUNT_JSON."
+            "Gemini credentials not found. All sources exhausted:\n  - "
+            f"{reasons}\nConfigure one of: GEMINI_GOOGLE_APPLICATION_CREDENTIALS, "
+            "GOOGLE_APPLICATION_CREDENTIALS, GEMINI_SERVICE_ACCOUNT_JSON."
         )
     return str(credentials)
 
@@ -197,6 +224,12 @@ def _load_vertex_ai() -> tuple[Any, Any, Any]:
             "Install it from requirements before using vlm_pipeline.lib.gemini."
         ) from exc
     return vertexai, GenerativeModel, Part
+
+
+def _load_generation_config_cls() -> Any:
+    from vertexai.preview.generative_models import GenerationConfig
+
+    return GenerationConfig
 
 
 _int_env = _int_env_impl
@@ -255,10 +288,13 @@ class GeminiAnalyzer:
         *,
         content_type: str,
         source_name: str,
+        generation_config: Any | None = None,
     ) -> Any:
         attempts = self._rate_limit_max_retries + 1
         for attempt in range(1, attempts + 1):
             try:
+                if generation_config is not None:
+                    return self.model.generate_content(parts, generation_config=generation_config)
                 return self.model.generate_content(parts)
             except Exception as exc:
                 if not _is_vertex_rate_limit_error(exc) or attempt >= attempts:
@@ -297,6 +333,9 @@ class GeminiAnalyzer:
         video_path: str,
         prompt: str | None = None,
         mime_type: str | None = None,
+        *,
+        response_mime_type: str | None = None,
+        response_schema: Any | None = None,
     ) -> str:
         path = Path(video_path)
         video_bytes = path.read_bytes()
@@ -305,10 +344,21 @@ class GeminiAnalyzer:
             guessed_mime, _ = mimetypes.guess_type(str(path))
             resolved_mime_type = guessed_mime or "video/mp4"
         video_part = self._part_cls.from_data(data=video_bytes, mime_type=resolved_mime_type)
+
+        generation_config = None
+        if response_mime_type is not None or response_schema is not None:
+            config_kwargs: dict[str, Any] = {}
+            if response_mime_type is not None:
+                config_kwargs["response_mime_type"] = response_mime_type
+            if response_schema is not None:
+                config_kwargs["response_schema"] = response_schema
+            generation_config = _load_generation_config_cls()(**config_kwargs)
+
         response = self._generate_content_with_retry(
             [video_part, prompt or VIDEO_PROMPT],
             content_type="video",
             source_name=path.name,
+            generation_config=generation_config,
         )
         return _extract_response_text(response)
 
@@ -342,16 +392,93 @@ def extract_clean_json_text(text: str) -> str:
     return cleaned.strip()
 
 
+def _repair_clean_json_strings(text: str) -> str:
+    """Best-effort repair of common Gemini JSON string glitches.
+
+    Inside string values, replaces raw LF/CR/TAB with `\\n`/`\\r`/`\\t`
+    and escapes an internal `"` whose next non-whitespace char is not a
+    JSON structural delimiter (`,`, `:`, `]`, `}`, EOF).
+    """
+    out: list[str] = []
+    in_string = False
+    escape = False
+    i = 0
+    n = len(text)
+    while i < n:
+        ch = text[i]
+        if escape:
+            out.append(ch)
+            escape = False
+            i += 1
+            continue
+        if ch == "\\":
+            out.append(ch)
+            escape = True
+            i += 1
+            continue
+        if in_string:
+            if ch == '"':
+                j = i + 1
+                while j < n and text[j] in " \t\r\n":
+                    j += 1
+                next_ch = text[j] if j < n else ""
+                if next_ch in (",", ":", "]", "}", ""):
+                    in_string = False
+                    out.append(ch)
+                else:
+                    out.append("\\\"")
+                i += 1
+                continue
+            if ch == "\n":
+                out.append("\\n")
+                i += 1
+                continue
+            if ch == "\r":
+                out.append("\\r")
+                i += 1
+                continue
+            if ch == "\t":
+                out.append("\\t")
+                i += 1
+                continue
+            out.append(ch)
+            i += 1
+        else:
+            if ch == '"':
+                in_string = True
+            out.append(ch)
+            i += 1
+    return "".join(out)
+
+
 def load_clean_json(text: str) -> Any:
     cleaned = extract_clean_json_text(text)
     decoder = json.JSONDecoder()
     try:
         return decoder.decode(cleaned)
     except json.JSONDecodeError as exc:
-        if exc.msg != "Extra data":
-            raise
-        payload, _ = decoder.raw_decode(cleaned)
-        return payload
+        if exc.msg == "Extra data":
+            payload, _ = decoder.raw_decode(cleaned)
+            return payload
+        repaired = _repair_clean_json_strings(cleaned)
+        if repaired != cleaned:
+            try:
+                payload = decoder.decode(repaired)
+                logger.warning(
+                    "load_clean_json: repaired malformed JSON (orig_err=%s)", exc
+                )
+                return payload
+            except json.JSONDecodeError:
+                try:
+                    payload, _ = decoder.raw_decode(repaired)
+                    logger.warning(
+                        "load_clean_json: repaired malformed JSON via raw_decode (orig_err=%s)",
+                        exc,
+                    )
+                    return payload
+                except json.JSONDecodeError:
+                    pass
+        raise
 
 
 def save_response_as_json(response_text: str, video_path: str) -> str:

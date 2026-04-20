@@ -412,7 +412,10 @@ def cmd_create(args, minio, auth_headers: dict) -> None:
 
         try:
             video_url = generate_presigned_url(minio, args.bucket, key, DEFAULT_PRESIGN_EXPIRES)
-            task = create_task(args.ls_url, auth_headers, project_id, video_url, folder_name)
+            rel = key[len(prefix):].lstrip("/") if key.startswith(prefix) else key
+            subfolder = rel.split("/", 1)[0] if "/" in rel else ""
+            task_folder = subfolder or folder_name
+            task = create_task(args.ls_url, auth_headers, project_id, video_url, task_folder)
             task_id = task["id"]
 
             # prediction 즉시 attach + label_key 수집
@@ -525,6 +528,84 @@ def cmd_renew_all(args, minio, auth_headers: dict) -> None:
 
 
 # ---------------------------------------------------------------------------
+# attach-predictions 커맨드 — 기존 task에 Gemini events JSON을 prediction으로 사후 주입
+# ---------------------------------------------------------------------------
+
+def _resolve_project_id(ls_url: str, headers: dict, project: str) -> int:
+    """project 인자를 id(정수) 또는 title(문자)로 받아 project_id 반환."""
+    try:
+        return int(project)
+    except ValueError:
+        pass
+    resp = requests.get(f"{ls_url}/api/projects/", headers=headers, params={"page_size": 1000})
+    resp.raise_for_status()
+    data = resp.json()
+    projects = data if isinstance(data, list) else data.get("results", [])
+    for p in projects:
+        if p["title"] == project:
+            return int(p["id"])
+    raise RuntimeError(f"LS project를 찾을 수 없음: '{project}'")
+
+
+def cmd_attach_predictions(args, minio, auth_headers: dict) -> None:
+    """기존 task의 stem을 vlm-labels events JSON과 매칭하여 prediction POST. Idempotent.
+
+    skip 조건:
+      - task.total_predictions > 0 (이미 prediction 존재)
+      - stem에 매칭되는 events JSON 없음
+      - JSON이 비어있거나 클립 구간과 겹치는 이벤트 없음
+    """
+    project_id = _resolve_project_id(args.ls_url, auth_headers, args.project)
+    prefix = args.prefix.rstrip("/")
+
+    print(f"[INFO] project_id={project_id}, label_bucket={args.label_bucket}, prefix={prefix}")
+    existing = fetch_existing_task_stems(args.ls_url, auth_headers, project_id)
+    print(f"[INFO] 기존 task {len(existing)}개")
+
+    json_index = list_event_json_keys(minio, args.label_bucket, prefix)
+    print(f"[INFO] events JSON {len(json_index)}개 스캔 완료\n")
+
+    attached = skipped_has_pred = skipped_no_json = error = 0
+    for stem, task in existing.items():
+        task_id = task["id"]
+        if int(task.get("total_predictions") or 0) > 0:
+            skipped_has_pred += 1
+            continue
+
+        m = _CLIP_PATTERN.match(stem)
+        base = m.group(1) if m else stem
+        clip_start_sec = int(m.group(2)) / 1000.0 if m else 0.0
+        clip_end_sec = int(m.group(3)) / 1000.0 if m else float("inf")
+
+        json_key = json_index.get(base)
+        if not json_key:
+            skipped_no_json += 1
+            continue
+
+        try:
+            data = read_json_from_minio(minio, args.label_bucket, json_key)
+            events = data if isinstance(data, list) else []
+            if not events:
+                skipped_no_json += 1
+                continue
+            ls_result = gemini_events_to_ls_result(events, args.fps, clip_start_sec, clip_end_sec)
+            if not ls_result:
+                skipped_no_json += 1
+                continue
+            create_prediction(args.ls_url, auth_headers, task_id, ls_result)
+            print(f"[ATTACH]  task {task_id} ← {stem} (prediction {len(ls_result)}건)")
+            attached += 1
+        except Exception as exc:
+            print(f"[ERROR]   task {task_id}: {exc}")
+            error += 1
+
+    print(
+        f"\n[DONE] 주입 {attached} / 이미있음 {skipped_has_pred} / "
+        f"JSON 없음 {skipped_no_json} / 오류 {error} (총 {len(existing)})"
+    )
+
+
+# ---------------------------------------------------------------------------
 # main
 # ---------------------------------------------------------------------------
 
@@ -552,6 +633,14 @@ def main() -> int:
     p_renew_group.add_argument("--all-projects", action="store_true", help="모든 project의 URL 일괄 갱신")
     p_renew.add_argument("--threshold", type=int, default=DEFAULT_RENEW_THRESHOLD, help="갱신 임계값(초), 기본 86400(1일)")
 
+    # attach-predictions — 기존 task에 Gemini events JSON을 prediction으로 사후 주입
+    p_attach = sub.add_parser(
+        "attach-predictions",
+        help="기존 task에 Gemini events JSON을 prediction으로 사후 주입 (idempotent)",
+    )
+    p_attach.add_argument("--project", required=True, help="LS project id (숫자) 또는 title (문자)")
+    p_attach.add_argument("--prefix", required=True, help="vlm-labels 하위 prefix (예: vanguardhealthcarevhc/falldown)")
+
     args = parser.parse_args()
 
     if not args.api_key:
@@ -567,6 +656,8 @@ def main() -> int:
             cmd_renew_all(args, minio, auth_headers)
         else:
             cmd_renew(args, minio, auth_headers)
+    elif args.command == "attach-predictions":
+        cmd_attach_predictions(args, minio, auth_headers)
 
     return 0
 

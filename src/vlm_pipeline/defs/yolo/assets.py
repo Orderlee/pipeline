@@ -91,9 +91,14 @@ def _run_yolo_image_detection(
 ) -> dict:
     """processed_clip_frame 이미지에 YOLO-World-L detection 실행."""
     if not bool_env("ENABLE_YOLO_DETECTION", True):
-        if not should_run_any_output(context, YOLO_OUTPUTS):
-            context.log.info("yolo_image_detection 스킵: outputs에 YOLO 계열 요청이 없습니다.")
-            return {"processed": 0, "failed": 0, "total_detections": 0, "skipped": True}
+        context.log.info(
+            "yolo_image_detection 스킵: ENABLE_YOLO_DETECTION=false (SAM3가 primary bbox 엔진)"
+        )
+        return {"processed": 0, "failed": 0, "total_detections": 0, "skipped": True}
+
+    if not should_run_any_output(context, YOLO_OUTPUTS):
+        context.log.info("yolo_image_detection 스킵: outputs에 YOLO 계열 요청이 없습니다.")
+        return {"processed": 0, "failed": 0, "total_detections": 0, "skipped": True}
 
     limit = int(context.op_config.get("limit", 500))
     conf = float(context.op_config.get("confidence_threshold", 0.25))
