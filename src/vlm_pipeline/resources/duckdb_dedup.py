@@ -339,37 +339,129 @@ class DuckDBDedupMixin:
             ]
             return dict(zip(columns, row))
 
-    def find_dataset_candidates(self) -> list[dict]:
+    def find_projects_for_dataset_build(self) -> list[dict]:
+        """source_unit_name 별 video/image 카운트. raw_files.source_unit_name 기준."""
         with self.connect() as conn:
             rows = conn.execute(
                 """
                 SELECT
-                    pc.clip_id,
-                    pc.source_asset_id,
-                    pc.source_label_id,
-                    pc.processed_bucket,
-                    pc.clip_key,
-                    pc.label_key,
-                    pc.data_source,
-                    pc.caption_text,
-                    pc.clip_start_sec,
-                    pc.clip_end_sec,
-                    pc.width,
-                    pc.height,
-                    pc.codec,
-                    l.label_source,
-                    l.review_status,
-                    l.label_format,
-                    l.object_count
-                FROM processed_clips pc
-                LEFT JOIN labels l ON l.label_id = pc.source_label_id
-                WHERE pc.process_status = 'completed'
+                    r.source_unit_name AS folder,
+                    COUNT(DISTINCT CASE WHEN r.media_type = 'video' THEN r.asset_id END) AS video_count,
+                    COUNT(DISTINCT im.image_id) AS image_count
+                FROM raw_files r
+                LEFT JOIN image_metadata im ON im.source_asset_id = r.asset_id
+                WHERE r.source_unit_name IS NOT NULL
+                  AND r.source_unit_name <> ''
+                GROUP BY r.source_unit_name
+                HAVING video_count > 0 OR image_count > 0
+                ORDER BY folder
                 """
             ).fetchall()
+            return [
+                {"folder": row[0], "video_count": row[1], "image_count": row[2]}
+                for row in rows
+            ]
+
+    def find_project_video_candidates(
+        self, folder: str, require_ls_finalized: bool = False
+    ) -> list[dict]:
+        """해당 folder의 ingest 완료 video asset 목록 + raw_key.
+
+        require_ls_finalized=True 면 labels.review_status='finalized' event가
+        최소 1개 있는 video만 반환.
+        """
+        finalized_filter = (
+            """
+                  AND EXISTS (
+                      SELECT 1 FROM labels l
+                      WHERE l.asset_id = r.asset_id
+                        AND l.review_status = 'finalized'
+                  )
+            """
+            if require_ls_finalized
+            else ""
+        )
+        with self.connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT r.asset_id, r.raw_bucket, r.raw_key
+                FROM raw_files r
+                JOIN video_metadata vm ON vm.asset_id = r.asset_id
+                WHERE r.media_type = 'video'
+                  AND r.ingest_status = 'completed'
+                  AND r.source_unit_name = ?
+                  AND r.raw_key IS NOT NULL
+                  {finalized_filter}
+                """,
+                [folder],
+            ).fetchall()
+            return [
+                {"asset_id": row[0], "raw_bucket": row[1], "raw_key": row[2]}
+                for row in rows
+            ]
+
+    def find_project_image_candidates(
+        self, folder: str, require_ls_finalized: bool = False
+    ) -> list[dict]:
+        """해당 folder의 image_metadata 목록 + image_key.
+
+        require_ls_finalized=True 면 image_labels.review_status='finalized' 인
+        image만 반환 (DISTINCT image).
+        """
+        if require_ls_finalized:
+            sql = """
+                SELECT DISTINCT im.image_id, im.image_bucket, im.image_key, im.source_asset_id
+                FROM image_metadata im
+                JOIN raw_files r ON r.asset_id = im.source_asset_id
+                JOIN image_labels il ON il.image_id = im.image_id
+                WHERE r.source_unit_name = ?
+                  AND im.image_key IS NOT NULL
+                  AND im.image_bucket IS NOT NULL
+                  AND il.review_status = 'finalized'
+            """
+        else:
+            sql = """
+                SELECT im.image_id, im.image_bucket, im.image_key, im.source_asset_id
+                FROM image_metadata im
+                JOIN raw_files r ON r.asset_id = im.source_asset_id
+                WHERE r.source_unit_name = ?
+                  AND im.image_key IS NOT NULL
+                  AND im.image_bucket IS NOT NULL
+            """
+        with self.connect() as conn:
+            rows = conn.execute(sql, [folder]).fetchall()
+            return [
+                {
+                    "image_id": row[0],
+                    "image_bucket": row[1],
+                    "image_key": row[2],
+                    "source_asset_id": row[3],
+                }
+                for row in rows
+            ]
+
+    def find_project_clip_candidates(self, folder: str) -> list[dict]:
+        """해당 folder의 processed_clips 완료 row. LS 라벨링 완료된 event 단위 clip."""
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT pc.clip_id, pc.processed_bucket, pc.clip_key,
+                       pc.source_asset_id, pc.source_label_id,
+                       pc.event_index, pc.clip_start_sec, pc.clip_end_sec,
+                       r.raw_key AS source_raw_key, r.raw_bucket AS source_raw_bucket
+                FROM processed_clips pc
+                JOIN raw_files r ON r.asset_id = pc.source_asset_id
+                WHERE r.source_unit_name = ?
+                  AND pc.process_status = 'completed'
+                  AND pc.clip_key IS NOT NULL
+                """,
+                [folder],
+            ).fetchall()
             columns = [
-                "clip_id", "source_asset_id", "source_label_id", "processed_bucket", "clip_key",
-                "label_key", "data_source", "caption_text", "clip_start_sec", "clip_end_sec",
-                "width", "height", "codec", "label_source", "review_status", "label_format", "object_count",
+                "clip_id", "processed_bucket", "clip_key",
+                "source_asset_id", "source_label_id",
+                "event_index", "clip_start_sec", "clip_end_sec",
+                "source_raw_key", "source_raw_bucket",
             ]
             return [dict(zip(columns, row)) for row in rows]
 
@@ -402,23 +494,184 @@ class DuckDBDedupMixin:
                 [status, dataset_id],
             )
 
-    def insert_dataset_clips_batch(self, clips: list[dict]) -> None:
-        if not clips:
-            return
-        rows = [
-            [
-                clip["dataset_id"],
-                clip["clip_id"],
-                clip["split"],
-                clip.get("dataset_key"),
-            ]
-            for clip in clips
-        ]
+    # ------------------------------------------------------------------
+    # Classification build 쿼리
+    # ------------------------------------------------------------------
+
+    def find_projects_for_classification_build(self) -> list[dict]:
+        """dispatch_requests.labeling_method 에 classification_* 가 포함된 프로젝트.
+
+        labeling_method 는 comma-separated 로 저장됨. 최근 dispatch 우선.
+        """
         with self.connect() as conn:
-            conn.executemany(
+            rows = conn.execute(
                 """
-                INSERT INTO dataset_clips (dataset_id, clip_id, split, dataset_key)
-                VALUES (?, ?, ?, ?)
+                SELECT folder_name,
+                       ANY_VALUE(labeling_method) AS labeling_method,
+                       ANY_VALUE(categories)      AS categories,
+                       ANY_VALUE(classes)         AS classes,
+                       MAX(created_at)            AS latest_at
+                FROM dispatch_requests
+                WHERE labeling_method LIKE '%classification_%'
+                  AND (status IS NULL OR status NOT IN ('failed', 'canceled'))
+                  AND folder_name IS NOT NULL
+                GROUP BY folder_name
+                ORDER BY folder_name
+                """
+            ).fetchall()
+            columns = ["folder_name", "labeling_method", "categories", "classes", "latest_at"]
+            return [dict(zip(columns, row)) for row in rows]
+
+    def find_project_classification_videos(
+        self, folder: str, require_ls_finalized: bool = False
+    ) -> list[dict]:
+        """video 후보 + 해당 video 의 gemini_event_json labels_key 리스트."""
+        finalized_filter = (
+            "AND l.review_status = 'finalized'" if require_ls_finalized else ""
+        )
+        with self.connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT r.asset_id, r.raw_bucket, r.raw_key,
+                       LIST(DISTINCT l.labels_key) AS labels_key_list
+                FROM raw_files r
+                JOIN labels l ON l.asset_id = r.asset_id
+                WHERE r.source_unit_name = ?
+                  AND r.media_type = 'video'
+                  AND r.ingest_status = 'completed'
+                  AND r.raw_key IS NOT NULL
+                  AND l.label_format = 'gemini_event_json'
+                  AND l.labels_key IS NOT NULL
+                  {finalized_filter}
+                GROUP BY r.asset_id, r.raw_bucket, r.raw_key
                 """,
-                rows,
+                [folder],
+            ).fetchall()
+            columns = ["asset_id", "raw_bucket", "raw_key", "labels_key_list"]
+            return [dict(zip(columns, row)) for row in rows]
+
+    def find_project_classification_images(
+        self, folder: str, require_ls_finalized: bool = False
+    ) -> list[dict]:
+        """image 후보 + 해당 image 의 SAM3 COCO labels_key 리스트."""
+        finalized_filter = (
+            "AND il.review_status = 'finalized'" if require_ls_finalized else ""
+        )
+        with self.connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT im.image_id, im.image_bucket, im.image_key, im.source_asset_id,
+                       LIST(DISTINCT il.labels_key) AS labels_key_list
+                FROM image_metadata im
+                JOIN raw_files r ON r.asset_id = im.source_asset_id
+                JOIN image_labels il ON il.image_id = im.image_id
+                WHERE r.source_unit_name = ?
+                  AND im.image_key IS NOT NULL
+                  AND im.image_bucket IS NOT NULL
+                  AND il.label_tool = 'sam3'
+                  AND il.labels_key IS NOT NULL
+                  {finalized_filter}
+                GROUP BY im.image_id, im.image_bucket, im.image_key, im.source_asset_id
+                """,
+                [folder],
+            ).fetchall()
+            columns = [
+                "image_id", "image_bucket", "image_key",
+                "source_asset_id", "labels_key_list",
+            ]
+            return [dict(zip(columns, row)) for row in rows]
+
+    def find_latest_dispatch_for_folder(self, folder: str) -> dict | None:
+        """최신 dispatch_requests row (labeling_method, categories, classes)."""
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT labeling_method, categories, classes
+                FROM dispatch_requests
+                WHERE folder_name = ?
+                  AND (status IS NULL OR status NOT IN ('failed', 'canceled'))
+                ORDER BY created_at DESC
+                LIMIT 1
+                """,
+                [folder],
+            ).fetchone()
+            if not row:
+                return None
+            return {"labeling_method": row[0], "categories": row[1], "classes": row[2]}
+
+    def find_project_video_candidates_missing_images(self, folder: str) -> list[dict]:
+        """image_metadata row 가 전혀 없는 video (classification_image fallback 대상)."""
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT r.asset_id, r.raw_bucket, r.raw_key,
+                       vm.duration_sec, vm.fps, vm.frame_count
+                FROM raw_files r
+                LEFT JOIN video_metadata vm ON vm.asset_id = r.asset_id
+                WHERE r.source_unit_name = ?
+                  AND r.media_type = 'video'
+                  AND r.ingest_status = 'completed'
+                  AND r.raw_key IS NOT NULL
+                  AND NOT EXISTS (
+                      SELECT 1 FROM image_metadata im
+                      WHERE im.source_asset_id = r.asset_id
+                  )
+                """,
+                [folder],
+            ).fetchall()
+            columns = [
+                "asset_id", "raw_bucket", "raw_key",
+                "duration_sec", "fps", "frame_count",
+            ]
+            return [dict(zip(columns, row)) for row in rows]
+
+    def insert_classification_dataset(self, row: dict) -> None:
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO classification_datasets (
+                    dataset_id, name, folder_prefix, config,
+                    classification_bucket, video_count, image_count, category_count,
+                    build_status, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    row.get("dataset_id") or str(uuid4()),
+                    row.get("name"),
+                    row.get("folder_prefix"),
+                    row.get("config"),
+                    row.get("classification_bucket", "vlm-classification"),
+                    int(row.get("video_count") or 0),
+                    int(row.get("image_count") or 0),
+                    int(row.get("category_count") or 0),
+                    row.get("build_status", "pending"),
+                    row.get("created_at", datetime.now()),
+                ],
             )
+
+    def update_classification_dataset_status(
+        self,
+        dataset_id: str,
+        status: str,
+        video_count: int | None = None,
+        image_count: int | None = None,
+        category_count: int | None = None,
+    ) -> None:
+        sets = ["build_status = ?"]
+        params: list[Any] = [status]
+        if video_count is not None:
+            sets.append("video_count = ?")
+            params.append(int(video_count))
+        if image_count is not None:
+            sets.append("image_count = ?")
+            params.append(int(image_count))
+        if category_count is not None:
+            sets.append("category_count = ?")
+            params.append(int(category_count))
+        params.append(dataset_id)
+        with self.connect() as conn:
+            conn.execute(
+                f"UPDATE classification_datasets SET {', '.join(sets)} WHERE dataset_id = ?",
+                params,
+            )
+

@@ -106,7 +106,7 @@ def raw_video_to_frame_impl(
                 sampling.policy_source,
             )
 
-            frame_rows, uploaded_frame_keys = _extract_raw_video_frames(
+            frame_rows, uploaded_frame_keys = extract_raw_video_frames(
                 minio,
                 asset_id=asset_id,
                 video_path=video_path,
@@ -163,7 +163,7 @@ def raw_video_to_frame_impl(
     return summary
 
 
-def _extract_raw_video_frames(
+def extract_raw_video_frames(
     minio: MinIOResource,
     *,
     asset_id: str,

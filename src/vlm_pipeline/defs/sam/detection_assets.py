@@ -12,9 +12,7 @@ YOLO의 COCO bbox 결과와 1:1 비교가 목적이므로, 동일 이미지에 �
 
 from __future__ import annotations
 
-import json
 from datetime import datetime
-from pathlib import PurePosixPath
 
 from dagster import Failure, Field, MetadataValue, asset
 
@@ -22,7 +20,6 @@ from vlm_pipeline.lib.detection_common import (
     flush_image_labels,
     normalize_classes,
     resolve_target_classes,
-    stable_image_label_id,
 )
 from vlm_pipeline.lib.env_utils import (
     SAM3_OUTPUTS,
@@ -32,9 +29,8 @@ from vlm_pipeline.lib.env_utils import (
     should_run_any_output,
 )
 from vlm_pipeline.lib.sam3 import get_sam3_client
+from vlm_pipeline.lib.sam3_labeling import run_sam3_and_build_label_row
 from vlm_pipeline.lib.spec_config import parse_requested_outputs
-from vlm_pipeline.lib.detection_coco import build_coco_detection_payload, convert_sam3_detections_for_coco
-from vlm_pipeline.lib.key_builders import build_sam3_detection_key
 from vlm_pipeline.lib.yolo_thresholds import resolve_active_class_confidence_thresholds
 from vlm_pipeline.resources.duckdb import DuckDBResource
 from vlm_pipeline.resources.minio import MinIOResource
@@ -72,7 +68,7 @@ sam3_image_detection = _make_sam3_detection_asset(
 )
 dispatch_sam3_image_detection = _make_sam3_detection_asset(
     name="dispatch_sam3_image_detection",
-    deps=["clip_to_frame", "raw_video_to_frame"],
+    deps=["raw_video_to_frame"],
     description="Dispatch 라인: frame 추출 완료 후 SAM3.1 text-prompted bbox detection (YOLO 비교용)",
 )
 
@@ -205,62 +201,24 @@ def _run_sam3_image_detection(
             continue
 
         try:
-            sam_result = client.segment(
-                img_bytes,
-                prompts=target_classes,
-                filename=PurePosixPath(image_key).name or "image.jpg",
-                score_threshold=score_threshold,
-                max_masks_per_prompt=max(1, max_masks_per_prompt),
-                per_prompt_score_thresholds=prompt_score_thresholds,
-            )
-            sam_detections = list(sam_result.get("detections") or [])
-            coco_detections = convert_sam3_detections_for_coco(sam_detections)
-
-            detected_at = datetime.now()
-            sam3_labels_key = build_sam3_detection_key(image_key)
-            coco_payload = build_coco_detection_payload(
+            label_row, annotation_count = run_sam3_and_build_label_row(
+                client=client,
+                minio=minio,
                 image_id=image_id,
-                source_clip_id=source_clip_id,
                 image_key=image_key,
+                image_bytes=img_bytes,
                 image_width=cand.get("width"),
                 image_height=cand.get("height"),
-                detections=coco_detections,
-                requested_classes=target_classes,
+                prompts=target_classes,
                 class_source=class_source,
                 resolved_config_id=resolved_config_id,
-                confidence_threshold=score_threshold,
-                iou_threshold=0.0,
-                detected_at=detected_at,
-                effective_request_confidence_threshold=score_threshold,
-                class_confidence_thresholds=prompt_score_thresholds,
-                elapsed_ms=sam_result.get("elapsed_ms"),
-                model_name="sam3.1",
+                source_clip_id=source_clip_id,
+                score_threshold=score_threshold,
+                max_masks_per_prompt=max_masks_per_prompt,
+                per_prompt_score_thresholds=prompt_score_thresholds,
+                include_detailed_meta=True,
             )
-            coco_payload["meta"]["sam3_prompt_score_thresholds"] = prompt_score_thresholds
-            coco_payload["meta"]["sam3_total_latency_ms"] = float(sam_result.get("elapsed_ms") or 0.0)
-            coco_payload["meta"]["sam3_per_prompt_latency_ms"] = sam_result.get("per_prompt_latency_ms") or {}
-            coco_payload["meta"]["sam3_device"] = sam_result.get("device")
-            coco_payload["meta"]["gpu_memory_peak_gb"] = sam_result.get("gpu_memory_peak_gb")
-            annotation_count = len(coco_payload.get("annotations") or [])
-
-            label_bytes = json.dumps(coco_payload, ensure_ascii=False).encode("utf-8")
-            minio.upload("vlm-labels", sam3_labels_key, label_bytes, "application/json")
-
-            label_rows_buffer.append({
-                "image_label_id": stable_image_label_id(image_id, sam3_labels_key),
-                "image_id": image_id,
-                "source_clip_id": source_clip_id,
-                "labels_bucket": "vlm-labels",
-                "labels_key": sam3_labels_key,
-                "label_format": "coco",
-                "label_tool": "sam3",
-                "label_source": "auto",
-                "review_status": "auto_generated",
-                "label_status": "completed",
-                "object_count": annotation_count,
-                "created_at": detected_at,
-            })
-
+            label_rows_buffer.append(label_row)
             processed += 1
             total_detections += annotation_count
             if source_asset_id:

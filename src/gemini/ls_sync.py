@@ -28,7 +28,8 @@ import base64
 import json
 import os
 import re
-from pathlib import Path
+from datetime import datetime, timezone
+from pathlib import Path, PurePosixPath
 from urllib.parse import urlparse, parse_qs
 
 # 클립 파일명 패턴: {base}_{8자리ms}_{8자리ms}
@@ -311,6 +312,167 @@ def find_matching_event_index(json_data: list, clip_start_sec: float, clip_end_s
 
 
 # ---------------------------------------------------------------------------
+# Image mode helpers (RectangleLabels → SAM3 COCO)
+# ---------------------------------------------------------------------------
+
+def _parse_image_url_to_key(image_url: str) -> str | None:
+    """presigned URL → MinIO object key.
+
+    형태: http://<endpoint>/<bucket>/<key>?X-Amz-...
+    bucket 구분 없이 첫 path segment 제거하고 나머지를 key로 사용.
+    """
+    try:
+        parsed = urlparse(image_url)
+        path = (parsed.path or "").lstrip("/")
+        if "/" not in path:
+            return None
+        # 첫 segment = bucket, 나머지 = key
+        return path.split("/", 1)[1] or None
+    except Exception:
+        return None
+
+
+def _sam3_key_from_image_key(image_key: str) -> str:
+    """build_sam3_detection_key()와 동일 규약 — cross-package import 회피 위해 인라인."""
+    p = PurePosixPath(str(image_key or ""))
+    stem = p.stem or "image"
+    parent = p.parent
+    raw_parent = parent.parent if parent.name == "image" else parent
+    if str(raw_parent) and str(raw_parent) != ".":
+        return f"{raw_parent}/sam3_segmentations/{stem}.json"
+    return f"sam3_segmentations/{stem}.json"
+
+
+def annotation_to_rectangles(annotation: dict) -> list[dict]:
+    """LS RectangleLabels annotation → 절대 픽셀 bbox 리스트.
+
+    반환 항목:
+      {"label": str, "bbox": [x, y, w, h], "score": float | None,
+       "rotation": float, "image_width": int, "image_height": int}
+    """
+    rects: list[dict] = []
+    for item in annotation.get("result", []):
+        if item.get("type") != "rectanglelabels":
+            continue
+        v = item.get("value", {}) or {}
+        W = int(item.get("original_width") or 0)
+        H = int(item.get("original_height") or 0)
+        if W <= 0 or H <= 0:
+            continue
+        x = float(v.get("x", 0)) * W / 100.0
+        y = float(v.get("y", 0)) * H / 100.0
+        w = float(v.get("width", 0)) * W / 100.0
+        h = float(v.get("height", 0)) * H / 100.0
+        labels = v.get("rectanglelabels") or []
+        label_name = str(labels[0]).strip() if labels else "unknown"
+        rects.append({
+            "label": label_name,
+            "bbox": [round(x, 2), round(y, 2), round(w, 2), round(h, 2)],
+            "score": item.get("score"),
+            "rotation": float(v.get("rotation", 0) or 0),
+            "image_width": W,
+            "image_height": H,
+        })
+    return rects
+
+
+def _merge_categories(existing: list[dict], new_names: list[str]) -> tuple[list[dict], dict[str, int]]:
+    """기존 categories 보존 + 신규 label 확장. (updated_list, name_to_id) 반환."""
+    name_to_id = {str(c.get("name", "")).strip(): int(c["id"]) for c in existing if "id" in c and "name" in c}
+    max_id = max(name_to_id.values(), default=0)
+    merged = list(existing)
+    for name in new_names:
+        name_s = name.strip()
+        if not name_s or name_s in name_to_id:
+            continue
+        max_id += 1
+        merged.append({"id": max_id, "name": name_s, "supercategory": "object"})
+        name_to_id[name_s] = max_id
+    return merged, name_to_id
+
+
+def build_reviewed_coco_json(
+    existing: dict,
+    rectangles: list[dict],
+    image_key: str,
+) -> dict:
+    """기존 SAM3 COCO JSON에 검수 결과를 반영해 새 JSON 생성."""
+    out = dict(existing) if isinstance(existing, dict) else {}
+
+    # images 보존 (또는 rectangles의 W/H로 보강)
+    images = out.get("images") or []
+    if not images and rectangles:
+        r0 = rectangles[0]
+        images = [{
+            "id": 1,
+            "file_name": image_key,
+            "width": r0.get("image_width"),
+            "height": r0.get("image_height"),
+        }]
+    image_id = int(images[0]["id"]) if images else 1
+
+    categories_in = out.get("categories") or []
+    label_names = [r["label"] for r in rectangles]
+    categories_out, name_to_id = _merge_categories(categories_in, label_names)
+
+    new_annotations: list[dict] = []
+    for i, r in enumerate(rectangles, start=1):
+        bbox = r["bbox"]
+        ann = {
+            "id": i,
+            "image_id": image_id,
+            "category_id": name_to_id[r["label"]],
+            "bbox": bbox,
+            "area": round(float(bbox[2]) * float(bbox[3]), 2),
+            "iscrowd": 0,
+            "segmentation": [],
+        }
+        if r.get("score") is not None:
+            ann["score"] = float(r["score"])
+        if r.get("rotation"):
+            ann["rotation"] = r["rotation"]
+        new_annotations.append(ann)
+
+    meta = dict(out.get("meta") or {})
+    meta["review_source"] = "manual_review"
+    meta["reviewed_at"] = datetime.now(timezone.utc).isoformat()
+    meta["reviewed_object_count"] = len(new_annotations)
+
+    out["info"] = out.get("info") or {}
+    out["licenses"] = out.get("licenses") or []
+    out["images"] = images
+    out["annotations"] = new_annotations
+    out["categories"] = categories_out
+    out["meta"] = meta
+    return out
+
+
+def update_image_labels_in_db(db_path: str, labels_key: str, object_count: int) -> int:
+    """image_labels 테이블의 review_status/label_source/object_count 전이."""
+    if not labels_key or not db_path:
+        return 0
+    conn = _connect_duckdb_with_retry(db_path)
+    try:
+        conn.execute(
+            """
+            UPDATE image_labels
+            SET review_status = 'reviewed',
+                label_source  = 'manual_review',
+                object_count  = ?
+            WHERE labels_key = ?
+            """,
+            [int(object_count), labels_key],
+        )
+        row = conn.execute(
+            "SELECT COUNT(*) FROM image_labels WHERE labels_key = ? AND review_status = 'reviewed'",
+            [labels_key],
+        ).fetchone()
+        return int(row[0]) if row else 0
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -356,8 +518,47 @@ def run(
                 skipped += 1
                 continue
 
+            # 모드 판별 — result 아이템 type 기준
+            result_types = {str(r.get("type") or "") for r in annotation.get("result", [])}
+            data = detail.get("data", {}) or {}
+
+            # ───────── image mode (RectangleLabels → SAM3 COCO JSON) ─────────
+            if "rectanglelabels" in result_types:
+                image_url = data.get("image", "")
+                image_key = _parse_image_url_to_key(image_url)
+                if not image_key:
+                    print(f"[NO MATCH] task {task_id} → image URL 파싱 실패: {image_url[:120]}")
+                    no_match += 1
+                    continue
+                sam3_key = _sam3_key_from_image_key(image_key)
+
+                rectangles = annotation_to_rectangles(annotation)
+                if not rectangles:
+                    print(f"[SKIP]     task {task_id} → rectanglelabels가 있으나 유효 bbox 없음")
+                    skipped += 1
+                    continue
+
+                try:
+                    existing = read_json(minio, bucket, sam3_key)
+                    if not isinstance(existing, dict):
+                        existing = {}
+                except Exception:
+                    existing = {}
+
+                reviewed_json = build_reviewed_coco_json(existing, rectangles, image_key)
+
+                if dry_run:
+                    print(f"[DRY-RUN]  task {task_id} → {sam3_key} ({len(rectangles)}개 bbox)")
+                else:
+                    write_json(minio, bucket, sam3_key, reviewed_json)
+                    db_updated = update_image_labels_in_db(db_path, sam3_key, len(rectangles))
+                    print(f"[UPDATED]  task {task_id} → {sam3_key} (bbox {len(rectangles)}, DB {db_updated}건)")
+                updated += 1
+                continue
+
+            # ───────── video mode (TimelineLabels → events JSON) ─────────
             # clip stem 추출 → base 변환 후 JSON 매칭
-            video_url = detail.get("data", {}).get("video", "")
+            video_url = data.get("video", "")
             s3_path = _decode_fileuri(video_url)
             stem = Path(s3_path or video_url).stem
             m = _CLIP_PATTERN.match(stem)

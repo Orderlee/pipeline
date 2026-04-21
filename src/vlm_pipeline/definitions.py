@@ -5,9 +5,10 @@ from __future__ import annotations
 from dagster import Definitions
 
 from vlm_pipeline.definitions_production import (
-    PRODUCTION_DISPATCH_STAGE_SELECTION,
+    POST_REVIEW_CLIP_ASSETS,
     build_asset_job,
     build_common_resources,
+    build_dispatch_stage_selection,
     build_gcs_download_schedule,
     build_motherduck_daily_schedule,
     build_production_assets,
@@ -22,7 +23,6 @@ from vlm_pipeline.defs.sam.assets import sam3_shadow_compare
 from vlm_pipeline.defs.sam.detection_assets import sam3_image_detection
 from vlm_pipeline.defs.sync.assets import motherduck_sync
 from vlm_pipeline.defs.sync.sensor import MOTHERDUCK_TABLE_SENSORS
-from vlm_pipeline.defs.yolo.assets import yolo_image_detection
 from vlm_pipeline.lib.env_utils import (
     DUCKDB_LABEL_WRITER_TAG,
     DUCKDB_LEGACY_WRITER_TAG,
@@ -61,9 +61,17 @@ _motherduck_sync_job = build_asset_job(
 )
 _dispatch_stage_job = build_asset_job(
     name="dispatch_stage_job",
-    selection=PRODUCTION_DISPATCH_STAGE_SELECTION,
+    selection=build_dispatch_stage_selection(enable_yolo_detection=_enable_yolo_detection),
     writer_tag=DUCKDB_LEGACY_WRITER_TAG,
-    description="[운영 유일 자동 라벨링] `.dispatch/pending` 트리거 JSON → ingest + clip_* + YOLO + SAM3",
+    description="[운영 유일 자동 라벨링] `.dispatch/pending` 트리거 JSON → ingest + clip_* + (YOLO opt) + SAM3",
+)
+# LS 검수 확정(/sync-approve) 후 호출되는 clip 분할 전용 job.
+# ls_webhook.py finalize_project 에서 GraphQL launchPipelineExecution 으로 트리거.
+_post_review_clip_job = build_asset_job(
+    name="post_review_clip_job",
+    selection=POST_REVIEW_CLIP_ASSETS,
+    writer_tag=DUCKDB_LABEL_WRITER_TAG,
+    description="[LS 확정 후] 사람 검수된 labels timestamp 기반 clip 분할 + 프레임 추출",
 )
 _sam3_shadow_compare_job = build_asset_job(
     name="sam3_shadow_compare_job",
@@ -78,6 +86,7 @@ _jobs: list[object] = [
     _gcs_download_job,
     _motherduck_sync_job,
     _dispatch_stage_job,
+    _post_review_clip_job,
     _sam3_shadow_compare_job,
 ]
 if _enable_manual_label_import:
@@ -90,6 +99,8 @@ if _enable_manual_label_import:
         )
     )
 if _enable_yolo_detection:
+    from vlm_pipeline.defs.yolo.assets import yolo_image_detection
+
     _jobs.append(
         build_asset_job(
             name="yolo_standard_detection_job",
