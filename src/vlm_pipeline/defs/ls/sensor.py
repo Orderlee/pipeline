@@ -105,12 +105,14 @@ def create_ls_tasks(context) -> None:
         request_id = req["request_id"]
         raw_folder = req["folder_name"].rstrip("/")
         # dispatch가 MinIO에 쓰는 key는 sanitize_path_component로 정규화된 폴더명을 사용하므로
-        # LS 자동 생성 경로도 동일 규칙으로 prefix를 만들어야 clip/events 매칭이 일치한다.
+        # LS 자동 생성 경로도 동일 규칙으로 prefix를 만들어야 events/원본 영상 매칭이 일치한다.
+        # ls_tasks.py cmd_create 는 vlm-raw/<folder>/ 하위 원본 영상 1개당 1 task 를 만드는 구조이므로
+        # prefix 는 폴더명 그대로 사용 (과거 '<folder>/clips' 는 vlm-raw 에 clips 하위가 없어 항상 0건).
         folder_name = sanitize_path_component(raw_folder)
-        clip_prefix = f"{folder_name}/clips"
+        raw_prefix = folder_name
 
         context.log.info(
-            f"ls task 생성 시작: request_id={request_id}, folder_raw={raw_folder}, prefix={clip_prefix}"
+            f"ls task 생성 시작: request_id={request_id}, folder_raw={raw_folder}, prefix={raw_prefix}"
         )
         try:
             # (A/C) staging이면 클립·라벨을 production MinIO로 복사
@@ -122,15 +124,17 @@ def create_ls_tasks(context) -> None:
                 )
                 context.log.info(f"staging→production 동기화: {n}건 복사")
 
-            # (B) --minio-endpoint를 명시적으로 전달하여 LS가 production 버킷 참조
+            # (B) --minio-endpoint를 명시적으로 전달하여 LS가 production 버킷 참조.
+            # --api-key / --minio-endpoint는 ls_tasks.py top-level argparse 옵션이므로
+            # 반드시 subcommand(create/renew) 앞에 배치해야 한다 (subparser는 모름 → exit=2).
             result = subprocess.run(
                 [
                     sys.executable,
                     str(LS_TASKS_SCRIPT),
                     "--minio-endpoint", target_ep,
-                    "create",
-                    "--prefix", clip_prefix,
                     "--api-key", api_key,
+                    "create",
+                    "--prefix", raw_prefix,
                 ],
                 capture_output=True,
                 text=True,
@@ -206,14 +210,16 @@ def renew_ls_presigned_urls(context) -> None:
         return
 
     target_ep = ls_minio_endpoint()
+    # --api-key / --minio-endpoint는 ls_tasks.py top-level argparse 옵션이므로
+    # 반드시 subcommand(renew) 앞에 배치해야 한다 (subparser는 모름 → exit=2).
     result = subprocess.run(
         [
             sys.executable,
             str(LS_TASKS_SCRIPT),
             "--minio-endpoint", target_ep,
+            "--api-key", api_key,
             "renew",
             "--all-projects",
-            "--api-key", api_key,
         ],
         capture_output=True,
         text=True,
