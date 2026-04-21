@@ -337,3 +337,19 @@ CREATE TABLE IF NOT EXISTS requester_config_map (
     created_at           TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at           TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
+
+-- ============================================================
+-- 15. classification_datasets: 카테고리별 폴더 복사 빌드 이력
+-- ============================================================
+CREATE TABLE IF NOT EXISTS classification_datasets (
+    dataset_id             VARCHAR PRIMARY KEY,
+    name                   VARCHAR,
+    folder_prefix          VARCHAR,
+    config                 JSON,
+    classification_bucket  VARCHAR DEFAULT 'vlm-classification',
+    video_count            INTEGER DEFAULT 0,
+    image_count            INTEGER DEFAULT 0,
+    category_count         INTEGER DEFAULT 0,
+    build_status           VARCHAR DEFAULT 'pending',
+    created_at             TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);

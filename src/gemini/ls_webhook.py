@@ -61,6 +61,8 @@ DEFAULT_LABEL_BUCKET     = "vlm-labels"
 DEFAULT_FPS              = 24
 DEFAULT_WEBHOOK_HOST     = "localhost"
 DEFAULT_WEBHOOK_PORT     = 8001
+DEFAULT_DAGSTER_GRAPHQL  = "http://docker-dagster-1:3030/graphql"
+DEFAULT_POST_REVIEW_JOB  = "post_review_clip_job"
 
 LS_URL            = os.environ.get("LS_URL", DEFAULT_LS_URL).rstrip("/")
 API_KEY           = os.environ.get("LS_API_KEY", "")
@@ -72,10 +74,21 @@ DB_PATH           = os.environ.get("DATAOPS_DUCKDB_PATH", "")
 MINIO_ENDPOINT    = os.environ.get("MINIO_ENDPOINT", DEFAULT_MINIO_ENDPOINT)
 MINIO_ACCESS_KEY  = os.environ.get("MINIO_ACCESS_KEY", DEFAULT_MINIO_ACCESS_KEY)
 MINIO_SECRET_KEY  = os.environ.get("MINIO_SECRET_KEY", DEFAULT_MINIO_SECRET_KEY)
+DAGSTER_GRAPHQL_URL = os.environ.get("DAGSTER_GRAPHQL_URL", DEFAULT_DAGSTER_GRAPHQL)
+POST_REVIEW_JOB_NAME = os.environ.get("POST_REVIEW_JOB_NAME", DEFAULT_POST_REVIEW_JOB)
 
-STATE_FILE = Path(
-    os.environ.get("LS_STATE_FILE", Path(__file__).parent / "ls_review_state.json")
-)
+def _default_ls_state_path() -> Path:
+    # 소스 트리(`/src/vlm/gemini/`)는 read-only bind mount 이므로 쓰기 가능 경로로 폴백.
+    override = os.environ.get("LS_STATE_FILE")
+    if override:
+        return Path(override)
+    dagster_home = os.environ.get("DAGSTER_HOME")
+    if dagster_home:
+        return Path(dagster_home) / "ls_review_state.json"
+    return Path("/tmp/ls_review_state.json")
+
+
+STATE_FILE = _default_ls_state_path()
 
 
 # ---------------------------------------------------------------------------
@@ -171,7 +184,12 @@ def send_slack_response(response_url: str, message: str) -> None:
 # ---------------------------------------------------------------------------
 
 def finalize_labels_in_db(label_keys: list[str]) -> int:
-    """label_status='completed', review_status='finalized' 업데이트."""
+    """label_status='completed', review_status='finalized' 업데이트.
+
+    labels (video-level) 와 image_labels (image-level) 양쪽에 동일 UPDATE 적용.
+    labels_key 스키마가 서로 겹치지 않으므로 각 테이블은 자신의 key 만 매칭됨.
+    반환값은 두 테이블의 finalized row 합계.
+    """
     import duckdb
     if not label_keys or not DB_PATH:
         return 0
@@ -189,6 +207,7 @@ def finalize_labels_in_db(label_keys: list[str]) -> int:
         raise RuntimeError("DuckDB 연결 실패 (5회 재시도 초과)")
     try:
         placeholders = ",".join(["?"] * len(label_keys))
+        # Video-level labels (Gemini events)
         conn.execute(
             f"""
             UPDATE labels
@@ -199,9 +218,27 @@ def finalize_labels_in_db(label_keys: list[str]) -> int:
             """,
             label_keys,
         )
-        row = conn.execute(
-            f"SELECT COUNT(*) FROM labels WHERE labels_key IN ({placeholders}) AND review_status = 'finalized'",
+        # Image-level labels (SAM3 segmentations) — review_status 기준으로 전이
+        conn.execute(
+            f"""
+            UPDATE image_labels
+            SET label_status  = 'completed',
+                review_status = 'finalized'
+            WHERE labels_key IN ({placeholders})
+              AND review_status <> 'finalized'
+            """,
             label_keys,
+        )
+        row = conn.execute(
+            f"""
+            SELECT
+              (SELECT COUNT(*) FROM labels
+                 WHERE labels_key IN ({placeholders}) AND review_status = 'finalized')
+              +
+              (SELECT COUNT(*) FROM image_labels
+                 WHERE labels_key IN ({placeholders}) AND review_status = 'finalized')
+            """,
+            label_keys + label_keys,
         ).fetchone()
         return int(row[0]) if row else 0
     finally:
@@ -269,6 +306,88 @@ def run_sync_and_notify(project_id: int, project_title: str) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Dagster GraphQL 트리거
+# ---------------------------------------------------------------------------
+
+def _discover_repo_selector(graphql_url: str, job_name: str) -> dict | None:
+    """repositoryLocations에서 job_name 보유 repo를 찾아 selector dict 반환."""
+    query = """
+    query { workspaceOrError { __typename ... on Workspace {
+      locationEntries { locationOrLoadError { __typename
+        ... on RepositoryLocation { name repositories { name pipelines { name } } }
+      } }
+    } } }
+    """
+    resp = requests.post(graphql_url, json={"query": query}, timeout=10)
+    resp.raise_for_status()
+    entries = resp.json().get("data", {}).get("workspaceOrError", {}).get("locationEntries", []) or []
+    for entry in entries:
+        loc = entry.get("locationOrLoadError") or {}
+        if loc.get("__typename") != "RepositoryLocation":
+            continue
+        for repo in loc.get("repositories", []) or []:
+            pipelines = [p.get("name") for p in repo.get("pipelines", []) or []]
+            if job_name in pipelines:
+                return {
+                    "repositoryLocationName": loc.get("name"),
+                    "repositoryName": repo.get("name"),
+                    "jobName": job_name,
+                }
+    return None
+
+
+def trigger_dagster_job(job_name: str, tags: dict[str, str]) -> tuple[bool, str]:
+    """Dagster GraphQL launchPipelineExecution 트리거. (성공여부, 메시지) 반환."""
+    try:
+        selector = _discover_repo_selector(DAGSTER_GRAPHQL_URL, job_name)
+    except Exception as exc:
+        return False, f"repo discovery 실패: {exc}"
+    if not selector:
+        return False, f"job '{job_name}'을 포함한 repository를 찾지 못함"
+
+    mutation = """
+    mutation Launch($executionParams: ExecutionParams!) {
+      launchPipelineExecution(executionParams: $executionParams) {
+        __typename
+        ... on LaunchRunSuccess { run { runId } }
+        ... on PythonError { message }
+        ... on PipelineNotFoundError { message }
+        ... on RunConfigValidationInvalid { errors { message } }
+        ... on InvalidSubsetError { message }
+        ... on ConflictingExecutionParamsError { message }
+      }
+    }
+    """
+    variables = {
+        "executionParams": {
+            "selector": selector,
+            "runConfigData": "{}",
+            "mode": "default",
+            "executionMetadata": {
+                "tags": [{"key": k, "value": str(v)} for k, v in tags.items()],
+            },
+        }
+    }
+    try:
+        resp = requests.post(
+            DAGSTER_GRAPHQL_URL,
+            json={"query": mutation, "variables": variables},
+            timeout=15,
+        )
+        resp.raise_for_status()
+        payload = resp.json()
+    except Exception as exc:
+        return False, f"GraphQL 요청 실패: {exc}"
+
+    result = (payload.get("data") or {}).get("launchPipelineExecution") or {}
+    typename = result.get("__typename", "")
+    if typename == "LaunchRunSuccess":
+        run_id = (result.get("run") or {}).get("runId", "")
+        return True, run_id
+    return False, f"{typename}: {result.get('message', '') or result.get('errors', '')}"
+
+
+# ---------------------------------------------------------------------------
 # finalize 실행 (background)
 # ---------------------------------------------------------------------------
 
@@ -306,9 +425,24 @@ def finalize_project(project_id: int, response_url: str = "") -> None:
     state[pid] = info
     save_state(state)
 
+    # Dagster post_review_clip_job 트리거 — 검수된 labels.timestamp로 clip 분할
+    ok, detail = trigger_dagster_job(
+        POST_REVIEW_JOB_NAME,
+        tags={
+            "trigger": "ls_finalize",
+            "project_id": project_id,
+            "folder_name": title,
+        },
+    )
+    clip_msg = (
+        f"→ clip 생성 job 트리거: run_id={detail}" if ok
+        else f"→ ⚠️ clip 생성 트리거 실패 ({detail}) — Dagster UI에서 `{POST_REVIEW_JOB_NAME}` 수동 실행 필요"
+    )
+
     msg = (
         f"✅ *{title}* (id={project_id}) 최종 확정 완료\n"
-        f"→ DuckDB {updated}건 반영, downstream 시작"
+        f"→ DuckDB {updated}건 반영\n"
+        f"{clip_msg}"
     )
     print(f"[FINALIZE] {msg}")
     send_slack(msg)

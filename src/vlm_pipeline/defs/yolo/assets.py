@@ -73,7 +73,7 @@ yolo_image_detection = _make_yolo_detection_asset(
 )
 dispatch_yolo_image_detection = _make_yolo_detection_asset(
     name="dispatch_yolo_image_detection",
-    deps=["clip_to_frame", "raw_video_to_frame"],
+    deps=["raw_video_to_frame"],
     description="Dispatch 라인: frame 추출 완료 후 YOLO-World-L object detection",
 )
 
@@ -90,7 +90,7 @@ def _run_yolo_image_detection(
     resolved_config_id_override: str | None = None,
 ) -> dict:
     """processed_clip_frame 이미지에 YOLO-World-L detection 실행."""
-    if not bool_env("ENABLE_YOLO_DETECTION", True):
+    if not bool_env("ENABLE_YOLO_DETECTION", False):
         context.log.info(
             "yolo_image_detection 스킵: ENABLE_YOLO_DETECTION=false (SAM3가 primary bbox 엔진)"
         )

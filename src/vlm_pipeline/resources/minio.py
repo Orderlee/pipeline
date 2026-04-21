@@ -189,3 +189,23 @@ class MinIOResource(ConfigurableResource):
     def delete(self, bucket: str, key: str) -> None:
         """MinIO 객체 삭제."""
         self.client.delete_object(Bucket=bucket, Key=key)
+
+    def exists(self, bucket: str, key: str) -> bool:
+        """객체 존재 여부 (HEAD). 없으면 False, 다른 오류는 그대로 raise."""
+        try:
+            self.client.head_object(Bucket=bucket, Key=key)
+            return True
+        except self.client.exceptions.ClientError as exc:
+            code = exc.response.get("Error", {}).get("Code", "")
+            if code in ("404", "NoSuchKey", "NotFound"):
+                return False
+            raise
+
+    def list_keys(self, bucket: str, prefix: str) -> list[str]:
+        """list_objects_v2 paginate → 모든 key 리스트."""
+        paginator = self.client.get_paginator("list_objects_v2")
+        keys: list[str] = []
+        for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
+            for obj in page.get("Contents", []) or []:
+                keys.append(obj["Key"])
+        return keys

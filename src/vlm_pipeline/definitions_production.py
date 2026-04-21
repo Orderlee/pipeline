@@ -9,6 +9,7 @@ from __future__ import annotations
 from dagster import EnvVar, ScheduleDefinition, define_asset_job
 
 from vlm_pipeline.defs.build.assets import build_dataset
+from vlm_pipeline.defs.build.classification import build_classification
 from vlm_pipeline.defs.dispatch.production_agent_sensor import build_production_agent_dispatch_sensor
 from vlm_pipeline.defs.dispatch.sensor import build_dispatch_sensor
 from vlm_pipeline.defs.dispatch.sensor_run_status import (
@@ -39,7 +40,6 @@ from vlm_pipeline.defs.sam.detection_assets import (
     sam3_image_detection,
 )
 from vlm_pipeline.defs.sync.assets import motherduck_sync
-from vlm_pipeline.defs.yolo.assets import dispatch_yolo_image_detection, yolo_image_detection
 from vlm_pipeline.lib.env_utils import (
     DUCKDB_LABEL_WRITER_TAG,
     DUCKDB_LEGACY_WRITER_TAG,
@@ -57,14 +57,31 @@ CLIP_AUTO_LABEL_ASSETS = (
     clip_to_frame,
 )
 
-PRODUCTION_DISPATCH_STAGE_SELECTION = [
-    raw_ingest,
-    *CLIP_AUTO_LABEL_ASSETS,
-    classification_video,
-    raw_video_to_frame,
-    dispatch_yolo_image_detection,
-    dispatch_sam3_image_detection,
-]
+# dispatch_stage_job에서는 clip_to_frame 제외 — Gemini 초벌(JSON) 까지만 실행.
+# clip 분할은 LS 검수 확정(webhook → /sync-approve) 후 post_review_clip_job 에서 수행.
+# clip_captioning은 JSON → labels 테이블 upsert만 하므로 유지.
+DISPATCH_STAGE_AUTO_LABEL_ASSETS = (
+    clip_timestamp,
+    clip_captioning,
+)
+
+def build_dispatch_stage_selection(*, enable_yolo_detection: bool) -> list[object]:
+    """Dispatch 단계 asset selection. YOLO flag=False 면 YOLO asset 미포함 + import 안 함."""
+    selection: list[object] = [
+        raw_ingest,
+        *DISPATCH_STAGE_AUTO_LABEL_ASSETS,
+        classification_video,
+        raw_video_to_frame,
+        dispatch_sam3_image_detection,
+    ]
+    if enable_yolo_detection:
+        from vlm_pipeline.defs.yolo.assets import dispatch_yolo_image_detection
+
+        selection.insert(-1, dispatch_yolo_image_detection)
+    return selection
+
+# 사람 검수 확정 후 실행되는 clip 생성 단계.
+POST_REVIEW_CLIP_ASSETS = [clip_to_frame]
 
 COMMON_INGEST_SENSORS = (
     incoming_manifest_sensor,
@@ -163,22 +180,24 @@ def build_production_assets(
     enable_yolo_detection: bool,
     enable_sam3_detection: bool = False,
 ) -> list[object]:
-    assets = [
+    assets: list[object] = [
         raw_ingest,
         gcs_download_to_incoming,
         *CLIP_AUTO_LABEL_ASSETS,
         raw_video_to_frame,
         build_dataset,
+        build_classification,
         motherduck_sync,
         classification_video,
-        dispatch_yolo_image_detection,
         dispatch_sam3_image_detection,
         sam3_shadow_compare,
     ]
     if enable_manual_label_import:
         assets.append(manual_label_import)
     if enable_yolo_detection:
-        assets.append(yolo_image_detection)
+        from vlm_pipeline.defs.yolo.assets import dispatch_yolo_image_detection, yolo_image_detection
+
+        assets.extend([dispatch_yolo_image_detection, yolo_image_detection])
     if enable_sam3_detection:
         assets.append(sam3_image_detection)
     return assets
