@@ -37,9 +37,19 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
 
-STATE_FILE = Path(
-    os.environ.get("LS_STATE_FILE", Path(__file__).parent / "ls_review_state.json")
-)
+def _default_ls_state_path() -> Path:
+    # 소스 트리(`/src/vlm/gemini/`)는 read-only bind mount 이므로 기본값은 쓰기 가능 위치로 폴백.
+    # 우선순위: LS_STATE_FILE > DAGSTER_HOME > /tmp.
+    override = os.environ.get("LS_STATE_FILE")
+    if override:
+        return Path(override)
+    dagster_home = os.environ.get("DAGSTER_HOME")
+    if dagster_home:
+        return Path(dagster_home) / "ls_review_state.json"
+    return Path("/tmp/ls_review_state.json")
+
+
+STATE_FILE = _default_ls_state_path()
 
 import boto3
 import requests
@@ -53,7 +63,9 @@ DEFAULT_LS_URL = "http://localhost:8080"
 DEFAULT_MINIO_ENDPOINT = "172.168.47.36:9000"
 DEFAULT_MINIO_ACCESS_KEY = "minioadmin"
 DEFAULT_MINIO_SECRET_KEY = "minioadmin"
-DEFAULT_RAW_BUCKET = "vlm-processed"
+# raw bucket: Gemini 초벌이 끝난 원본 영상이 들어있는 곳. LS task는 원본 영상을 가리킴.
+# clip 분할은 LS 검수 확정 후 post_review_clip_job에서 vlm-processed/{folder}/clips/*.mp4 로 생성.
+DEFAULT_RAW_BUCKET = "vlm-raw"
 DEFAULT_LABEL_BUCKET = "vlm-labels"
 DEFAULT_FPS = 24
 DEFAULT_PRESIGN_EXPIRES = 3600 * 24 * 7   # 7일
@@ -114,6 +126,19 @@ def list_event_json_keys(client, bucket: str, prefix: str) -> dict[str, str]:
             key = obj["Key"]
             parts = key.split("/")
             if key.endswith(".json") and len(parts) >= 2 and parts[-2] == "events":
+                index[Path(key).stem] = key
+    return index
+
+
+def list_sam3_json_keys(client, bucket: str, prefix: str) -> dict[str, str]:
+    """{image_stem → key} for */sam3_segmentations/*.json (COCO per-image)."""
+    paginator = client.get_paginator("list_objects_v2")
+    index: dict[str, str] = {}
+    for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
+        for obj in page.get("Contents", []):
+            key = obj["Key"]
+            parts = key.split("/")
+            if key.endswith(".json") and len(parts) >= 2 and parts[-2] == "sam3_segmentations":
                 index[Path(key).stem] = key
     return index
 
@@ -331,6 +356,121 @@ def create_prediction(ls_url: str, headers: dict, task_id: int, result: list[dic
     return resp.json()
 
 
+def sam3_coco_to_ls_rectangles(
+    coco: dict,
+    allowed_labels: set[str],
+    from_name: str,
+    to_name: str,
+    label_map: dict[str, str] | None = None,
+) -> list[dict]:
+    """SAM3 COCO per-image JSON → LS RectangleLabels result (percentage).
+
+    label_map이 주어지면 SAM3 category name을 LS 라벨로 먼저 치환한 뒤 allowed_labels 필터.
+    이미지 크기는 coco['images'][0]의 width/height 사용.
+    """
+    images = coco.get("images") or []
+    annotations = coco.get("annotations") or []
+    categories = coco.get("categories") or []
+    if not images or not annotations:
+        return []
+
+    img = images[0]
+    width = float(img.get("width") or 0)
+    height = float(img.get("height") or 0)
+    if width <= 0 or height <= 0:
+        return []
+
+    cat_by_id = {int(c["id"]): str(c.get("name") or "") for c in categories}
+
+    lmap = label_map or {}
+    result: list[dict] = []
+    for ann in annotations:
+        bbox = ann.get("bbox")
+        if not bbox or len(bbox) < 4:
+            continue
+        raw = cat_by_id.get(int(ann.get("category_id", -1)), "")
+        label = lmap.get(raw, raw)
+        if label not in allowed_labels:
+            continue
+        x, y, w, h = (float(v) for v in bbox[:4])
+        score = float(ann.get("score") or 0.0)
+        result.append({
+            "value": {
+                "x": x / width * 100.0,
+                "y": y / height * 100.0,
+                "width": w / width * 100.0,
+                "height": h / height * 100.0,
+                "rotation": 0,
+                "rectanglelabels": [label],
+            },
+            "id": _rand_id(),
+            "from_name": from_name,
+            "to_name": to_name,
+            "type": "rectanglelabels",
+            "origin": "prediction",
+            "original_width": int(width),
+            "original_height": int(height),
+            "image_rotation": 0,
+            "score": score,
+        })
+    return result
+
+
+def parse_rectangle_labels_config(label_config: str) -> tuple[str, str, set[str]] | None:
+    """label_config XML에서 <RectangleLabels> name/toName과 허용 Label value 목록 추출.
+
+    반환: (from_name, to_name, {label_values}) 또는 RectangleLabels 없으면 None.
+    """
+    import xml.etree.ElementTree as ET
+    try:
+        root = ET.fromstring(label_config)
+    except ET.ParseError:
+        return None
+    rect = root.find(".//RectangleLabels")
+    if rect is None:
+        return None
+    from_name = rect.get("name") or ""
+    to_name = rect.get("toName") or ""
+    values = {el.get("value") for el in rect.findall("Label") if el.get("value")}
+    if not from_name or not to_name or not values:
+        return None
+    return from_name, to_name, values
+
+
+def fetch_project_label_config(ls_url: str, headers: dict, project_id: int) -> str:
+    resp = requests.get(f"{ls_url}/api/projects/{project_id}/", headers=headers)
+    resp.raise_for_status()
+    return resp.json().get("label_config") or ""
+
+
+def fetch_existing_task_image_stems(ls_url: str, headers: dict, project_id: int) -> dict[str, dict]:
+    """{image_stem → task} 인덱스 — data.image URL 기반."""
+    index: dict[str, dict] = {}
+    page = 1
+    while True:
+        resp = requests.get(
+            f"{ls_url}/api/tasks/",
+            headers=headers,
+            params={"project": project_id, "page": page, "page_size": 500},
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        tasks = data if isinstance(data, list) else data.get("tasks", [])
+        if not tasks:
+            break
+        for task in tasks:
+            image_url = task.get("data", {}).get("image", "")
+            if not image_url:
+                continue
+            stem = Path(urlparse(image_url).path).stem
+            if stem:
+                index[stem] = task
+        if isinstance(data, list) or not data.get("next"):
+            break
+        page += 1
+    return index
+
+
 # ---------------------------------------------------------------------------
 # 폴더명 추출
 # ---------------------------------------------------------------------------
@@ -377,6 +517,11 @@ def update_review_state(project_id: int, title: str, label_keys: list[str], task
 # ---------------------------------------------------------------------------
 
 def cmd_create(args, minio, auth_headers: dict) -> None:
+    """원본 영상(vlm-raw) + Gemini 초벌 JSON(vlm-labels/events) → LS task + prediction.
+
+    1 원본 영상 = 1 task (clip 분할은 LS 검수 확정 후 post_review_clip_job에서 수행).
+    prediction timestamp는 원본 영상 시간축 그대로(clip_start=0, clip_end=inf).
+    """
     prefix = args.prefix.rstrip("/")
     folder_name = extract_folder_name(prefix)
     project_id, is_new = find_or_create_project(args.ls_url, auth_headers, folder_name)
@@ -388,23 +533,22 @@ def cmd_create(args, minio, auth_headers: dict) -> None:
         except Exception as exc:
             print(f"[WARN] webhook 등록 실패 (수동 등록 필요): {exc}")
 
-    print(f"[INFO] 클립 목록 조회 중... (bucket={args.bucket}, prefix={prefix})")
-    clip_keys = list_clip_keys(minio, args.bucket, prefix)
-    print(f"[INFO] 클립 {len(clip_keys)}개 발견")
+    print(f"[INFO] 원본 영상 목록 조회 중... (bucket={args.bucket}, prefix={prefix})")
+    video_keys = list_clip_keys(minio, args.bucket, prefix)
+    print(f"[INFO] 영상 {len(video_keys)}개 발견")
 
     print("[INFO] 기존 task 인덱스 구성 중...")
     existing = fetch_existing_task_stems(args.ls_url, auth_headers, project_id)
     print(f"[INFO] 기존 task {len(existing)}개\n")
 
-    # Gemini JSON 인덱스: clips 한 단계 위 경로에서 탐색
-    prefix_parts = prefix.rstrip("/").split("/")
-    label_prefix = "/".join(prefix_parts[:-1]) if len(prefix_parts) > 1 else ""
-    json_index = list_event_json_keys(minio, args.label_bucket, label_prefix)
+    # Gemini JSON 인덱스: label bucket의 {prefix} 하위 events/*.json
+    json_index = list_event_json_keys(minio, args.label_bucket, prefix)
+    print(f"[INFO] events JSON {len(json_index)}개 인덱싱\n")
 
     created = skipped = error = 0
     collected_label_keys: list[str] = []
 
-    for key in clip_keys:
+    for key in video_keys:
         stem = Path(key).stem
         if stem in existing:
             skipped += 1
@@ -418,13 +562,8 @@ def cmd_create(args, minio, auth_headers: dict) -> None:
             task = create_task(args.ls_url, auth_headers, project_id, video_url, task_folder)
             task_id = task["id"]
 
-            # prediction 즉시 attach + label_key 수집
-            m = _CLIP_PATTERN.match(stem)
-            base = m.group(1) if m else stem
-            clip_start_sec = int(m.group(2)) / 1000.0 if m else 0.0
-            clip_end_sec = int(m.group(3)) / 1000.0 if m else float("inf")
-
-            json_key = json_index.get(base)
+            # 1 영상 = 1 task이므로 stem == JSON stem. prediction 시간축도 원본 그대로.
+            json_key = json_index.get(stem)
             pred_count = 0
             if json_key:
                 if json_key not in collected_label_keys:
@@ -432,7 +571,9 @@ def cmd_create(args, minio, auth_headers: dict) -> None:
                 data = read_json_from_minio(minio, args.label_bucket, json_key)
                 events = data if isinstance(data, list) else []
                 if events:
-                    ls_result = gemini_events_to_ls_result(events, args.fps, clip_start_sec, clip_end_sec)
+                    ls_result = gemini_events_to_ls_result(
+                        events, args.fps, clip_start_sec=0.0, clip_end_sec=float("inf")
+                    )
                     if ls_result:
                         create_prediction(args.ls_url, auth_headers, task_id, ls_result)
                         pred_count = len(ls_result)
@@ -450,7 +591,7 @@ def cmd_create(args, minio, auth_headers: dict) -> None:
         update_review_state(project_id, folder_name, collected_label_keys, created)
         print(f"[INFO] review state 저장 완료 ({STATE_FILE.name})")
 
-    print(f"\n[DONE] 생성 {created} / 스킵(기존) {skipped} / 오류 {error} (총 {len(clip_keys)})")
+    print(f"\n[DONE] 생성 {created} / 스킵(기존) {skipped} / 오류 {error} (총 {len(video_keys)})")
 
 
 # ---------------------------------------------------------------------------
@@ -547,20 +688,88 @@ def _resolve_project_id(ls_url: str, headers: dict, project: str) -> int:
     raise RuntimeError(f"LS project를 찾을 수 없음: '{project}'")
 
 
-def cmd_attach_predictions(args, minio, auth_headers: dict) -> None:
-    """기존 task의 stem을 vlm-labels events JSON과 매칭하여 prediction POST. Idempotent.
+def _detect_task_mode(ls_url: str, headers: dict, project_id: int) -> str:
+    """첫 task를 조회해 'image' 또는 'video' 모드 자동 감지. 비어있으면 'video' 기본."""
+    resp = requests.get(
+        f"{ls_url}/api/tasks/",
+        headers=headers,
+        params={"project": project_id, "page": 1, "page_size": 1},
+    )
+    resp.raise_for_status()
+    data = resp.json()
+    tasks = data if isinstance(data, list) else data.get("tasks", [])
+    if not tasks:
+        return "video"
+    d = tasks[0].get("data", {}) or {}
+    if d.get("image"):
+        return "image"
+    return "video"
 
-    skip 조건:
-      - task.total_predictions > 0 (이미 prediction 존재)
-      - stem에 매칭되는 events JSON 없음
-      - JSON이 비어있거나 클립 구간과 겹치는 이벤트 없음
-    """
-    project_id = _resolve_project_id(args.ls_url, auth_headers, args.project)
+
+def _attach_sam3_images(args, minio, auth_headers: dict, project_id: int) -> None:
     prefix = args.prefix.rstrip("/")
+    print(f"[INFO] mode=image, project_id={project_id}, label_bucket={args.label_bucket}, prefix={prefix}")
 
-    print(f"[INFO] project_id={project_id}, label_bucket={args.label_bucket}, prefix={prefix}")
+    label_config = fetch_project_label_config(args.ls_url, auth_headers, project_id)
+    parsed = parse_rectangle_labels_config(label_config)
+    if not parsed:
+        print("[ERROR] project label_config에 <RectangleLabels>가 없습니다 — image mode는 bbox 라벨 필수")
+        return
+    from_name, to_name, allowed = parsed
+    label_map: dict[str, str] = {}
+    for pair in (args.label_map or "").split(","):
+        pair = pair.strip()
+        if "=" in pair:
+            src, dst = pair.split("=", 1)
+            label_map[src.strip()] = dst.strip()
+    print(f"[INFO] RectangleLabels: name={from_name}, toName={to_name}, allowed={sorted(allowed)}")
+    if label_map:
+        print(f"[INFO] label_map: {label_map}")
+
+    existing = fetch_existing_task_image_stems(args.ls_url, auth_headers, project_id)
+    print(f"[INFO] 기존 image task {len(existing)}개")
+
+    json_index = list_sam3_json_keys(minio, args.label_bucket, prefix)
+    print(f"[INFO] sam3_segmentations JSON {len(json_index)}개 스캔 완료\n")
+
+    attached = skipped_has_pred = skipped_no_json = skipped_empty = error = 0
+    for stem, task in existing.items():
+        task_id = task["id"]
+        if int(task.get("total_predictions") or 0) > 0:
+            skipped_has_pred += 1
+            continue
+
+        json_key = json_index.get(stem)
+        if not json_key:
+            skipped_no_json += 1
+            continue
+
+        try:
+            coco = read_json_from_minio(minio, args.label_bucket, json_key)
+            ls_result = sam3_coco_to_ls_rectangles(coco, allowed, from_name, to_name, label_map)
+            if not ls_result:
+                skipped_empty += 1
+                continue
+            create_prediction(args.ls_url, auth_headers, task_id, ls_result)
+            print(f"[ATTACH]  task {task_id} ← {stem} (bbox {len(ls_result)}건)")
+            attached += 1
+        except Exception as exc:
+            print(f"[ERROR]   task {task_id}: {exc}")
+            error += 1
+
+    print(
+        f"\n[DONE] 주입 {attached} / 이미있음 {skipped_has_pred} / "
+        f"JSON 없음 {skipped_no_json} / 허용라벨 없음 {skipped_empty} / 오류 {error} "
+        f"(총 {len(existing)})"
+    )
+
+
+def _attach_video_events(args, minio, auth_headers: dict, project_id: int) -> None:
+    prefix = args.prefix.rstrip("/")
+    print(f"[INFO] mode=video, project_id={project_id}, label_bucket={args.label_bucket}, prefix={prefix}")
+
     existing = fetch_existing_task_stems(args.ls_url, auth_headers, project_id)
-    print(f"[INFO] 기존 task {len(existing)}개")
+    print(f"[INFO] 기존 video task {len(existing)}개")
 
     json_index = list_event_json_keys(minio, args.label_bucket, prefix)
     print(f"[INFO] events JSON {len(json_index)}개 스캔 완료\n")
@@ -605,6 +814,27 @@ def cmd_attach_predictions(args, minio, auth_headers: dict) -> None:
     )
 
 
+def cmd_attach_predictions(args, minio, auth_headers: dict) -> None:
+    """기존 task에 MinIO JSON을 prediction으로 사후 주입 (idempotent).
+
+    mode 자동 감지:
+      - image 모드: task.data.image 존재 → sam3_segmentations/*.json → RectangleLabels
+                    (project label_config의 RectangleLabels 허용 라벨만 필터링)
+      - video 모드: task.data.video → events/*.json → TimelineLabels
+
+    --mode 명시 시 자동 감지 무시.
+    skip 조건: task.total_predictions > 0 / stem 매칭 JSON 없음 / 주입 result 0건.
+    """
+    project_id = _resolve_project_id(args.ls_url, auth_headers, args.project)
+    mode = args.mode if args.mode != "auto" else _detect_task_mode(
+        args.ls_url, auth_headers, project_id
+    )
+    if mode == "image":
+        _attach_sam3_images(args, minio, auth_headers, project_id)
+    else:
+        _attach_video_events(args, minio, auth_headers, project_id)
+
+
 # ---------------------------------------------------------------------------
 # main
 # ---------------------------------------------------------------------------
@@ -640,6 +870,17 @@ def main() -> int:
     )
     p_attach.add_argument("--project", required=True, help="LS project id (숫자) 또는 title (문자)")
     p_attach.add_argument("--prefix", required=True, help="vlm-labels 하위 prefix (예: vanguardhealthcarevhc/falldown)")
+    p_attach.add_argument(
+        "--mode",
+        choices=["auto", "image", "video"],
+        default="auto",
+        help="auto(기본): 첫 task로 판정 / image: SAM3 COCO→RectangleLabels / video: Gemini events→TimelineLabels",
+    )
+    p_attach.add_argument(
+        "--label-map",
+        default="",
+        help="SAM3→LS 라벨 매핑. 예: 'person=fall,knife=unsafe_act' (image 모드 전용)",
+    )
 
     args = parser.parse_args()
 

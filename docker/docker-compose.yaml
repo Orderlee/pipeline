@@ -72,6 +72,9 @@ x-runtime-dagster-common: &runtime-dagster-common
   extra_hosts:
     - "host.docker.internal:host-gateway"
   volumes: *runtime-volumes
+  networks:
+    - default
+    - pipeline-network
   gpus: all
   restart: unless-stopped
 
@@ -279,3 +282,9 @@ volumes:
   minio_data:
   postgres_data:
   grafana_data:
+
+networks:
+  default:
+  pipeline-network:
+    external: true
+    name: pipeline-network
