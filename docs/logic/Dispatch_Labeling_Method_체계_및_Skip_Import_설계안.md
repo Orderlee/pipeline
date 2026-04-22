@@ -89,15 +89,15 @@
 
 - event/timestamp/caption video JSON
   - `vlm-labels` + `labels`
-- bbox JSON
+- bbox JSON (SAM3 primary)
   - `vlm-labels` + `image_labels`
 - image caption JSON
   - `vlm-labels` + `image_metadata` caption 계열
-- video classification JSON
-  - `vlm-labels` + `labels`
-- image classification JSON
-  - `vlm-labels` + `image_labels`
-- `classification_image`는 bbox와 동일 처리로 뭉개지지 않고, "이미지-level 다중분류 요약 + bbox evidence"를 함께 보존하는 형태로 저장한다.
+- video classification
+  - `vlm-classification/<folder_prefix>/video/<class>/<file>` 원본 복사만 수행. JSON/DB 미적재.
+- image classification (SAM3)
+  - `vlm-classification/<folder_prefix>/image/<class>/<file>` 원본/frame 복사만 수행. JSON/DB 미적재.
+- `classification_image`는 bbox와 다르게 이미지-level 다중분류 결과를 class 폴더 분류 구조로 보존한다 (한 이미지가 다수 class 에 걸치면 각 폴더에 복사).
 
 ## production / staging 반영 범위
 
