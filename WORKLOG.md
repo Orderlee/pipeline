@@ -10,6 +10,41 @@
 
 
 
+
+## 2026-04-21
+
+### 1. 프레임 추출 안정화 및 이미지 캡션 메타 확장
+- **문제**: 영상 말단 구간에서 프레임 추출이 비거나 불안정할 수 있었고, 이미지 캡션 결과도 텍스트만 남아 후속 추적에 필요한 저장 메타가 부족했음.
+- **원인**: ffmpeg 프레임 추출은 요청 시점이 영상 끝에 가까우면 empty output이 날 수 있었고, image caption 저장은 bucket/key/generated_at 같은 정본 추적 필드가 충분하지 않았음.
+- **조치**:
+    - ffmpeg frame extract에 fallback seek 후보와 retry 흐름을 넣어 말단 구간 empty output 상황을 완화함.
+    - image caption JSON을 별도 key로 저장하고 bucket, key, 생성 시각 메타를 image/process 경로에 함께 기록하도록 확장함.
+    - process 중 실패 시 업로드한 frame/image caption JSON을 함께 정리하도록 rollback 경로도 보강함.
+    - 관련 파일:
+      - `src/vlm_pipeline/sql/schema.sql`
+
+### 2. Staging 환경값 및 운영 보조 설정 정리
+- **문제**: staging 실행 시 DuckDB/MinIO/NAS 경로와 sensor guard 설정이 비어 있거나 분산되어 있어, 실제 테스트 환경을 재현할 때 수동 보정이 많이 필요했음.
+- **원인**: staging env 기본값, compose 공통 설정, stuck run guard / MotherDuck / GCS 관련 옵션이 파일마다 흩어져 있어 환경별 기준을 한 번에 맞추기 어려웠음.
+- **조치**:
+    - staging DuckDB, MinIO, incoming/archive/manifest 경로와 주요 timeout / in-flight / guard 옵션을 `.env.staging`에 구체값으로 정리함.
+    - docker compose에서 production dagster 공통 anchor를 분리해 prod/staging 공통점과 차이를 명확히 정리함.
+    - stuck run guard와 ingest feature flag가 runtime settings를 통해 같은 방식으로 로드되도록 맞춰 운영 보조 설정을 단일화함.
+    - 관련 파일:
+      - `docker/docker-compose.yaml`
+
+### 3. 당일 정리
+- **변경 통계**:
+    - 변경 파일 **16개**, +2366/-330줄.
+- **관련 커밋**:
+    - `df2811e0`: feat(ls): labeling_method + categories 기반 project 카테고리별 자동 분할
+    - `6a6d028e`: chore(compose): dagster 서비스에 외부 pipeline-network 연결
+    - `b9299d9d`: feat(ls): image mode(SAM3 COCO ↔ RectangleLabels) + Dagster GraphQL 트리거 + sensor prefix 수정
+    - `2f9d6448`: feat(build): 프로젝트별 타임스탬프+Bbox 데이터셋 빌드 + classification asset 신설
+    - `ccccda81`: refactor(pipeline): dispatch_stage → post_review_clip_job 분리 + SAM3 공통 로직 추출
+- **서비스 상태**: 파이프라인 서비스 3개 컨테이너 중 3개 정상 가동.
+- **작업 환경**: Cursor, VSCode
+
 ## 2026-04-20
 
 ### 1. Staging 환경값 및 운영 보조 설정 정리

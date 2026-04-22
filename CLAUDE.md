@@ -105,9 +105,10 @@ Staging은 `docker compose --profile staging`으로만 기동. Production과 **D
 - archive 이동 완료된 파일**만** `ingest_status=completed` 유지
 
 ### MinIO 버킷/경로 정책
-- `vlm-raw` · `vlm-labels` · `vlm-processed` · `vlm-dataset` (4개 고정)
+- `vlm-raw` · `vlm-labels` · `vlm-processed` · `vlm-dataset` · `vlm-classification` (5개 고정)
 - `raw_key = <source_unit_name>/<rel_path>` — `YYYY/MM` prefix 금지
 - 이벤트 JSON source of truth = `vlm-labels`만. `vlm-processed`에 중복 저장 금지
+- classification 결과: `vlm-classification/<folder_prefix>/{video|image}/<class>/<file>` 형태의 **원본 복사** (JSON/DB 미적재)
 
 ### Staging 초기화 (깨끗한 재테스트)
 1. `dagster-staging` 중지

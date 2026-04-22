@@ -51,6 +51,8 @@ docker/app/dagster_home/history/
 docker/app/dagster_home*/.nux/
 docker/app/dagster_home*/.telemetry/
 docker/app/dagster_home*/schedules/
+docker/app/dagster_home*/ls_review_state.json
+docker/.env.test.template
 
 # etc
 pyproject.toml
@@ -58,6 +60,7 @@ pyproject.toml
 # MCP 설정 (API 키 포함)
 .mcp.json
 .agent/*
+.claude/
 
 # 일일 작업 로그 자동 생성 로그
 .worklog_logs/
