@@ -197,8 +197,17 @@ def resolve_auth_headers(ls_url: str, token: str) -> dict[str, str]:
 # Label Studio project
 # ---------------------------------------------------------------------------
 
-def find_or_create_project(ls_url: str, headers: dict, project_name: str) -> tuple[int, bool]:
-    """project_name으로 프로젝트 조회, 없으면 생성. (project_id, is_new) 반환."""
+def find_or_create_project(
+    ls_url: str,
+    headers: dict,
+    project_name: str,
+    label_config: str | None = None,
+) -> tuple[int, bool]:
+    """project_name으로 프로젝트 조회, 없으면 생성. (project_id, is_new) 반환.
+
+    label_config: None 이면 _default_label_config() 사용 (video 전용 legacy).
+    기존 project 가 이미 있으면 label_config 는 건드리지 않음 (사람이 LS UI 에서 관리).
+    """
     resp = requests.get(f"{ls_url}/api/projects/", headers=headers)
     resp.raise_for_status()
     data = resp.json()
@@ -214,7 +223,7 @@ def find_or_create_project(ls_url: str, headers: dict, project_name: str) -> tup
         headers={**headers, "Content-Type": "application/json"},
         json={
             "title": project_name,
-            "label_config": _default_label_config(),
+            "label_config": label_config or _default_label_config(),
         },
     )
     resp.raise_for_status()
@@ -255,6 +264,126 @@ def _default_label_config() -> str:
   </TimelineLabels>
   <Video name="video" value="$video" timelineHeight="120" />
 </View>"""
+
+
+_LABEL_PALETTE = [
+    "#e74c3c", "#e67e22", "#f39c12", "#16a085",
+    "#2980b9", "#8e44ad", "#7f8c8d", "#27ae60",
+]
+
+# dispatch canonical category → 동의어 집합 (lowercase). Gemini/SAM3 의 raw prediction 을
+# dispatch 가 요구한 라벨로 정규화한다. 매핑 안 되는 카테고리는 prediction 에서 drop
+# (리뷰어에게 노이즈 라벨이 섞이지 않도록).
+# 운영 중 새 Gemini/SAM3 동의어가 나오면 여기에 추가.
+CATEGORY_SYNONYMS: dict[str, set[str]] = {
+    "falldown": {
+        "falldown", "fall", "simulated_fall", "fall_simulation",
+        "intentional_fall_simulation", "fall_recovery_drill",
+        "recovery_from_fall_simulation", "deliberate_fall_from_wheelchair",
+        "fall_recovery", "fall_risk", "fall_assistance",
+        # VHC 의료진이 의도적으로 연출한 낙상 시나리오 — falldown 데이터로 유효.
+        "deliberate_lie_down", "deliberate_recovery",
+        # smart-city 에서 바닥에 쓰러진 사람 묘사 — 낙상 의미.
+        "person_lying_on_ground",
+    },
+    "person":   {"person"},
+    "fire":     {"fire", "flame", "explosion"},
+    "smoke":    {"smoke", "smoking", "cigarette"},
+}
+
+
+def build_label_normalizer(target_cats: list[str]) -> dict[str, str]:
+    """target_cats 에 속하는 canonical → synonym 매핑을 뒤집어 {synonym: canonical} 리턴.
+
+    target_cats 에 없는 canonical 은 무시. target_cats 에 있지만 SYNONYMS 테이블에 없는
+    canonical 은 자기 자신만 매핑 (identity). 키는 전부 lowercase.
+    """
+    canonical_set = {c.strip().lower() for c in (target_cats or []) if c}
+    normalizer: dict[str, str] = {}
+    for canon, synonyms in CATEGORY_SYNONYMS.items():
+        if canon not in canonical_set:
+            continue
+        for s in synonyms:
+            normalizer[s.strip().lower()] = canon
+    # SYNONYMS 테이블에 없는 canonical 도 자기 자신 매핑.
+    for canon in canonical_set:
+        normalizer.setdefault(canon, canon)
+    return normalizer
+
+
+def _labels_xml(categories: list[str]) -> str:
+    """카테고리 리스트 → `<Label value=.. background=..>` 라인. (dispatch.categories 만 표시, `other` 없음)"""
+    cats = [c for c in (categories or []) if c]
+    return "\n".join(
+        f'    <Label value="{c}" background="{_LABEL_PALETTE[i % len(_LABEL_PALETTE)]}"/>'
+        for i, c in enumerate(cats)
+    )
+
+
+def _video_label_config(categories: list[str]) -> str:
+    """video project 전용 — TimelineLabels 만."""
+    return f"""<View>
+  <Video name="video" value="$video" timelineHeight="120" />
+  <TimelineLabels name="videoLabels" toName="video">
+{_labels_xml(categories)}
+  </TimelineLabels>
+</View>"""
+
+
+def _image_label_config(categories: list[str]) -> str:
+    """image project 전용 — RectangleLabels 만."""
+    return f"""<View>
+  <Image name="image" value="$image" />
+  <RectangleLabels name="imageLabels" toName="image">
+{_labels_xml(categories)}
+  </RectangleLabels>
+</View>"""
+
+
+def _parse_csv_or_json_list(raw: str | None) -> list[str]:
+    """'a,b,c' 또는 '["a","b"]' → ['a','b','c'] (lowercase, 중복 제거, 순서 유지)."""
+    if not raw:
+        return []
+    rendered = str(raw).strip()
+    if not rendered:
+        return []
+    values: list[str]
+    try:
+        if rendered.startswith("["):
+            parsed = json.loads(rendered)
+            values = [str(v) for v in parsed] if isinstance(parsed, list) else []
+        else:
+            values = rendered.split(",")
+    except Exception:
+        values = rendered.split(",")
+    seen: set[str] = set()
+    out: list[str] = []
+    for v in values:
+        s = v.strip().lower()
+        if not s or s in seen:
+            continue
+        seen.add(s)
+        out.append(s)
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Image task 생성 (data.image)
+# ---------------------------------------------------------------------------
+
+def create_image_task(
+    ls_url: str, headers: dict, project_id: int, image_url: str, folder: str
+) -> dict:
+    resp = requests.post(
+        f"{ls_url}/api/tasks/",
+        headers={**headers, "Content-Type": "application/json"},
+        json={
+            "project": project_id,
+            "data": {"image": image_url, "folder": folder},
+        },
+    )
+    resp.raise_for_status()
+    return resp.json()
 
 
 # ---------------------------------------------------------------------------
@@ -317,9 +446,18 @@ def _rand_id(n: int = 10) -> str:
 
 
 def gemini_events_to_ls_result(
-    events: list[dict], fps: int, clip_start_sec: float = 0.0, clip_end_sec: float = float("inf")
+    events: list[dict],
+    fps: int,
+    clip_start_sec: float = 0.0,
+    clip_end_sec: float = float("inf"),
+    normalizer: dict[str, str] | None = None,
 ) -> list[dict]:
-    """이벤트 목록 → LS result. 클립 구간에 속하는 이벤트만 로컬 타임스탬프로 변환."""
+    """이벤트 목록 → LS result. 클립 구간에 속하는 이벤트만 로컬 타임스탬프로 변환.
+
+    normalizer 가 주어지면 각 이벤트의 category 를 dispatch canonical 로 변환.
+    매핑 안 되는 카테고리는 drop (리뷰어에게 노이즈 라벨을 노출하지 않기 위함).
+    normalizer=None 이면 raw category 그대로 (legacy).
+    """
     result = []
     for ev in events:
         ts = ev.get("timestamp")
@@ -331,7 +469,14 @@ def gemini_events_to_ls_result(
             continue
         local_start = max(raw_start - clip_start_sec, 0.0)
         local_end = raw_end - clip_start_sec
-        category = str(ev.get("category", "unknown"))
+        raw_cat = str(ev.get("category", "")).strip().lower()
+        if normalizer is not None:
+            canonical = normalizer.get(raw_cat)
+            if not canonical:
+                continue
+            category = canonical
+        else:
+            category = raw_cat or "unknown"
         result.append({
             "value": {
                 "ranges": [{"start": round(local_start * fps), "end": round(local_end * fps)}],
@@ -362,10 +507,13 @@ def sam3_coco_to_ls_rectangles(
     from_name: str,
     to_name: str,
     label_map: dict[str, str] | None = None,
+    normalizer: dict[str, str] | None = None,
 ) -> list[dict]:
     """SAM3 COCO per-image JSON → LS RectangleLabels result (percentage).
 
-    label_map이 주어지면 SAM3 category name을 LS 라벨로 먼저 치환한 뒤 allowed_labels 필터.
+    정규화 우선순위: normalizer(synonym→canonical) > label_map(단순 rename).
+    normalizer 가 주어지면 매핑 안 되는 카테고리는 drop (dispatch 범위 밖 탐지 결과는 리뷰에서 제외).
+    normalizer=None 이면 allowed_labels 필터만 적용 (legacy).
     이미지 크기는 coco['images'][0]의 width/height 사용.
     """
     images = coco.get("images") or []
@@ -389,8 +537,13 @@ def sam3_coco_to_ls_rectangles(
         if not bbox or len(bbox) < 4:
             continue
         raw = cat_by_id.get(int(ann.get("category_id", -1)), "")
-        label = lmap.get(raw, raw)
-        if label not in allowed_labels:
+        label = lmap.get(raw, raw).strip().lower()
+        if normalizer is not None:
+            canonical = normalizer.get(label)
+            if not canonical:
+                continue
+            label = canonical
+        elif label not in allowed_labels:
             continue
         x, y, w, h = (float(v) for v in bbox[:4])
         score = float(ann.get("score") or 0.0)
@@ -517,33 +670,74 @@ def update_review_state(project_id: int, title: str, label_keys: list[str], task
 # ---------------------------------------------------------------------------
 
 def cmd_create(args, minio, auth_headers: dict) -> None:
-    """원본 영상(vlm-raw) + Gemini 초벌 JSON(vlm-labels/events) → LS task + prediction.
+    """MinIO 데이터 + JSON → LS task + prediction.
 
-    1 원본 영상 = 1 task (clip 분할은 LS 검수 확정 후 post_review_clip_job에서 수행).
-    prediction timestamp는 원본 영상 시간축 그대로(clip_start=0, clip_end=inf).
+    mode='video': vlm-raw/*.mp4 + vlm-labels/*/events/*.json → video task
+    mode='image': vlm-labels/*/sam3_segmentations/*.json → image task (프레임 이미지 presigned)
+
+    project 이름 = `<folder>_<mode>_<suffix>` (suffix = sensor 가 dispatch.requested_at 에서 포맷).
+    카테고리별 split 하지 않음. label_config 에 dispatch.categories + `other` 가 선언되며,
+    prediction 에 없는 카테고리가 나오면 `other` 로 coerce 된다.
+    """
+    mode = getattr(args, "mode", "video") or "video"
+    if mode == "image":
+        _create_image(args, minio, auth_headers)
+    else:
+        _create_video(args, minio, auth_headers)
+
+
+def _resolve_category_targets(args) -> list[str]:
+    """--categories 인자를 파싱. 비어있으면 []."""
+    raw = getattr(args, "categories", "") or ""
+    return _parse_csv_or_json_list(raw)
+
+
+def _build_project_title(folder_name: str, mode: str, suffix: str) -> str:
+    """`<folder>_<mode>_<suffix>`. suffix 는 dispatch.requested_at 을 YYMMDD_HHMM 으로 포맷한 값."""
+    base = f"{folder_name}_{mode}"
+    return f"{base}_{suffix}" if suffix else base
+
+
+def _ensure_dated_project(
+    ls_url: str, auth_headers: dict, title: str, label_config: str
+) -> int:
+    pid, is_new = find_or_create_project(ls_url, auth_headers, title, label_config=label_config)
+    if is_new:
+        try:
+            register_webhook(ls_url, auth_headers, pid)
+        except Exception as exc:
+            print(f"[WARN] webhook 등록 실패 (수동 등록 필요): {exc}")
+    return pid
+
+
+def _create_video(args, minio, auth_headers: dict) -> None:
+    """video mode: vlm-raw/<prefix>/**.mp4 → video task (+ events JSON prediction).
+
+    1 원본 영상 = 1 task. prediction timestamp 는 원본 시간축 그대로(clip_start=0, clip_end=inf).
+    project = `<folder>_video_<suffix>`. 카테고리 split 없음 — label_config 에 cats + `other` 가 선언됨.
     """
     prefix = args.prefix.rstrip("/")
     folder_name = extract_folder_name(prefix)
-    project_id, is_new = find_or_create_project(args.ls_url, auth_headers, folder_name)
+    target_cats = _resolve_category_targets(args)
+    suffix = getattr(args, "project_suffix", "") or ""
+    title = _build_project_title(folder_name, "video", suffix)
 
-    # 신규 project에만 webhook 자동 등록
-    if is_new:
-        try:
-            register_webhook(args.ls_url, auth_headers, project_id)
-        except Exception as exc:
-            print(f"[WARN] webhook 등록 실패 (수동 등록 필요): {exc}")
+    print(f"[INFO] video mode: prefix={prefix}, project={title}, categories={target_cats or '(none)'}")
+
+    project_id = _ensure_dated_project(
+        args.ls_url, auth_headers, title, _video_label_config(target_cats)
+    )
 
     print(f"[INFO] 원본 영상 목록 조회 중... (bucket={args.bucket}, prefix={prefix})")
     video_keys = list_clip_keys(minio, args.bucket, prefix)
     print(f"[INFO] 영상 {len(video_keys)}개 발견")
 
-    print("[INFO] 기존 task 인덱스 구성 중...")
     existing = fetch_existing_task_stems(args.ls_url, auth_headers, project_id)
-    print(f"[INFO] 기존 task {len(existing)}개\n")
-
-    # Gemini JSON 인덱스: label bucket의 {prefix} 하위 events/*.json
     json_index = list_event_json_keys(minio, args.label_bucket, prefix)
-    print(f"[INFO] events JSON {len(json_index)}개 인덱싱\n")
+    print(f"[INFO] events JSON {len(json_index)}개 인덱싱")
+
+    normalizer = build_label_normalizer(target_cats)
+    print(f"[INFO] synonym normalizer: {len(normalizer)}개 매핑 → {sorted(set(normalizer.values()))}\n")
 
     created = skipped = error = 0
     collected_label_keys: list[str] = []
@@ -554,6 +748,16 @@ def cmd_create(args, minio, auth_headers: dict) -> None:
             skipped += 1
             continue
 
+        json_key = json_index.get(stem)
+        events: list[dict] = []
+        if json_key:
+            try:
+                data = read_json_from_minio(minio, args.label_bucket, json_key)
+                events = data if isinstance(data, list) else []
+            except Exception as exc:
+                print(f"[WARN] events JSON 읽기 실패 {json_key}: {exc}")
+                events = []
+
         try:
             video_url = generate_presigned_url(minio, args.bucket, key, DEFAULT_PRESIGN_EXPIRES)
             rel = key[len(prefix):].lstrip("/") if key.startswith(prefix) else key
@@ -562,21 +766,18 @@ def cmd_create(args, minio, auth_headers: dict) -> None:
             task = create_task(args.ls_url, auth_headers, project_id, video_url, task_folder)
             task_id = task["id"]
 
-            # 1 영상 = 1 task이므로 stem == JSON stem. prediction 시간축도 원본 그대로.
-            json_key = json_index.get(stem)
             pred_count = 0
-            if json_key:
-                if json_key not in collected_label_keys:
-                    collected_label_keys.append(json_key)
-                data = read_json_from_minio(minio, args.label_bucket, json_key)
-                events = data if isinstance(data, list) else []
-                if events:
-                    ls_result = gemini_events_to_ls_result(
-                        events, args.fps, clip_start_sec=0.0, clip_end_sec=float("inf")
-                    )
-                    if ls_result:
-                        create_prediction(args.ls_url, auth_headers, task_id, ls_result)
-                        pred_count = len(ls_result)
+            if events:
+                ls_result = gemini_events_to_ls_result(
+                    events, args.fps,
+                    clip_start_sec=0.0, clip_end_sec=float("inf"),
+                    normalizer=normalizer,
+                )
+                if ls_result:
+                    create_prediction(args.ls_url, auth_headers, task_id, ls_result)
+                    pred_count = len(ls_result)
+                    if json_key and json_key not in collected_label_keys:
+                        collected_label_keys.append(json_key)
 
             pred_msg = f", prediction {pred_count}건" if pred_count else ""
             print(f"[CREATED]  task {task_id} ← {stem}{pred_msg}")
@@ -586,12 +787,96 @@ def cmd_create(args, minio, auth_headers: dict) -> None:
             print(f"[ERROR]    {key}: {exc}")
             error += 1
 
-    # Review state 파일 기록
     if collected_label_keys:
-        update_review_state(project_id, folder_name, collected_label_keys, created)
+        update_review_state(project_id, title, collected_label_keys, created)
         print(f"[INFO] review state 저장 완료 ({STATE_FILE.name})")
 
-    print(f"\n[DONE] 생성 {created} / 스킵(기존) {skipped} / 오류 {error} (총 {len(video_keys)})")
+    print(f"\n[DONE] video mode: 생성 {created} / 스킵(기존) {skipped} / 오류 {error}")
+
+
+def _create_image(args, minio, auth_headers: dict) -> None:
+    """image mode: vlm-labels/<prefix>/*/sam3_segmentations/*.json → image task (+ RectangleLabels prediction).
+
+    각 SAM3 COCO JSON 하나 = 한 프레임. COCO `images[0].file_name` 이 vlm-processed 의 key 를 가리킴.
+    project = `<folder>_image_<suffix>`. label_config 에 dispatch.categories + `other` 선언.
+    """
+    prefix = args.prefix.rstrip("/")
+    folder_name = extract_folder_name(prefix)
+    target_cats = _resolve_category_targets(args)
+    if not target_cats:
+        print("[ERROR] image mode 는 --categories 가 필수입니다 (label_config 구성에 필요)")
+        return
+    suffix = getattr(args, "project_suffix", "") or ""
+    title = _build_project_title(folder_name, "image", suffix)
+
+    print(f"[INFO] image mode: prefix={prefix}, project={title}, categories={target_cats}")
+
+    project_id = _ensure_dated_project(
+        args.ls_url, auth_headers, title, _image_label_config(target_cats)
+    )
+
+    existing = fetch_existing_task_image_stems(args.ls_url, auth_headers, project_id)
+    json_index = list_sam3_json_keys(minio, args.label_bucket, prefix)
+    print(f"[INFO] sam3_segmentations JSON {len(json_index)}개 인덱싱")
+
+    normalizer = build_label_normalizer(target_cats)
+    allowed_labels = set(normalizer.values())
+    print(f"[INFO] synonym normalizer: {len(normalizer)}개 매핑 → {sorted(allowed_labels)}\n")
+
+    processed_bucket = getattr(args, "processed_bucket", None) or "vlm-processed"
+    created = skipped = error = dropped_no_image = 0
+
+    for stem, json_key in json_index.items():
+        if stem in existing:
+            skipped += 1
+            continue
+
+        try:
+            coco = read_json_from_minio(minio, args.label_bucket, json_key)
+        except Exception as exc:
+            print(f"[ERROR] JSON 읽기 실패 {json_key}: {exc}")
+            error += 1
+            continue
+
+        images = coco.get("images") or []
+        if not images:
+            dropped_no_image += 1
+            continue
+        image_key = str(images[0].get("file_name") or "").strip()
+        if not image_key:
+            dropped_no_image += 1
+            continue
+
+        try:
+            image_url = generate_presigned_url(
+                minio, processed_bucket, image_key, DEFAULT_PRESIGN_EXPIRES
+            )
+            rel = image_key[len(prefix):].lstrip("/") if image_key.startswith(prefix) else image_key
+            subfolder = rel.split("/", 1)[0] if "/" in rel else ""
+            task_folder = subfolder or folder_name
+            task = create_image_task(args.ls_url, auth_headers, project_id, image_url, task_folder)
+            task_id = task["id"]
+
+            ls_result = sam3_coco_to_ls_rectangles(
+                coco, allowed_labels, "imageLabels", "image",
+                label_map=None, normalizer=normalizer,
+            )
+            pred_count = 0
+            if ls_result:
+                create_prediction(args.ls_url, auth_headers, task_id, ls_result)
+                pred_count = len(ls_result)
+
+            print(f"[CREATED]  task {task_id} ← {stem} (bbox {pred_count})")
+            created += 1
+
+        except Exception as exc:
+            print(f"[ERROR]    {stem}: {exc}")
+            error += 1
+
+    print(
+        f"\n[DONE] image mode: 생성 {created} / 스킵(기존) {skipped} / "
+        f"이미지경로 누락 {dropped_no_image} / 오류 {error}"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -854,7 +1139,31 @@ def main() -> int:
 
     # create
     p_create = sub.add_parser("create", help="새 task 생성")
-    p_create.add_argument("--prefix", required=True, help="MinIO prefix (예: hyundai_v2/01_27_collection_data)")
+    p_create.add_argument("--prefix", required=True, help="MinIO prefix (예: vanguardhealthcarevhc)")
+    p_create.add_argument(
+        "--mode",
+        choices=["video", "image"],
+        default="video",
+        help="video(기본): vlm-raw/*.mp4 + events JSON → video task / "
+             "image: vlm-labels/*/sam3_segmentations/*.json → image task (프레임 이미지 presigned)",
+    )
+    p_create.add_argument(
+        "--categories",
+        default="",
+        help="카테고리 CSV 또는 JSON array — label_config 에 선언될 라벨 목록. "
+             "prediction 에 없는 카테고리가 나오면 `other` 로 coerce 됨.",
+    )
+    p_create.add_argument(
+        "--project-suffix",
+        default="",
+        help="project 이름 접미사 (예: YYMMDD_HHMM). dispatch.requested_at 기준으로 sensor 가 채움. "
+             "지정 시 project 이름 = <folder>_<mode>_<suffix> (batch 별 격리).",
+    )
+    p_create.add_argument(
+        "--processed-bucket",
+        default="vlm-processed",
+        help="image mode 에서 프레임 이미지를 presign 할 버킷 (기본: vlm-processed)",
+    )
 
     # renew
     p_renew = sub.add_parser("renew", help="만료 임박 presigned URL 갱신")
