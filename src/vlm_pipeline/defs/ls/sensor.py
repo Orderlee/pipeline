@@ -7,7 +7,10 @@ dispatch_stage_job이 완료된 후 (dispatch_requests.status='completed'),
   dispatch_requests
       WHERE status='completed'
         AND COALESCE(ls_task_status, 'pending') = 'pending'
-    → ls_task_create_job (folder_name 기준으로 ls_tasks.py create 실행)
+    → labeling_method 읽어서 video/image mode 분기:
+        timestamp_video/timestamp/video  → ls_tasks.py create --mode video --categories ...
+        bbox/segmentation/image          → ls_tasks.py create --mode image --categories ...
+      둘 다 있으면 두 번 호출. categories 가 있으면 project title = `<folder>_<category>`.
     → ls_task_status = 'created' 업데이트
 
 presigned URL 갱신:
@@ -34,6 +37,7 @@ from dagster import (
     sensor,
 )
 
+from vlm_pipeline.lib.detection_common import parse_tag_list
 from vlm_pipeline.lib.env_utils import default_duckdb_path, int_env
 from vlm_pipeline.lib.minio_cross_sync import (
     is_cross_sync_needed,
@@ -41,6 +45,10 @@ from vlm_pipeline.lib.minio_cross_sync import (
     sync_folder_for_ls,
 )
 from vlm_pipeline.lib.sanitizer import sanitize_path_component
+
+# labeling_method 값 → ls_tasks.py create --mode 매핑
+_VIDEO_METHODS = {"timestamp_video", "timestamp", "video"}
+_IMAGE_METHODS = {"bbox", "segmentation", "image"}
 
 LS_TASKS_SCRIPT = Path(
     os.environ.get("LS_TASKS_SCRIPT", Path(__file__).parents[3] / "gemini" / "ls_tasks.py")
@@ -52,21 +60,45 @@ LS_TASKS_SCRIPT = Path(
 # ---------------------------------------------------------------------------
 
 def _fetch_pending_dispatch_requests(db_path: str) -> list[dict]:
-    """ls_task_status='pending'이고 dispatch가 완료된 요청 목록."""
+    """ls_task_status='pending'이고 dispatch가 완료된 요청 목록.
+
+    labeling_method / categories / requested_at (fallback: completed_at, created_at) 도 함께 읽는다.
+    project 이름 = `<folder>_<mode>_<YYMMDD>_<HHMM>` (batch 별 격리) 생성에 사용.
+    """
     conn = duckdb.connect(db_path, read_only=True)
     try:
         rows = conn.execute(
             """
-            SELECT request_id, folder_name
+            SELECT request_id, folder_name, labeling_method, categories,
+                   COALESCE(requested_at, completed_at, created_at) AS batch_ts
             FROM dispatch_requests
             WHERE status = 'completed'
               AND COALESCE(ls_task_status, 'pending') = 'pending'
             ORDER BY completed_at
             """
         ).fetchall()
-        return [{"request_id": r[0], "folder_name": r[1]} for r in rows if r[1]]
+        return [
+            {
+                "request_id": r[0],
+                "folder_name": r[1],
+                "labeling_method": r[2],
+                "categories": r[3],
+                "batch_ts": r[4],
+            }
+            for r in rows if r[1]
+        ]
     finally:
         conn.close()
+
+
+def _format_batch_suffix(ts) -> str:
+    """TIMESTAMP → `YYMMDD_HHMM`. None/falsey 이면 빈 문자열(접미사 없음)."""
+    if not ts:
+        return ""
+    try:
+        return ts.strftime("%y%m%d_%H%M")
+    except Exception:
+        return ""
 
 
 def _update_ls_task_status(db_path: str, request_id: str, status: str) -> None:
@@ -106,14 +138,25 @@ def create_ls_tasks(context) -> None:
         raw_folder = req["folder_name"].rstrip("/")
         # dispatch가 MinIO에 쓰는 key는 sanitize_path_component로 정규화된 폴더명을 사용하므로
         # LS 자동 생성 경로도 동일 규칙으로 prefix를 만들어야 events/원본 영상 매칭이 일치한다.
-        # ls_tasks.py cmd_create 는 vlm-raw/<folder>/ 하위 원본 영상 1개당 1 task 를 만드는 구조이므로
-        # prefix 는 폴더명 그대로 사용 (과거 '<folder>/clips' 는 vlm-raw 에 clips 하위가 없어 항상 0건).
         folder_name = sanitize_path_component(raw_folder)
         raw_prefix = folder_name
 
+        methods = set(parse_tag_list(req.get("labeling_method")))
+        categories = parse_tag_list(req.get("categories"))
+        cat_csv = ",".join(categories)
+        batch_suffix = _format_batch_suffix(req.get("batch_ts"))
+        run_video = bool(methods & _VIDEO_METHODS)
+        run_image = bool(methods & _IMAGE_METHODS)
+        # labeling_method 미지정 dispatch (legacy) → video 만 실행
+        if not methods:
+            run_video = True
+
         context.log.info(
-            f"ls task 생성 시작: request_id={request_id}, folder_raw={raw_folder}, prefix={raw_prefix}"
+            f"ls task 생성 시작: request_id={request_id}, folder={raw_folder}, "
+            f"prefix={raw_prefix}, methods={sorted(methods)}, categories={categories}, "
+            f"batch_suffix={batch_suffix or '(none)'}, video={run_video}, image={run_image}"
         )
+
         try:
             # (A/C) staging이면 클립·라벨을 production MinIO로 복사
             if need_sync:
@@ -124,26 +167,47 @@ def create_ls_tasks(context) -> None:
                 )
                 context.log.info(f"staging→production 동기화: {n}건 복사")
 
-            # (B) --minio-endpoint를 명시적으로 전달하여 LS가 production 버킷 참조.
-            # --api-key / --minio-endpoint는 ls_tasks.py top-level argparse 옵션이므로
-            # 반드시 subcommand(create/renew) 앞에 배치해야 한다 (subparser는 모름 → exit=2).
-            result = subprocess.run(
-                [
+            statuses: list[tuple[str, int, str]] = []  # (mode, returncode, tail)
+
+            def _run_create(mode: str) -> None:
+                # --api-key / --minio-endpoint는 ls_tasks.py top-level argparse 옵션이므로
+                # 반드시 subcommand(create) 앞에 배치해야 한다.
+                argv = [
                     sys.executable,
                     str(LS_TASKS_SCRIPT),
                     "--minio-endpoint", target_ep,
                     "--api-key", api_key,
                     "create",
+                    "--mode", mode,
                     "--prefix", raw_prefix,
-                ],
-                capture_output=True,
-                text=True,
-                timeout=300,
-            )
-            if result.returncode != 0:
-                raise RuntimeError(f"ls_tasks.py 실패:\n{result.stderr}")
+                ]
+                if cat_csv:
+                    argv += ["--categories", cat_csv]
+                if batch_suffix:
+                    argv += ["--project-suffix", batch_suffix]
+                result = subprocess.run(
+                    argv, capture_output=True, text=True, timeout=600
+                )
+                tail = (result.stderr or result.stdout or "").strip().splitlines()[-20:]
+                context.log.info(f"[ls_tasks create --mode {mode}] stdout:\n{result.stdout}")
+                if result.returncode != 0:
+                    context.log.error(f"[ls_tasks create --mode {mode}] stderr:\n{result.stderr}")
+                statuses.append((mode, result.returncode, "\n".join(tail)))
 
-            context.log.info(result.stdout)
+            if run_video:
+                _run_create("video")
+            if run_image:
+                if not categories:
+                    context.log.warning(
+                        f"image mode 요청됐지만 categories 비어있음 — skip: request_id={request_id}"
+                    )
+                else:
+                    _run_create("image")
+
+            failed_modes = [m for m, rc, _ in statuses if rc != 0]
+            if failed_modes:
+                raise RuntimeError(f"ls_tasks.py create 실패: modes={failed_modes}")
+
             _update_ls_task_status(db_path, request_id, "created")
             context.log.info(f"ls_task_status='created' 업데이트: request_id={request_id}")
 

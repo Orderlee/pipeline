@@ -229,6 +229,9 @@ services:
       NVIDIA_VISIBLE_DEVICES: "1"
     volumes:
       - ./data/models:/data/models:ro
+    networks:
+      - default
+      - pipeline-network
     deploy:
       resources:
         reservations:
@@ -263,6 +266,9 @@ services:
       HF_TOKEN: ${HF_TOKEN:-}
       CUDA_VISIBLE_DEVICES: "0"
       NVIDIA_VISIBLE_DEVICES: "0"
+    networks:
+      - default
+      - pipeline-network
     deploy:
       resources:
         reservations:
