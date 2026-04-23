@@ -23,6 +23,101 @@
 - 기능 개발은 `dev`로 모으고, production 반영은 `dev -> main` PR로만 진행합니다.
 - 과거 문서나 스크립트에 남아 있는 `staging` 표기는 대부분 현재의 `test` 환경을 뜻하는 legacy 표현입니다.
 
+---
+
+## 빠른 참조 (체크카드)
+
+> Orderlee 포크에서 직접 배포 중일 때 5초 안에 찾을 정보. 기억이 안 나면 여기만 보세요.
+
+### 일반 기능 배포 — 4단계
+
+```bash
+# 1) 커밋 + dev 푸시 → 스테이징 자동 배포
+git push origin dev
+
+# 2) 3–10분 대기 후 스테이징에서 검증
+#    http://172.168.42.6:3031/  (Dagster UI)
+#    + 관련 센서 tick·asset 재실행·MinIO 결과물 등 수동 확인
+
+# 3) 프로덕션 반영
+git checkout main && git merge --no-ff dev && git push origin main
+
+# 4) 프로덕션 안정 확인 후, upstream(TeamPIA/dev)으로 기여
+./tools/pr-to-upstream.sh          # 대화형 (y/N 확인)
+# 또는 보낼 커밋만 확인: ./tools/pr-to-upstream.sh --dry-run
+```
+
+### 핫픽스 (프로덕션 긴급 수정) — 4단계
+
+```bash
+# 1) main에서 fix 브랜치 분기
+git checkout -b fix/<이름> main
+
+# 2) 수정 + 커밋 + 푸시 → GitHub에서 PR 생성
+git push origin fix/<이름>
+# PR → main → 머지 → 프로덕션 즉시 배포
+
+# 3) (거의 무조건!) 백머지하여 dev로 되돌려놓기
+git checkout dev && git merge main && git push origin dev
+```
+
+> ⚠️ **핫픽스 백머지 생략 금지** — 다음 정기 릴리즈(`dev → main`)에서 같은 버그가 되살아남.
+
+### 자동/수동 구분
+
+| 단계 | 자동 | 주체 |
+|---|---|---|
+| 커밋·푸시 | ❌ | 개발자 |
+| 스테이징 배포 (deploy-test.yml) | ✅ | GitHub Actions |
+| 스테이징 검증 | ❌ | 사람 |
+| dev → main 머지 | ❌ | 개발자 |
+| 프로덕션 배포 (deploy-production.yml) | ✅ | GitHub Actions |
+
+### CI 트리거 규칙 (언제 CI가 돌고 안 돌고)
+
+| 바뀐 파일 | CI 트리거? | 이미지 재빌드? |
+|---|---|---|
+| `*.md` (루트) / `docs/**` / `tests/**` / `.cursor/**` / `.agent/**` | ❌ (paths-ignore) | — |
+| `src/vlm_pipeline/**` | ✅ | ❌ (rsync만, 빠름) |
+| `Dockerfile` / `docker/app/**` / `configs/**` / `scripts/**` / `gcp/**` / `split_dataset/**` / `src/python/**` | ✅ | ✅ (느림) |
+| `.env` / `.env.test` | git 미추적 — 트리거 불가. 호스트에서 직접 편집 + 해당 환경 `docker compose restart` |
+
+### 확인 URL 모음
+
+| 용도 | URL |
+|---|---|
+| GitHub Actions | https://github.com/Orderlee/Datapipeline-Data-data_pipeline/actions |
+| PROD Dagster UI | http://172.168.42.6:3030/ |
+| STAGING Dagster UI | http://172.168.42.6:3031/ |
+| PROD MinIO Console | http://172.168.47.36:9001/ (S3 :9000) |
+| STAGING MinIO Console | http://172.168.47.36:9003/ (S3 :9002) |
+
+### 자주 하는 실수
+
+- 스테이징 `src/`·`configs/`·`scripts/` 를 **호스트에서 직접 수정** → 다음 CI 배포의 `rsync --delete`로 소실됨. 반드시 git 커밋 경로로
+- **핫픽스 백머지 누락** → 다음 정기 릴리즈에서 버그 재발
+- **env 변경을 git에 넣으려다 실패** → `.env`/`.env.test`는 `.gitignore`에 등록되어 있음. 호스트에서만 편집
+- **스테이징에서 디버깅 중 직접 파일 수정** → commit 안 하면 다음 배포로 사라짐
+- **upstream 기여 빠뜨림** → Orderlee/main에만 쌓이고 TeamPIA/dev 뒤처짐. 4단계의 `tools/pr-to-upstream.sh` 반드시 실행
+
+### CI 우회 수동 배포 (장애 시 전용)
+
+CI가 내려앉았을 때 호스트에서 직접:
+
+```bash
+# PROD
+cd /home/pia/work_p/Datapipeline-Data-data_pipeline
+git pull origin main --ff-only
+cd docker && docker compose restart dagster dagster-daemon dagster-code-server
+
+# STAGING
+cd /home/pia/work_p/Datapipeline-Data-data_pipeline_test
+git pull origin dev --ff-only
+cd docker && docker compose restart
+```
+
+---
+
 ## 작업 시나리오
 
 ### 시나리오 1. 일반 기능 개발

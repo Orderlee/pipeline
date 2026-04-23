@@ -27,15 +27,15 @@ pip install -e ".[dev]"
 pytest tests/unit -q
 pytest tests/integration -q
 
-# Docker (production)
-cd docker && docker compose up -d
+# Docker (production — main 브랜치)
+cd /home/pia/work_p/Datapipeline-Data-data_pipeline/docker && docker compose up -d
 
-# Docker (staging) — profile 분리
-cd docker && docker compose --profile staging up -d dagster-staging
+# Docker (staging — dev 브랜치)
+cd /home/pia/work_p/Datapipeline-Data-data_pipeline_test/docker && docker compose up -d
 
 # Dagster UI
-#   production : http://<HOST>:3030
-#   staging    : http://<HOST>:3031
+#   production : http://172.168.42.6:3030  (main)
+#   staging    : http://172.168.42.6:3031  (dev)
 
 # DuckDB 쿼리 (호스트에서 직접)
 python3 scripts/query_local_duckdb.py --sql "SELECT COUNT(*) FROM raw_files;"
@@ -45,19 +45,101 @@ python3 scripts/query_local_duckdb.py --sql "SELECT COUNT(*) FROM raw_files;"
 
 ## 환경 이중 구조 (Production vs Staging)
 
+두 환경은 **독립 git clone + 독립 docker compose 스택**으로 완전 분리됩니다.
+
 | 항목 | Production | Staging |
 |------|-----------|---------|
-| DuckDB | `/data/pipeline.duckdb` | `/data/staging.duckdb` |
+| Dagster UI | `http://172.168.42.6:3030` | `http://172.168.42.6:3031` |
+| Git repo (호스트) | `/home/pia/work_p/Datapipeline-Data-data_pipeline` | `/home/pia/work_p/Datapipeline-Data-data_pipeline_test` |
+| Git branch | **`main`** (안정) | **`dev`** (검증) |
+| Compose project | `docker` | `pipeline-test` |
+| 컨테이너 이름 prefix | `docker-dagster-*` | `pipeline-test-dagster-*` |
+| DuckDB (컨테이너) | `/data/pipeline.duckdb` | `/data/staging.duckdb` |
 | MinIO endpoint | `http://172.168.47.36:9000` | `http://172.168.47.36:9002` |
 | MinIO Console | `:9001` | `:9003` |
-| Dagster port | `3030` | `3031` |
-| Incoming | `/nas/incoming` | `/nas/staging/incoming` |
-| Archive | `/nas/archive` | `/nas/staging/archive` |
-| DAGSTER_HOME | `/app/dagster_home` | `/app/dagster_home_staging` |
-| env file | `docker/.env` | `docker/.env.staging` |
-| `IS_STAGING` | (unset) | `true` |
+| Incoming (호스트) | `/home/pia/mou/incoming` | `/home/pia/mou/staging/incoming` |
+| Archive (호스트) | `/home/pia/mou/archive` | `/home/pia/mou/staging/archive` |
+| DAGSTER_HOME (컨테이너) | `/app/dagster_home` | `/app/dagster_home` (동일, 호스트 경로만 다름) |
+| env file | `docker/.env` | `docker/.env.test` |
+| pia-agent 연동 | `host.docker.internal:8080` | `host.docker.internal:8081` |
 
-Staging은 `docker compose --profile staging`으로만 기동. Production과 **Dagster storage/runtime을 완전 분리**해야 heartbeat 충돌 없음.
+두 repo는 각자 독립 `.git`을 보유하며, 브랜치 기준 배포는 CI/CD가 자동 수행합니다 (다음 섹션).
+
+---
+
+## 브랜치 전략 & 배포 (CI/CD)
+
+### 브랜치 역할
+
+- **`dev`** — 스테이징(3031)이 추적. 신기능·실험·리팩터링 진입점.
+- **`main`** — 프로덕션(3030)이 추적. `dev`에서 충분히 검증된 뒤에만 머지.
+
+### 자동 배포 (GitHub Actions, self-hosted runner)
+
+| Workflow | 트리거 | 배포 대상 | Runner 라벨 |
+|----------|-------|-----------|------------|
+| [`deploy-test.yml`](.github/workflows/deploy-test.yml) | `push` → `dev` | 스테이징 repo | `self-hosted, linux, test` |
+| [`deploy-production.yml`](.github/workflows/deploy-production.yml) | `push` → `main` | 프로덕션 repo | `self-hosted, linux, production` |
+
+두 워크플로 모두 [`scripts/deploy/deploy-stack.sh`](scripts/deploy/deploy-stack.sh)로 실행. 주요 단계:
+
+1. **test 잡** — `pytest tests/unit` (workflow_dispatch의 `skip_tests=true`로 우회 가능, 긴급시 전용)
+2. **detect_image_rebuild 잡** — `Dockerfile` / `docker/app/` / `configs/` / `scripts/` / `gcp/` / `split_dataset/` / `src/python/` 변경 시에만 이미지 재빌드
+3. **deploy 잡** — `rsync -a --delete`로 워크스페이스 → DEPLOY_ROOT 동기화 (`src/`, `configs/`, `gcp/`, `scripts/`, `split_dataset/` + `docker/app/` 일부 + compose/Dockerfile). `dagster_home/`, `dagster_home_staging/`, `credentials/`, `docker/data/`는 rsync 제외 — 런타임 상태 보존
+4. env 파일 복원 (`.env` / `.env.test` — 호스트 저장분 유지)
+5. `docker compose up -d` 스택 재기동 + HEALTHCHECK_URL 응답 검증 (prod `:3030/server_info`, staging `:3031/server_info`)
+6. AI deploy 분석 (Claude CLI, best-effort, 실패해도 배포는 성공)
+
+> ⚠️ **fork 구분**: 두 워크플로 모두 `if: github.repository == 'Orderlee/Datapipeline-Data-data_pipeline'` 조건 있음 — `upstream`(TeamPIA)으로 PR이 가면 CI 트리거되지 않음.
+
+### 권장 배포 플로우
+
+1. `feature/*` 브랜치를 `dev`에서 분기
+2. PR → `dev` 머지 → **자동 스테이징 배포** (3-10분)
+3. 스테이징(3031)에서 end-to-end 검증 (센서 tick, dispatch run, MinIO 결과물)
+4. `dev` → `main` PR → 머지 → **자동 프로덕션 배포**
+
+### 핫픽스 (프로덕션 긴급 수정)
+
+1. `fix/*` 브랜치를 `main`에서 분기
+2. PR → `main` 머지 → 프로덕션 즉시 배포
+3. 완료 후 `main` → `dev` 백머지하여 drift 방지
+
+### 수동 배포 / CI 우회
+
+- GitHub Actions UI → 해당 워크플로 `Run workflow` 버튼 (`skip_tests` 옵션 사용 가능)
+- CI 불가 시 호스트에서 직접:
+
+```bash
+# PROD
+cd /home/pia/work_p/Datapipeline-Data-data_pipeline
+git pull origin main --ff-only
+cd docker && docker compose restart dagster dagster-daemon dagster-code-server
+
+# STAGING
+cd /home/pia/work_p/Datapipeline-Data-data_pipeline_test
+git pull origin dev --ff-only
+cd docker && docker compose restart
+```
+
+### Drift 감지
+
+```bash
+# 두 repo src/ 바이트 비교 (dev ≠ main 시점에는 차이 존재 = 정상)
+diff -rq /home/pia/work_p/Datapipeline-Data-data_pipeline/src \
+         /home/pia/work_p/Datapipeline-Data-data_pipeline_test/src
+
+# 각 repo가 해당 브랜치 HEAD와 일치하는지
+git -C /home/pia/work_p/Datapipeline-Data-data_pipeline status            # main clean?
+git -C /home/pia/work_p/Datapipeline-Data-data_pipeline_test status       # dev clean?
+```
+
+### 금기사항
+
+- 호스트에서 `src/`·`configs/`·`scripts/`·compose 파일 **수동 수정 금지** — 다음 CI 배포의 `rsync --delete`로 소실됨. 반드시 git commit → push 경로로 반영
+- `main`에 force-push 금지 (CI 미트리거 + 히스토리 손상)
+- `.env` / `.env.test`는 git 미추적. 변경 시 호스트에서 직접 편집 후 해당 환경 Dagster 재시작 필요
+- 스테이징에서 디버깅용 수정 → `dev`에 commit하지 않으면 다음 배포로 사라짐
 
 ---
 
@@ -111,12 +193,13 @@ Staging은 `docker compose --profile staging`으로만 기동. Production과 **D
 - classification 결과: `vlm-classification/<folder_prefix>/{video|image}/<class>/<file>` 형태의 **원본 복사** (JSON/DB 미적재)
 
 ### Staging 초기화 (깨끗한 재테스트)
-1. `dagster-staging` 중지
-2. staging MinIO 4개 버킷 객체 전체 삭제
-3. `docker/data/staging.duckdb` 삭제
-4. `docker/data/dagster_home_staging/storage/` 삭제
-5. 재기동
-- ⚠️ staging incoming/archive 원본 폴더는 명시 요청 없으면 **절대 삭제 금지**
+1. 스테이징 컨테이너 중지:
+   `docker stop pipeline-test-dagster-1 pipeline-test-dagster-daemon-1 pipeline-test-dagster-code-server-1`
+2. staging MinIO 5개 버킷(`vlm-raw`, `vlm-labels`, `vlm-processed`, `vlm-dataset`, `vlm-classification`) 객체 전체 삭제 — `:9003` 콘솔 또는 `mc rm --recursive --force local/<bucket>`
+3. `Datapipeline-Data-data_pipeline_test/docker/data/staging.duckdb` 삭제 (root 소유라 `docker run --rm -v ... alpine rm -f` 권장)
+4. `Datapipeline-Data-data_pipeline_test/docker/app/dagster_home/storage/` 내용 삭제 (run·sensor·schedule 상태 초기화)
+5. 재기동: `cd .../data_pipeline_test/docker && docker compose up -d`
+- ⚠️ staging incoming/archive 원본 폴더(`/home/pia/mou/staging/incoming`, `/home/pia/mou/staging/archive`)는 명시 요청 없으면 **절대 삭제 금지**
 
 ---
 
