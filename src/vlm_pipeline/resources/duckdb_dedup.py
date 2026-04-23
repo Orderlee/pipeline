@@ -494,6 +494,43 @@ class DuckDBDedupMixin:
                 [status, dataset_id],
             )
 
+    def find_projects_ready_to_build(self) -> list[str]:
+        """LS 검수 finalized 라벨이 있고 아직 완료된 dataset이 없는 folder.
+
+        `build_dataset_on_finalize_sensor` 전용. `labels.review_status='finalized'`
+        또는 `image_labels.review_status='finalized'` 가 하나라도 있는 프로젝트 중,
+        `datasets.build_status='completed'` 로 마감된 기존 row가 없는 것만 반환.
+        """
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT DISTINCT r.source_unit_name AS folder
+                FROM raw_files r
+                WHERE r.source_unit_name IS NOT NULL
+                  AND r.source_unit_name <> ''
+                  AND (
+                    EXISTS (
+                        SELECT 1 FROM labels l
+                        WHERE l.asset_id = r.asset_id
+                          AND l.review_status = 'finalized'
+                    )
+                    OR EXISTS (
+                        SELECT 1 FROM image_labels il
+                        JOIN image_metadata im ON im.image_id = il.image_id
+                        WHERE im.source_asset_id = r.asset_id
+                          AND il.review_status = 'finalized'
+                    )
+                  )
+                  AND NOT EXISTS (
+                    SELECT 1 FROM datasets d
+                    WHERE d.name = r.source_unit_name
+                      AND d.build_status = 'completed'
+                  )
+                ORDER BY folder
+                """
+            ).fetchall()
+            return [row[0] for row in rows]
+
     # ------------------------------------------------------------------
     # Classification build 쿼리
     # ------------------------------------------------------------------

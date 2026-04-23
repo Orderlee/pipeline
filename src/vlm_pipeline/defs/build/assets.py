@@ -14,7 +14,7 @@ from datetime import datetime
 from pathlib import PurePosixPath
 from uuid import uuid4
 
-from dagster import asset
+from dagster import Field, asset
 
 from vlm_pipeline.lib.key_builders import (
     build_gemini_label_key,
@@ -270,16 +270,23 @@ def _build_project(context, db: DuckDBResource, minio: MinIOResource,
     deps=["clip_to_frame"],
     description=(
         "프로젝트별 timestamp JSON + bbox JSON + 각 원본을 vlm-dataset 버킷에 조립. "
-        "완료 판별은 MinIO JSON 실존 기반. split 없음, 전체 복사. 멱등."
+        "완료 판별은 MinIO JSON 실존 기반. split 없음, 전체 복사. 멱등. "
+        "config.folder 주어지면 해당 프로젝트만, 없으면 전체 순회."
     ),
     group_name="build",
+    config_schema={"folder": Field(str, is_required=False)},
 )
 def build_dataset(
     context,
     db: DuckDBResource,
     minio: MinIOResource,
 ) -> dict:
-    projects = db.find_projects_for_dataset_build()
+    folder_filter = context.op_config.get("folder") if context.op_config else None
+    if folder_filter:
+        projects = [{"folder": folder_filter}]
+        context.log.info(f"BUILD 단일 프로젝트 모드: folder={folder_filter}")
+    else:
+        projects = db.find_projects_for_dataset_build()
     if not projects:
         context.log.info("BUILD 대상 프로젝트 없음")
         return {"projects": 0, "summaries": []}
