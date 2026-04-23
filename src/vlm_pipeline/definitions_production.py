@@ -10,6 +10,7 @@ from dagster import EnvVar, ScheduleDefinition, define_asset_job
 
 from vlm_pipeline.defs.build.assets import build_dataset
 from vlm_pipeline.defs.build.classification import build_classification
+from vlm_pipeline.defs.build.sensor import build_dataset_on_finalize_sensor
 from vlm_pipeline.defs.dispatch.production_agent_sensor import build_production_agent_dispatch_sensor
 from vlm_pipeline.defs.dispatch.sensor import build_dispatch_sensor
 from vlm_pipeline.defs.dispatch.sensor_run_status import (
@@ -215,4 +216,5 @@ def build_production_sensors(
         *COMMON_DISPATCH_STATUS_SENSORS,
         *motherduck_table_sensors,
         ls_task_create_sensor,
+        build_dataset_on_finalize_sensor,
     ]

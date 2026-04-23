@@ -12,7 +12,15 @@ from pathlib import Path
 import boto3
 from boto3.s3.transfer import TransferConfig
 from botocore.config import Config as BotoConfig
-from dagster import ConfigurableResource
+from dagster import ConfigurableResource, InitResourceContext
+
+FIXED_BUCKETS: tuple[str, ...] = (
+    "vlm-raw",
+    "vlm-labels",
+    "vlm-processed",
+    "vlm-dataset",
+    "vlm-classification",
+)
 
 
 class MinIOResource(ConfigurableResource):
@@ -185,6 +193,14 @@ class MinIOResource(ConfigurableResource):
             self.client.head_bucket(Bucket=bucket)
         except Exception:
             self.client.create_bucket(Bucket=bucket)
+
+    def ensure_fixed_buckets(self) -> None:
+        """5개 고정 버킷 일괄 ensure (멱등)."""
+        for bucket in FIXED_BUCKETS:
+            self._ensure_bucket_once(bucket)
+
+    def setup_for_execution(self, context: InitResourceContext) -> None:
+        self.ensure_fixed_buckets()
 
     def delete(self, bucket: str, key: str) -> None:
         """MinIO 객체 삭제."""
