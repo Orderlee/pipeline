@@ -33,26 +33,22 @@ def manifest_source_under_gcp(manifest: dict, config: "PipelineConfig | None" = 
 
 
 def manifest_allows_auto_bootstrap_without_dispatch(
-    manifest: dict,
-    config: "PipelineConfig | None" = None,
-    runtime_profile: RuntimeProfile | None = None,  # noqa: ARG001 - 향후 정책 확장용
+    manifest: dict,  # noqa: ARG001
+    config: "PipelineConfig | None" = None,  # noqa: ARG001
+    runtime_profile: RuntimeProfile | None = None,  # noqa: ARG001
 ) -> bool:
-    """dispatch 트리거 JSON 없이 auto_bootstrap·ingest 허용: production/staging 모두 gcp 트리만."""
-    return manifest_source_under_gcp(manifest, config)
+    """dispatch 트리거 JSON 없이 auto_bootstrap·ingest 허용: 전면 허용 (previously gcp-only)."""
+    return True
 
 
 def _staging_transfer_allows_archive(
-    manifest: dict,
+    manifest: dict,  # noqa: ARG001
     transfer_tool: str,
     *,
-    config: "PipelineConfig | None",
+    config: "PipelineConfig | None",  # noqa: ARG001
 ) -> bool:
-    """staging에서 archive+ingest 허용 transfer: dispatch·retry·또는 incoming/gcp auto_bootstrap."""
-    if transfer_tool in {"dispatch_sensor", "ingest_retry_manifest"}:
-        return True
-    if transfer_tool == "auto_bootstrap_sensor" and manifest_source_under_gcp(manifest, config):
-        return True
-    return False
+    """staging에서 archive+ingest 허용 transfer: dispatch·retry·auto_bootstrap 전면."""
+    return transfer_tool in {"dispatch_sensor", "ingest_retry_manifest", "auto_bootstrap_sensor"}
 
 
 def should_archive_manifest(

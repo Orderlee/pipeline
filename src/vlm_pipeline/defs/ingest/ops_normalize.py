@@ -47,11 +47,15 @@ def normalize_and_archive(
     ingest_rejections: list[dict] | None = None,
     retry_candidates: list[dict] | None = None,
     defer_video_env_classification: bool = False,
+    upload_enabled: bool = True,
 ) -> list[dict]:
     """1-pass 로딩 → checksum → verify → image/video_metadata → MinIO 업로드.
 
     archive 이동은 assets 레이어에서 source unit 정책으로 처리한다.
     ★ NFS에서 파일 1회만 읽어 모든 메타 추출 (3회→1회 최적화).
+
+    upload_enabled=False 면 Phase C(MinIO 업로드)를 스킵하고 "ready" 리스트만 반환.
+    archive 이동과 'archived' 상태 마크는 호출자(orchestrator)가 별도 함수로 수행.
     """
     uploaded: list[dict] = []
     upload_tasks: list[dict[str, Any]] = []
@@ -364,7 +368,9 @@ def normalize_and_archive(
 
             db_record["file_size"] = meta["file_size"]
             db_record["checksum"] = meta["checksum"]
-            db_record["ingest_status"] = "uploading"
+            # upload_enabled=False 경로에서는 raw_files 에 잠시 "pending" 으로 insert 하고,
+            # archive 이동 완료 시 호출자가 "archived" 로 전환한다.
+            db_record["ingest_status"] = "uploading" if upload_enabled else "pending"
             pending_db_rows.append(
                 {
                     "filepath": filepath,
@@ -417,6 +423,29 @@ def normalize_and_archive(
             )
 
     _flush_pending_db_rows()
+
+    if not upload_enabled:
+        # upload_enabled=False: upload_tasks 를 그대로 "ready" 리스트로 변환해 반환.
+        # 호출자가 archive 이동 후 ingest_status='archived' 로 전환한다.
+        ready: list[dict] = []
+        for task in upload_tasks:
+            _close_video_stream(task.get("meta") or {})
+            m = task.get("meta") or {}
+            ready.append(
+                {
+                    "asset_id": task["asset_id"],
+                    "source_path": task.get("source_path") or task["filepath"],
+                    "raw_key": task["raw_key"],
+                    "media_type": task["media_type"],
+                    "checksum": m.get("checksum"),
+                    "file_size": m.get("file_size"),
+                }
+            )
+        context.log.info(
+            f"upload_skip:done (upload_enabled=False) ready={len(ready)} "
+            f"reason='MinIO 업로드는 dispatch 단계로 연기'"
+        )
+        return ready
 
     context.log.info(f"upload_prepare:done tasks={len(upload_tasks)}")
     context.log.info("upload_execute:start")

@@ -41,26 +41,15 @@ def resolve_ingest_runtime_policy(
 
 
 def auto_bootstrap_unit_allowed(
-    unit_path: str | Path,
+    unit_path: str | Path,  # noqa: ARG001 - 정책 확장 대비 인터페이스 유지
     *,
-    incoming_dir: Path,
-    config,
-    runtime_profile: RuntimeProfile | None = None,
+    incoming_dir: Path,  # noqa: ARG001
+    config,  # noqa: ARG001
+    runtime_profile: RuntimeProfile | None = None,  # noqa: ARG001
 ) -> bool:
-    profile = runtime_profile or resolve_runtime_profile()
-    resolved_path = Path(unit_path).resolve()
-    if profile.is_staging:
-        gcp_root = (incoming_dir / "gcp").resolve()
-        try:
-            resolved_path.relative_to(gcp_root)
-            return True
-        except Exception:
-            return False
-    return manifest_allows_auto_bootstrap_without_dispatch(
-        {"source_unit_path": str(resolved_path)},
-        config=config,
-        runtime_profile=profile,
-    )
+    # 모든 incoming 하위 폴더를 auto_bootstrap 대상으로 허용.
+    # dispatch JSON 과의 중복은 sensor_bootstrap.py:148 의 excluded_top_level_names 에서 처리.
+    return True
 
 
 def pending_manifest_allowed(
