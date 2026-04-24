@@ -71,6 +71,10 @@ def _discover_source_units(
         top_name = top_entry.name
         if top_name.startswith("."):
             continue
+        # `.tmp` suffix 는 "복사 중" 표식. drop 프로세스가 atomic rename 으로
+        # 완료 신호를 줄 때까지 auto_bootstrap 이 진입하지 않도록 배제.
+        if top_name.endswith(".tmp"):
+            continue
         if excluded_top_level_names and top_name in excluded_top_level_names:
             continue
 

@@ -100,8 +100,15 @@ def archive_uploaded_assets(
     uploaded: list[dict],
     archive_dir: str,
     ingest_rejections: list[dict] | None = None,
+    completion_status: str = "completed",
+    raw_bucket: str | None = "vlm-raw",
 ) -> tuple[list[dict], Path | None]:
-    """업로드 완료 파일을 source unit 기반으로 archive 이동."""
+    """업로드 완료 파일을 source unit 기반으로 archive 이동.
+
+    completion_status/raw_bucket 파라미터로 upload 없이 archive 만 수행하는 경로도 지원:
+    - 기본 (upload_enabled=True): completion_status='completed', raw_bucket='vlm-raw'
+    - upload_enabled=False 경로: completion_status='archived', raw_bucket=None
+    """
     from .duplicate import error_code_from_message
 
     archive_root_dir = Path(archive_dir)
@@ -152,9 +159,9 @@ def archive_uploaded_assets(
                 cleanup_residual_source_file(context, sp)
                 cleanup_empty_parent_chain(Path(sp).parent, stop_at=source_root_dir)
             db.update_raw_file_status(
-                asset_id, "completed",
+                asset_id, completion_status,
                 archive_path=str(archive_path),
-                raw_bucket="vlm-raw",
+                raw_bucket=raw_bucket,
             )
             archived_items.append({**item, "archive_path": str(archive_path)})
             return

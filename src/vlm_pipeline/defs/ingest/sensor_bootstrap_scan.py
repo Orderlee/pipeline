@@ -50,7 +50,9 @@ def _scan_unit_media_files(unit: dict, allowed_exts: set[str]) -> list[dict]:
                 [
                     name
                     for name in dirs
-                    if not name.startswith(".partial__") and not is_macos_metadata_file(name)
+                    if not name.startswith(".partial__")
+                    and not name.endswith(".tmp")
+                    and not is_macos_metadata_file(name)
                 ]
             )
             root_path = Path(root)
