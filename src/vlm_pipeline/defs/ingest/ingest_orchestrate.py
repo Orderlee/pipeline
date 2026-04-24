@@ -89,7 +89,12 @@ def _step_load_and_hydrate(context, db, *, config, state):
 
 
 def _step_register_and_upload(context, db, minio, *, config, state, runtime_policy):
-    """DB 등록 → MinIO 업로드 → archive 확정."""
+    """DB 등록 → (옵션) MinIO 업로드 → archive 확정.
+
+    manifest.upload_enabled=False 면 MinIO 업로드를 건너뛰고 archive 만 이동한 뒤
+    raw_files.ingest_status='archived' 로 마크한다. 실제 MinIO 업로드 + 라벨링은
+    dispatch/piaagent API 수신 시점에 별도 manifest 로 수행된다.
+    """
     state.stage = "register"
     context.log.info("register:start")
     state.records = register_incoming(
@@ -99,24 +104,33 @@ def _step_register_and_upload(context, db, minio, *, config, state, runtime_poli
 
     target_archive_dir = config.archive_dir
 
+    # upload_enabled 플래그 (manifest 기본 True, auto_bootstrap 생성 manifest 는 False).
+    upload_enabled = bool(state.manifest.get("upload_enabled", True))
+
     state.stage = "upload"
     context.log.info(
-        f"upload_prepare:start defer_video_env_classification={runtime_policy.defer_video_env_classification}"
+        f"upload_prepare:start defer_video_env_classification={runtime_policy.defer_video_env_classification} "
+        f"upload_enabled={upload_enabled}"
     )
     state.uploaded = normalize_and_archive(
         context, db, minio, state.records, target_archive_dir,
         ingest_rejections=state.ingest_rejections,
         retry_candidates=state.retry_candidates,
         defer_video_env_classification=runtime_policy.defer_video_env_classification,
+        upload_enabled=upload_enabled,
     )
     context.log.info(
-        f"upload_execute:done uploaded={len(state.uploaded)} retry_candidates={len(state.retry_candidates)}"
+        f"upload_execute:done uploaded={len(state.uploaded)} "
+        f"retry_candidates={len(state.retry_candidates)} upload_enabled={upload_enabled}"
     )
 
     state.stage = "archive_finalize"
+    completion_status = "completed" if upload_enabled else "archived"
+    completion_bucket = "vlm-raw" if upload_enabled else None
     context.log.info(
         f"archive_finalize:start archive_requested={state.archive_requested} "
-        f"prepared={state.archive_prepared_for_upload} uploaded={len(state.uploaded)}"
+        f"prepared={state.archive_prepared_for_upload} uploaded={len(state.uploaded)} "
+        f"completion_status={completion_status}"
     )
     if state.archive_requested:
         try:
@@ -124,11 +138,13 @@ def _step_register_and_upload(context, db, minio, *, config, state, runtime_poli
                 context=context, db=db, manifest=state.manifest,
                 uploaded=state.uploaded, archive_dir=target_archive_dir,
                 ingest_rejections=state.ingest_rejections,
+                completion_status=completion_status,
+                raw_bucket=completion_bucket,
             )
         except OSError as exc:
             if "archive_move_timeout" in str(exc):
                 context.log.error(
-                    f"archive_finalize TIMEOUT — 업로드 완료분을 completed로 전환하고 후속 진행: {exc}"
+                    f"archive_finalize TIMEOUT — 업로드 완료분을 {completion_status}로 전환하고 후속 진행: {exc}"
                 )
                 state.archived = complete_uploaded_assets_without_archive(
                     context=context, db=db, manifest=state.manifest, uploaded=state.uploaded,
@@ -143,7 +159,8 @@ def _step_register_and_upload(context, db, minio, *, config, state, runtime_poli
         state.archive_unit_dir_hint = None
     context.log.info(
         f"archive_finalize:done archived={len(state.archived)} "
-        f"uploaded={len(state.uploaded)} archive_requested={state.archive_requested}"
+        f"uploaded={len(state.uploaded)} archive_requested={state.archive_requested} "
+        f"completion_status={completion_status}"
     )
     return target_archive_dir
 

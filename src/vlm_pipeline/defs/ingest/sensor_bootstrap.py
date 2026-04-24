@@ -342,6 +342,10 @@ def auto_bootstrap_manifest_sensor(context):
                     config=config,
                     runtime_profile=runtime_profile,
                 ),
+                # auto_bootstrap 진입 단계에서는 MinIO 업로드를 보류한다.
+                # dispatch JSON / piaagent API 가 도착할 때 upload_enabled=True 로
+                # 별도 manifest 가 생성돼 실제 MinIO upload + 라벨링이 진행된다.
+                "upload_enabled": False,
                 "file_count": len(chunk_files),
                 "files": [
                     {

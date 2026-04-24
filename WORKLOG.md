@@ -12,6 +12,41 @@
 
 
 
+
+## 2026-04-23
+
+### 1. 당일 코드 및 설정 정리
+- **문제**: 당일 변경이 여러 영역에 걸쳐 있어, 커밋 목록만 보면 실제 수정 범위와 운영 영향 지점을 파악하기 어려웠음.
+- **원인**: 자동 기록이 파일/커밋 나열 중심으로 작성되면 코드, 설정, 문서 변경이 어떤 의도로 묶였는지 드러나지 않음.
+- **조치**:
+    - 파이프라인 코드 변경을 정리함: `src/vlm_pipeline/definitions_production.py`, `src/vlm_pipeline/defs/build/assets.py`, `src/vlm_pipeline/defs/build/sensor.py`, `src/vlm_pipeline/resources/duckdb_dedup.py`, `... 외 1개`
+    - 스크립트/도구 변경을 정리함: `scripts/migrate_legacy/build_pilot_manifest.py`, `scripts/migrate_legacy/profile.py`
+    - 문서 변경을 정리함: `.github/PULL_REQUEST_TEMPLATE.md`, `CLAUDE.md`, `docs/git-workflow-guide.md`
+    - 기타 변경을 정리함: `tools/pr-to-upstream.sh`
+    - 관련 커밋: `07216011` merge: dev → main — pr-to-upstream.sh cross-fork 기존 PR 감지 수정, `4c8cbce1` fix(tools): pr-to-upstream.sh cross-fork 기존 PR 감지 버그 수정, `df7f7479` merge: dev → main — Slack finalize → build_dataset 자동 트리거 센서, `9acbb4ed` feat(build): LS finalize 감지 센서로 build_dataset 자동 트리거
+    - 관련 파일:
+      - `.github/PULL_REQUEST_TEMPLATE.md`
+      - `CLAUDE.md`
+      - `docs/git-workflow-guide.md`
+      - `scripts/migrate_legacy/build_pilot_manifest.py`
+      - `scripts/migrate_legacy/profile.py`
+      - `src/vlm_pipeline/definitions_production.py`
+      - `src/vlm_pipeline/defs/build/assets.py`
+      - `src/vlm_pipeline/defs/build/sensor.py`
+      - `... 외 3개`
+
+### 2. 당일 정리
+- **변경 통계**:
+    - 변경 파일 **11개**, +1736/-60줄.
+- **관련 커밋**:
+    - `07216011`: merge: dev → main — pr-to-upstream.sh cross-fork 기존 PR 감지 수정
+    - `4c8cbce1`: fix(tools): pr-to-upstream.sh cross-fork 기존 PR 감지 버그 수정
+    - `df7f7479`: merge: dev → main — Slack finalize → build_dataset 자동 트리거 센서
+    - `9acbb4ed`: feat(build): LS finalize 감지 센서로 build_dataset 자동 트리거
+    - `0c08216e`: merge: dev → main — tools/pr-to-upstream.sh 헬퍼 추가
+- **서비스 상태**: 파이프라인 서비스 6개 컨테이너 중 6개 정상 가동.
+- **작업 환경**: Cursor, VSCode
+
 ## 2026-04-22
 
 ### 1. 프레임 추출 안정화 및 이미지 캡션 메타 확장
