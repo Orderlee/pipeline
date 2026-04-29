@@ -367,14 +367,30 @@ class DuckDBDedupMixin:
     ) -> list[dict]:
         """해당 folder의 ingest 완료 video asset 목록 + raw_key.
 
-        require_ls_finalized=True 면 labels.review_status='finalized' event가
-        최소 1개 있는 video만 반환.
+        require_ls_finalized=True 면 labels.review_status='finalized' 표지가
+        있는 dispatch_requests 와 join 하여 후보를 한정한다 (영상 단위 EXISTS
+        가 아니라 folder 단위 검사).
+
+        주의:
+          이전엔 `EXISTS labels WHERE asset_id=r.asset_id AND review_status=
+          'finalized'` 라는 영상 단위 필터를 썼다. 이 방식은 빈 검수 영상
+          (사람이 fp_case 등에서 의도적으로 이벤트 없음으로 확정한 영상)을
+          dataset 에서 제외시키는 부작용이 있었다 — ls_sync 의 SOT 정책상
+          빈 검수도 MinIO 에 [] events JSON 으로 저장되지만 DB labels 에는
+          row 가 없으므로 EXISTS 가 false 로 빠지기 때문.
+
+          빈 검수도 정상 데이터(AI 팀 후처리에서 normal 처리)이므로 dataset
+          에 포함되어야 한다. build_dataset 의 step 3 (MinIO label_keys 검사)
+          가 events JSON 실존을 보장하므로, 영상 단위 EXISTS 필터는 제거하고
+          require_ls_finalized=True 일 때 folder 단위로 "최소 한 영상이라도
+          finalized 됐는가" 만 검사한다.
         """
         finalized_filter = (
             """
                   AND EXISTS (
                       SELECT 1 FROM labels l
-                      WHERE l.asset_id = r.asset_id
+                      JOIN raw_files r2 ON r2.asset_id = l.asset_id
+                      WHERE r2.source_unit_name = r.source_unit_name
                         AND l.review_status = 'finalized'
                   )
             """

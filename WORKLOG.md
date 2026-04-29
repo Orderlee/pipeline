@@ -13,6 +13,89 @@
 
 
 
+
+
+
+## 2026-04-28
+
+### 1. Staging dispatch 서비스 분리 및 흐름 정리
+- **문제**: staging dispatch 처리 로직이 sensor 안에 몰려 있어 중복 요청 체크, 실패 기록, manifest 작성, run 상태 연동을 한 번에 파악하기 어려웠음.
+- **원인**: dispatch request 준비, archive/manifest 경로 계산, DB 기록, in-flight run 검사 로직이 sensor 본문과 run status 처리 코드에 분산되어 유지보수성이 떨어졌음.
+- **조치**:
+    - dispatch request 준비, manifest 작성, DB 기록, run request 생성 로직을 service 레이어로 분리해 sensor 책임을 줄임.
+    - 중복 request_id, 같은 folder의 진행 중 run, 실패 request upsert 흐름을 DB helper와 공통 함수로 정리함.
+    - dispatch run status와 archive 판단 경로가 같은 tag 해석 함수를 사용하도록 맞춰 상태 전파를 일관되게 정리함.
+    - 관련 파일:
+      - `src/vlm_pipeline/defs/dispatch/sensor.py`
+      - `src/vlm_pipeline/defs/dispatch/service.py`
+
+### 2. Staging 환경값 및 운영 보조 설정 정리
+- **문제**: staging 실행 시 DuckDB/MinIO/NAS 경로와 sensor guard 설정이 비어 있거나 분산되어 있어, 실제 테스트 환경을 재현할 때 수동 보정이 많이 필요했음.
+- **원인**: staging env 기본값, compose 공통 설정, stuck run guard / MotherDuck / GCS 관련 옵션이 파일마다 흩어져 있어 환경별 기준을 한 번에 맞추기 어려웠음.
+- **조치**:
+    - staging DuckDB, MinIO, incoming/archive/manifest 경로와 주요 timeout / in-flight / guard 옵션을 `.env.staging`에 구체값으로 정리함.
+    - docker compose에서 production dagster 공통 anchor를 분리해 prod/staging 공통점과 차이를 명확히 정리함.
+    - stuck run guard와 ingest feature flag가 runtime settings를 통해 같은 방식으로 로드되도록 맞춰 운영 보조 설정을 단일화함.
+    - 관련 파일:
+      - `docker/docker-compose.yaml`
+
+### 3. 당일 정리
+- **변경 통계**:
+    - 변경 파일 **13개**, +708/-39줄.
+- **관련 커밋**:
+    - `964f13d6`: Merge pull request #30 from Orderlee/dev
+    - `8aeb8b19`: Merge pull request #29 from Orderlee/fix/ls-tasks-image-state
+    - `1cdd460b`: fix(ls_tasks): image mode 도 update_review_state 호출 — video 와 통일
+    - `f9a78139`: fix(dispatch): gemini-code-assist 리뷰 반영 — silent fail / count race 정리
+    - `4744b47a`: feat(dispatch): archive 데이터 트리거용 신규 sensor + upload_label_job (Phase 2b MVP)
+- **서비스 상태**: 파이프라인 서비스 6개 컨테이너 중 6개 정상 가동.
+- **작업 환경**: Cursor, VSCode
+
+## 2026-04-27
+
+### 1. 운영 ingest / process 공통 구조 정리
+- **문제**: ingest와 process 공통 책임이 여러 모듈로 흩어져 있어, 운영 로직을 수정할 때 영향 범위와 설정 반영 지점을 한 번에 보기 어려웠음.
+- **원인**: raw ingest 실행 흐름, runtime env 해석, DuckDB schema 보정과 조회 helper가 각각 다른 레이어에 퍼져 있어 공통 동작을 건드릴 때 수정 포인트가 많아졌음.
+- **조치**:
+    - raw ingest에서 상태 생성과 실제 실행 파이프라인을 분리해 진입 구조를 명확히 정리함.
+    - runtime 설정 로더를 추가하고 ingest runtime policy, stuck guard가 같은 설정 해석 경로를 재사용하도록 맞춤.
+    - DuckDB resource에 dispatch/model/raw/image 조회 및 insert helper를 보강하고 schema ensure 흐름을 운영 기준으로 정돈함.
+    - 관련 파일:
+      - `src/vlm_pipeline/defs/ingest/runtime_policy.py`
+
+### 2. 당일 정리
+- **변경 통계**:
+    - 변경 파일 **12개**, +772/-485줄.
+- **관련 커밋**:
+    - `e93b6ad4`: Merge pull request #19 from Orderlee/dev
+    - `59fc6743`: Merge pull request #18 from Orderlee/fix/ls-sync-video-sot-on-cdd83c9
+    - `f33c8ba6`: fix(ls_sync): video 분기 SOT=사람 submit 으로 빈 검수·신규 events 통합
+    - `ad8574bf`: Merge pull request #17 from Orderlee/main
+- **서비스 상태**: 파이프라인 서비스 6개 컨테이너 중 6개 정상 가동.
+- **작업 환경**: Cursor, VSCode
+
+## 2026-04-24
+
+### 1. 운영 ingest / process 공통 구조 정리
+- **문제**: ingest와 process 공통 책임이 여러 모듈로 흩어져 있어, 운영 로직을 수정할 때 영향 범위와 설정 반영 지점을 한 번에 보기 어려웠음.
+- **원인**: raw ingest 실행 흐름, runtime env 해석, DuckDB schema 보정과 조회 helper가 각각 다른 레이어에 퍼져 있어 공통 동작을 건드릴 때 수정 포인트가 많아졌음.
+- **조치**:
+    - raw ingest에서 상태 생성과 실제 실행 파이프라인을 분리해 진입 구조를 명확히 정리함.
+    - runtime 설정 로더를 추가하고 ingest runtime policy, stuck guard가 같은 설정 해석 경로를 재사용하도록 맞춤.
+    - DuckDB resource에 dispatch/model/raw/image 조회 및 insert helper를 보강하고 schema ensure 흐름을 운영 기준으로 정돈함.
+    - 관련 파일:
+      - `src/vlm_pipeline/defs/ingest/runtime_policy.py`
+
+### 2. 당일 정리
+- **변경 통계**:
+    - 변경 파일 **9개**, +117/-74줄.
+- **관련 커밋**:
+    - `ea8c3119`: feat(ingest): auto_bootstrap 경로에서 MinIO 업로드 보류 + 'archived' 상태
+    - `f3ee252f`: Merge pull request #15 from Orderlee/feature/auto-ingest-and-tmp-rename
+    - `d0281a37`: feat(ingest): incoming 자동 archive+ingest + .tmp rename 대응
+- **서비스 상태**: 파이프라인 서비스 6개 컨테이너 중 6개 정상 가동.
+- **작업 환경**: Cursor, VSCode
+
 ## 2026-04-23
 
 ### 1. 당일 코드 및 설정 정리

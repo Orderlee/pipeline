@@ -18,6 +18,7 @@ from vlm_pipeline.definitions_production import (
 )
 from vlm_pipeline.defs.gcp.assets import gcs_download_to_incoming
 from vlm_pipeline.defs.ingest.assets import raw_ingest
+from vlm_pipeline.defs.ingest.upload_archived_asset import upload_archived
 from vlm_pipeline.defs.label.manual_import import manual_label_import
 from vlm_pipeline.defs.sam.assets import sam3_shadow_compare
 from vlm_pipeline.defs.sam.detection_assets import sam3_image_detection
@@ -65,6 +66,14 @@ _dispatch_stage_job = build_asset_job(
     writer_tag=DUCKDB_LEGACY_WRITER_TAG,
     description="[운영 유일 자동 라벨링] `.dispatch/pending` 트리거 JSON → ingest + clip_* + (YOLO opt) + SAM3",
 )
+# Phase 2b — archive 경로 파일을 MinIO 로 업로드하는 단일 step 잡.
+# (라벨링 assets 통합은 follow-up PR 에서 selection 확장 예정)
+_upload_label_job = build_asset_job(
+    name="upload_label_job",
+    selection=[upload_archived],
+    writer_tag=DUCKDB_RAW_WRITER_TAG,
+    description="[Phase 2b] from_archived=True dispatch JSON → archive 파일 MinIO 업로드",
+)
 # LS 검수 확정(/sync-approve) 후 호출되는 clip 분할 전용 job.
 # ls_webhook.py finalize_project 에서 GraphQL launchPipelineExecution 으로 트리거.
 _post_review_clip_job = build_asset_job(
@@ -86,6 +95,7 @@ _jobs: list[object] = [
     _gcs_download_job,
     _motherduck_sync_job,
     _dispatch_stage_job,
+    _upload_label_job,
     _post_review_clip_job,
     _sam3_shadow_compare_job,
 ]
@@ -136,6 +146,7 @@ defs = Definitions(
     sensors=build_production_sensors(
         MOTHERDUCK_TABLE_SENSORS,
         dispatch_target_jobs=[_dispatch_stage_job, _ingest_job],
+        archive_dispatch_jobs=[_upload_label_job],
     ),
     resources=build_common_resources(),
 )
