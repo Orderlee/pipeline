@@ -40,9 +40,41 @@ import hashlib
 import hmac
 import json
 import os
+import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+
+# project_id별 sync 동시 실행 방지 (단일 webhook 컨테이너 가정).
+_SYNC_IN_FLIGHT: set[int] = set()
+_SYNC_GUARD_LOCK = threading.Lock()
+
+# Submit 폭주 시 debounce: 마지막 수신 후 N초 idle이면 1회만 실행. 그 전 재수신은 timer reset.
+_SYNC_DEBOUNCE_TIMERS: dict[int, threading.Timer] = {}
+_SYNC_DEBOUNCE_LOCK = threading.Lock()
+_SYNC_DEBOUNCE_SEC = float(os.getenv("LS_WEBHOOK_DEBOUNCE_SEC", "15"))
+
+
+def schedule_sync_debounced(project_id: int, project_title: str) -> None:
+    """debounce timer로 run_sync_and_notify 스케줄. 0 이하면 즉시 실행."""
+    if _SYNC_DEBOUNCE_SEC <= 0:
+        run_sync_and_notify(project_id, project_title)
+        return
+    with _SYNC_DEBOUNCE_LOCK:
+        existing = _SYNC_DEBOUNCE_TIMERS.pop(project_id, None)
+        if existing:
+            existing.cancel()
+
+        def _fire() -> None:
+            with _SYNC_DEBOUNCE_LOCK:
+                _SYNC_DEBOUNCE_TIMERS.pop(project_id, None)
+            run_sync_and_notify(project_id, project_title)
+
+        timer = threading.Timer(_SYNC_DEBOUNCE_SEC, _fire)
+        timer.daemon = True
+        _SYNC_DEBOUNCE_TIMERS[project_id] = timer
+        timer.start()
+        print(f"[DEBOUNCE] project {project_id} sync {_SYNC_DEBOUNCE_SEC:.1f}초 후 예약 (중복 수신 시 리셋)")
 
 import requests
 import uvicorn
@@ -131,7 +163,25 @@ def resolve_auth_headers(token: str) -> dict[str, str]:
 # ---------------------------------------------------------------------------
 
 def count_incomplete_tasks(headers: dict, project_id: int) -> int:
-    """annotation이 없는 task 수 반환. 0이면 전체 완료."""
+    """annotation이 없는 task 수 반환. 0이면 전체 완료.
+    fast path: /api/projects/{id}/ 1회 호출로 task_number vs num_tasks_with_annotations 비교.
+    실패하거나 필드 누락 시 기존 /api/tasks/ 페이지네이션으로 fallback.
+    """
+    try:
+        resp = requests.get(
+            f"{LS_URL}/api/projects/{project_id}/",
+            headers=headers,
+            timeout=5,
+        )
+        resp.raise_for_status()
+        p = resp.json()
+        tn = p.get("task_number")
+        na = p.get("num_tasks_with_annotations")
+        if isinstance(tn, int) and isinstance(na, int) and tn >= 0 and na >= 0:
+            return max(tn - na, 0)
+    except Exception as exc:
+        print(f"[WARN] 완료 판정 fast path 실패, 페이지네이션 fallback: {exc}")
+
     incomplete = 0
     page = 1
     while True:
@@ -207,14 +257,18 @@ def finalize_labels_in_db(label_keys: list[str]) -> int:
         raise RuntimeError("DuckDB 연결 실패 (5회 재시도 초과)")
     try:
         placeholders = ",".join(["?"] * len(label_keys))
-        # Video-level labels (Gemini events)
+        # Video-level labels (Gemini events) — image_labels 와 동일 정책 (review_status 기준)
+        # 기존엔 label_status='pending_review' 조건이었으나, captioning.py 등 upstream 이
+        # INSERT 시 label_status='completed' 로 박아 prod 의 모든 video labels 가 'completed'
+        # 상태였기에 UPDATE 가 0건 영향 → review_status 가 'finalized' 로 못 가서
+        # build_dataset_on_finalize_sensor 가 video 검수 프로젝트를 영구히 못 잡았던 버그.
         conn.execute(
             f"""
             UPDATE labels
             SET label_status  = 'completed',
                 review_status = 'finalized'
             WHERE labels_key IN ({placeholders})
-              AND label_status = 'pending_review'
+              AND review_status <> 'finalized'
             """,
             label_keys,
         )
@@ -251,6 +305,21 @@ def finalize_labels_in_db(label_keys: list[str]) -> int:
 
 def run_sync_and_notify(project_id: int, project_title: str) -> None:
     """ls_sync.run() 실행 후 Slack 알림 및 state 업데이트."""
+    # debounce: 같은 project의 sync가 이미 돌고 있으면 drop (웹훅 중복 수신 대응).
+    with _SYNC_GUARD_LOCK:
+        if project_id in _SYNC_IN_FLIGHT:
+            print(f"[DEDUP] project {project_id} sync 이미 진행 중 — skip")
+            return
+        _SYNC_IN_FLIGHT.add(project_id)
+
+    try:
+        _run_sync_and_notify_inner(project_id, project_title)
+    finally:
+        with _SYNC_GUARD_LOCK:
+            _SYNC_IN_FLIGHT.discard(project_id)
+
+
+def _run_sync_and_notify_inner(project_id: int, project_title: str) -> None:
     state = load_state()
     pid = str(project_id)
     is_first = state.get(pid, {}).get("last_sync_at") is None
@@ -436,7 +505,11 @@ def finalize_project(project_id: int, response_url: str = "") -> None:
     )
     clip_msg = (
         f"→ clip 생성 job 트리거: run_id={detail}" if ok
-        else f"→ ⚠️ clip 생성 트리거 실패 ({detail}) — Dagster UI에서 `{POST_REVIEW_JOB_NAME}` 수동 실행 필요"
+        else (
+            f"→ ⚠️ clip 생성 트리거 실패 ({detail})\n"
+            f"   수동 재실행: `python /src/vlm/gemini/ls_webhook.py finalize --project {project_id}`\n"
+            f"   또는 Dagster UI에서 `{POST_REVIEW_JOB_NAME}` 수동 실행"
+        )
     )
 
     msg = (
@@ -476,6 +549,21 @@ async def receive_webhook(request: Request, background_tasks: BackgroundTasks):
 
     print(f"[RECV] {action} — project '{project_title}' (id={project_id})")
 
+    # 가드: /sync-approve 로 finalized 된 project 의 재 Submit 은 무시.
+    # ls_sync.upsert_video_labels / update_image_labels_in_db 가 review_status
+    # 를 'reviewed' 로 되돌려 finalize 가 회귀하는 사고 방지. 재검수 정책이
+    # 필요하면 별도 운영 절차로 처리해야 한다 (state.json status 수동 리셋 등).
+    state = load_state()
+    if state.get(str(project_id), {}).get("status") == "finalized":
+        msg = (
+            f"⚠️ *{project_title}* (id={project_id}) 는 이미 finalized 상태 — "
+            f"재 Submit 무시. 재검수가 필요하면 운영자에게 문의 (state.json status "
+            f"리셋 후 sync 재실행 필요)."
+        )
+        print(f"[GUARD] {msg}")
+        send_slack(msg)
+        return {"status": "ignored_finalized", "project_id": project_id}
+
     headers    = resolve_auth_headers(API_KEY)
     incomplete = count_incomplete_tasks(headers, project_id)
 
@@ -484,7 +572,7 @@ async def receive_webhook(request: Request, background_tasks: BackgroundTasks):
         return {"status": "pending", "incomplete": incomplete}
 
     print(f"[INFO] project '{project_title}' 전체 완료 → background sync 시작")
-    background_tasks.add_task(run_sync_and_notify, project_id, project_title)
+    background_tasks.add_task(schedule_sync_debounced, project_id, project_title)
     return {"status": "accepted"}
 
 
@@ -608,6 +696,9 @@ def main() -> int:
 
     sub.add_parser("list", help="등록된 webhook 목록")
 
+    p_fin = sub.add_parser("finalize", help="프로젝트 수동 finalize (Slack 슬래시 커맨드 대체)")
+    p_fin.add_argument("--project", type=int, required=True)
+
     args = parser.parse_args()
 
     if not API_KEY:
@@ -626,6 +717,9 @@ def main() -> int:
 
     elif args.command == "list":
         cmd_list()
+
+    elif args.command == "finalize":
+        finalize_project(args.project)
 
     return 0
 
