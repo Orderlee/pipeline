@@ -873,6 +873,15 @@ def _create_image(args, minio, auth_headers: dict) -> None:
             print(f"[ERROR]    {stem}: {exc}")
             error += 1
 
+    # video mode 와 동일하게 review state 에 label_keys 기록.
+    # 이전엔 image mode 가 update_review_state 호출을 빠뜨려, /sync-list 에 안 뜨고
+    # /sync-approve 가 "label_keys 없음" 으로 거부되던 결함이 있었음.
+    # 모든 sam3 JSON 키를 박음 (existing 포함) — update_review_state 가 union merge 라 idempotent.
+    # 따라서 같은 명령 재호출만으로 기존 proj 의 backfill 도 자연 처리됨.
+    if json_index:
+        update_review_state(project_id, title, list(json_index.values()), created + skipped)
+        print(f"[INFO] review state 저장 완료 ({STATE_FILE.name})")
+
     print(
         f"\n[DONE] image mode: 생성 {created} / 스킵(기존) {skipped} / "
         f"이미지경로 누락 {dropped_no_image} / 오류 {error}"

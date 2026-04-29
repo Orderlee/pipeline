@@ -11,6 +11,7 @@ from dagster import EnvVar, ScheduleDefinition, define_asset_job
 from vlm_pipeline.defs.build.assets import build_dataset
 from vlm_pipeline.defs.build.classification import build_classification
 from vlm_pipeline.defs.build.sensor import build_dataset_on_finalize_sensor
+from vlm_pipeline.defs.dispatch.archive_dispatch_sensor import build_archive_dispatch_sensor
 from vlm_pipeline.defs.dispatch.production_agent_sensor import build_production_agent_dispatch_sensor
 from vlm_pipeline.defs.dispatch.sensor import build_dispatch_sensor
 from vlm_pipeline.defs.dispatch.sensor_run_status import (
@@ -20,6 +21,7 @@ from vlm_pipeline.defs.dispatch.sensor_run_status import (
 )
 from vlm_pipeline.defs.gcp.assets import DEFAULT_GCP_BUCKETS, gcs_download_to_incoming
 from vlm_pipeline.defs.ingest.assets import raw_ingest
+from vlm_pipeline.defs.ingest.upload_archived_asset import upload_archived
 from vlm_pipeline.defs.ingest.sensor import (
     auto_bootstrap_manifest_sensor,
     incoming_manifest_sensor,
@@ -183,6 +185,7 @@ def build_production_assets(
 ) -> list[object]:
     assets: list[object] = [
         raw_ingest,
+        upload_archived,  # Phase 2b: archive 경로 → MinIO 업로드
         gcs_download_to_incoming,
         *CLIP_AUTO_LABEL_ASSETS,
         raw_video_to_frame,
@@ -208,8 +211,9 @@ def build_production_sensors(
     motherduck_table_sensors: list[object] | tuple[object, ...],
     *,
     dispatch_target_jobs: list[object],
+    archive_dispatch_jobs: list[object] | None = None,
 ) -> list[object]:
-    return [
+    sensors: list[object] = [
         *COMMON_INGEST_SENSORS,
         build_dispatch_sensor(jobs=dispatch_target_jobs),
         build_production_agent_dispatch_sensor(jobs=dispatch_target_jobs),
@@ -218,3 +222,7 @@ def build_production_sensors(
         ls_task_create_sensor,
         build_dataset_on_finalize_sensor,
     ]
+    if archive_dispatch_jobs:
+        # Phase 2b: from_archived=True dispatch JSON 만 처리
+        sensors.append(build_archive_dispatch_sensor(jobs=archive_dispatch_jobs))
+    return sensors
