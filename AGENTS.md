@@ -11,6 +11,7 @@
    - `docs/design-docs/index.md`
    - `docs/exec-plans/index.md`
    - `docs/references/index.md`
+4. 에이전트 라우팅·effort·escalation 룰: `docs/references/multi-agent.md`
 
 ## 프로젝트 한 줄
 

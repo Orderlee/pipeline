@@ -248,6 +248,110 @@ def write_dispatch_manifest(
     return manifest_path, archive_dest
 
 
+def resolve_archive_paths_from_folder(
+    db_resource,
+    folder_name: str,
+) -> list[dict[str, Any]]:
+    """Phase 2b: archive 에 이미 옮겨진 raw_files 조회.
+
+    `from_archived=True` dispatch JSON 처리 시 folder_name 으로 raw_files 의
+    archived 행들을 lookup 해서 archive_path/raw_key/asset_id/media_type 반환.
+    동일 folder 가 다중 source_unit_name (예: `<folder>` + `<folder>/<sub>`) 으로
+    저장된 경우 둘 다 매칭한다.
+
+    DB 오류는 raise — sensor 가 lock 충돌 등 transient error 와 "데이터 없음"을
+    구분해서 재시도 또는 fail-fast 결정하도록 한다.
+    """
+    if not folder_name:
+        return []
+    with db_resource.connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT asset_id, archive_path, raw_key, media_type, file_size, source_unit_name
+            FROM raw_files
+            WHERE (source_unit_name = ? OR source_unit_name LIKE ?)
+              AND ingest_status = 'archived'
+              AND archive_path IS NOT NULL
+            ORDER BY raw_key
+            """,
+            [folder_name, f"{folder_name}/%"],
+        ).fetchall()
+    return [
+        {
+            "asset_id": r[0],
+            "archive_path": r[1],
+            "raw_key": r[2],
+            "media_type": r[3],
+            "file_size": r[4],
+            "source_unit_name": r[5],
+        }
+        for r in rows
+    ]
+
+
+def write_archive_dispatch_manifest(
+    config: PipelineConfig,
+    prepared: PreparedDispatchRequest,
+    archive_rows: list[dict[str, Any]],
+) -> Path:
+    """Phase 2b: archive 데이터 dispatch 용 manifest.
+
+    `source_unit_path` 를 archive 폴더(공통 부모) 로 두고 `archive_requested=False`,
+    `upload_enabled=True`, `from_archived=True` 플래그를 명시한다. files 는 DB lookup
+    결과 그대로 (재스캔 없이) 채운다.
+    """
+    if not archive_rows:
+        raise ValueError("no_archive_rows")
+
+    archive_paths = [r["archive_path"] for r in archive_rows]
+    archive_root = str(Path(archive_paths[0]).parent.parent)
+    archive_unit_dir = str(Path(archive_paths[0]).parent)
+
+    now = datetime.now()
+    manifest_id = f"archive_dispatch_{prepared.request_id}_{now:%Y%m%d_%H%M%S}"
+    files = []
+    for row in archive_rows:
+        archive_path = str(row["archive_path"])
+        rel_path = Path(archive_path).name
+        files.append(
+            {
+                "path": archive_path,
+                "size": int(row.get("file_size") or 0),
+                "rel_path": rel_path,
+                "asset_id": row["asset_id"],
+                "raw_key": row["raw_key"],
+                "media_type": row.get("media_type"),
+            }
+        )
+
+    manifest = {
+        "manifest_id": manifest_id,
+        "generated_at": now.isoformat(),
+        "source_dir": archive_root,
+        "source_unit_type": "directory",
+        "source_unit_path": archive_unit_dir,
+        "source_unit_name": prepared.folder_name,
+        "source_unit_total_file_count": len(files),
+        "file_count": len(files),
+        "transfer_tool": "archive_dispatch_sensor",
+        "archive_requested": False,
+        "upload_enabled": True,
+        "from_archived": True,
+        "request_id": prepared.request_id,
+        "categories": prepared.categories,
+        "classes": prepared.classes,
+        "labeling_method": prepared.labeling_method,
+        "image_profile": prepared.image_profile,
+        "requested_by": prepared.requested_by,
+        "files": files,
+    }
+    manifest_dir = Path(config.manifest_dir) / "dispatch"
+    manifest_dir.mkdir(parents=True, exist_ok=True)
+    manifest_path = manifest_dir / f"{manifest_id}.json"
+    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+    return manifest_path
+
+
 def build_dispatch_request_record(
     prepared: PreparedDispatchRequest,
     *,

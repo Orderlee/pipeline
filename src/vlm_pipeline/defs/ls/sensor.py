@@ -233,7 +233,7 @@ def ls_task_create_job():
     job=ls_task_create_job,
     name="ls_task_create_sensor",
     minimum_interval_seconds=int_env("LS_TASK_SENSOR_INTERVAL_SEC", 60, 30),
-    default_status=DefaultSensorStatus.STOPPED,
+    default_status=DefaultSensorStatus.RUNNING,
     description="dispatch 완료 후 LS task 미생성 요청 감지 → ls_task_create_job 트리거",
 )
 def ls_task_create_sensor(context):
