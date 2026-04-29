@@ -25,6 +25,16 @@ x-common-env: &common-env
   VIDEO_FFPROBE_RETRY_COUNT: "1"
   VIDEO_FFPROBE_RETRY_DELAY_MS: "250"
   DAGSTER_HOME: /app/dagster_home
+  # ls_tasks.py / ls_webhook.py 가 공유하는 review state 파일 경로.
+  # dagster 와 ls-webhook 두 컨테이너가 같은 호스트 dir(./data → /data)을 mount 하므로
+  # 동일 경로로 명시해 state 분기를 막는다 (이전엔 dagster_home / /tmp 로 갈라져 있었음).
+  LS_STATE_FILE: /data/ls_review_state.json
+  # build_dataset asset 의 _require_ls_finalized() 토글.
+  #   1 → labels/image_labels 의 review_status='finalized' 표지가 있는 dispatch 만
+  #       dataset 후보로 사용. SOT 정책상 finalize 안 된 데이터가 vlm-dataset 에
+  #       섞이지 않도록 운영 권장값.
+  #   0 → 레거시 호환. 모든 raw_files 가 후보 (의도치 않은 미검수 데이터 포함 위험).
+  DATASET_REQUIRE_LS_FINALIZED: ${DATASET_REQUIRE_LS_FINALIZED:-0}
   PYTHONPATH: /:/src/python:/src/vlm
   DATAOPS_ASSET_PATH_PREFIX_FROM: ${DATAOPS_ASSET_PATH_PREFIX_FROM:-/home/pia/mou/nas_192tb;/home/pia/mou/archive;/home/pia/mou/incoming}
   DATAOPS_ASSET_PATH_PREFIX_TO: /nas

@@ -81,6 +81,11 @@ def _dispatch_sensor_fn(context: SensorEvaluationContext):
             move_dispatch_file(req_file, failed_dir, context=context)
             continue
 
+        # Phase 2b — from_archived=True 요청은 archive_dispatch_sensor 가 처리.
+        # 본 sensor 는 incoming/archive+ingest+upload+labeling 전체 흐름만 담당.
+        if req_data.get("from_archived") is True:
+            continue
+
         request_id = str(req_data.get("request_id") or req_file.stem).strip() or req_file.stem
         outcome = process_dispatch_ingress_request(
             context,

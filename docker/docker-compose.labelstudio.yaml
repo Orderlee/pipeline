@@ -57,8 +57,17 @@ services:
       LS_MINIO_ENDPOINT: ${LS_MINIO_ENDPOINT:-${MINIO_ENDPOINT:-http://172.168.47.36:9000}}
       MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
       MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin}
+      # dagster 컨테이너의 x-common-env 와 동일 경로로 통합.
+      # /data 는 양쪽 공통 mount 라 같은 호스트 파일을 보게 된다.
+      LS_STATE_FILE: /data/ls_review_state.json
     volumes:
       - ./data:/data
+      # 호스트 src/ 를 read-only 로 마운트하여 ls_webhook.py / ls_sync.py 변경이
+      # 컨테이너에 즉시 반영되도록 한다 (이미지 재빌드 없이도 동작).
+      # docker-dagster 계열 컨테이너는 이미 같은 mount 를 갖고 있는데 ls-webhook
+      # 만 빠져있어, 호스트 코드 변경 시 docker cp + restart 우회가 필요했던 운영
+      # 마찰을 제거.
+      - ../src:/src/vlm:ro
     command:
       [
         "/bin/bash", "-c",
