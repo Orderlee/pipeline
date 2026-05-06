@@ -9,13 +9,15 @@ Layer 4: Dagster sensor + job.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
-import duckdb
 from dagster import (
     AssetSelection,
+    DagsterRunStatus,
     DefaultSensorStatus,
     RunRequest,
+    RunsFilter,
     SkipReason,
     define_asset_job,
     sensor,
@@ -26,8 +28,10 @@ from vlm_pipeline.lib.env_utils import (
     DUCKDB_LEGACY_WRITER_TAG,
     build_duckdb_writer_tags,
     default_duckdb_path,
+    default_postgres_dsn,
     int_env,
 )
+from vlm_pipeline.lib.sensor_db import open_sensor_read_connection
 
 
 # ---------------------------------------------------------------------------
@@ -49,7 +53,7 @@ build_dataset_single_job = define_asset_job(
 # Sensor
 # ---------------------------------------------------------------------------
 
-def _fetch_projects_ready_to_build(db_path: str) -> list[str]:
+def _fetch_projects_ready_to_build(db_path: str | None = None) -> list[str]:  # noqa: ARG001 - signature 호환 유지
     """dispatch.outputs 가 요구하는 모든 검수 단계가 finalized 된 folder 조회.
 
     이전 SQL 은 (labels.finalized OR image_labels.finalized) OR-조건이라
@@ -72,7 +76,7 @@ def _fetch_projects_ready_to_build(db_path: str) -> list[str]:
     `DuckDBResource.find_projects_ready_to_build()` 와 동일 SQL 이지만,
     sensor에서는 resource 주입 없이 read-only 연결을 직접 열어 수행.
     """
-    with duckdb.connect(db_path, read_only=True) as conn:
+    with open_sensor_read_connection() as conn:
         rows = conn.execute(
             """
             SELECT DISTINCT r.source_unit_name AS folder
@@ -114,6 +118,30 @@ def _fetch_projects_ready_to_build(db_path: str) -> list[str]:
         return [row[0] for row in rows]
 
 
+def _last_run_failed(context, folder: str) -> bool:
+    """folder 의 마지막 build_dataset_on_finalize_sensor run 이 FAILURE 였는지.
+
+    이 sensor 가 발행한 run 만 검사 (다른 trigger 의 run 은 attempt 결정에 무관).
+    instance.get_runs 가 시간 역순 반환을 가정.
+    """
+    try:
+        runs = context.instance.get_runs(
+            filters=RunsFilter(
+                tags={
+                    "folder_name": folder,
+                    "trigger": "build_dataset_on_finalize_sensor",
+                }
+            ),
+            limit=1,
+        )
+    except Exception as exc:
+        context.log.warning(f"[{folder}] 마지막 run 조회 실패: {exc} — attempt 그대로 유지")
+        return False
+    if not runs:
+        return False
+    return runs[0].status == DagsterRunStatus.FAILURE
+
+
 @sensor(
     job=build_dataset_single_job,
     name="build_dataset_on_finalize_sensor",
@@ -125,13 +153,16 @@ def _fetch_projects_ready_to_build(db_path: str) -> list[str]:
     ),
 )
 def build_dataset_on_finalize_sensor(context):
-    db_path = default_duckdb_path()
-    if not Path(db_path).exists():
-        yield SkipReason(f"DuckDB not found: {db_path}")
-        return
+    # PG primary 모드면 DuckDB file 존재성 무관 (in-memory + ATTACH PG).
+    # DuckDB single 모드면 file 필요.
+    if not default_postgres_dsn():
+        db_path = default_duckdb_path()
+        if not Path(db_path).exists():
+            yield SkipReason(f"DuckDB not found: {db_path}")
+            return
 
     try:
-        folders = _fetch_projects_ready_to_build(db_path)
+        folders = _fetch_projects_ready_to_build()
     except Exception as exc:
         yield SkipReason(f"DB 조회 실패: {exc}")
         return
@@ -142,14 +173,36 @@ def build_dataset_on_finalize_sensor(context):
 
     context.log.info(f"build_dataset 대상 {len(folders)}건: {folders}")
 
+    # cursor: {folder: attempt_int}. 마지막 run 이 FAILURE 면 attempt 증가시켜
+    # run_key 가 unique 해지도록 → Dagster 의 영구 dedup 회피.
+    # SUCCESS 후엔 _fetch SQL 의 NOT EXISTS datasets.completed 가드로 후보에서 빠져
+    # 무한 재시도 위험 없음.
+    try:
+        cursor = json.loads(context.cursor) if context.cursor else {}
+        if not isinstance(cursor, dict):
+            cursor = {}
+    except Exception:
+        cursor = {}
+
     for folder in folders:
+        attempt = int(cursor.get(folder, 0))
+        if _last_run_failed(context, folder):
+            attempt += 1
+            context.log.info(
+                f"[{folder}] 직전 run FAILURE 감지 → attempt {cursor.get(folder, 0)} → {attempt}"
+            )
+        cursor[folder] = attempt
+        run_key = f"build-dataset:{folder}:{attempt}"
         yield RunRequest(
-            run_key=f"build-dataset:{folder}",
+            run_key=run_key,
             run_config={
                 "ops": {"build_dataset": {"config": {"folder": folder}}},
             },
             tags={
                 "folder_name": folder,
                 "trigger": "build_dataset_on_finalize_sensor",
+                "attempt": str(attempt),
             },
         )
+
+    context.update_cursor(json.dumps(cursor, sort_keys=True))

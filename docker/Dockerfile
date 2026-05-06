@@ -40,6 +40,12 @@ COPY docker/app/requirements.txt .
 RUN pip3 install --upgrade pip setuptools wheel \
     && pip3 install --no-cache-dir -r requirements.txt
 
+# DuckDB postgres extension 사전 설치 — sensor 가 PG primary 모드에서
+# duckdb (in-memory) + ATTACH PG (read-only) 로 read 시 첫 LOAD postgres 시점에
+# 인터넷 download 가 필요하다. 이미지에 미리 캐시해 컨테이너 부팅 후 sensor tick
+# 첫 호출이 즉시 동작하도록 한다.
+RUN python3 -c "import duckdb; con = duckdb.connect(':memory:'); con.execute('INSTALL postgres'); con.close()"
+
 # ===== 런타임 코드/설정 복사 =====
 COPY docker/app/dagster_defs.py /app/dagster_defs.py
 COPY docker/app/workspace.yaml /app/workspace.yaml

@@ -1,4 +1,12 @@
-"""Bbox / detection artifact import helpers."""
+"""Bbox / detection artifact import helpers.
+
+NOTE on import order: this module imports ``_ArtifactImportSummary`` from
+``artifact_import``, which in turn does deferred bottom-of-file imports of
+this module. Always enter the label artifact subsystem via
+``artifact_import_support`` (the facade) or ``artifact_import`` first — never
+import a sibling (``artifact_bbox``/``_caption``/``_classification``) as the
+first label module in a process, or you will see a circular ``ImportError``.
+"""
 
 from __future__ import annotations
 
@@ -9,14 +17,16 @@ from typing import Any
 from vlm_pipeline.lib.key_builders import build_yolo_label_key as _build_yolo_label_key
 from vlm_pipeline.lib.detection_coco import convert_detection_payload_to_coco
 
-from vlm_pipeline.defs.label.artifact_import_support import (
-    _ArtifactImportSummary,
-    _coerce_source_unit_dirs,
+from vlm_pipeline.defs.label.artifact_import import _ArtifactImportSummary
+from vlm_pipeline.defs.label.artifact_import_utils import (
+    now as _now,
+    stable_id as _stable_id,
+)
+from vlm_pipeline.defs.label.artifact_resolve import (
     _ensure_processed_media_rows,
     _find_existing_image_row,
-    _now,
-    _stable_id,
 )
+from vlm_pipeline.defs.label.artifact_scan import _coerce_source_unit_dirs
 
 
 def _import_bbox_json_files(

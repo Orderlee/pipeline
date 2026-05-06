@@ -42,7 +42,10 @@ x-common-env: &common-env
 x-runtime-volumes: &runtime-volumes
   - ${DAGSTER_HOME_HOST_PATH:-./app/dagster_home}:/app/dagster_home
   - ${DOCKER_DATA_HOST_PATH:-./data}:/data
-  - ../src:/src/vlm:ro
+  # NOTE: 호스트 src 를 마운트하지 않는다 — 이미지 빌드 시 COPY 된 /src/vlm 만 사용한다.
+  # 호스트 src 를 마운트하면 (1) 호스트 git tree 가 stale 일 때 컨테이너도 stale 해지고,
+  # (2) deploy 시점의 src 가 아닌 호스트 현재 상태가 즉시 반영돼 'deployed image == running code'
+  # 단일 진리 보장이 깨진다. dev 코드 변경 즉시 반영이 필요하면 이미지 재빌드 (compose build) 로 해결.
   - type: bind
     source: ${DATASETS_HOST_PATH:-/home/user/mou/nas_192tb/datasets}
     target: /nas/datasets
@@ -204,7 +207,15 @@ services:
     restart: unless-stopped
 
   postgres:
-    image: postgres:15
+    # Default = vanilla postgres:15. staging 등 분석 가속이 필요한 환경에서는
+    # POSTGRES_IMAGE=pgduckdb/pgduckdb:15-v1.1.1 로 override 하면 PG 안에서 DuckDB
+    # 엔진을 사용 (CREATE EXTENSION pg_duckdb 후 read_parquet/duckdb.query 등 가능).
+    # postgres_data volume 은 그대로 유지되므로 image swap 으로 데이터 손실 없음.
+    image: ${POSTGRES_IMAGE:-postgres:15}
+    # POSTGRES_PRELOAD_LIBS: pg_duckdb 같이 shared_preload_libraries 가 필요한
+    # extension 활성화용. default 는 빈 문자열 (vanilla postgres:15 영향 0).
+    # pgduckdb image 사용 시 POSTGRES_PRELOAD_LIBS=pg_duckdb 로 override.
+    command: postgres -c shared_preload_libraries=${POSTGRES_PRELOAD_LIBS:-}
     ports:
       - "${POSTGRES_PORT:-0}:5432"
     environment:
@@ -304,3 +315,5 @@ networks:
   pipeline-network:
     external: true
     name: pipeline-network
+
+# claude-action fix verification trigger 2026-05-06

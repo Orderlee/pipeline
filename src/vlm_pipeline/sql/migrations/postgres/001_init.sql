@@ -1,0 +1,454 @@
+-- migration 001_init: PostgreSQL bootstrap. Idempotent. Forward-only.
+
+BEGIN;
+
+-- ============================================================
+-- VLM Data Pipeline — 8테이블 DDL (Strict 8)
+-- ============================================================
+-- 운영 테이블: raw_files, image_metadata, video_metadata, labels,
+--            processed_clips, datasets, dataset_clips, image_labels
+
+-- ============================================================
+-- 1. raw_files: NAS 파일 스캔 및 수집 상태 관리
+-- ============================================================
+CREATE TABLE IF NOT EXISTS raw_files (
+    asset_id        TEXT PRIMARY KEY,
+    source_path     TEXT NOT NULL,
+    original_name   TEXT,
+    media_type      TEXT DEFAULT 'image',
+    file_size       BIGINT,
+    checksum        TEXT UNIQUE,
+    phash           TEXT,
+    dup_group_id    TEXT,
+    archive_path    TEXT,
+    raw_bucket      TEXT DEFAULT 'vlm-raw',
+    raw_key         TEXT,
+    ingest_batch_id TEXT,
+    transfer_tool   TEXT DEFAULT 'manual',
+    ingest_status   TEXT DEFAULT 'pending',
+    error_message   TEXT,
+    spec_id         TEXT,
+    source_unit_name TEXT,
+    created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- ============================================================
+-- 2. video_metadata: 원본 비디오 메타데이터 (ffprobe)
+-- ============================================================
+CREATE TABLE IF NOT EXISTS video_metadata (
+    asset_id        TEXT PRIMARY KEY REFERENCES raw_files(asset_id),
+    width           INTEGER,
+    height          INTEGER,
+    duration_sec    DOUBLE PRECISION,
+    fps             DOUBLE PRECISION,
+    codec           TEXT,
+    bitrate         BIGINT,
+    frame_count     INTEGER,
+    has_audio       BOOLEAN DEFAULT FALSE,
+    environment_type TEXT,
+    daynight_type    TEXT,
+    outdoor_score    DOUBLE PRECISION,
+    avg_brightness   DOUBLE PRECISION,
+    env_method       TEXT,
+    extracted_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    frame_extract_status TEXT DEFAULT 'pending',
+    frame_extract_count  INTEGER DEFAULT 0,
+    frame_extract_error  TEXT,
+    frame_extracted_at   TIMESTAMP,
+    auto_label_status    TEXT DEFAULT 'pending',
+    auto_label_error     TEXT,
+    auto_label_key       TEXT,
+    auto_labeled_at      TIMESTAMP,
+    timestamp_status     TEXT DEFAULT 'pending',
+    timestamp_error      TEXT,
+    timestamp_label_key  TEXT,
+    timestamp_completed_at TIMESTAMP,
+    caption_status       TEXT DEFAULT 'pending',
+    caption_error        TEXT,
+    caption_completed_at TIMESTAMP,
+    frame_status         TEXT DEFAULT 'pending',
+    frame_error          TEXT,
+    frame_completed_at   TIMESTAMP,
+    bbox_status          TEXT DEFAULT 'pending',
+    bbox_error           TEXT,
+    bbox_completed_at    TIMESTAMP,
+    -- 재인코딩: 원본 인코딩 정보 (감사/디버깅 목적)
+    original_codec        TEXT,
+    original_profile      TEXT,
+    original_has_b_frames BOOLEAN,
+    original_level_int    INTEGER,
+    -- 재인코딩: 판정 결과
+    reencode_required     BOOLEAN DEFAULT FALSE,
+    reencode_reason       TEXT,
+    -- 재인코딩: 적용 결과 (codec은 실제 저장 파일 기준으로 갱신됨)
+    reencode_applied      BOOLEAN DEFAULT FALSE,
+    reencode_preset       TEXT
+);
+
+-- ============================================================
+-- 3. labels: 라벨 데이터 관리 (LABEL 단계에서 INSERT)
+-- ============================================================
+CREATE TABLE IF NOT EXISTS labels (
+    label_id        TEXT PRIMARY KEY,
+    asset_id        TEXT REFERENCES raw_files(asset_id),
+    labels_bucket   TEXT DEFAULT 'vlm-labels',
+    labels_key      TEXT,
+    label_format    TEXT,
+    label_tool      TEXT DEFAULT 'pre-built',
+    label_source    TEXT DEFAULT 'manual',
+    review_status   TEXT DEFAULT 'pending',
+    event_index     INTEGER DEFAULT 0,
+    event_count     INTEGER,
+    timestamp_start_sec DOUBLE PRECISION,
+    timestamp_end_sec   DOUBLE PRECISION,
+    caption_text    TEXT,
+    object_count    INTEGER DEFAULT 0,
+    label_status    TEXT DEFAULT 'completed',
+    created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- ============================================================
+-- 4. processed_clips: 전처리 결과 (clip_metadata 흡수)
+-- ============================================================
+CREATE TABLE IF NOT EXISTS processed_clips (
+    clip_id          TEXT PRIMARY KEY,
+    source_asset_id  TEXT REFERENCES raw_files(asset_id),
+    source_label_id  TEXT REFERENCES labels(label_id),
+    event_index      INTEGER DEFAULT 0,
+    clip_start_sec   DOUBLE PRECISION,
+    clip_end_sec     DOUBLE PRECISION,
+    checksum         TEXT UNIQUE,
+    file_size        BIGINT,
+    processed_bucket TEXT DEFAULT 'vlm-processed',
+    clip_key         TEXT,
+    label_key        TEXT,
+    data_source      TEXT DEFAULT 'manual',
+    caption_text     TEXT,
+    width            INTEGER,
+    height           INTEGER,
+    codec            TEXT,
+    duration_sec     DOUBLE PRECISION,
+    fps              DOUBLE PRECISION,
+    frame_count      INTEGER,
+    image_extract_status  TEXT DEFAULT 'pending',
+    image_extract_count   INTEGER DEFAULT 0,
+    image_extract_error   TEXT,
+    image_extracted_at    TIMESTAMP,
+    process_status   TEXT DEFAULT 'pending',
+    created_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- ============================================================
+-- 5. image_metadata: 원본 이미지 + 비디오 프레임 메타데이터
+-- ============================================================
+CREATE TABLE IF NOT EXISTS image_metadata (
+    image_id         TEXT PRIMARY KEY,
+    source_asset_id  TEXT NOT NULL REFERENCES raw_files(asset_id),
+    source_clip_id   TEXT REFERENCES processed_clips(clip_id),
+    image_bucket     TEXT DEFAULT 'vlm-raw',
+    image_key        TEXT,
+    image_role       TEXT DEFAULT 'source_image',
+    frame_index      INTEGER,
+    frame_sec        DOUBLE PRECISION,
+    checksum         TEXT,
+    file_size        BIGINT,
+    width            INTEGER,
+    height           INTEGER,
+    color_mode       TEXT DEFAULT 'RGB',
+    bit_depth        INTEGER DEFAULT 8,
+    has_alpha        BOOLEAN DEFAULT FALSE,
+    orientation      INTEGER DEFAULT 1,
+    image_caption_text TEXT,
+    image_caption_score DOUBLE PRECISION,
+    image_caption_bucket TEXT,
+    image_caption_key TEXT,
+    image_caption_generated_at TIMESTAMP,
+    extracted_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (image_bucket, image_key),
+    UNIQUE (source_asset_id, source_clip_id, image_role, frame_index)
+);
+
+-- ============================================================
+-- 6. datasets: 데이터셋 구성 관리
+-- ============================================================
+CREATE TABLE IF NOT EXISTS datasets (
+    dataset_id      TEXT PRIMARY KEY,
+    name            TEXT,
+    version         TEXT,
+    config          JSONB,
+    split_ratio     JSONB DEFAULT '{"train":0.8,"val":0.1,"test":0.1}'::jsonb,
+    dataset_bucket  TEXT DEFAULT 'vlm-dataset',
+    dataset_prefix  TEXT,
+    build_status    TEXT DEFAULT 'pending',
+    created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- ============================================================
+-- 7. dataset_clips: 데이터셋-클립 연결 (M:N)
+-- ============================================================
+CREATE TABLE IF NOT EXISTS dataset_clips (
+    dataset_id      TEXT REFERENCES datasets(dataset_id),
+    clip_id         TEXT REFERENCES processed_clips(clip_id),
+    split           TEXT,
+    dataset_key     TEXT,
+    PRIMARY KEY (dataset_id, clip_id)
+);
+
+-- ============================================================
+-- 8. image_labels: 이미지 detection 라벨 (YOLO-world 등)
+-- ============================================================
+CREATE TABLE IF NOT EXISTS image_labels (
+    image_label_id   TEXT PRIMARY KEY,
+    image_id         TEXT REFERENCES image_metadata(image_id),
+    source_clip_id   TEXT REFERENCES processed_clips(clip_id),
+    labels_bucket    TEXT DEFAULT 'vlm-labels',
+    labels_key       TEXT,
+    label_format     TEXT,
+    label_tool       TEXT,
+    label_source     TEXT,
+    review_status    TEXT DEFAULT 'pending',
+    label_status     TEXT DEFAULT 'pending',
+    object_count     INTEGER DEFAULT 0,
+    created_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- ============================================================
+-- 9. dispatch_requests: Dispatch 요청 추적 (dispatch_sensor DDL과 동일)
+--    trigger JSON → archive 이동 + 파이프라인 실행
+-- ============================================================
+CREATE TABLE IF NOT EXISTS dispatch_requests (
+    request_id           TEXT PRIMARY KEY,
+    folder_name          TEXT,
+    run_mode             TEXT,
+    outputs              TEXT,          -- 쉼표 구분: bbox, timestamp, captioning
+    labeling_method      TEXT,
+    categories           TEXT,
+    classes              TEXT,
+    image_profile        TEXT,
+    status               TEXT DEFAULT 'pending',
+    archive_pending_path TEXT,
+    archive_path         TEXT,
+    -- YOLO 이미지 추출 파라미터 (NULL이면 기본값 사용)
+    max_frames_per_video INTEGER,
+    jpeg_quality         INTEGER,
+    confidence_threshold DOUBLE PRECISION,
+    iou_threshold        DOUBLE PRECISION,
+    -- 메타
+    requested_by         TEXT,
+    requested_at         TIMESTAMP,
+    processed_at         TIMESTAMP,
+    completed_at         TIMESTAMP,
+    error_message        TEXT,
+    ls_task_status       TEXT DEFAULT 'pending',  -- pending | created | skipped
+    created_at           TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- ============================================================
+-- 10. staging_model_configs: output 타입별 모델 선택 + 기본 파라미터
+--     outputs 값(bbox, timestamp, captioning)에 따라 사용 모델 결정
+-- ============================================================
+CREATE TABLE IF NOT EXISTS staging_model_configs (
+    config_id            TEXT PRIMARY KEY,
+    output_type          TEXT NOT NULL UNIQUE,  -- bbox | timestamp | captioning
+    model_name           TEXT NOT NULL,         -- yolov8l-worldv2 | gemini-2.0-flash 등
+    model_version        TEXT,
+    -- 이미지 추출 기본 파라미터 (dispatch JSON에 값이 없을 때 사용)
+    default_max_frames   INTEGER DEFAULT 24,
+    default_jpeg_quality INTEGER DEFAULT 90,
+    -- 모델별 기본 파라미터
+    default_confidence   DOUBLE PRECISION DEFAULT 0.25,
+    default_iou          DOUBLE PRECISION DEFAULT 0.45,
+    -- 추가 설정 (JSON)
+    extra_params         TEXT,                  -- JSON 문자열로 확장 파라미터 저장
+    is_active            BOOLEAN DEFAULT TRUE,
+    description          TEXT,
+    updated_at           TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    created_at           TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- ============================================================
+-- 11. dispatch_pipeline_runs: Dispatch 요청별 파이프라인 단계 진행 추적
+--     archive 이동 → 모델 실행 → 완료 전 과정 기록
+-- ============================================================
+CREATE TABLE IF NOT EXISTS dispatch_pipeline_runs (
+    run_id               TEXT PRIMARY KEY,
+    request_id           TEXT,
+    folder_name          TEXT,
+    -- 단계 상태
+    step_name            TEXT NOT NULL,         -- archive_move | frame_extract | yolo_detect | gemini_timestamp | gemini_caption | build_dataset
+    step_order           INTEGER DEFAULT 0,
+    step_status          TEXT DEFAULT 'pending', -- pending | running | completed | failed | skipped
+    -- 모델 정보
+    model_name           TEXT,
+    model_version        TEXT,
+    -- 사용된 파라미터 (실제 적용값 기록)
+    applied_params       TEXT,                  -- JSON: {"max_frames":24,"jpeg_quality":90,...}
+    -- 처리 통계
+    input_count          INTEGER DEFAULT 0,
+    output_count         INTEGER DEFAULT 0,
+    error_count          INTEGER DEFAULT 0,
+    -- 타이밍
+    started_at           TIMESTAMP,
+    completed_at         TIMESTAMP,
+    error_message        TEXT,
+    created_at           TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- ============================================================
+-- 12. labeling_specs: spec 수신 → 라우팅/재시도/완료 추적
+-- ============================================================
+CREATE TABLE IF NOT EXISTS labeling_specs (
+    spec_id              TEXT PRIMARY KEY,
+    requester_id         TEXT,
+    team_id              TEXT,
+    source_unit_name     TEXT,
+    categories           JSONB,                     -- category array
+    classes              JSONB,                     -- resolved class array (derived from categories)
+    labeling_method      JSONB,                     -- ["timestamp","captioning","bbox"] or []
+    spec_status          TEXT DEFAULT 'pending',    -- pending | pending_resolved | active | completed | failed
+    retry_count          INTEGER DEFAULT 0,
+    resolved_config_id   TEXT,
+    resolved_config_scope TEXT,                     -- personal | team | fallback
+    last_error           TEXT,
+    created_at           TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at           TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- ============================================================
+-- 13. labeling_configs: config/parameters/*.json 동기화
+-- ============================================================
+CREATE TABLE IF NOT EXISTS labeling_configs (
+    config_id            TEXT PRIMARY KEY,
+    config_json          JSONB NOT NULL,
+    version              INTEGER DEFAULT 1,
+    is_active            BOOLEAN DEFAULT TRUE,
+    created_at           TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at           TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- ============================================================
+-- 14. requester_config_map: requester/team → config 매핑 (personal → team → _fallback)
+-- ============================================================
+CREATE TABLE IF NOT EXISTS requester_config_map (
+    map_id               TEXT PRIMARY KEY,
+    requester_id         TEXT,
+    team_id              TEXT,
+    scope                TEXT NOT NULL,             -- personal | team
+    config_id            TEXT NOT NULL,
+    is_active            BOOLEAN DEFAULT TRUE,
+    created_at           TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at           TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- ============================================================
+-- 15. classification_datasets: 카테고리별 폴더 복사 빌드 이력
+-- ============================================================
+CREATE TABLE IF NOT EXISTS classification_datasets (
+    dataset_id             TEXT PRIMARY KEY,
+    name                   TEXT,
+    folder_prefix          TEXT,
+    config                 JSONB,
+    classification_bucket  TEXT DEFAULT 'vlm-classification',
+    video_count            INTEGER DEFAULT 0,
+    image_count            INTEGER DEFAULT 0,
+    category_count         INTEGER DEFAULT 0,
+    build_status           TEXT DEFAULT 'pending',
+    created_at             TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- ============================================================
+-- Idempotent column guards (ALTER TABLE IF EXISTS ... ADD COLUMN IF NOT EXISTS)
+-- 이하 컬럼은 DuckDB 운영 중 ALTER 로 추가된 것들.
+-- CREATE TABLE 에 이미 포함되어 있으므로 greenfield 에서는 no-op.
+-- 스냅샷 복원 / partial 상태 보호용.
+-- ============================================================
+
+-- raw_files 보강 컬럼
+ALTER TABLE IF EXISTS raw_files ADD COLUMN IF NOT EXISTS spec_id TEXT;
+ALTER TABLE IF EXISTS raw_files ADD COLUMN IF NOT EXISTS source_unit_name TEXT;
+
+-- video_metadata 프레임 추출/자동 라벨 보강 컬럼
+ALTER TABLE IF EXISTS video_metadata ADD COLUMN IF NOT EXISTS frame_extract_status TEXT DEFAULT 'pending';
+ALTER TABLE IF EXISTS video_metadata ADD COLUMN IF NOT EXISTS frame_extract_count INTEGER DEFAULT 0;
+ALTER TABLE IF EXISTS video_metadata ADD COLUMN IF NOT EXISTS frame_extract_error TEXT;
+ALTER TABLE IF EXISTS video_metadata ADD COLUMN IF NOT EXISTS frame_extracted_at TIMESTAMP;
+ALTER TABLE IF EXISTS video_metadata ADD COLUMN IF NOT EXISTS auto_label_status TEXT DEFAULT 'pending';
+ALTER TABLE IF EXISTS video_metadata ADD COLUMN IF NOT EXISTS auto_label_error TEXT;
+ALTER TABLE IF EXISTS video_metadata ADD COLUMN IF NOT EXISTS auto_label_key TEXT;
+ALTER TABLE IF EXISTS video_metadata ADD COLUMN IF NOT EXISTS auto_labeled_at TIMESTAMP;
+
+-- video_metadata 재인코딩 보강 컬럼
+ALTER TABLE IF EXISTS video_metadata ADD COLUMN IF NOT EXISTS original_codec TEXT;
+ALTER TABLE IF EXISTS video_metadata ADD COLUMN IF NOT EXISTS original_profile TEXT;
+ALTER TABLE IF EXISTS video_metadata ADD COLUMN IF NOT EXISTS original_has_b_frames BOOLEAN;
+ALTER TABLE IF EXISTS video_metadata ADD COLUMN IF NOT EXISTS original_level_int INTEGER;
+ALTER TABLE IF EXISTS video_metadata ADD COLUMN IF NOT EXISTS reencode_required BOOLEAN DEFAULT FALSE;
+ALTER TABLE IF EXISTS video_metadata ADD COLUMN IF NOT EXISTS reencode_reason TEXT;
+ALTER TABLE IF EXISTS video_metadata ADD COLUMN IF NOT EXISTS reencode_applied BOOLEAN DEFAULT FALSE;
+ALTER TABLE IF EXISTS video_metadata ADD COLUMN IF NOT EXISTS reencode_preset TEXT;
+
+-- video_metadata 단계별 처리 상태 보강 컬럼
+ALTER TABLE IF EXISTS video_metadata ADD COLUMN IF NOT EXISTS timestamp_status TEXT DEFAULT 'pending';
+ALTER TABLE IF EXISTS video_metadata ADD COLUMN IF NOT EXISTS timestamp_error TEXT;
+ALTER TABLE IF EXISTS video_metadata ADD COLUMN IF NOT EXISTS timestamp_label_key TEXT;
+ALTER TABLE IF EXISTS video_metadata ADD COLUMN IF NOT EXISTS timestamp_completed_at TIMESTAMP;
+ALTER TABLE IF EXISTS video_metadata ADD COLUMN IF NOT EXISTS caption_status TEXT DEFAULT 'pending';
+ALTER TABLE IF EXISTS video_metadata ADD COLUMN IF NOT EXISTS caption_error TEXT;
+ALTER TABLE IF EXISTS video_metadata ADD COLUMN IF NOT EXISTS caption_completed_at TIMESTAMP;
+ALTER TABLE IF EXISTS video_metadata ADD COLUMN IF NOT EXISTS frame_status TEXT DEFAULT 'pending';
+ALTER TABLE IF EXISTS video_metadata ADD COLUMN IF NOT EXISTS frame_error TEXT;
+ALTER TABLE IF EXISTS video_metadata ADD COLUMN IF NOT EXISTS frame_completed_at TIMESTAMP;
+ALTER TABLE IF EXISTS video_metadata ADD COLUMN IF NOT EXISTS bbox_status TEXT DEFAULT 'pending';
+ALTER TABLE IF EXISTS video_metadata ADD COLUMN IF NOT EXISTS bbox_error TEXT;
+ALTER TABLE IF EXISTS video_metadata ADD COLUMN IF NOT EXISTS bbox_completed_at TIMESTAMP;
+
+-- labels 보강 컬럼
+ALTER TABLE IF EXISTS labels ADD COLUMN IF NOT EXISTS label_source TEXT DEFAULT 'manual';
+ALTER TABLE IF EXISTS labels ADD COLUMN IF NOT EXISTS review_status TEXT DEFAULT 'pending';
+ALTER TABLE IF EXISTS labels ADD COLUMN IF NOT EXISTS event_index INTEGER DEFAULT 0;
+ALTER TABLE IF EXISTS labels ADD COLUMN IF NOT EXISTS timestamp_start_sec DOUBLE PRECISION;
+ALTER TABLE IF EXISTS labels ADD COLUMN IF NOT EXISTS timestamp_end_sec DOUBLE PRECISION;
+ALTER TABLE IF EXISTS labels ADD COLUMN IF NOT EXISTS caption_text TEXT;
+ALTER TABLE IF EXISTS labels ADD COLUMN IF NOT EXISTS object_count INTEGER DEFAULT 0;
+
+-- processed_clips 보강 컬럼
+ALTER TABLE IF EXISTS processed_clips ADD COLUMN IF NOT EXISTS clip_start_sec DOUBLE PRECISION;
+ALTER TABLE IF EXISTS processed_clips ADD COLUMN IF NOT EXISTS clip_end_sec DOUBLE PRECISION;
+ALTER TABLE IF EXISTS processed_clips ADD COLUMN IF NOT EXISTS data_source TEXT DEFAULT 'manual';
+ALTER TABLE IF EXISTS processed_clips ADD COLUMN IF NOT EXISTS caption_text TEXT;
+ALTER TABLE IF EXISTS processed_clips ADD COLUMN IF NOT EXISTS duration_sec DOUBLE PRECISION;
+ALTER TABLE IF EXISTS processed_clips ADD COLUMN IF NOT EXISTS fps DOUBLE PRECISION;
+ALTER TABLE IF EXISTS processed_clips ADD COLUMN IF NOT EXISTS frame_count INTEGER;
+ALTER TABLE IF EXISTS processed_clips ADD COLUMN IF NOT EXISTS image_extract_status TEXT DEFAULT 'pending';
+ALTER TABLE IF EXISTS processed_clips ADD COLUMN IF NOT EXISTS image_extract_count INTEGER DEFAULT 0;
+ALTER TABLE IF EXISTS processed_clips ADD COLUMN IF NOT EXISTS image_extract_error TEXT;
+ALTER TABLE IF EXISTS processed_clips ADD COLUMN IF NOT EXISTS image_extracted_at TIMESTAMP;
+
+-- image_metadata 보강 컬럼
+ALTER TABLE IF EXISTS image_metadata ADD COLUMN IF NOT EXISTS image_caption_text TEXT;
+ALTER TABLE IF EXISTS image_metadata ADD COLUMN IF NOT EXISTS image_caption_score DOUBLE PRECISION;
+ALTER TABLE IF EXISTS image_metadata ADD COLUMN IF NOT EXISTS image_caption_bucket TEXT;
+ALTER TABLE IF EXISTS image_metadata ADD COLUMN IF NOT EXISTS image_caption_key TEXT;
+ALTER TABLE IF EXISTS image_metadata ADD COLUMN IF NOT EXISTS image_caption_generated_at TIMESTAMP;
+
+-- dispatch_requests 보강 컬럼
+ALTER TABLE IF EXISTS dispatch_requests ADD COLUMN IF NOT EXISTS labeling_method TEXT;
+ALTER TABLE IF EXISTS dispatch_requests ADD COLUMN IF NOT EXISTS categories TEXT;
+ALTER TABLE IF EXISTS dispatch_requests ADD COLUMN IF NOT EXISTS classes TEXT;
+ALTER TABLE IF EXISTS dispatch_requests ADD COLUMN IF NOT EXISTS max_frames_per_video INTEGER;
+ALTER TABLE IF EXISTS dispatch_requests ADD COLUMN IF NOT EXISTS jpeg_quality INTEGER;
+ALTER TABLE IF EXISTS dispatch_requests ADD COLUMN IF NOT EXISTS confidence_threshold DOUBLE PRECISION;
+ALTER TABLE IF EXISTS dispatch_requests ADD COLUMN IF NOT EXISTS iou_threshold DOUBLE PRECISION;
+ALTER TABLE IF EXISTS dispatch_requests ADD COLUMN IF NOT EXISTS completed_at TIMESTAMP;
+
+-- ============================================================
+-- image_metadata 인덱스 (트랜잭션 내 일반 CREATE INDEX — PG 15 OK)
+-- ============================================================
+CREATE INDEX IF NOT EXISTS idx_image_metadata_bucket_key
+    ON image_metadata (image_bucket, image_key);
+
+CREATE INDEX IF NOT EXISTS idx_image_metadata_source_clip_role_frame
+    ON image_metadata (source_asset_id, source_clip_id, image_role, frame_index);
+
+COMMIT;

@@ -1,4 +1,9 @@
-"""MotherDuck table sensors — 테이블 row count 증가 기반 sync 트리거."""
+"""MotherDuck table sensors — 테이블 row count 증가 기반 sync 트리거.
+
+Backend-aware: ``DATAOPS_DB_BACKEND`` 가 ``postgres`` / ``dual_pg_primary`` 면
+PG 에서 row count 를 읽고, 그 외엔 (default 포함) DuckDB 에서 읽는다.
+이로써 staging/prod cutover 시 env 한 줄로 sensor 가 새 백엔드를 추적.
+"""
 
 from __future__ import annotations
 
@@ -12,7 +17,11 @@ from dagster import DefaultSensorStatus, RunRequest, SkipReason, sensor
 from dagster._core.storage.dagster_run import DagsterRunStatus, RunsFilter
 
 from vlm_pipeline.lib.env_utils import (
+    DB_BACKEND_DUAL_PG_PRIMARY,
+    DB_BACKEND_POSTGRES,
+    db_backend_mode,
     default_duckdb_path,
+    default_postgres_dsn,
     has_any_duckdb_writer_tag,
     int_env,
     is_duckdb_lock_conflict,
@@ -49,7 +58,49 @@ def _parse_cursor_state(raw_cursor: str | None) -> tuple[int | None, str | None,
     return last_count, str(last_updated_at), max(0, event_seq)
 
 
-def _read_table_snapshot(table_name: str) -> tuple[int, str | None]:
+def _read_table_snapshot_postgres(table_name: str) -> tuple[int, str | None]:
+    """PG backend 에서 (row_count, max_updated_at) 스냅샷.
+
+    raw_files 일 때만 max(updated_at) 도 가져옴 — DuckDB 경로와 동일한 cursor 의미.
+    """
+    import psycopg2
+
+    dsn = default_postgres_dsn()
+    if not dsn:
+        raise RuntimeError(
+            "DATAOPS_DB_BACKEND=postgres 인데 DATAOPS_POSTGRES_DSN 미설정 — sensor 가 read 할 곳 없음"
+        )
+
+    with psycopg2.connect(dsn) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT COUNT(*)
+                FROM information_schema.tables
+                WHERE table_schema = 'public'
+                  AND table_name = %s
+                """,
+                (table_name,),
+            )
+            row = cur.fetchone()
+            if not row or int(row[0]) <= 0:
+                raise LookupError(f"table not found: {table_name}")
+
+            escaped = table_name.replace('"', '""')
+            if table_name == "raw_files":
+                cur.execute(
+                    f'SELECT COUNT(*), CAST(MAX(updated_at) AS TEXT) FROM "{escaped}"'
+                )
+                count_row = cur.fetchone()
+                return (
+                    int(count_row[0]),
+                    str(count_row[1]) if count_row[1] is not None else None,
+                )
+            cur.execute(f'SELECT COUNT(*) FROM "{escaped}"')
+            return int(cur.fetchone()[0]), None
+
+
+def _read_table_snapshot_duckdb(table_name: str) -> tuple[int, str | None]:
     db_path = Path(default_duckdb_path())
     if not db_path.exists():
         raise FileNotFoundError(str(db_path))
@@ -92,6 +143,18 @@ def _read_table_snapshot(table_name: str) -> tuple[int, str | None]:
                 conn.close()
 
     raise RuntimeError("duckdb sensor snapshot retry exhausted unexpectedly")
+
+
+def _read_table_snapshot(table_name: str) -> tuple[int, str | None]:
+    """DATAOPS_DB_BACKEND 에 따라 PG 또는 DuckDB 에서 read.
+
+    - postgres / dual_pg_primary  → PG (read authoritative side)
+    - duckdb / dual_duckdb_primary → DuckDB
+    """
+    mode = db_backend_mode()
+    if mode in (DB_BACKEND_POSTGRES, DB_BACKEND_DUAL_PG_PRIMARY):
+        return _read_table_snapshot_postgres(table_name)
+    return _read_table_snapshot_duckdb(table_name)
 
 
 def _build_table_sensor(table_name: str):

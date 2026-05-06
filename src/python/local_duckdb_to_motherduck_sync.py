@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """
-Local DuckDB(MVP tables) -> MotherDuck(MVP tables) sync.
+Local DuckDB/PostgreSQL(MVP tables) -> MotherDuck(MVP tables) sync.
 
 목표:
-- 로컬 DuckDB의 MVP 운영 테이블을 MotherDuck로 동기화
-- 테이블 단위 CREATE OR REPLACE로 스키마/데이터를 로컬과 동일하게 정렬
+- 로컬 DuckDB 또는 PostgreSQL의 MVP 운영 테이블을 MotherDuck로 동기화
+- DuckDB 소스는 기존 기본/호환 경로로 유지
+- 테이블 단위 CREATE OR REPLACE로 스키마/데이터를 소스와 동일하게 정렬
 """
 
 from __future__ import annotations
@@ -250,16 +251,21 @@ def _table_exists(con: duckdb.DuckDBPyConnection, table_name: str) -> bool:
     return bool(row and row[0] > 0)
 
 
-def _local_table_exists(con: duckdb.DuckDBPyConnection, table_name: str) -> bool:
+def _local_table_exists(
+    con: duckdb.DuckDBPyConnection,
+    table_name: str,
+    source_schema: str = "main",
+) -> bool:
+    """source ATTACH alias='local_db'. ``source_schema`` 는 DuckDB='main', PG='public'."""
     row = con.execute(
         """
         SELECT COUNT(*)
         FROM information_schema.tables
         WHERE table_catalog = 'local_db'
-          AND table_schema = 'main'
+          AND table_schema = ?
           AND table_name = ?
         """,
-        [table_name],
+        [source_schema, table_name],
     ).fetchone()
     return bool(row and row[0] > 0)
 
@@ -272,16 +278,20 @@ def _sync_mvp_tables(
     con: duckdb.DuckDBPyConnection,
     dry_run: bool,
     tables: Optional[list[str]] = None,
+    source_schema: str = "main",
 ) -> list[tuple[str, int, int]]:
     results: list[tuple[str, int, int]] = []
     target_tables = _normalize_sync_tables(tables)
 
     for table in target_tables:
-        if not _local_table_exists(con, table):
+        if not _local_table_exists(con, table, source_schema=source_schema):
             print(f"[SKIP] local_db.{table} table not found")
             continue
 
-        src_rel = f"local_db.{quote_identifier(table)}"
+        if source_schema == "public":
+            src_rel = f"local_db.public.{quote_identifier(table)}"
+        else:
+            src_rel = f"local_db.{quote_identifier(table)}"
         dst_rel = quote_identifier(table)
 
         local_count = _count_rows(con, src_rel)
@@ -323,9 +333,43 @@ def _drop_legacy_tables(con: duckdb.DuckDBPyConnection, dry_run: bool) -> list[s
     return dropped
 
 
+def _attach_pg_source(con: duckdb.DuckDBPyConnection, pg_dsn: str) -> None:
+    """MotherDuck 커넥션에서 PG source 를 ``local_db`` alias 로 ATTACH.
+
+    INSTALL 실패는 LOAD 가 성공하면 무시 (MotherDuck 가 extension 을 번들하는 경우 지원).
+    """
+    install_exc: Exception | None = None
+    try:
+        con.execute("INSTALL postgres")
+    except Exception as exc:  # noqa: BLE001
+        install_exc = exc
+    try:
+        con.execute("LOAD postgres")
+    except Exception as load_exc:  # noqa: BLE001
+        if install_exc is not None:
+            raise RuntimeError(
+                f"Failed to load DuckDB postgres extension. "
+                f"INSTALL error: {install_exc}. LOAD error: {load_exc}"
+            ) from load_exc
+        raise RuntimeError(f"Failed to load DuckDB postgres extension: {load_exc}") from load_exc
+    con.execute(f"ATTACH '{pg_dsn}' AS local_db (TYPE POSTGRES, READ_ONLY)")
+
+
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Sync local DuckDB MVP tables to MotherDuck"
+        description="Sync local DuckDB/PostgreSQL MVP tables to MotherDuck",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # DuckDB source mode (original behavior):
+  %(prog)s --local-db-path /data/pipeline.duckdb --db pipeline_db
+
+  # PostgreSQL source mode (phase 7+):
+  %(prog)s --source-dsn "postgresql://user:pass@host:5432/vlm" --db pipeline_db
+
+  # PostgreSQL source, dry-run:
+  %(prog)s --source-dsn "postgresql://user:pass@host:5432/vlm" --db pipeline_db --dry-run
+""",
     )
     parser.add_argument("--config", default=None, help="Path to configs/global.yaml")
     parser.add_argument("--db", default="pipeline_db", help="MotherDuck database name")
@@ -333,6 +377,14 @@ def _parse_args() -> argparse.Namespace:
         "--local-db-path",
         default=None,
         help="Local DuckDB path (default: settings/env)",
+    )
+    parser.add_argument(
+        "--source-dsn",
+        default=None,
+        help=(
+            "PostgreSQL source DSN (e.g. postgresql://user:pass@host:5432/dbname). "
+            "Overrides DuckDB source. Falls back to DATAOPS_POSTGRES_DSN env var."
+        ),
     )
     parser.add_argument(
         "--token",
@@ -398,8 +450,10 @@ def main() -> int:
         or os.getenv("DUCKDB_PATH")
         or settings.duckdb_path
     )
+    pg_dsn = args.source_dsn or os.getenv("DATAOPS_POSTGRES_DSN")
+    use_pg_source: bool = bool(pg_dsn)
 
-    if not local_db_path or not os.path.exists(local_db_path):
+    if not use_pg_source and (not local_db_path or not os.path.exists(local_db_path)):
         print(f"[ERROR] Local DuckDB not found: {local_db_path}")
         return 1
 
@@ -408,22 +462,36 @@ def main() -> int:
         print("[ERROR] MotherDuck token is required. Set MOTHERDUCK_TOKEN or pass --token/--env-file.")
         return 1
 
-    bootstrap_state = _bootstrap_database_from_local(
-        token=md_token,
-        database=args.db,
-        local_db_path=local_db_path,
-        dry_run=args.dry_run,
-    )
-    if bootstrap_state == "would_create":
-        if args.ensure_org_share:
-            _ensure_org_share(
-                token=md_token,
-                database=args.db,
-                share_name=args.share_name or args.db,
-                share_update_mode=args.share_update,
-                dry_run=True,
-            )
-        return 0
+    if use_pg_source:
+        # PG source 모드 — DuckDB 파일 기반 bootstrap 적용 불가.
+        # 운영 흐름: 한 번은 DuckDB 로 bootstrap 한 후 이후엔 PG source 로 sync.
+        root_con = connect_motherduck_root(md_token)
+        try:
+            if not database_exists(root_con, args.db):
+                print(
+                    "[ERROR] PG source mode requires MotherDuck DB to already exist. "
+                    "Bootstrap once with DuckDB source first."
+                )
+                return 1
+        finally:
+            root_con.close()
+    else:
+        bootstrap_state = _bootstrap_database_from_local(
+            token=md_token,
+            database=args.db,
+            local_db_path=local_db_path,
+            dry_run=args.dry_run,
+        )
+        if bootstrap_state == "would_create":
+            if args.ensure_org_share:
+                _ensure_org_share(
+                    token=md_token,
+                    database=args.db,
+                    share_name=args.share_name or args.db,
+                    share_update_mode=args.share_update,
+                    dry_run=True,
+                )
+            return 0
 
     if args.ensure_org_share:
         _ensure_org_share(
@@ -436,15 +504,25 @@ def main() -> int:
 
     con = connect_motherduck(args.db, md_token)
     try:
-        attach_path = quote_string(str(Path(local_db_path).resolve()))
-        con.execute(f"ATTACH '{attach_path}' AS local_db (READ_ONLY)")
+        if use_pg_source:
+            _attach_pg_source(con, pg_dsn)
+            source_schema = "public"
+        else:
+            attach_path = quote_string(str(Path(local_db_path).resolve()))
+            con.execute(f"ATTACH '{attach_path}' AS local_db (READ_ONLY)")
+            source_schema = "main"
 
         dropped = _drop_legacy_tables(con, dry_run=args.dry_run)
         if dropped:
             mode = "DRY-RUN" if args.dry_run else "SYNC"
             print(f"[{mode}] dropped_legacy_tables={len(dropped)}")
 
-        synced = _sync_mvp_tables(con, dry_run=args.dry_run, tables=selected_tables)
+        synced = _sync_mvp_tables(
+            con,
+            dry_run=args.dry_run,
+            tables=selected_tables,
+            source_schema=source_schema,
+        )
         if not synced:
             print("[INFO] No local MVP tables found. Nothing to sync.")
             con.execute("DETACH local_db")
