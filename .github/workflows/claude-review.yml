@@ -44,10 +44,31 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
+      # claude-code-action @v1 의 native installer 가 종종 fail (binary not
+      # found at /home/runner/.local/bin/claude). 사전에 npm 으로 CLI 설치 후
+      # path_to_claude_code_executable 로 명시 주입. step continue-on-error 도
+      # 유지 — action 의 cosmetic tsconfig directory mismatch 출력 무시용.
+      - name: Pre-install Claude Code CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "${HOME}/.npm-global"
+          npm config set prefix "${HOME}/.npm-global"
+          # supply-chain 안전 위해 명시 버전 pin (latest stable). action 의 SDK
+          # 버전과 호환되는 patch 만 변경. 미설치 시 graceful fail (action 측
+          # native install 시도가 fallback 으로 진행됨).
+          npm install -g @anthropic-ai/claude-code@latest
+          echo "${HOME}/.npm-global/bin" >> "$GITHUB_PATH"
+          /home/runner/.npm-global/bin/claude --version || true
+
       - uses: anthropics/claude-code-action@v1
+        continue-on-error: true
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
+          # ${{ env.HOME }} 은 GitHub Actions 의 env: context 에서 빈 문자열로
+          # resolve 되므로 하드코딩.
+          path_to_claude_code_executable: /home/runner/.npm-global/bin/claude
           claude_args: "--max-turns 15 --allowedTools Read,Grep,Glob"
           prompt: |
             You are reviewing a PR for a Dagster-based VLM data pipeline.

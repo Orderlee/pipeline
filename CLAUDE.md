@@ -85,10 +85,14 @@ python3 scripts/query_local_duckdb.py --sql "SELECT COUNT(*) FROM raw_files;"
 
 1. **test 잡** — `pytest tests/unit` (workflow_dispatch의 `skip_tests=true`로 우회 가능, 긴급시 전용)
 2. **detect_image_rebuild 잡** — `Dockerfile` / `docker/app/` / `configs/` / `scripts/` / `gcp/` / `split_dataset/` / `src/python/` 변경 시에만 이미지 재빌드
-3. **deploy 잡** — `rsync -a --delete`로 워크스페이스 → DEPLOY_ROOT 동기화 (`src/`, `configs/`, `gcp/`, `scripts/`, `split_dataset/` + `docker/app/` 일부 + compose/Dockerfile). `dagster_home/`, `dagster_home_staging/`, `credentials/`, `docker/data/`는 rsync 제외 — 런타임 상태 보존
+3. **deploy 잡** — 호스트 코드를 deployed SHA로 정렬:
+   - **(a) rsync** `-a --delete` 워크스페이스 → DEPLOY_ROOT 동기화 (`src/`, `configs/`, `gcp/`, `scripts/`, `split_dataset/` + `docker/app/` 일부 + compose/Dockerfile). `dagster_home/`, `dagster_home_staging/`, `credentials/`, `docker/data/`는 rsync 제외 — 런타임 상태 보존
+   - **(b) git hard-reset** `git -C ${DEPLOY_REPO_ROOT} fetch origin && reset --hard ${GITHUB_SHA}` — 호스트 git tree(`.git/HEAD`, `git log`, `git status`)를 deployed commit과 정확히 일치시킴. **rsync로 src 파일은 갱신되지만 `.git`은 안 건드리므로** 이 step이 없으면 호스트의 `git log`가 영원히 stale로 보임. tracked 파일만 reset되고 `dagster_home/` 등 untracked는 유지됨.
 4. env 파일 복원 (`.env` / `.env.test` — 호스트 저장분 유지)
 5. `docker compose up -d` 스택 재기동 + HEALTHCHECK_URL 응답 검증 (prod `:3030/server_info`, staging `:3031/server_info`)
 6. AI deploy 분석 (Claude CLI, best-effort, 실패해도 배포는 성공)
+
+> ✅ **단일 진리 원칙**: deploy 후 `호스트 git HEAD == 컨테이너 이미지 안 src == 실행 코드`가 항상 일치한다. 호스트 src는 컨테이너에 mount되지 않으므로 (이미지 빌드 시 `COPY src/` 결과만 사용), 호스트 src를 수정해도 컨테이너 동작은 변하지 않는다 — 변경 즉시 반영이 필요하면 `docker compose build` 후 재기동.
 
 > ⚠️ **fork 구분**: 두 워크플로 모두 `if: github.repository == 'Orderlee/Datapipeline-Data-data_pipeline'` 조건 있음 — `upstream`(upstream-org)으로 PR이 가면 CI 트리거되지 않음.
 
@@ -136,7 +140,7 @@ git -C /home/user/work_p/Datapipeline-Data-data_pipeline_test status       # dev
 
 ### 금기사항
 
-- 호스트에서 `src/`·`configs/`·`scripts/`·compose 파일 **수동 수정 금지** — 다음 CI 배포의 `rsync --delete`로 소실됨. 반드시 git commit → push 경로로 반영
+- 호스트에서 `src/`·`configs/`·`scripts/`·compose 파일 **수동 수정 금지** — 다음 CI 배포의 `rsync --delete` + `git reset --hard`로 소실됨. 반드시 git commit → push 경로로 반영
 - `main`에 force-push 금지 (CI 미트리거 + 히스토리 손상)
 - `.env` / `.env.test`는 git 미추적. 변경 시 호스트에서 직접 편집 후 해당 환경 Dagster 재시작 필요
 - 스테이징에서 디버깅용 수정 → `dev`에 commit하지 않으면 다음 배포로 사라짐
@@ -210,7 +214,7 @@ git -C /home/user/work_p/Datapipeline-Data-data_pipeline_test status       # dev
   - `/home/user/mou/incoming` → `/nas/incoming`
   - `/home/user/mou/archive` → `/nas/archive`
   - `/home/user/mou/staging` → `/nas/staging` (staging only)
-  - 코드→실행 경로: `../src` → `/src/vlm` (read-only)
+  - 코드→실행 경로: **mount 없음**. 컨테이너는 이미지 빌드 시 Dockerfile `COPY src/ /src/vlm/`로 들어간 src만 사용 (`/src/vlm`, `/src/python`). 호스트 src 변경은 다음 `docker compose build` 전까지 컨테이너에 반영되지 않음.
 - DuckDB **호스트 실제 경로**: `./docker/data/pipeline.duckdb`
 - YOLO 서버: GPU 1번 전용 (`cuda:1`, `NVIDIA_VISIBLE_DEVICES=1`)
 - Places365 모델 캐시: `/data/models/places365` (auto_download=false, 고정 캐시만 사용)

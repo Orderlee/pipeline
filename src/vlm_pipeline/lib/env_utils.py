@@ -76,6 +76,35 @@ def default_duckdb_path() -> str:
     )
 
 
+def default_postgres_dsn() -> str | None:
+    """PostgreSQL DSN 기본값 (환경변수 우선).
+
+    ``DATAOPS_POSTGRES_DSN`` 미설정이면 None 반환.
+    형식: ``postgresql://user:pass@host:port/dbname``
+    """
+    raw = os.getenv("DATAOPS_POSTGRES_DSN", "").strip()
+    return raw or None
+
+
+# DB 백엔드 모드. ``definitions_production.build_common_resources`` 가 분기.
+DB_BACKEND_DUCKDB = "duckdb"
+DB_BACKEND_POSTGRES = "postgres"
+DB_BACKEND_DUAL_DUCKDB_PRIMARY = "dual_duckdb_primary"
+DB_BACKEND_DUAL_PG_PRIMARY = "dual_pg_primary"
+DB_BACKEND_MODES = (
+    DB_BACKEND_DUCKDB,
+    DB_BACKEND_POSTGRES,
+    DB_BACKEND_DUAL_DUCKDB_PRIMARY,
+    DB_BACKEND_DUAL_PG_PRIMARY,
+)
+
+
+def db_backend_mode() -> str:
+    """``DATAOPS_DB_BACKEND`` env. 미설정/오타 시 안전한 ``duckdb`` (legacy default)."""
+    raw = os.getenv("DATAOPS_DB_BACKEND", "").strip().lower()
+    return raw if raw in DB_BACKEND_MODES else DB_BACKEND_DUCKDB
+
+
 DUCKDB_LEGACY_WRITER_TAG = "duckdb_writer"
 DUCKDB_RAW_WRITER_TAG = "duckdb_raw_writer"
 DUCKDB_LABEL_WRITER_TAG = "duckdb_label_writer"
@@ -91,7 +120,15 @@ DUCKDB_WRITER_TAG_KEYS = (
 
 
 def build_duckdb_writer_tags(*tag_keys: str) -> dict[str, str]:
-    """Dagster run/job tag dict를 생성한다."""
+    """Dagster run/job tag dict 를 생성.
+
+    PG primary 모드 (``DATAOPS_DB_BACKEND=postgres``) 에서는 DuckDB write 가 0이라
+    concurrency lock 이 무의미. tag 자체를 안 붙여 동시 run 을 막지 않게 한다.
+    dual_pg_primary / dual_duckdb_primary / duckdb 모드에서는 mirror 또는 primary
+    로 DuckDB write 가 발생하므로 단일 file write lock 보호용 tag 그대로 적용.
+    """
+    if db_backend_mode() == DB_BACKEND_POSTGRES:
+        return {}
     normalized = [str(tag or "").strip() for tag in tag_keys if str(tag or "").strip()]
     return {tag_key: "true" for tag_key in normalized}
 

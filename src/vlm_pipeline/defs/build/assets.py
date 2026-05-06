@@ -14,7 +14,7 @@ from datetime import datetime
 from pathlib import PurePosixPath
 from uuid import uuid4
 
-from dagster import Field, asset
+from dagster import Field, RetryPolicy, asset
 
 from vlm_pipeline.lib.key_builders import (
     build_gemini_label_key,
@@ -275,6 +275,9 @@ def _build_project(context, db: DuckDBResource, minio: MinIOResource,
     ),
     group_name="build",
     config_schema={"folder": Field(str, is_required=False)},
+    # transient error (DuckDB lock conflict, MinIO 일시 장애 등) 자동 재시도.
+    # delay=60s 면 lock 보유한 다른 writer 가 풀릴 충분한 시간 + sensor interval 과 정렬.
+    retry_policy=RetryPolicy(max_retries=3, delay=60),
 )
 def build_dataset(
     context,
@@ -294,20 +297,34 @@ def build_dataset(
     minio.ensure_bucket(DATASET_BUCKET)
 
     summaries: list[dict] = []
+    errors: list[tuple[str, Exception]] = []
     for proj in projects:
         folder = proj["folder"]
         try:
             summaries.append(_build_project(context, db, minio, folder))
         except Exception as exc:
+            # 폴더별 fail-forward 정책 유지: 다른 폴더 처리 계속.
+            # 단, run 종료 시 errors 가 있으면 escalate 하여 job=FAILURE 표시.
+            # 이렇게 해야 sensor cursor 가 success 로 박지 않고 RetryPolicy/재 finalize
+            # 시 같은 후보를 다시 시도할 수 있다 (이전엔 swallow → SUCCESS → 영구 dedup).
             context.log.error(f"[{folder}] 빌드 실패: {exc}")
             summaries.append({"folder": folder, "error": str(exc)})
+            errors.append((folder, exc))
 
     total = {
         "projects": len(summaries),
         "total_videos": sum(s.get("videos", 0) for s in summaries),
         "total_clips": sum(s.get("clips", 0) for s in summaries),
         "total_images": sum(s.get("images", 0) for s in summaries),
+        "failed_folders": [f for f, _ in errors],
     }
     context.add_output_metadata(total)
     context.log.info(f"BUILD 전체 완료: {total}")
+
+    if errors:
+        first_folder, first_exc = errors[0]
+        raise RuntimeError(
+            f"build_dataset 실패 {len(errors)}/{len(summaries)} folder. "
+            f"첫 실패: {first_folder} → {first_exc}"
+        )
     return {**total, "summaries": summaries}

@@ -7,16 +7,17 @@ import time
 from hashlib import sha1
 from pathlib import Path
 
-import duckdb
 from dagster import DefaultSensorStatus, RunRequest, SkipReason, sensor
 from dagster._core.storage.dagster_run import DagsterRunStatus, RunsFilter
 
 from vlm_pipeline.lib.env_utils import (
     bool_env,
     default_duckdb_path,
+    default_postgres_dsn,
     int_env,
     is_duckdb_lock_conflict,
 )
+from vlm_pipeline.lib.sensor_db import open_sensor_read_connection
 
 VIDEO_FRAME_SENSOR_TARGET_JOBS = {
     "auto_labeling_job",
@@ -53,9 +54,13 @@ def _parse_cursor_state(raw_cursor: str | None) -> tuple[int | None, str | None,
 
 
 def _read_video_frame_backlog_snapshot() -> dict[str, int | str | None]:
-    db_path = Path(default_duckdb_path())
-    if not db_path.exists():
-        raise FileNotFoundError(str(db_path))
+    # PG primary 모드면 in-memory DuckDB + ATTACH PG (read_only). DuckDB single
+    # 모드면 legacy DuckDB file 직접 read. open_sensor_read_connection() 가 분기.
+    # DuckDB legacy 경로 보호용 file 존재성 체크는 helper 안에서 안 하므로 호출자가 확인.
+    if not default_postgres_dsn():
+        db_path = Path(default_duckdb_path())
+        if not db_path.exists():
+            raise FileNotFoundError(str(db_path))
 
     retry_count = int_env("DUCKDB_SENSOR_LOCK_RETRY_COUNT", 5, 0)
     retry_delay_ms = int_env("DUCKDB_SENSOR_LOCK_RETRY_DELAY_MS", 200, 10)
@@ -64,7 +69,7 @@ def _read_video_frame_backlog_snapshot() -> dict[str, int | str | None]:
     for attempt in range(retry_count + 1):
         conn = None
         try:
-            conn = duckdb.connect(str(db_path), read_only=True)
+            conn = open_sensor_read_connection()
             row = conn.execute(
                 """
                 WITH existing_frames AS (

@@ -31,8 +31,21 @@ jobs:
         with:
           fetch-depth: 0
 
+      # claude-review.yml 동일 — npm 사전 설치 + path 명시 + continue-on-error.
+      - name: Pre-install Claude Code CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "${HOME}/.npm-global"
+          npm config set prefix "${HOME}/.npm-global"
+          npm install -g @anthropic-ai/claude-code@latest
+          echo "${HOME}/.npm-global/bin" >> "$GITHUB_PATH"
+          /home/runner/.npm-global/bin/claude --version || true
+
       - uses: anthropics/claude-code-action@v1
+        continue-on-error: true
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
+          path_to_claude_code_executable: /home/runner/.npm-global/bin/claude
           claude_args: "--max-turns 15"
