@@ -68,6 +68,18 @@ def schedule_sync_debounced(project_id: int, project_title: str) -> None:
         def _fire() -> None:
             with _SYNC_DEBOUNCE_LOCK:
                 _SYNC_DEBOUNCE_TIMERS.pop(project_id, None)
+            # finalize 직전 큐잉돼 있던 RECV 가 finalize 후 _fire 되어 ls_sync 가
+            # review_status='finalized' 를 'reviewed' 로 회귀시키는 race 방어.
+            # /webhook RECV 핸들러의 가드와 동일 정책으로 _fire 시점에도 재검사.
+            current = load_state().get(str(project_id), {}).get("status")
+            if current == "finalized":
+                msg = (
+                    f"⚠️ *{project_title}* (id={project_id}) debounce timer fire 직전 "
+                    f"finalized 확인 — sync skip (회귀 방지)."
+                )
+                print(f"[DEBOUNCE-GUARD] {msg}")
+                send_slack(msg)
+                return
             run_sync_and_notify(project_id, project_title)
 
         timer = threading.Timer(_SYNC_DEBOUNCE_SEC, _fire)
@@ -233,16 +245,43 @@ def send_slack_response(response_url: str, message: str) -> None:
 # DuckDB finalize
 # ---------------------------------------------------------------------------
 
-def finalize_labels_in_db(label_keys: list[str]) -> int:
+def _extract_folder_prefixes(label_keys: list[str]) -> list[str]:
+    """label_keys 의 첫 path component 집합을 반환 (folder_name).
+
+    label_keys 는 보통 `<source_unit_name>/...json` 형식이라 첫 "/" 까지가 folder
+    prefix 가 된다. 같은 LS project 의 키는 일반적으로 하나의 folder 에 속하지만,
+    안전을 위해 set 으로 모은다.
+    """
+    prefixes: set[str] = set()
+    for k in label_keys or []:
+        if not k or "/" not in k:
+            continue
+        prefixes.add(k.split("/", 1)[0])
+    return sorted(prefixes)
+
+
+def finalize_labels_in_db(label_keys: list[str]) -> dict:
     """label_status='completed', review_status='finalized' 업데이트.
 
     labels (video-level) 와 image_labels (image-level) 양쪽에 동일 UPDATE 적용.
     labels_key 스키마가 서로 겹치지 않으므로 각 테이블은 자신의 key 만 매칭됨.
-    반환값은 두 테이블의 finalized row 합계.
+
+    잔존 row 자동 보정:
+      1) state.label_keys IN ({...}) 매칭 1차 UPDATE (review_status<>'finalized')
+      2) label_keys 의 folder prefix LIKE 매칭으로 review_status='reviewed' 잔존
+         row 도 자동 finalize.
+         SOT: 사람 LS submit 결과는 ls_sync.upsert_video_labels /
+         update_image_labels_in_db 가 review_status='reviewed' 로 박는다 → 같은
+         folder 의 'reviewed' 는 사람 검수 완료 의미라 finalize 안전.
+         'pending_review'/'in_review' 등은 prefix 매칭에서 제외하여 미검수 row 보호.
+
+    반환값: {"primary": int, "auto_recovered": int}
+      - primary: state.label_keys IN 매칭으로 finalize 된 row (양 테이블 합)
+      - auto_recovered: prefix LIKE 매칭으로 추가 finalize 된 row (양 테이블 합)
     """
     import duckdb
     if not label_keys or not DB_PATH:
-        return 0
+        return {"primary": 0, "auto_recovered": 0}
     conn = None
     for attempt in range(5):
         try:
@@ -283,7 +322,7 @@ def finalize_labels_in_db(label_keys: list[str]) -> int:
             """,
             label_keys,
         )
-        row = conn.execute(
+        primary_row = conn.execute(
             f"""
             SELECT
               (SELECT COUNT(*) FROM labels
@@ -294,7 +333,54 @@ def finalize_labels_in_db(label_keys: list[str]) -> int:
             """,
             label_keys + label_keys,
         ).fetchone()
-        return int(row[0]) if row else 0
+        primary = int(primary_row[0]) if primary_row else 0
+
+        # 2차: folder prefix 기반 잔존 자동 보정.
+        # state.label_keys 에 빠진 키가 있어도 같은 folder 의 사람 검수 완료 row 는
+        # 함께 finalize. 'reviewed' 만 매칭하여 미검수 row 는 안전하게 제외.
+        auto_recovered = 0
+        prefixes = _extract_folder_prefixes(label_keys)
+        if prefixes:
+            patterns = [p + "/%" for p in prefixes]
+            or_clauses = " OR ".join(["labels_key LIKE ?"] * len(prefixes))
+            # pre-count: 매칭 row 가 곧 UPDATE 영향 row (단일 트랜잭션 + 동시 INSERT 없음 가정).
+            pre_v = conn.execute(
+                f"SELECT COUNT(*) FROM labels WHERE ({or_clauses}) AND review_status = 'reviewed'",
+                patterns,
+            ).fetchone()
+            pre_i = conn.execute(
+                f"SELECT COUNT(*) FROM image_labels WHERE ({or_clauses}) AND review_status = 'reviewed'",
+                patterns,
+            ).fetchone()
+            pending_v = int(pre_v[0]) if pre_v else 0
+            pending_i = int(pre_i[0]) if pre_i else 0
+            if pending_v:
+                conn.execute(
+                    f"""
+                    UPDATE labels
+                    SET label_status  = 'completed',
+                        review_status = 'finalized'
+                    WHERE ({or_clauses}) AND review_status = 'reviewed'
+                    """,
+                    patterns,
+                )
+            if pending_i:
+                conn.execute(
+                    f"""
+                    UPDATE image_labels
+                    SET label_status  = 'completed',
+                        review_status = 'finalized'
+                    WHERE ({or_clauses}) AND review_status = 'reviewed'
+                    """,
+                    patterns,
+                )
+            auto_recovered = pending_v + pending_i
+            if auto_recovered:
+                print(
+                    f"[FINALIZE] folder prefix 잔존 자동 보정: labels +{pending_v}, "
+                    f"image_labels +{pending_i} (prefixes={prefixes})"
+                )
+        return {"primary": primary, "auto_recovered": auto_recovered}
     finally:
         conn.close()
 
@@ -329,13 +415,14 @@ def _run_sync_and_notify_inner(project_id: int, project_title: str) -> None:
         send_slack(f"❌ *{project_title}* sync 실패: DuckDB 경로 미설정")
         return
 
+    sync_result: dict = {}
     try:
         import sys as _sys
         _gemini_dir = str(Path(__file__).parent)
         if _gemini_dir not in _sys.path:
             _sys.path.insert(0, _gemini_dir)
         from ls_sync import run as sync_run
-        sync_run(
+        sync_result = sync_run(
             project_id=project_id,
             ls_url=LS_URL,
             api_key=API_KEY,
@@ -347,23 +434,33 @@ def _run_sync_and_notify_inner(project_id: int, project_title: str) -> None:
             prefix="",
             dry_run=False,
             db_path=DB_PATH,
-        )
+        ) or {}
     except Exception as exc:
         print(f"[ERROR] sync 실패: {exc}")
         send_slack(f"❌ *{project_title}* (id={project_id}) sync 실패: {exc}")
         return
 
-    # state 업데이트
+    # state 업데이트.
+    # ls_tasks.py create 시점에 박힌 label_keys 외에, ls_sync 가 신규 생성한 events
+    # / sam3 JSON (예: Gemini auto 누락이었던 영상에 사람이 라벨 작성한 케이스) 도
+    # union merge 해서 finalize 누락 방지.
     now = datetime.now(timezone.utc).isoformat()
     entry = state.get(pid, {})
+    existing_keys = set(entry.get("label_keys", []))
+    processed_keys = set(sync_result.get("processed_label_keys", []))
+    merged_keys = sorted(existing_keys | processed_keys)
     entry.update({
         "project_id": project_id,
         "title": project_title,
         "last_sync_at": now,
         "status": "pending_finalize",
+        "label_keys": merged_keys,
     })
     state[pid] = entry
     save_state(state)
+    if processed_keys - existing_keys:
+        added = sorted(processed_keys - existing_keys)
+        print(f"[INFO] state.json label_keys 에 {len(added)}건 신규 추가: {added}")
 
     if is_first:
         send_slack(
@@ -486,7 +583,10 @@ def finalize_project(project_id: int, response_url: str = "") -> None:
         send_slack_response(response_url, msg)
         return
 
-    updated = finalize_labels_in_db(label_keys)
+    result = finalize_labels_in_db(label_keys)
+    primary = int(result.get("primary", 0))
+    auto_recovered = int(result.get("auto_recovered", 0))
+    total_finalized = primary + auto_recovered
 
     # state 업데이트
     info["status"] = "finalized"
@@ -512,9 +612,17 @@ def finalize_project(project_id: int, response_url: str = "") -> None:
         )
     )
 
+    if auto_recovered:
+        db_msg = (
+            f"→ DuckDB {total_finalized}건 반영 "
+            f"(state 매칭 {primary} + folder prefix 자동 보정 {auto_recovered})"
+        )
+    else:
+        db_msg = f"→ DuckDB {total_finalized}건 반영"
+
     msg = (
         f"✅ *{title}* (id={project_id}) 최종 확정 완료\n"
-        f"→ DuckDB {updated}건 반영\n"
+        f"{db_msg}\n"
         f"{clip_msg}"
     )
     print(f"[FINALIZE] {msg}")

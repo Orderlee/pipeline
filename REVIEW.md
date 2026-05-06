@@ -43,3 +43,5 @@ dev → main PR (릴리즈 PR)의 경우 추가 확인:
 - `docker-compose.yaml` 변경 시 볼륨/네트워크 영향
 - env 변수 추가/변경 시 `.env.example` 동기화 여부
 - `scripts/deploy/` 변경 시 롤백 호환성
+
+<!-- claude-action fix verification trigger 2026-05-06 -->

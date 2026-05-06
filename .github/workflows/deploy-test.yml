@@ -38,6 +38,23 @@ jobs:
     # upstream-org(upstream)에는 runner 없음 → 워크플로우 파일이 공유되어도 여기서는 skip.
     runs-on: [self-hosted, linux, test]
     if: ${{ github.repository == 'Orderlee/Datapipeline-Data-data_pipeline' && github.event.inputs.skip_tests != 'true' }}
+    services:
+      # DuckDB → PostgreSQL 마이그레이션 (db-splendid-crayon plan) 의 양 백엔드 parity
+      # 테스트를 위한 sidecar. host port 25432 — 로컬 compose 의 postgres 와 충돌 회피.
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: postgres
+        ports:
+          - 25432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    env:
+      DATAOPS_TEST_POSTGRES_DSN: postgresql://postgres:test@localhost:25432/postgres
     steps:
       - name: Checkout code
         uses: actions/checkout@v6
@@ -45,6 +62,8 @@ jobs:
       - name: Run unit tests
         run: |
           pip install -e ".[dev]" --quiet 2>/dev/null || true
+          # PG fixture 의존성 — runtime 에서도 이미 설치되어 있을 수 있지만 명시.
+          pip install psycopg2-binary --quiet 2>/dev/null || true
           python -m pytest tests/unit -q --tb=short 2>&1 || {
             echo "::error::Unit tests failed — test 배포를 중단합니다"
             exit 1
@@ -119,7 +138,9 @@ jobs:
           DEPLOY_ROOT: ${{ env.DEPLOY_ROOT }}
           ENV_TARGET_NAME: .env.test
           ENV_SOURCE: /home/user/work_p/Datapipeline-Data-data_pipeline_test/docker/.env.test
-          ENV_TEMPLATE_SOURCE: ${{ github.workspace }}/docker/.env.test
+          # .env.test 은 git untracked (staging 호스트 secrets/override 보관용).
+          # 새 환경 셋업 시 .env.test.example 이 시드 source.
+          ENV_TEMPLATE_SOURCE: ${{ github.workspace }}/docker/.env.test.example
           HEALTHCHECK_URL: http://127.0.0.1:3031/server_info
           DEPLOY_LABEL: test
           IMAGE_NAME: ${{ env.IMAGE_NAME }}
@@ -127,6 +148,9 @@ jobs:
           BUILD_REQUIRED: ${{ needs.detect_image_rebuild.outputs.build_required }}
           COMPOSE_PROJECT_NAME: ${{ env.COMPOSE_PROJECT_NAME }}
           REQUIRED_ENV_KEYS: DATAOPS_DUCKDB_PATH MINIO_ENDPOINT
+          # deploy-stack.sh 가 staging repo 의 .git tree 를 정확히 이 SHA 로 hard-reset 한다.
+          # 이렇게 해야 호스트의 git log/status 가 deployed 코드와 일치한다.
+          GIT_TARGET_REF: ${{ github.sha }}
         run: bash scripts/deploy/deploy-stack.sh
 
       - name: Deploy summary

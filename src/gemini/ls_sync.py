@@ -288,6 +288,11 @@ def upsert_video_labels(
     new_events=[] 이면 DELETE 만 (INSERT 없음).
     DELETE + INSERT 를 한 트랜잭션으로 묶어 원자성 보장.
 
+    finalized 보호 가드: 이미 review_status='finalized' 인 row 가 하나라도 있으면
+    upsert 자체를 skip. /sync-approve 로 확정된 라벨이 사람 재 Submit 또는
+    debounce 잔존 webhook 에 의해 'reviewed' 로 회귀하던 사고 (운영 1회 발생) 방지.
+    재검수가 필요하면 state.json status 를 운영자가 명시 리셋 후 sync 재실행해야 한다.
+
     반환값: (deleted_count, inserted_count)
     """
     import hashlib
@@ -295,6 +300,17 @@ def upsert_video_labels(
     if owns_conn:
         conn = _connect_duckdb_with_retry(db_path)
     try:
+        finalized_row = conn.execute(
+            "SELECT COUNT(*) FROM labels WHERE labels_key = ? AND review_status = 'finalized'",
+            [labels_key],
+        ).fetchone()
+        if finalized_row and int(finalized_row[0]) > 0:
+            print(
+                f"[GUARD] {labels_key} 는 이미 finalized 라벨 보유 → upsert_video_labels skip "
+                f"(SOT 회귀 방지). 재검수 필요 시 state.json status 리셋 후 재실행."
+            )
+            return (0, 0)
+
         conn.execute("BEGIN")
         deleted_row = conn.execute(
             "SELECT COUNT(*) FROM labels WHERE labels_key = ?",
@@ -517,6 +533,10 @@ def build_reviewed_coco_json(
 def update_image_labels_in_db(db_path: str, labels_key: str, object_count: int, conn=None) -> int:
     """image_labels 테이블의 review_status/label_source/object_count 전이.
     conn이 주어지면 재사용 (커넥션 open/close 오버헤드 감소).
+
+    finalized 보호 가드: WHERE 절에 review_status<>'finalized' 추가. /sync-approve 로
+    확정된 image_labels 가 사람 재 Submit 또는 debounce 잔존 webhook 에 의해 'reviewed'
+    로 회귀하던 사고 방지. 재검수는 state.json status 리셋 후 재 sync 가 정식 절차.
     """
     if not labels_key or (not db_path and conn is None):
         return 0
@@ -531,11 +551,12 @@ def update_image_labels_in_db(db_path: str, labels_key: str, object_count: int, 
                 label_source  = 'manual_review',
                 object_count  = ?
             WHERE labels_key = ?
+              AND review_status <> 'finalized'
             """,
             [int(object_count), labels_key],
         )
         row = conn.execute(
-            "SELECT COUNT(*) FROM image_labels WHERE labels_key = ? AND review_status = 'reviewed'",
+            "SELECT COUNT(*) FROM image_labels WHERE labels_key = ? AND review_status IN ('reviewed','finalized')",
             [labels_key],
         ).fetchone()
         return int(row[0]) if row else 0
@@ -560,7 +581,27 @@ def run(
     prefix: str,
     dry_run: bool,
     db_path: str | None = None,
-) -> None:
+) -> dict:
+    """LS annotation → MinIO labels JSON + DuckDB labels 동기화.
+
+    반환값:
+        {
+            "processed_label_keys": list[str],   # 이번 sync 가 실제로 쓴 labels_key
+                                                  # (video events JSON + image sam3 JSON 모두)
+            "updated":   int,
+            "empty_save": int,
+            "skipped":   int,
+            "no_match":  int,
+            "error":     int,
+        }
+        호출자(ls_webhook._run_sync_and_notify_inner)가 processed_label_keys 를
+        받아 ls_review_state.json 의 label_keys 에 union merge 한다.
+
+        이전엔 ls_tasks.py create 시점에 박힌 label_keys 만 state.json 에 있고,
+        ls_sync 가 신규 events JSON 을 생성해도 (Scenario A: Gemini auto 누락 +
+        사람이 라벨 작성) state 에 추가되지 않아 finalize 시 누락되는 결함이
+        있었음. 본 함수의 반환값으로 호출자가 동기화한다.
+    """
     print(f"[INFO] MinIO: {minio_endpoint}, bucket={bucket}")
     minio = build_minio_client(minio_endpoint, minio_access_key, minio_secret_key)
 
@@ -589,6 +630,9 @@ def run(
                     detail_cache[tid] = None
 
     updated = empty_save = skipped = no_match = error = 0
+    # 이번 sync 에서 처리한 labels_key 들 (video events + image sam3).
+    # 호출자(ls_webhook)가 받아 ls_review_state.json 의 label_keys 에 union merge.
+    processed_label_keys: set[str] = set()
 
     # DuckDB 커넥션을 루프 전체에서 재사용 (매 UPDATE마다 open/close 오버헤드 제거).
     db_conn = None
@@ -654,6 +698,7 @@ def run(
                     db_updated = update_image_labels_in_db(db_path, sam3_key, len(rectangles), conn=db_conn)
                     tag = "[UPDATED]" if rectangles else "[EMPTY]   "
                     print(f"{tag}  task {task_id} → {sam3_key} (bbox {len(rectangles)}, DB {db_updated}건)")
+                processed_label_keys.add(sam3_key)
                 updated += 1
                 continue
 
@@ -696,6 +741,7 @@ def run(
                     f"[UPDATED]  task {task_id} → {json_key} "
                     f"(MinIO {ev_count}건, DB del={deleted} ins={inserted})"
                 )
+            processed_label_keys.add(json_key)
 
             if ev_count == 0:
                 empty_save += 1
@@ -717,6 +763,14 @@ def run(
         f"\n[DONE] 업데이트 {updated} / 빈저장 {empty_save} / "
         f"스킵 {skipped} / 미매칭 {no_match} / 오류 {error}{suffix}"
     )
+    return {
+        "processed_label_keys": sorted(processed_label_keys),
+        "updated": updated,
+        "empty_save": empty_save,
+        "skipped": skipped,
+        "no_match": no_match,
+        "error": error,
+    }
 
 
 def _parse_clip_times(stem: str) -> tuple[float, float]:
