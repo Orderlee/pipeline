@@ -56,8 +56,25 @@ rsync -a --delete --exclude='dagster_home/' --exclude='dagster_home_staging/' --
     "${WORKSPACE_ROOT}/docker/app/" "${DEPLOY_ROOT}/app/"
 rsync -a "${WORKSPACE_ROOT}/docker/Dockerfile" "${DEPLOY_ROOT}/Dockerfile"
 rsync -a "${WORKSPACE_ROOT}/docker/docker-compose.yaml" "${DEPLOY_ROOT}/docker-compose.yaml"
-if [[ -f "${WORKSPACE_ROOT}/docker/.env.test" ]]; then
+if [[ -f "${WORKSPACE_ROOT}/docker/.env.test.example" ]]; then
+    rsync -a "${WORKSPACE_ROOT}/docker/.env.test.example" "${DEPLOY_ROOT}/.env.test.template"
+elif [[ -f "${WORKSPACE_ROOT}/docker/.env.test" ]]; then
+    # legacy 호환 — .env.test 가 git tracked 였던 시절의 fallback (점진 제거).
     rsync -a "${WORKSPACE_ROOT}/docker/.env.test" "${DEPLOY_ROOT}/.env.test.template"
+fi
+
+# DEPLOY_REPO_ROOT 의 git tree 도 GIT_TARGET_REF 로 hard-reset 하여
+# rsync 결과와 git HEAD 가 항상 일치하게 만든다. 이렇게 하지 않으면 호스트의
+# `git status` / `git log` 가 영원히 stale 로 보여 운영자가 혼동한다.
+# GIT_TARGET_REF 가 설정 안 되었거나 .git 이 없으면 silent skip (legacy 호환).
+GIT_TARGET_REF="${GIT_TARGET_REF:-}"
+if [[ -n "${GIT_TARGET_REF}" && -d "${DEPLOY_REPO_ROOT}/.git" ]]; then
+    if git -C "${DEPLOY_REPO_ROOT}" fetch --quiet origin 2>/dev/null; then
+        git -C "${DEPLOY_REPO_ROOT}" reset --hard --quiet "${GIT_TARGET_REF}"
+        echo "Deploy repo synced to ${GIT_TARGET_REF}: $(git -C "${DEPLOY_REPO_ROOT}" rev-parse --short HEAD)"
+    else
+        echo "::warning::git fetch failed in ${DEPLOY_REPO_ROOT}; skipping git reset"
+    fi
 fi
 
 if [[ -n "${ENV_SOURCE}" && -f "${ENV_SOURCE}" ]]; then
@@ -108,7 +125,24 @@ if [[ -n "${IMAGE_TAG}" ]]; then
     docker tag "${IMAGE_NAME}" "${IMAGE_TAG}"
 fi
 
-# 기존 컨테이너 정지 후 재시작 (포트 충돌 방지)
+# postgres: compose 변경 (image swap 등) 자동 감지하여 recreate.
+# 변화 없으면 no-op (compose 가 same-state 면 skip). prod (.env) 는 POSTGRES_IMAGE
+# 미설정 → default postgres:15 그대로 유지 → 영향 0. staging (.env.test) 에서
+# POSTGRES_IMAGE=pgduckdb/pgduckdb:15-v1.1.1 같이 override 시 자동 swap.
+# postgres_data volume 보존 → schema/데이터 손실 없음.
+echo "Ensuring postgres up-to-date with compose..."
+compose up -d postgres
+# postgres healthy 까지 대기 (최대 60s) — dagster 가 PG 접속 시점 race 방지.
+for i in $(seq 1 30); do
+    state=$(compose ps -a postgres --format json 2>/dev/null | python3 -c "import json,sys; data=sys.stdin.read().strip(); print('') if not data else print(json.loads(data.split(chr(10))[0]).get('Health',''))" 2>/dev/null || echo "")
+    if [[ "${state}" == "healthy" ]]; then
+        echo "postgres healthy (${i})"
+        break
+    fi
+    sleep 2
+done
+
+# 기존 dagster 컨테이너 정지 후 재시작 (포트 충돌 방지)
 compose stop dagster dagster-daemon dagster-code-server 2>/dev/null || true
 compose rm -f dagster dagster-daemon dagster-code-server 2>/dev/null || true
 

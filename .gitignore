@@ -13,6 +13,9 @@ catalog/snapshots/
 # Environment & Configs
 .env
 .env.dev
+# .env.test 은 staging 호스트의 secrets/override 보관 — git untracked.
+# 새 환경 셋업 시 docker/.env.test.example 을 cp 해서 시작.
+docker/.env.test
 your-gcp-project-credentials.json
 configs/global.yaml
 !configs/config.sample.yaml

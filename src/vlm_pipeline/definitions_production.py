@@ -44,15 +44,24 @@ from vlm_pipeline.defs.sam.detection_assets import (
 )
 from vlm_pipeline.defs.sync.assets import motherduck_sync
 from vlm_pipeline.lib.env_utils import (
+    DB_BACKEND_DUAL_DUCKDB_PRIMARY,
+    DB_BACKEND_DUAL_PG_PRIMARY,
+    DB_BACKEND_DUCKDB,
+    DB_BACKEND_POSTGRES,
     DUCKDB_LABEL_WRITER_TAG,
     DUCKDB_LEGACY_WRITER_TAG,
     DUCKDB_RAW_WRITER_TAG,
     DUCKDB_SAM3_WRITER_TAG,
     DUCKDB_YOLO_WRITER_TAG,
     build_duckdb_writer_tags,
+    db_backend_mode,
+    default_duckdb_path,
+    default_postgres_dsn,
 )
+from vlm_pipeline.resources.data_db import DualDBResource
 from vlm_pipeline.resources.duckdb import DuckDBResource
 from vlm_pipeline.resources.minio import MinIOResource
+from vlm_pipeline.resources.postgres import PostgresResource
 
 CLIP_AUTO_LABEL_ASSETS = (
     clip_timestamp,
@@ -100,9 +109,52 @@ COMMON_DISPATCH_STATUS_SENSORS = (
 )
 
 
+def _build_db_resource() -> object:
+    """DATAOPS_DB_BACKEND 기반 db 리소스 인스턴스 생성.
+
+    4 모드:
+      - duckdb               : DuckDBResource 단일 (legacy default)
+      - postgres             : PostgresResource 단일 (PG cutover 후)
+      - dual_duckdb_primary  : DualDBResource(primary=DuckDB, mirror=PG, read=primary)
+      - dual_pg_primary      : DualDBResource(primary=PG, mirror=DuckDB, read=primary)
+
+    DSN/path 미설정 시 dual_* 모드는 단일 백엔드로 자동 fallback (안전 default).
+    """
+    mode = db_backend_mode()
+
+    duckdb_path = default_duckdb_path()
+    postgres_dsn = default_postgres_dsn()
+
+    duckdb_resource = DuckDBResource(db_path=EnvVar("DATAOPS_DUCKDB_PATH"))
+    pg_resource: PostgresResource | None = None
+    if postgres_dsn:
+        pg_resource = PostgresResource(dsn=postgres_dsn)
+
+    if mode == DB_BACKEND_POSTGRES:
+        if pg_resource is None:
+            raise RuntimeError(
+                "DATAOPS_DB_BACKEND=postgres requires DATAOPS_POSTGRES_DSN to be set"
+            )
+        return pg_resource
+
+    if mode == DB_BACKEND_DUAL_PG_PRIMARY:
+        if pg_resource is None:
+            # safety fallback: PG mirror 없이는 dual 모드 의미 없음 → DuckDB single 로 retreat.
+            return duckdb_resource
+        return DualDBResource(primary=pg_resource, mirror=duckdb_resource, read_from="primary")
+
+    if mode == DB_BACKEND_DUAL_DUCKDB_PRIMARY:
+        if pg_resource is None:
+            return duckdb_resource
+        return DualDBResource(primary=duckdb_resource, mirror=pg_resource, read_from="primary")
+
+    # default: DB_BACKEND_DUCKDB
+    return duckdb_resource
+
+
 def build_common_resources() -> dict[str, object]:
     return {
-        "db": DuckDBResource(db_path=EnvVar("DATAOPS_DUCKDB_PATH")),
+        "db": _build_db_resource(),
         "minio": MinIOResource(
             endpoint=EnvVar("MINIO_ENDPOINT"),
             access_key=EnvVar("MINIO_ACCESS_KEY"),

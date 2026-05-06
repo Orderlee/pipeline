@@ -26,7 +26,6 @@ import sys
 import time
 from pathlib import Path
 
-import duckdb
 from dagster import (
     DefaultSensorStatus,
     RunRequest,
@@ -38,7 +37,14 @@ from dagster import (
 )
 
 from vlm_pipeline.lib.detection_common import parse_tag_list
-from vlm_pipeline.lib.env_utils import default_duckdb_path, int_env
+from vlm_pipeline.lib.env_utils import (
+    DB_BACKEND_DUCKDB,
+    db_backend_mode,
+    default_duckdb_path,
+    default_postgres_dsn,
+    int_env,
+)
+from vlm_pipeline.lib.sensor_db import open_sensor_read_connection
 from vlm_pipeline.lib.minio_cross_sync import (
     is_cross_sync_needed,
     ls_minio_endpoint,
@@ -59,13 +65,13 @@ LS_TASKS_SCRIPT = Path(
 # DuckDB helpers
 # ---------------------------------------------------------------------------
 
-def _fetch_pending_dispatch_requests(db_path: str) -> list[dict]:
+def _fetch_pending_dispatch_requests(db_path: str | None = None) -> list[dict]:  # noqa: ARG001 - signature 호환 유지
     """ls_task_status='pending'이고 dispatch가 완료된 요청 목록.
 
     labeling_method / categories / requested_at (fallback: completed_at, created_at) 도 함께 읽는다.
     project 이름 = `<folder>_<mode>_<YYMMDD>_<HHMM>` (batch 별 격리) 생성에 사용.
     """
-    conn = duckdb.connect(db_path, read_only=True)
+    conn = open_sensor_read_connection()
     try:
         rows = conn.execute(
             """
@@ -102,14 +108,52 @@ def _format_batch_suffix(ts) -> str:
 
 
 def _update_ls_task_status(db_path: str, request_id: str, status: str) -> None:
-    conn = duckdb.connect(db_path)
-    try:
-        conn.execute(
-            "UPDATE dispatch_requests SET ls_task_status = ? WHERE request_id = ?",
-            [status, request_id],
-        )
-    finally:
-        conn.close()
+    """dispatch_requests.ls_task_status update — backend 모드에 따라 PG 또는 DuckDB.
+
+    - DuckDB single mode (legacy): 기존 db_path 의 DuckDB 파일에 직접 write
+    - PG/dual modes (DATAOPS_POSTGRES_DSN 설정): PG 에 직접 psycopg2 write
+      (ATTACH READ_ONLY 라 DuckDB 경유 write 불가능)
+
+    db_path 인자는 legacy 호환용 — PG 모드에서는 무시.
+    """
+    if db_backend_mode() == DB_BACKEND_DUCKDB:
+        # legacy: DuckDB direct write
+        import duckdb  # noqa: PLC0415 - lazy import (PG mode 에서는 불필요)
+
+        conn = duckdb.connect(db_path)
+        try:
+            conn.execute(
+                "UPDATE dispatch_requests SET ls_task_status = ? WHERE request_id = ?",
+                [status, request_id],
+            )
+        finally:
+            conn.close()
+        return
+
+    # PG/dual modes — PG 에 직접 write
+    dsn = default_postgres_dsn()
+    if not dsn:
+        # safety: DSN 미설정이면 fallback to DuckDB legacy path
+        import duckdb  # noqa: PLC0415
+
+        conn = duckdb.connect(db_path)
+        try:
+            conn.execute(
+                "UPDATE dispatch_requests SET ls_task_status = ? WHERE request_id = ?",
+                [status, request_id],
+            )
+        finally:
+            conn.close()
+        return
+
+    import psycopg2  # noqa: PLC0415 - lazy import
+
+    with psycopg2.connect(dsn) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE dispatch_requests SET ls_task_status = %s WHERE request_id = %s",
+                (status, request_id),
+            )
 
 
 # ---------------------------------------------------------------------------

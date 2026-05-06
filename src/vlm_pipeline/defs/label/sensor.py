@@ -7,15 +7,16 @@ import time
 from hashlib import sha1
 from pathlib import Path
 
-import duckdb
 from dagster import DefaultSensorStatus, RunRequest, SkipReason, sensor
 from dagster._core.storage.dagster_run import DagsterRunStatus, RunsFilter
 
 from vlm_pipeline.lib.env_utils import (
     default_duckdb_path,
+    default_postgres_dsn,
     int_env,
     is_duckdb_lock_conflict,
 )
+from vlm_pipeline.lib.sensor_db import open_sensor_read_connection
 
 AUTO_LABELING_TARGET_JOBS = {
     "auto_labeling_job",
@@ -24,9 +25,10 @@ AUTO_LABELING_TARGET_JOBS = {
 
 
 def _read_auto_label_backlog_snapshot() -> dict[str, int | str | None]:
-    db_path = Path(default_duckdb_path())
-    if not db_path.exists():
-        raise FileNotFoundError(str(db_path))
+    if not default_postgres_dsn():
+        db_path = Path(default_duckdb_path())
+        if not db_path.exists():
+            raise FileNotFoundError(str(db_path))
 
     retry_count = int_env("DUCKDB_SENSOR_LOCK_RETRY_COUNT", 5, 0)
     retry_delay_ms = int_env("DUCKDB_SENSOR_LOCK_RETRY_DELAY_MS", 200, 10)
@@ -35,7 +37,7 @@ def _read_auto_label_backlog_snapshot() -> dict[str, int | str | None]:
     for attempt in range(retry_count + 1):
         conn = None
         try:
-            conn = duckdb.connect(str(db_path), read_only=True)
+            conn = open_sensor_read_connection()
             row = conn.execute(
                 """
                 WITH gemini_pending AS (

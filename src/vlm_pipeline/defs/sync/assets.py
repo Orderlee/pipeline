@@ -15,6 +15,7 @@ from vlm_pipeline.lib.env_utils import (
     as_int,
     bool_env,
     default_duckdb_path,
+    default_postgres_dsn,
     extract_lock_owner_pid,
     is_duckdb_lock_conflict,
 )
@@ -53,6 +54,8 @@ def _resolve_script_path(configured_path: str) -> Path:
         "tables": Field([str], default_value=[]),
         "trigger_table": Field(str, default_value=""),
         "script_path": Field(str, default_value=DEFAULT_SYNC_SCRIPT_PATH),
+        # Phase 7+ : 비어 있으면 DATAOPS_POSTGRES_DSN env 로 폴백, 그래도 없으면 DuckDB 사용.
+        "source_dsn": Field(str, default_value=""),
     },
 )
 def motherduck_sync(context):
@@ -71,9 +74,16 @@ def motherduck_sync(context):
         context.log.warning("motherduck_sync: MOTHERDUCK_TOKEN not set. sync를 건너뜁니다.")
         return {"status": "skipped", "reason": "missing_token"}
 
-    db_path = Path(default_duckdb_path())
-    if not db_path.exists():
-        raise FileNotFoundError(f"DuckDB not found: {db_path}")
+    # 소스 결정: source_dsn > DATAOPS_POSTGRES_DSN env > DuckDB 파일.
+    cfg_dsn = str(cfg.get("source_dsn") or "").strip()
+    pg_dsn = cfg_dsn or (default_postgres_dsn() or "")
+    use_pg_source = bool(pg_dsn)
+
+    db_path: Path | None = None
+    if not use_pg_source:
+        db_path = Path(default_duckdb_path())
+        if not db_path.exists():
+            raise FileNotFoundError(f"DuckDB not found: {db_path}")
 
     db_name = (cfg.get("db") or os.getenv("MOTHERDUCK_DB") or DEFAULT_MOTHERDUCK_DB).strip()
     dry_run = bool(cfg.get("dry_run", False)) or bool_env("MOTHERDUCK_SYNC_DRY_RUN", False)
@@ -113,11 +123,14 @@ def motherduck_sync(context):
         str(script_path),
         "--db",
         db_name,
-        "--local-db-path",
-        str(db_path),
         "--share-update",
         share_update,
     ]
+    if use_pg_source:
+        cmd.extend(["--source-dsn", pg_dsn])
+    else:
+        # type: ignore[union-attr] — use_pg_source=False 면 db_path 가 set 되어 있다.
+        cmd.extend(["--local-db-path", str(db_path)])
     if tables:
         cmd.extend(["--tables", *tables])
     if dry_run:
