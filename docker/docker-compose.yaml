@@ -315,5 +315,3 @@ networks:
   pipeline-network:
     external: true
     name: pipeline-network
-
-# claude-action fix verification trigger 2026-05-06
