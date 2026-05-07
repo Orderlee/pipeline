@@ -21,6 +21,41 @@
 
 
 
+
+## 2026-05-06
+
+### 1. Staging dispatch 서비스 분리 및 흐름 정리
+- **문제**: staging dispatch 처리 로직이 sensor 안에 몰려 있어 중복 요청 체크, 실패 기록, manifest 작성, run 상태 연동을 한 번에 파악하기 어려웠음.
+- **원인**: dispatch request 준비, archive/manifest 경로 계산, DB 기록, in-flight run 검사 로직이 sensor 본문과 run status 처리 코드에 분산되어 유지보수성이 떨어졌음.
+- **조치**:
+    - dispatch request 준비, manifest 작성, DB 기록, run request 생성 로직을 service 레이어로 분리해 sensor 책임을 줄임.
+    - 중복 request_id, 같은 folder의 진행 중 run, 실패 request upsert 흐름을 DB helper와 공통 함수로 정리함.
+    - dispatch run status와 archive 판단 경로가 같은 tag 해석 함수를 사용하도록 맞춰 상태 전파를 일관되게 정리함.
+    - 관련 파일:
+      - `src/vlm_pipeline/defs/dispatch/sensor_run_status.py`
+
+### 2. Staging 환경값 및 운영 보조 설정 정리
+- **문제**: staging 실행 시 DuckDB/MinIO/NAS 경로와 sensor guard 설정이 비어 있거나 분산되어 있어, 실제 테스트 환경을 재현할 때 수동 보정이 많이 필요했음.
+- **원인**: staging env 기본값, compose 공통 설정, stuck run guard / MotherDuck / GCS 관련 옵션이 파일마다 흩어져 있어 환경별 기준을 한 번에 맞추기 어려웠음.
+- **조치**:
+    - staging DuckDB, MinIO, incoming/archive/manifest 경로와 주요 timeout / in-flight / guard 옵션을 `.env.staging`에 구체값으로 정리함.
+    - docker compose에서 production dagster 공통 anchor를 분리해 prod/staging 공통점과 차이를 명확히 정리함.
+    - stuck run guard와 ingest feature flag가 runtime settings를 통해 같은 방식으로 로드되도록 맞춰 운영 보조 설정을 단일화함.
+    - 관련 파일:
+      - `docker/docker-compose.yaml`
+
+### 3. 당일 정리
+- **변경 통계**:
+    - 변경 파일 **43개**, +12445/-335줄.
+- **관련 커밋**:
+    - `0be93f71`: test(ci): trigger review on non-md change
+    - `6003c57e`: test(ci): trigger claude-review workflow to verify npm pre-install fix
+    - `da389ef0`: fix(ci): claude-code-action native install bypass via npm pre-install (#49)
+    - `43384ae6`: fix(ci): claude-code-action native install bypass via npm pre-install
+    - `b335de7c`: chore: staging ops hygiene (Claude review fix + .env.test untrack + duckdb_writer release) (#48)
+- **서비스 상태**: 파이프라인 서비스 7개 컨테이너 중 7개 정상 가동.
+- **작업 환경**: Cursor, VSCode
+
 ## 2026-05-05
 
 - (당일 커밋/파일 변경 없음)
