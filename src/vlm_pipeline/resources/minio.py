@@ -217,6 +217,21 @@ class MinIOResource(ConfigurableResource):
                 return False
             raise
 
+    def head(self, bucket: str, key: str) -> dict | None:
+        """객체 메타데이터 dict {etag, last_modified, size}. 없으면 None."""
+        try:
+            resp = self.client.head_object(Bucket=bucket, Key=key)
+        except self.client.exceptions.ClientError as exc:
+            code = exc.response.get("Error", {}).get("Code", "")
+            if code in ("404", "NoSuchKey", "NotFound"):
+                return None
+            raise
+        return {
+            "etag": resp["ETag"].strip('"'),
+            "last_modified": resp["LastModified"],
+            "size": resp["ContentLength"],
+        }
+
     def list_keys(self, bucket: str, prefix: str) -> list[str]:
         """list_objects_v2 paginate → 모든 key 리스트."""
         paginator = self.client.get_paginator("list_objects_v2")
