@@ -32,12 +32,17 @@ def _require_ls_finalized() -> bool:
     return os.getenv("DATASET_REQUIRE_LS_FINALIZED", "0") == "1"
 
 
-def _copy_if_absent(minio: MinIOResource, src_bucket: str, src_key: str,
-                    dst_key: str, log,
-                    dst_bucket: str = DATASET_BUCKET) -> bool:
-    """이미 있으면 skip. 신규 copy 시 True."""
-    if minio.exists(dst_bucket, dst_key):
-        return False
+def _copy_if_outdated(minio: MinIOResource, src_bucket: str, src_key: str,
+                      dst_key: str, log,
+                      dst_bucket: str = DATASET_BUCKET) -> bool:
+    # src ETag != dst ETag 일 때만 copy. dst 없거나 stale 이면 True.
+    # dst 존재만 확인하던 기존 방식은 LS 재submit 으로 src 가 갱신돼도
+    # vlm-dataset 에 옛 Gemini auto 버전이 영구히 남는 회귀를 일으켰다.
+    dst_head = minio.head(dst_bucket, dst_key)
+    if dst_head is not None:
+        src_head = minio.head(src_bucket, src_key)
+        if src_head is not None and src_head["etag"] == dst_head["etag"]:
+            return False
     minio.copy(src_bucket, src_key, dst_bucket, dst_key)
     log.debug(f"copy: {src_bucket}/{src_key} → {dst_bucket}/{dst_key}")
     return True
@@ -136,9 +141,9 @@ def _build_project(context, db: DuckDBResource, minio: MinIOResource,
         dataset_ts_key = f"{folder_prefix}/timestamps/{rel_stem}.json"
 
         try:
-            if _copy_if_absent(minio, video["raw_bucket"], raw_key, dataset_video_key, log):
+            if _copy_if_outdated(minio, video["raw_bucket"], raw_key, dataset_video_key, log):
                 video_copies_new += 1
-            if _copy_if_absent(minio, LABELS_BUCKET, expected_ts_key, dataset_ts_key, log):
+            if _copy_if_outdated(minio, LABELS_BUCKET, expected_ts_key, dataset_ts_key, log):
                 ts_copies_new += 1
         except Exception as exc:
             log.error(f"[{folder}] video copy 실패: {raw_key}: {exc}")
@@ -174,7 +179,7 @@ def _build_project(context, db: DuckDBResource, minio: MinIOResource,
         dataset_clip_key = f"{folder_prefix}/clips/{rel_stem}{ext}"
 
         try:
-            if _copy_if_absent(minio, src_bucket, clip_key, dataset_clip_key, log):
+            if _copy_if_outdated(minio, src_bucket, clip_key, dataset_clip_key, log):
                 clip_copies_new += 1
         except Exception as exc:
             log.error(f"[{folder}] clip copy 실패: {clip_key}: {exc}")
@@ -206,9 +211,9 @@ def _build_project(context, db: DuckDBResource, minio: MinIOResource,
         dataset_bbox_key = f"{folder_prefix}/bboxes/{rel_stem}.json"
 
         try:
-            if _copy_if_absent(minio, image["image_bucket"], image_key, dataset_image_key, log):
+            if _copy_if_outdated(minio, image["image_bucket"], image_key, dataset_image_key, log):
                 image_copies_new += 1
-            if _copy_if_absent(minio, LABELS_BUCKET, expected_bbox_key, dataset_bbox_key, log):
+            if _copy_if_outdated(minio, LABELS_BUCKET, expected_bbox_key, dataset_bbox_key, log):
                 bbox_copies_new += 1
         except Exception as exc:
             log.error(f"[{folder}] image copy 실패: {image_key}: {exc}")
