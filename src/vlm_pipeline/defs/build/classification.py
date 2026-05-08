@@ -21,7 +21,7 @@ from uuid import uuid4
 from dagster import asset
 
 from vlm_pipeline.defs.build.assets import (
-    _copy_if_absent,
+    _copy_if_outdated,
     _minio_prefix_from_key,
     _rel_stem_path,
     _require_ls_finalized,
@@ -122,7 +122,7 @@ def _copy_video_per_category(
         safe_cats.append(safe_cat)
         dst_key = f"{folder_prefix}/video/{safe_cat}/{rel_stem}{ext}"
         try:
-            if _copy_if_absent(
+            if _copy_if_outdated(
                 minio, video["raw_bucket"], raw_key, dst_key, log,
                 dst_bucket=CLASSIFICATION_BUCKET,
             ):
@@ -154,7 +154,7 @@ def _copy_image_per_category(
         safe_cats.append(safe_cat)
         dst_key = f"{folder_prefix}/image/{safe_cat}/{rel_stem}{ext}"
         try:
-            if _copy_if_absent(
+            if _copy_if_outdated(
                 minio, image["image_bucket"], image_key, dst_key, log,
                 dst_bucket=CLASSIFICATION_BUCKET,
             ):
