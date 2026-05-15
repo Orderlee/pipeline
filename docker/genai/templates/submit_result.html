@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% set page = "submit_result" %}
+{% from "_icons.html" import icon %}
+
+{% block body %}
+<main class="gs-page gs-page--narrow">
+  <h1 class="gs-h1">제출 완료 <span class="gs-badge running">running</span></h1>
+
+  <div class="gs-card-block" style="padding:18px;margin-bottom:18px">
+    <dl class="gs-dl">
+      <dt>batch_id</dt><dd><code>{{ result.batch_id }}</code></dd>
+      <dt>engine</dt><dd>{{ result.engine }}</dd>
+      <dt>n_total</dt><dd class="gs-mono">{{ result.n_total }}</dd>
+      <dt>submitted_at</dt><dd class="gs-mono">{{ result.submitted_at }}</dd>
+    </dl>
+  </div>
+
+  <div style="display:flex;gap:10px;flex-wrap:wrap">
+    <a href="/" class="gs-pill">{{ icon('arrowUp', size=13) }} 첫 화면</a>
+    <a href="/genai/batches/{{ result.batch_id }}" class="gs-pill">{{ icon('layers', size=13) }} 상세 보기</a>
+    <a href="/genai/batches" class="gs-pill">{{ icon('history', size=13) }} 전체 목록</a>
+  </div>
+</main>
+{% endblock %}

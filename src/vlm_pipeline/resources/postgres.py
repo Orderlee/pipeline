@@ -11,6 +11,7 @@ Mixin 구조 (DuckDB era 1:1 미러):
     PostgresDedupMixin
     PostgresLabelingMixin
     PostgresSpecMixin
+    PostgresGenAIMixin    (genai_batches / genai_jobs CRUD + status rollup)
 
 Import 호환:
     from vlm_pipeline.resources.postgres import PostgresResource
@@ -20,6 +21,7 @@ from dagster import ConfigurableResource
 
 from .postgres_base import PostgresBaseMixin
 from .postgres_dedup import PostgresDedupMixin
+from .postgres_genai import PostgresGenAIMixin
 from .postgres_ingest import PostgresIngestMixin
 from .postgres_labeling import PostgresLabelingMixin
 from .postgres_spec import PostgresSpecMixin
@@ -31,6 +33,7 @@ class PostgresResource(
     PostgresDedupMixin,
     PostgresLabelingMixin,
     PostgresSpecMixin,
+    PostgresGenAIMixin,
     ConfigurableResource,
 ):
     """PostgreSQL 통합 리소스 — 섹션별 CRUD 메서드 mixin 합성.

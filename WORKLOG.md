@@ -23,6 +23,109 @@
 
 
 
+
+
+
+
+
+## 2026-05-14
+
+### 1. 당일 코드 및 설정 정리
+- **문제**: 당일 변경이 여러 영역에 걸쳐 있어, 커밋 목록만 보면 실제 수정 범위와 운영 영향 지점을 파악하기 어려웠음.
+- **원인**: 자동 기록이 파일/커밋 나열 중심으로 작성되면 코드, 설정, 문서 변경이 어떤 의도로 묶였는지 드러나지 않음.
+- **조치**:
+    - 당일 변경 파일과 커밋을 기준으로 작업 내용을 정리함.
+
+### 2. 당일 정리
+- **서비스 상태**: 파이프라인 서비스 8개 컨테이너 중 8개 정상 가동.
+- **작업 환경**: Cursor, VSCode
+
+## 2026-05-13
+
+### 1. Staging dispatch 서비스 분리 및 흐름 정리
+- **문제**: staging dispatch 처리 로직이 sensor 안에 몰려 있어 중복 요청 체크, 실패 기록, manifest 작성, run 상태 연동을 한 번에 파악하기 어려웠음.
+- **원인**: dispatch request 준비, archive/manifest 경로 계산, DB 기록, in-flight run 검사 로직이 sensor 본문과 run status 처리 코드에 분산되어 유지보수성이 떨어졌음.
+- **조치**:
+    - dispatch request 준비, manifest 작성, DB 기록, run request 생성 로직을 service 레이어로 분리해 sensor 책임을 줄임.
+    - 중복 request_id, 같은 folder의 진행 중 run, 실패 request upsert 흐름을 DB helper와 공통 함수로 정리함.
+    - dispatch run status와 archive 판단 경로가 같은 tag 해석 함수를 사용하도록 맞춰 상태 전파를 일관되게 정리함.
+
+### 2. Staging 환경값 및 운영 보조 설정 정리
+- **문제**: staging 실행 시 DuckDB/MinIO/NAS 경로와 sensor guard 설정이 비어 있거나 분산되어 있어, 실제 테스트 환경을 재현할 때 수동 보정이 많이 필요했음.
+- **원인**: staging env 기본값, compose 공통 설정, stuck run guard / MotherDuck / GCS 관련 옵션이 파일마다 흩어져 있어 환경별 기준을 한 번에 맞추기 어려웠음.
+- **조치**:
+    - staging DuckDB, MinIO, incoming/archive/manifest 경로와 주요 timeout / in-flight / guard 옵션을 `.env.staging`에 구체값으로 정리함.
+    - docker compose에서 production dagster 공통 anchor를 분리해 prod/staging 공통점과 차이를 명확히 정리함.
+    - stuck run guard와 ingest feature flag가 runtime settings를 통해 같은 방식으로 로드되도록 맞춰 운영 보조 설정을 단일화함.
+    - 관련 파일:
+      - `docker/docker-compose.yaml`
+
+### 3. 당일 정리
+- **변경 통계**:
+    - 변경 파일 **103개**, +11834/-1905줄.
+- **관련 커밋**:
+    - `c2426ac3`: feat(infra): migrate MinIO endpoint 10.0.0.36 → 10.0.0.51
+    - `b21df67b`: Merge pull request #68 from Orderlee/dev
+    - `c2251615`: Merge pull request #61 from Orderlee/fix/migrate-duckdb-pg-explicit-cols
+    - `8f0214be`: Merge pull request #67 from Orderlee/dev
+    - `f8c53db0`: Merge pull request #65 from Orderlee/fix/ls-presign-import
+- **서비스 상태**: 파이프라인 서비스 8개 컨테이너 중 8개 정상 가동.
+- **작업 환경**: Antigravity, Cursor, VSCode
+
+## 2026-05-12
+
+- (당일 커밋/파일 변경 없음)
+## 2026-05-11
+
+### 1. 당일 코드 및 설정 정리
+- **문제**: 당일 변경이 여러 영역에 걸쳐 있어, 커밋 목록만 보면 실제 수정 범위와 운영 영향 지점을 파악하기 어려웠음.
+- **원인**: 자동 기록이 파일/커밋 나열 중심으로 작성되면 코드, 설정, 문서 변경이 어떤 의도로 묶였는지 드러나지 않음.
+- **조치**:
+    - 문서 변경을 정리함: `docs/genai_rollout/plan.md`
+    - 관련 커밋: `72fb931b` docs(genai): GenAI Studio 통합 계획서 v3 추가
+    - 관련 파일:
+      - `docs/genai_rollout/plan.md`
+
+### 2. 당일 정리
+- **변경 통계**:
+    - 변경 파일 **1개**, +516/-0줄.
+- **관련 커밋**:
+    - `72fb931b`: docs(genai): GenAI Studio 통합 계획서 v3 추가
+- **서비스 상태**: 파이프라인 서비스 8개 컨테이너 중 8개 정상 가동.
+- **작업 환경**: Cursor, VSCode
+
+## 2026-05-08
+
+### 1. Staging dispatch 서비스 분리 및 흐름 정리
+- **문제**: staging dispatch 처리 로직이 sensor 안에 몰려 있어 중복 요청 체크, 실패 기록, manifest 작성, run 상태 연동을 한 번에 파악하기 어려웠음.
+- **원인**: dispatch request 준비, archive/manifest 경로 계산, DB 기록, in-flight run 검사 로직이 sensor 본문과 run status 처리 코드에 분산되어 유지보수성이 떨어졌음.
+- **조치**:
+    - dispatch request 준비, manifest 작성, DB 기록, run request 생성 로직을 service 레이어로 분리해 sensor 책임을 줄임.
+    - 중복 request_id, 같은 folder의 진행 중 run, 실패 request upsert 흐름을 DB helper와 공통 함수로 정리함.
+    - dispatch run status와 archive 판단 경로가 같은 tag 해석 함수를 사용하도록 맞춰 상태 전파를 일관되게 정리함.
+    - 관련 파일:
+      - `src/vlm_pipeline/defs/dispatch/sensor_run_status.py`
+
+### 2. Staging 환경값 및 운영 보조 설정 정리
+- **문제**: staging 실행 시 DuckDB/MinIO/NAS 경로와 sensor guard 설정이 비어 있거나 분산되어 있어, 실제 테스트 환경을 재현할 때 수동 보정이 많이 필요했음.
+- **원인**: staging env 기본값, compose 공통 설정, stuck run guard / MotherDuck / GCS 관련 옵션이 파일마다 흩어져 있어 환경별 기준을 한 번에 맞추기 어려웠음.
+- **조치**:
+    - staging DuckDB, MinIO, incoming/archive/manifest 경로와 주요 timeout / in-flight / guard 옵션을 `.env.staging`에 구체값으로 정리함.
+    - docker compose에서 production dagster 공통 anchor를 분리해 prod/staging 공통점과 차이를 명확히 정리함.
+    - stuck run guard와 ingest feature flag가 runtime settings를 통해 같은 방식으로 로드되도록 맞춰 운영 보조 설정을 단일화함.
+    - 관련 파일:
+      - `docker/docker-compose.yaml`
+
+### 3. 당일 정리
+- **변경 통계**:
+    - 변경 파일 **48개**, +7667/-196줄.
+- **관련 커밋**:
+    - `a5636138`: Merge pull request #51 from Orderlee/dev
+    - `2d6efe93`: chore(tests): untrack test_build_copy_outdated for CI host pydantic skew
+    - `7dc2b611`: fix(build): refresh stale dataset objects when source changes
+- **서비스 상태**: 파이프라인 서비스 7개 컨테이너 중 7개 정상 가동.
+- **작업 환경**: Cursor, VSCode
+
 ## 2026-05-07
 
 ### 1. 당일 코드 및 설정 정리

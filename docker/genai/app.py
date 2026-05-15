@@ -1,0 +1,630 @@
+"""GenAI Studio FastAPI app.
+
+엔드포인트:
+  GET  /                  — 단일 화면 (탭 2개, 폼)
+  POST /genai/batches     — multipart upload + prompt → batch 생성
+  GET  /genai/batches     — 최근 batch 목록 (HTMX partial)
+  GET  /genai/batches/{batch_id} — 상세 (jobs + 미리보기)
+  GET  /healthz
+
+Phase 3 은 Kling 만 (Image→Video 탭 1개). Phase 4 에서 나머지 3엔진 + 두 번째 탭.
+"""
+
+from __future__ import annotations
+
+import os
+import re
+import secrets
+from pathlib import Path
+from typing import Annotated
+
+from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi.encoders import jsonable_encoder
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.security import HTTPBasic, HTTPBasicCredentials
+from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
+
+from adapters import ENGINE_TAB, all_engine_options, enabled_engines, engines_by_tab
+from db import pg
+from db.aggregates import cost_summary
+from jobs.submit import submit_batch
+import limits
+
+
+_ROOT = Path(__file__).parent
+templates = Jinja2Templates(directory=str(_ROOT / "templates"))
+security = HTTPBasic()
+
+
+# ----- basic auth -------------------------------------------------------
+def _check_auth(creds: Annotated[HTTPBasicCredentials, Depends(security)]) -> str:
+    # GENAI_BASIC_AUTH_USER/PASS 가 비었더라도 자동 통과는 위험 (사내망 가정 깨질 시
+    # 무인증 노출). 명시적 GENAI_AUTH_DISABLED=true 일 때만 우회 허용.
+    user = os.getenv("GENAI_BASIC_AUTH_USER", "").strip()
+    password = os.getenv("GENAI_BASIC_AUTH_PASS", "").strip()
+    auth_disabled = os.getenv("GENAI_AUTH_DISABLED", "").strip().lower() == "true"
+    if not user or not password:
+        if auth_disabled:
+            return creds.username or "anonymous"
+        raise HTTPException(
+            status_code=503,
+            detail="GENAI_BASIC_AUTH_USER/PASS 미설정. "
+                   "운영시 채우거나 GENAI_AUTH_DISABLED=true 명시 opt-in 필요.",
+        )
+    correct_user = secrets.compare_digest(creds.username, user)
+    correct_pass = secrets.compare_digest(creds.password, password)
+    if not (correct_user and correct_pass):
+        raise HTTPException(status_code=401, detail="auth required",
+                            headers={"WWW-Authenticate": "Basic"})
+    return creds.username
+
+
+# ----- upload limits ----------------------------------------------------
+_MAX_BYTES_PER_FILE = int(os.getenv("GENAI_MAX_BYTES_PER_FILE", str(50 * 1024 * 1024)))
+_MAX_FILES_PER_BATCH = int(os.getenv("GENAI_MAX_FILES_PER_BATCH", "20"))
+_ALLOWED_EXT = {".png", ".jpg", ".jpeg", ".webp"}
+
+# bulk-submit 묶음 id — 영숫자 / _ / - / . 1~64자. namespacing (team-a.run-001) 용도로 . 허용.
+_BULK_GROUP_ID_RE = re.compile(r"[A-Za-z0-9_.-]{1,64}")
+
+
+def _wants_json(request: Request) -> bool:
+    """Accept 헤더 우선순위로 JSON 요청 판정. text/html 보다 application/json 가
+    먼저 오면 JSON 응답 (CLI / API 클라이언트). 둘 다 없거나 html 만이면 HTML."""
+    accept = (request.headers.get("accept") or "").lower()
+    if "application/json" in accept and "text/html" not in accept:
+        return True
+    # Accept: */*  → 기본 HTML
+    if "application/json" in accept and accept.find("application/json") < accept.find("text/html"):
+        return True
+    return False
+
+
+def create_app() -> FastAPI:
+    app = FastAPI(title="GenAI Studio", version="0.1.0")
+    app.mount("/static", StaticFiles(directory=str(_ROOT / "static")), name="static")
+
+    @app.get("/healthz")
+    def healthz():
+        return {"status": "ok", "engines": enabled_engines()}
+
+    @app.get("/", response_class=HTMLResponse)
+    def index(
+        request: Request,
+        engine: str | None = None,
+        status: str | None = None,
+        user: str = Depends(_check_auth),
+    ):
+        # 빈 문자열은 None 취급 (chip 의 'all' 링크와 호환)
+        f_engine = (engine or "").strip() or None
+        f_status = (status or "").strip() or None
+        return templates.TemplateResponse(
+            request=request,
+            name="index.html",
+            context={
+                "engines": enabled_engines(),
+                "tabs": engines_by_tab(),
+                "engine_tab": ENGINE_TAB,
+                "engine_options": all_engine_options(),
+                "recent_batches": pg.list_batches(
+                    engine=f_engine, status=f_status, limit=10,
+                ),
+                "filter_engine": f_engine,
+                "filter_status": f_status,
+                "user": user,
+            },
+        )
+
+    @app.post("/genai/batches")
+    async def submit(
+        request: Request,
+        engine: Annotated[str, Form()],
+        prompt: Annotated[str, Form()],
+        files: Annotated[list[UploadFile] | None, File()] = None,
+        model_name: Annotated[str | None, Form()] = None,
+        mode: Annotated[str | None, Form()] = None,
+        duration: Annotated[str | None, Form()] = None,
+        aspect_ratio: Annotated[str | None, Form()] = None,
+        bulk_group_id: Annotated[str | None, Form()] = None,
+        user: str = Depends(_check_auth),
+    ):
+        if engine not in enabled_engines():
+            raise HTTPException(status_code=400, detail=f"engine {engine!r} not enabled")
+        # text-only (Veo txt2video) — files 생략 허용. 그 외 엔진/mode 는 files 필수.
+        is_text_only = (mode or "").strip().lower() == "txt2video"
+        if is_text_only and engine != "veo":
+            raise HTTPException(
+                status_code=400,
+                detail=f"txt2video 지원 안 함: engine={engine!r} (veo 만 가능)",
+            )
+        # multipart 에서 빈 파일 슬롯(빈 filename) 만 들어온 경우(브라우저가 input[type=file]
+        # 을 비워둔 채 submit) → 실제 빈 리스트 취급.
+        files = [f for f in (files or []) if (f.filename or "").strip()]
+        if not files and not is_text_only:
+            raise HTTPException(status_code=400, detail="files required")
+        if len(files) > _MAX_FILES_PER_BATCH:
+            raise HTTPException(status_code=413,
+                                detail=f"too many files: {len(files)} > {_MAX_FILES_PER_BATCH}")
+        # rate-limit 검사 (60s sliding window)
+        try:
+            limits.check_rate_limit(user)
+        except limits.LimitExceeded as exc:
+            raise HTTPException(status_code=429, detail=str(exc))
+        loaded: list[tuple[str, bytes]] = []
+        for f in files:
+            ext = Path(f.filename or "").suffix.lower()
+            if ext not in _ALLOWED_EXT:
+                raise HTTPException(status_code=415,
+                                    detail=f"unsupported ext: {ext} (allowed: {sorted(_ALLOWED_EXT)})")
+            blob = await f.read()
+            if len(blob) > _MAX_BYTES_PER_FILE:
+                raise HTTPException(status_code=413,
+                                    detail=f"file too large: {len(blob)} > {_MAX_BYTES_PER_FILE}")
+            loaded.append((f.filename or "image", blob))
+        # daily quota 검사 (입력 bytes + 일별 batch 수)
+        try:
+            limits.check_daily_quota(user, sum(len(b) for _, b in loaded))
+        except limits.LimitExceeded as exc:
+            raise HTTPException(status_code=429, detail=str(exc))
+        # 엔진별 옵션 (Kling 의 model_name/mode/duration 등) 통과
+        options: dict = {}
+        if model_name:
+            options["model_name"] = model_name
+        if mode:
+            options["mode"] = mode
+        if duration:
+            options["duration"] = duration
+        if aspect_ratio:
+            options["aspect_ratio"] = aspect_ratio
+        # bulk submit 묶음 id — CLI bulk-submit 가 N batch 를 1 group 으로 묶을 때
+        # options_json 에 그대로 저장 (스키마 변경 X). UI 가 그룹 필터에 활용.
+        if bulk_group_id and bulk_group_id.strip():
+            bgi = bulk_group_id.strip()
+            if not _BULK_GROUP_ID_RE.fullmatch(bgi):
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        "bulk_group_id 형식 오류: 영숫자 / _ / - / . 1~64자만 허용 "
+                        f"(got {bgi!r})"
+                    ),
+                )
+            options["bulk_group_id"] = bgi
+        result = submit_batch(
+            engine=engine,
+            prompt=prompt,
+            files=loaded,
+            requested_by=user,
+            options=options or None,
+        )
+        # API 클라이언트가 명시적으로 JSON 요청한 경우만 JSONResponse.
+        # 브라우저 (HTML 폼) 는 첫 화면 그대로 머무르도록 303 Redirect → '/?created=<batch_id>'
+        # (toast 표시는 index.html 가 URL query 보고 처리).
+        accept = (request.headers.get("accept") or "").lower()
+        if "application/json" in accept and "text/html" not in accept:
+            return JSONResponse(result)
+        return RedirectResponse(
+            url=f"/?created={result['batch_id']}",
+            status_code=303,
+        )
+
+    @app.get("/genai/batches", response_class=HTMLResponse)
+    def list_batches(
+        request: Request,
+        limit: int = 50,
+        engine: str | None = None,
+        status: str | None = None,
+        bulk_group_id: str | None = None,
+        user: str = Depends(_check_auth),
+    ):
+        # 빈 문자열은 None 취급 (HTML form 의 "all" 옵션 호환)
+        engine = (engine or "").strip() or None
+        status = (status or "").strip() or None
+        bulk_group_id = (bulk_group_id or "").strip() or None
+        # POST 와 동일한 regex 로 GET query 도 검증 (path injection / 잘못된 입력 거부)
+        if bulk_group_id and not _BULK_GROUP_ID_RE.fullmatch(bulk_group_id):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "bulk_group_id 형식 오류: 영숫자 / _ / - / . 1~64자만 허용 "
+                    f"(got {bulk_group_id!r})"
+                ),
+            )
+        batches = pg.list_batches(
+            status=status, engine=engine,
+            bulk_group_id=bulk_group_id, limit=int(limit),
+        )
+        if _wants_json(request):
+            return JSONResponse(jsonable_encoder(batches))
+        # UI 용 distinct bulk group id 목록 — 최근 500 rows 에서 추출. chip 위젯은 너무
+        # 많아지면 깨지므로 top-20 으로 제한. 현재 active filter 가 top-20 밖이면
+        # 맨 앞에 끼워넣어 사용자 시야에서 사라지지 않게 한다.
+        all_groups = pg.distinct_bulk_groups(limit_rows=500)
+        groups = all_groups[:20]
+        if bulk_group_id and bulk_group_id not in groups:
+            groups = [bulk_group_id] + groups[:19]
+        return templates.TemplateResponse(
+            request=request,
+            name="batches.html",
+            context={
+                "batches": batches,
+                "user": user,
+                "engines": enabled_engines(),
+                "filter_engine": engine,
+                "filter_status": status,
+                "filter_bulk_group_id": bulk_group_id,
+                "bulk_groups": groups,
+            },
+        )
+
+    @app.get("/genai/batches/{batch_id}", response_class=HTMLResponse)
+    def batch_detail(batch_id: str, request: Request, user: str = Depends(_check_auth)):
+        batch = pg.get_batch_with_jobs(batch_id)
+        if batch is None:
+            raise HTTPException(status_code=404, detail="batch not found")
+        if _wants_json(request):
+            return JSONResponse(jsonable_encoder(batch))
+        return templates.TemplateResponse(
+            request=request,
+            name="batch_detail.html",
+            context={"batch": batch, "user": user},
+        )
+
+    @app.get("/genai/batches/{batch_id}/outputs/{filename}")
+    def batch_output_file(
+        batch_id: str,
+        filename: str,
+        request: Request,
+        download: bool = False,
+        user: str = Depends(_check_auth),
+    ):
+        """완료된 batch 의 결과 파일(.mp4 / .png) 를 NAS 에서 스트리밍.
+
+        ingest sensor 가 incoming → archive 로 이동시키므로 두 경로 모두 확인.
+        path traversal 방지: filename 에 / 또는 .. 포함 시 거부.
+        """
+        if "/" in filename or ".." in filename or filename.startswith("."):
+            raise HTTPException(status_code=400, detail="invalid filename")
+        batch = pg.get_batch_with_jobs(batch_id)
+        if batch is None:
+            raise HTTPException(status_code=404, detail="batch not found")
+        ts = batch.get("submitted_at")
+        from datetime import datetime as _dt
+        if not isinstance(ts, _dt):
+            ts = _dt.now()
+        date_dir = ts.strftime("%Y-%m-%d")
+        nas_root = os.getenv("GENAI_NAS_INCOMING", "/nas/staging/incoming").rstrip("/")
+        archive_root = nas_root.replace("/incoming", "/archive")
+        # archive 우선 → incoming (이미 옮겨졌을 확률 큼)
+        candidates = [
+            f"{archive_root}/genai/{date_dir}/{batch_id}/outputs/{filename}",
+            f"{nas_root}/genai/{date_dir}/{batch_id}/outputs/{filename}",
+        ]
+        for path in candidates:
+            if os.path.exists(path) and os.path.isfile(path):
+                media = "video/mp4" if filename.endswith(".mp4") else (
+                    "image/png" if filename.endswith(".png") else "application/octet-stream"
+                )
+                headers = {}
+                if download:
+                    headers["Content-Disposition"] = f'attachment; filename="{batch_id}_{filename}"'
+                return FileResponse(path, media_type=media, headers=headers)
+        raise HTTPException(
+            status_code=404,
+            detail=f"output not found in incoming or archive: {filename}",
+        )
+
+    @app.get("/genai/limits")
+    def get_limits(user: str = Depends(_check_auth)):
+        """현재 설정된 한도 + 호출 사용자의 24h 사용량 + 남은 headroom.
+
+        CLI bulk-submit 가 제출 전 사전 체크용으로 호출. 응답은 항상 JSON
+        (Accept 헤더 무시) — UI 노출 페이지 없음.
+
+        구조:
+          {
+            "limits": {...env 한도...},
+            "usage": {
+               "rate_limit": {per_min, used_60s, remaining},
+               "daily_batches": {limit, used_24h, remaining},
+               "daily_bytes": {limit, used_24h, remaining}
+            },
+            "per_batch": {
+               "max_files": int, "max_bytes_per_file": int
+            }
+          }
+        """
+        return JSONResponse({
+            "limits": limits.status(),
+            "usage": limits.usage(user),
+            "per_batch": {
+                "max_files": _MAX_FILES_PER_BATCH,
+                "max_bytes_per_file": _MAX_BYTES_PER_FILE,
+            },
+        })
+
+    @app.get("/genai/costs", response_class=HTMLResponse)
+    def costs(request: Request, range: str = "week", user: str = Depends(_check_auth)):
+        if range not in ("day", "week", "month"):
+            range = "week"
+        summary = cost_summary(range)
+        if _wants_json(request):
+            return JSONResponse(jsonable_encoder({"summary": summary, "limits": limits.status()}))
+        return templates.TemplateResponse(
+            request=request,
+            name="costs.html",
+            context={
+                "summary": summary,
+                "limits": limits.status(),
+                "user": user,
+            },
+        )
+
+    @app.post("/genai/jobs/{job_id}/retry")
+    def retry_job(job_id: str, user: str = Depends(_check_auth)):
+        """실패한 job 1건을 재시도. input_asset_id 와 prompt 는 보존, 새 provider_job_id 발급.
+
+        Codex Q3 HIGH: atomic CAS — status='failed' → 'submitted' RETURNING. RETURNING
+        이 빈 row 면 다른 retry 가 이미 채갔거나 status 변동 → 409. 외부 API 중복 호출 방지.
+        """
+        with pg.connect() as conn:
+            with conn.cursor() as cur:
+                # 1) atomic transition (status='failed' 만 통과)
+                cur.execute(
+                    """
+                    UPDATE genai_jobs
+                       SET status = 'submitted',
+                           error_message = NULL,
+                           provider_job_id = NULL,
+                           submitted_at = CURRENT_TIMESTAMP,
+                           completed_at = NULL
+                     WHERE job_id = %s AND status = 'failed'
+                    RETURNING batch_id, seq_in_batch
+                    """,
+                    (job_id,),
+                )
+                cas = cur.fetchone()
+                if cas is None:
+                    raise HTTPException(
+                        status_code=409,
+                        detail="job is not in 'failed' state (retry race or already in-flight)",
+                    )
+                # batch.status 도 즉시 'running' 으로 복귀
+                cur.execute(
+                    "UPDATE genai_batches SET status='running', completed_at=NULL "
+                    "WHERE batch_id=%s",
+                    (cas[0],),
+                )
+                # 2) 메타 조회 (engine/prompt/options_json 은 batches 에)
+                cur.execute(
+                    """
+                    SELECT b.engine, b.prompt, b.options_json
+                      FROM genai_jobs j
+                      JOIN genai_batches b ON b.batch_id = j.batch_id
+                     WHERE j.job_id = %s
+                    """,
+                    (job_id,),
+                )
+                row = cur.fetchone()
+        batch_id, seq = cas
+        engine, prompt, options_json_raw = row
+        status = "submitted"  # CAS 통과 — 이미 전환됨
+
+        # options_json 에서 mode 회수 — txt2video 면 NAS 원본 읽기 skip
+        import json as _json
+        try:
+            opts_retry = _json.loads(options_json_raw) if options_json_raw else {}
+        except Exception:
+            opts_retry = {}
+        is_text_only_retry = (opts_retry.get("mode") or "").strip().lower() == "txt2video"
+
+        from pathlib import Path
+        from datetime import datetime
+        from adapters import get_adapter
+        adapter = get_adapter(engine)
+
+        if is_text_only_retry:
+            blob = b""
+            orig_name = ""
+        else:
+            # 원본 input image 를 NAS 에서 다시 읽어 어댑터 submit
+            # 날짜 폴더 안의 batch 경로 (batch.submitted_at 기준)
+            nas_root = os.getenv("GENAI_NAS_INCOMING", "/nas/staging/incoming")
+            submitted = pg.get_batch_with_jobs(batch_id) or {}
+            ts = submitted.get("submitted_at")
+            if not isinstance(ts, datetime):
+                ts = datetime.now()
+            orig_parent = Path(nas_root) / "genai" / ts.strftime("%Y-%m-%d") / batch_id / "originals"
+            # 확장자 자동 탐색 (png/jpg/webp)
+            candidates = [
+                p for p in orig_parent.glob(f"{int(seq):03d}.*")
+                if not p.name.endswith(".partial")
+            ]
+            # 구버전(날짜 폴더 없는) 경로 fallback
+            if not candidates:
+                legacy = Path(nas_root) / "genai" / batch_id / "originals"
+                candidates = [p for p in legacy.glob(f"{int(seq):03d}.*") if not p.name.endswith(".partial")]
+            orig_path = orig_parent / f"{int(seq):03d}.png"  # 변수 그대로 유지 (error msg 용)
+            if not candidates:
+                # CAS 한 status 를 'failed' 로 되돌림 (원본 없으면 retry 자체 불가)
+                with pg.connect() as conn:
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            "UPDATE genai_jobs SET status='failed', "
+                            "error_message='original file gone (archive moved?)' "
+                            "WHERE job_id=%s",
+                            (job_id,),
+                        )
+                raise HTTPException(status_code=410, detail=f"original file gone: {orig_path}")
+            orig = candidates[0]
+            blob = orig.read_bytes()
+            orig_name = orig.name
+
+        try:
+            sub = adapter.submit(blob, orig_name, prompt, options=opts_retry or None)
+        except Exception as exc:
+            # 외부 API 실패 시 status='failed' 로 되돌림
+            pg.update_job_status(job_id, status="failed",
+                                  error_message=f"retry adapter submit failed: {exc}")
+            raise HTTPException(status_code=502, detail=f"adapter submit failed: {exc}")
+        pg.update_job_submitted(job_id, sub.provider_job_id)
+        # 동기 엔진은 submit 시점에 결과 → finalize_sync_results 1건으로 호출
+        if sub.is_synchronous and sub.immediate_result is not None:
+            from jobs.finalize import finalize_sync_results
+            finalize_sync_results(
+                batch_id=batch_id,
+                engine=engine,
+                output_media=adapter.output_media,
+                results=[{
+                    "job_id": job_id,
+                    "seq": int(seq),
+                    "bytes": sub.immediate_result,
+                    "ext": sub.immediate_ext or adapter.output_ext,
+                    "cost_units": sub.cost_units,
+                }],
+            )
+            return {"job_id": job_id, "status": "done", "action": "sync_finalized"}
+        return {"job_id": job_id, "status": "submitted", "provider_job_id": sub.provider_job_id}
+
+    # ----- Internal API (Dagster polling sensor 전용) -----------------
+    # Phase 3.5: Dagster 이미지에 어댑터 코드를 COPY 하지 않고, HTTP 경유로
+    # poll/finalize 를 위임. 인증은 GENAI_INTERNAL_TOKEN env 로 분리 (basic auth 와 별개).
+    def _check_internal(request: Request) -> None:
+        expected = os.getenv("GENAI_INTERNAL_TOKEN", "").strip()
+        if not expected:
+            raise HTTPException(
+                status_code=503,
+                detail="GENAI_INTERNAL_TOKEN 미설정 — internal API 비활성",
+            )
+        provided = request.headers.get("X-Internal-Token", "")
+        if not secrets.compare_digest(provided, expected):
+            raise HTTPException(status_code=401, detail="invalid internal token")
+
+    def _async_engines() -> list[str]:
+        """is_synchronous=False 인 엔진만 (sync 는 submit 에서 finalize 됨)."""
+        from adapters import _ADAPTERS  # type: ignore[attr-defined]
+        out: list[str] = []
+        for name, cls in _ADAPTERS.items():
+            try:
+                if not getattr(cls, "is_synchronous", True):
+                    out.append(name)
+            except Exception:
+                pass
+        return out
+
+    def _do_finalize(batch_id: str, seq: int, engine: str, result_url: str,
+                     output_ext: str, cost_units: float | None) -> None:
+        """Background task — sensor timeout 보다 긴 download 도 안전하게 처리."""
+        from jobs.finalize import fail_job, finalize_job
+        try:
+            finalize_job(
+                batch_id=batch_id,
+                seq_in_batch=int(seq),
+                engine=engine,
+                result_url=result_url,
+                output_ext=output_ext,
+                cost_units=cost_units,
+            )
+        except Exception as exc:
+            fail_job(batch_id, int(seq), f"finalize_failed: {exc}")
+
+    @app.post("/internal/jobs/{job_id}/poll")
+    def internal_poll_job(
+        job_id: str,
+        request: Request,
+        background: BackgroundTasks,
+    ):
+        """Dagster sensor 가 호출. 1 job 의 외부 API 상태 확인.
+
+        'done' 일 때 finalize(NAS download 포함) 는 BackgroundTasks 로 분리.
+        sensor 의 짧은 timeout 안에 finalize 를 끝낼 수 없을 때 sensor 가 timeout
+        retry 하면서 동일 job 을 재호출 → 중복 finalize 위험. 이를 방지하기 위해
+        finalize 시작 직전에 status='running' (또는 unchanged) 인 row 만 진입하고,
+        atomic 으로 status='running' (이미 그러함) 유지 + BackgroundTasks 로 응답 즉시 반환.
+        """
+        _check_internal(request)
+        with pg.connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT j.batch_id, j.seq_in_batch, j.provider_job_id, j.status,
+                           b.engine, b.output_media
+                      FROM genai_jobs j
+                      JOIN genai_batches b ON b.batch_id = j.batch_id
+                     WHERE j.job_id = %s
+                    """,
+                    (job_id,),
+                )
+                row = cur.fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail="job not found")
+        batch_id, seq, provider_id, status, engine, output_media = row
+        if status not in ("submitted", "running"):
+            return {"job_id": job_id, "status": status, "action": "noop"}
+        if not provider_id:
+            return {"job_id": job_id, "status": status, "action": "no_provider_id"}
+
+        from adapters import get_adapter
+        from jobs.finalize import fail_job
+
+        try:
+            adapter = get_adapter(engine)
+            res = adapter.poll(provider_id)
+        except Exception as exc:
+            return {"job_id": job_id, "status": "error", "error": str(exc)}
+
+        if res.status == "running":
+            return {"job_id": job_id, "status": "running", "action": "wait"}
+        if res.status == "failed":
+            fail_job(batch_id, int(seq), res.error_message or "provider failed")
+            return {"job_id": job_id, "status": "failed", "action": "fail_recorded"}
+        if res.status == "done":
+            # 중복 finalize 방지 — sensor 가 60s 안에 응답 받게 즉시 반환,
+            # 실제 download 는 background. 다음 tick 의 pending list 에는 여전히
+            # 'running' 상태로 잡히지만, finalize_job 자체가 idempotent (atomic
+            # rename + UPDATE done) 라 outcome 동일. 외부 API 다운로드 비용 중복은
+            # 별도 mitigation 필요 시 status='running' → 'finalizing' 같은 추가 enum.
+            background.add_task(
+                _do_finalize,
+                batch_id=batch_id,
+                seq=int(seq),
+                engine=engine,
+                result_url=res.result_url or "",
+                output_ext=adapter.output_ext,
+                cost_units=res.cost_units,
+            )
+            return {"job_id": job_id, "status": "done", "action": "finalize_scheduled"}
+        return {"job_id": job_id, "status": res.status, "action": "unknown"}
+
+    @app.get("/internal/jobs/pending")
+    def internal_list_pending(request: Request, limit: int = 50):
+        _check_internal(request)
+        # 비동기 엔진만 — 어댑터의 is_synchronous=False 로 동적 결정 (Codex Q4 MED).
+        async_engines = _async_engines()
+        if not async_engines:
+            return {"pending": []}
+        # IN 절 — 길이 동적이라 placeholder 직접 생성
+        in_placeholders = ", ".join(["%s"] * len(async_engines))
+        sql = f"""
+            SELECT j.job_id, j.batch_id, j.seq_in_batch, j.provider_job_id,
+                   j.status, b.engine, b.output_media
+              FROM genai_jobs j
+              JOIN genai_batches b ON b.batch_id = j.batch_id
+             WHERE j.status IN ('submitted','running')
+               AND b.engine IN ({in_placeholders})
+             ORDER BY j.submitted_at NULLS LAST
+             LIMIT %s
+        """
+        params = (*async_engines, int(limit))
+        with pg.connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql, params)
+                rows = cur.fetchall()
+        cols = ["job_id", "batch_id", "seq_in_batch", "provider_job_id",
+                "status", "engine", "output_media"]
+        return {"pending": [dict(zip(cols, r)) for r in rows]}
+
+    return app
+
+
+app = create_app()

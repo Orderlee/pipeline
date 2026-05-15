@@ -21,7 +21,7 @@ Usage:
 
     # 환경변수
     export LS_API_KEY=...
-    export MINIO_ENDPOINT=10.0.0.36:9000
+    export MINIO_ENDPOINT=10.0.0.51:9000
 """
 
 from __future__ import annotations
@@ -60,7 +60,7 @@ from botocore.config import Config as BotoConfig
 # ---------------------------------------------------------------------------
 
 DEFAULT_LS_URL = "http://localhost:8080"
-DEFAULT_MINIO_ENDPOINT = "10.0.0.36:9000"
+DEFAULT_MINIO_ENDPOINT = "10.0.0.51:9000"
 DEFAULT_MINIO_ACCESS_KEY = "minioadmin"
 DEFAULT_MINIO_SECRET_KEY = "minioadmin"
 # raw bucket: Gemini 초벌이 끝난 원본 영상이 들어있는 곳. LS task는 원본 영상을 가리킴.

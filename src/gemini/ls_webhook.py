@@ -27,7 +27,7 @@ Usage:
     SLACK_WEBHOOK_URL    Slack Incoming Webhook URL (미설정 시 알림 생략)
     SLACK_SIGNING_SECRET Slack slash command 검증 시크릿 (미설정 시 검증 생략)
     DATAOPS_DUCKDB_PATH  DuckDB 파일 경로 (필수)
-    MINIO_ENDPOINT       (기본: 10.0.0.36:9000)
+    MINIO_ENDPOINT       (기본: 10.0.0.51:9000)
     MINIO_ACCESS_KEY     (기본: minioadmin)
     MINIO_SECRET_KEY     (기본: minioadmin)
 """
@@ -98,7 +98,7 @@ from fastapi.responses import PlainTextResponse
 # ---------------------------------------------------------------------------
 
 DEFAULT_LS_URL           = "http://localhost:8080"
-DEFAULT_MINIO_ENDPOINT   = "10.0.0.36:9000"
+DEFAULT_MINIO_ENDPOINT   = "10.0.0.51:9000"
 DEFAULT_MINIO_ACCESS_KEY = "minioadmin"
 DEFAULT_MINIO_SECRET_KEY = "minioadmin"
 DEFAULT_LABEL_BUCKET     = "vlm-labels"
