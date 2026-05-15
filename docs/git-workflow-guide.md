@@ -1,108 +1,108 @@
-# Git 브랜치 전략 & 배포 구조 가이드
+# Git Branch Strategy & Deployment Structure Guide
 
-> upstream-org/Datapipeline-Data-data_pipeline 기준
+> Based on upstream-org/Datapipeline-Data-data_pipeline
 
-## 현재 기준
+## Current Structure
 
 ```text
-개인 포크/feature 브랜치
+Personal fork / feature branch
   -> PR -> upstream-org/dev (test)
-  -> 검증 완료 후 PR -> upstream-org/main (production)
+  -> After validation, PR -> upstream-org/main (production)
 ```
 
-| 브랜치 | 역할 | 배포 |
+| Branch | Role | Deployment |
 |---|---|---|
-| 개인 포크 / feature | 개인 작업, 실험, 초안 | 없음 |
-| `upstream-org/dev` | 팀 통합 + test 검증 | test 자동 배포 |
-| `upstream-org/main` | production 릴리즈 | production 자동 배포 |
+| Personal fork / feature | Individual work, experiments, drafts | None |
+| `upstream-org/dev` | Team integration + test validation | Test auto-deploy |
+| `upstream-org/main` | Production release | Production auto-deploy |
 
-기본 원칙:
+Core principles:
 
 - `dev = test`
 - `main = production`
-- 기능 개발은 `dev`로 모으고, production 반영은 `dev -> main` PR로만 진행합니다.
-- 과거 문서나 스크립트에 남아 있는 `staging` 표기는 대부분 현재의 `test` 환경을 뜻하는 legacy 표현입니다.
+- Feature development is consolidated into `dev`; production promotion is done exclusively via `dev -> main` PR.
+- The `staging` terminology found in older documents or scripts mostly refers to the current `test` environment and is a legacy expression.
 
 ---
 
-## 빠른 참조 (체크카드)
+## Quick Reference (Flash Card)
 
-> Orderlee 포크에서 직접 배포 중일 때 5초 안에 찾을 정보. 기억이 안 나면 여기만 보세요.
+> What to check in 5 seconds when deploying directly from the Orderlee fork. Come here when you forget.
 
-### 일반 기능 배포 — 4단계
+### Standard Feature Deployment — 4 Steps
 
 ```bash
-# 1) 커밋 + dev 푸시 → 스테이징 자동 배포
+# 1) Commit + push to dev → staging auto-deploy
 git push origin dev
 
-# 2) 3–10분 대기 후 스테이징에서 검증
+# 2) Wait 3–10 minutes, then validate on staging
 #    http://10.0.0.10:3031/  (Dagster UI)
-#    + 관련 센서 tick·asset 재실행·MinIO 결과물 등 수동 확인
+#    + manually check relevant sensor ticks, asset re-runs, MinIO artifacts, etc.
 
-# 3) 프로덕션 반영
+# 3) Promote to production
 git checkout main && git merge --no-ff dev && git push origin main
 
-# 4) 프로덕션 안정 확인 후, upstream(upstream-org/dev)으로 기여
-./tools/pr-to-upstream.sh          # 대화형 (y/N 확인)
-# 또는 보낼 커밋만 확인: ./tools/pr-to-upstream.sh --dry-run
+# 4) After confirming production stability, contribute to upstream (upstream-org/dev)
+./tools/pr-to-upstream.sh          # interactive (y/N confirmation)
+# or to check only the commits being sent: ./tools/pr-to-upstream.sh --dry-run
 ```
 
-### 핫픽스 (프로덕션 긴급 수정) — 4단계
+### Hotfix (Emergency Production Fix) — 4 Steps
 
 ```bash
-# 1) main에서 fix 브랜치 분기
-git checkout -b fix/<이름> main
+# 1) Branch off main for a fix branch
+git checkout -b fix/<name> main
 
-# 2) 수정 + 커밋 + 푸시 → GitHub에서 PR 생성
-git push origin fix/<이름>
-# PR → main → 머지 → 프로덕션 즉시 배포
+# 2) Fix + commit + push → create PR on GitHub
+git push origin fix/<name>
+# PR → main → merge → production deploys immediately
 
-# 3) (거의 무조건!) 백머지하여 dev로 되돌려놓기
+# 3) (Almost always required!) Back-merge to dev
 git checkout dev && git merge main && git push origin dev
 ```
 
-> ⚠️ **핫픽스 백머지 생략 금지** — 다음 정기 릴리즈(`dev → main`)에서 같은 버그가 되살아남.
+> ⚠️ **Never skip the hotfix back-merge** — the same bug will resurface in the next regular release (`dev → main`).
 
-### 자동/수동 구분
+### Automatic vs Manual
 
-| 단계 | 자동 | 주체 |
+| Step | Automatic | Owner |
 |---|---|---|
-| 커밋·푸시 | ❌ | 개발자 |
-| 스테이징 배포 (deploy-test.yml) | ✅ | GitHub Actions |
-| 스테이징 검증 | ❌ | 사람 |
-| dev → main 머지 | ❌ | 개발자 |
-| 프로덕션 배포 (deploy-production.yml) | ✅ | GitHub Actions |
+| Commit & push | ❌ | Developer |
+| Staging deploy (deploy-test.yml) | ✅ | GitHub Actions |
+| Staging validation | ❌ | Human |
+| dev → main merge | ❌ | Developer |
+| Production deploy (deploy-production.yml) | ✅ | GitHub Actions |
 
-### CI 트리거 규칙 (언제 CI가 돌고 안 돌고)
+### CI Trigger Rules (When CI runs and when it doesn't)
 
-| 바뀐 파일 | CI 트리거? | 이미지 재빌드? |
+| Changed files | CI triggered? | Image rebuild? |
 |---|---|---|
-| `*.md` (루트) / `docs/**` / `tests/**` / `.cursor/**` / `.agent/**` | ❌ (paths-ignore) | — |
-| `src/vlm_pipeline/**` | ✅ | ❌ (rsync만, 빠름) |
-| `Dockerfile` / `docker/app/**` / `configs/**` / `scripts/**` / `gcp/**` / `split_dataset/**` / `src/python/**` | ✅ | ✅ (느림) |
-| `.env` / `.env.test` | git 미추적 — 트리거 불가. 호스트에서 직접 편집 + 해당 환경 `docker compose restart` |
+| `*.md` (root) / `docs/**` / `tests/**` / `.cursor/**` / `.agent/**` | ❌ (paths-ignore) | — |
+| `src/vlm_pipeline/**` | ✅ | ❌ (rsync only, fast) |
+| `Dockerfile` / `docker/app/**` / `configs/**` / `scripts/**` / `gcp/**` / `split_dataset/**` / `src/python/**` | ✅ | ✅ (slow) |
+| `.env` / `.env.test` | Not tracked by git — cannot trigger. Edit directly on host + `docker compose restart` for the affected environment |
 
-### 확인 URL 모음
+### URL Reference
 
-| 용도 | URL |
+| Purpose | URL |
 |---|---|
 | GitHub Actions | https://github.com/Orderlee/Datapipeline-Data-data_pipeline/actions |
 | PROD Dagster UI | http://10.0.0.10:3030/ |
 | STAGING Dagster UI | http://10.0.0.10:3031/ |
-| PROD MinIO Console | http://10.0.0.36:9001/ (S3 :9000) |
-| STAGING MinIO Console | http://10.0.0.36:9003/ (S3 :9002) |
+| PROD MinIO Console | http://10.0.0.51:9001/ (S3 :9000) |
+| STAGING MinIO Console | http://10.0.0.51:9003/ (S3 :9002) |
 
-### 자주 하는 실수
+### Common Mistakes
 
-- 스테이징 `src/`·`configs/`·`scripts/` 를 **호스트에서 직접 수정** → 다음 CI 배포의 `rsync --delete`로 소실됨. 반드시 git 커밋 경로로
-- **핫픽스 백머지 누락** → 다음 정기 릴리즈에서 버그 재발
-- **env 변경을 git에 넣으려다 실패** → `.env`/`.env.test`는 `.gitignore`에 등록되어 있음. 호스트에서만 편집
-- **스테이징에서 디버깅 중 직접 파일 수정** → commit 안 하면 다음 배포로 사라짐
-- **upstream 기여 빠뜨림** → Orderlee/main에만 쌓이고 upstream-org/dev 뒤처짐. 4단계의 `tools/pr-to-upstream.sh` 반드시 실행
+- **Directly editing** `src/`, `configs/`, `scripts/` on the staging host → wiped by `rsync --delete` on the next CI deploy. Always go through git commits.
+- **Skipping the hotfix back-merge** → bug resurfaces in the next regular release.
+- **Trying to put env changes in git** → `.env`/`.env.test` are in `.gitignore`. Edit on host only.
+- **Directly modifying files while debugging on staging** → disappears on next deploy if not committed.
+- **Forgetting to contribute upstream** → changes accumulate only in Orderlee/main while upstream-org/dev falls behind. Always run `tools/pr-to-upstream.sh` in step 4.
 
-### CI 우회 수동 배포 (장애 시 전용)
+### Manual Deployment / CI Bypass (Emergency Only)
 
-CI가 내려앉았을 때 호스트에서 직접:
+When CI is down, deploy directly from the host:
 
 ```bash
 # PROD
@@ -118,9 +118,9 @@ cd docker && docker compose restart
 
 ---
 
-## 작업 시나리오
+## Work Scenarios
 
-### 시나리오 1. 일반 기능 개발
+### Scenario 1. Standard Feature Development
 
 ```bash
 git fetch upstream
@@ -131,35 +131,35 @@ git checkout -b feature/xxx
 git push origin feature/xxx
 ```
 
-흐름:
+Flow:
 
 ```text
-PR: 내 포크/feature/xxx -> upstream-org/dev
-  -> test 자동 배포
-  -> test 검증
-  -> 릴리즈 시 dev -> main PR
+PR: my-fork/feature/xxx -> upstream-org/dev
+  -> test auto-deploy
+  -> test validation
+  -> dev -> main PR at release time
 ```
 
-### 시나리오 2. 긴급 버그 수정
+### Scenario 2. Emergency Bug Fix
 
 ```bash
 git fetch upstream
 git checkout -b hotfix/issue-name upstream/main
 ```
 
-흐름:
+Flow:
 
 ```text
 PR 1: hotfix/issue-name -> upstream-org/main
 PR 2: hotfix/issue-name -> upstream-org/dev
 ```
 
-핵심:
+Key points:
 
-- hotfix는 `main` 기준으로 만듭니다.
-- `main`에만 넣고 `dev`를 빼먹으면 다음 릴리즈 때 버그가 되살아날 수 있습니다.
+- Hotfixes are branched from `main`.
+- If you only merge to `main` and omit `dev`, the bug may resurface at the next release.
 
-### 시나리오 3. 팀원 작업 위에서 이어서 개발
+### Scenario 3. Continuing Development on Top of a Teammate's Work
 
 ```bash
 git fetch upstream
@@ -168,108 +168,108 @@ git merge upstream/dev
 git checkout -b feature/follow-up
 ```
 
-핵심:
+Key point:
 
-- 팀 간 공유 기준점은 항상 `upstream-org/dev`입니다.
-- 포크끼리 직접 브랜치를 이어붙이는 대신, 먼저 `dev`에 반영된 뒤 그 위에서 이어갑니다.
+- The shared reference point across the team is always `upstream-org/dev`.
+- Instead of chaining branches between forks directly, wait for the work to land in `dev` first, then build on top.
 
-### 시나리오 4. 릴리즈
+### Scenario 4. Release
 
 ```text
-1. upstream-org/dev 에서 test 검증 완료
+1. Validation complete on upstream-org/dev (test environment)
 2. PR: upstream-org/dev -> upstream-org/main
-3. 리뷰 후 merge
-4. main 자동 배포
+3. Review and merge
+4. main auto-deploys
 ```
 
-핵심:
+Key point:
 
-- `dev -> main` PR이 곧 production 릴리즈 기록입니다.
-- PR 설명에 포함 기능, 위험 요소, 검증 결과를 함께 남깁니다.
+- The `dev -> main` PR is the production release record.
+- Include included features, risk factors, and validation results in the PR description.
 
-### 시나리오 5. 실험성 작업
+### Scenario 5. Experimental Work
 
 ```bash
 git checkout -b experiment/xxx
 git push origin experiment/xxx
 ```
 
-핵심:
+Key point:
 
-- 실험은 개인 포크에서만 합니다.
-- 충분히 의미가 있을 때만 `upstream-org/dev`로 PR을 엽니다.
+- Experiments stay in personal forks only.
+- Open a PR to `upstream-org/dev` only when the results are sufficiently promising.
 
-## 의사결정 트리
+## Decision Tree
 
 ```text
-새 작업 시작
-  ├─ production 긴급 버그인가?
-  │    -> main 기준 hotfix
-  │    -> main + dev 둘 다 PR
-  ├─ 일반 기능인가?
-  │    -> dev 최신화
-  │    -> feature 브랜치
-  │    -> upstream-org/dev PR
-  └─ 실험인가?
-       -> 개인 포크에서만 진행
-       -> 결과 좋으면 upstream-org/dev PR
+Starting new work
+  ├─ Is it an urgent production bug?
+  │    -> hotfix based on main
+  │    -> PR to both main and dev
+  ├─ Is it a standard feature?
+  │    -> Update dev to latest
+  │    -> feature branch
+  │    -> PR to upstream-org/dev
+  └─ Is it an experiment?
+       -> Personal fork only
+       -> PR to upstream-org/dev if results are good
 ```
 
-## 배포 기준
+## Deployment Criteria
 
-### Test 배포
+### Test Deployment
 
-- 트리거: `upstream-org/dev` push
-- 대상: test stack
-- 기준 env: `docker/.env.test`
-- 목적: 팀 통합 검증
+- Trigger: push to `upstream-org/dev`
+- Target: test stack
+- Base env: `docker/.env.test`
+- Purpose: team integration validation
 
-### Production 배포
+### Production Deployment
 
-- 트리거: `upstream-org/main` push
-- 대상: production stack
-- 기준 env: `docker/.env`
-- 목적: 실제 운영 반영
+- Trigger: push to `upstream-org/main`
+- Target: production stack
+- Base env: `docker/.env`
+- Purpose: live production promotion
 
-## Self-hosted runner 기준
+## Self-Hosted Runner
 
-runner는 현재 branch 기반 배포를 같이 처리합니다.
+The runner currently handles branch-based deployments.
 
-권장 label:
+Recommended labels:
 
 ```text
 self-hosted, linux, deploy, production, test
 ```
 
-`setup-runner.sh` 사용 예:
+Usage with `setup-runner.sh`:
 
 ```bash
 bash scripts/deploy/setup-runner.sh --token <token>
 ```
 
-## 운영 체크포인트
+## Operational Checkpoints
 
 ### dev -> test
 
-- `dev` merge 후 test workflow가 실행되는지 확인
-- test Dagster health check가 통과하는지 확인
-- test 데이터 plane(`/data/staging.duckdb`, `/nas/staging/...`)만 건드렸는지 확인
+- Confirm the test workflow runs after merging to `dev`
+- Confirm the test Dagster health check passes
+- Confirm only the test data plane (`/data/staging.duckdb`, `/nas/staging/...`) was touched
 
 ### main -> production
 
-- `main` merge 후 production workflow가 실행되는지 확인
-- production Dagster health check가 통과하는지 확인
-- production 데이터 plane(`/data/pipeline.duckdb`, `/nas/...`)만 건드렸는지 확인
+- Confirm the production workflow runs after merging to `main`
+- Confirm the production Dagster health check passes
+- Confirm only the production data plane (`/data/pipeline.duckdb`, `/nas/...`) was touched
 
-## 팀 규칙
+## Team Rules
 
-| 브랜치 | 규칙 |
+| Branch | Rule |
 |---|---|
-| `main` | PR 필수, 리뷰 후 merge, direct push 금지 |
-| `dev` | PR 권장 또는 필수, direct push 최소화 |
+| `main` | PR required, review before merge, direct push forbidden |
+| `dev` | PR recommended or required, minimize direct push |
 
-## 호환성 메모
+## Compatibility Notes
 
-- `/nas/staging`, `/data/staging.duckdb`, `STAGING_ROOT` 같은 이름은 아직 일부 스크립트와 데이터 plane에서 legacy 호환용으로 남아 있습니다.
-- 하지만 브랜치/배포 의미는 이미 `staging`이 아니라 `test`입니다.
-- 새 스크립트와 새 문서에서는 가능한 한 `test` 용어를 사용합니다.
+- Names such as `/nas/staging`, `/data/staging.duckdb`, and `STAGING_ROOT` still appear in some scripts and data planes for legacy compatibility.
+- However, the branch/deployment semantics are now `test`, not `staging`.
+- New scripts and new documentation should use the `test` terminology wherever possible.

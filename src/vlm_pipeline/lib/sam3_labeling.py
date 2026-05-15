@@ -4,6 +4,10 @@ detection_assets.sam3_image_detection 과 build/classification.build_classificat
 fallback 경로가 동일한 패턴으로 SAM3 호출 결과를 저장한다. 이 모듈이 그 공통 블록을 보유한다.
 
 Layer 2: 순수 유틸 (Dagster 의존 없음). DB 쓰기는 호출자가 담당.
+
+CLAUDE.md 의 L1-2 → L4 import 금지 규칙 준수를 위해 ``MinIOResource`` 는 ``TYPE_CHECKING``
+가드 하에서만 import. 런타임엔 lib 가 resources 를 참조하지 않으며, 시그니처의 타입 힌트는
+``from __future__ import annotations`` 덕에 문자열로만 평가된다.
 """
 
 from __future__ import annotations
@@ -11,7 +15,7 @@ from __future__ import annotations
 import json
 from datetime import datetime
 from pathlib import PurePosixPath
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from vlm_pipeline.lib.detection_coco import (
     build_coco_detection_payload,
@@ -19,7 +23,9 @@ from vlm_pipeline.lib.detection_coco import (
 )
 from vlm_pipeline.lib.detection_common import stable_image_label_id
 from vlm_pipeline.lib.key_builders import build_sam3_detection_key
-from vlm_pipeline.resources.minio import MinIOResource
+
+if TYPE_CHECKING:
+    from vlm_pipeline.resources.minio import MinIOResource
 
 LABELS_BUCKET_DEFAULT = "vlm-labels"
 

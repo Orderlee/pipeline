@@ -29,7 +29,11 @@ from .helpers_gemini import (
     prepare_gemini_video_for_request,
     serialize_gemini_events,
 )
-from .helpers_keys import build_gemini_label_key, build_video_classification_key
+from vlm_pipeline.lib.key_builders import (
+    build_gemini_label_key,
+    build_video_classification_key,
+)
+
 from .helpers_video import materialize_video
 
 __all__ = [

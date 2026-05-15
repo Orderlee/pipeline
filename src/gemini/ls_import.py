@@ -15,7 +15,7 @@ Usage:
 
     # 환경변수로 설정
     export LS_API_KEY=...
-    export MINIO_ENDPOINT=10.0.0.36:9000
+    export MINIO_ENDPOINT=10.0.0.51:9000
     python ls_import.py --project 3
 """
 
@@ -41,7 +41,7 @@ from botocore.config import Config as BotoConfig
 # ---------------------------------------------------------------------------
 
 DEFAULT_LS_URL = "http://localhost:8080"
-DEFAULT_MINIO_ENDPOINT = "10.0.0.36:9000"
+DEFAULT_MINIO_ENDPOINT = "10.0.0.51:9000"
 DEFAULT_MINIO_ACCESS_KEY = "minioadmin"
 DEFAULT_MINIO_SECRET_KEY = "minioadmin"
 DEFAULT_BUCKET = "vlm-labels"

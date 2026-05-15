@@ -1,0 +1,111 @@
+{% extends "base.html" %}
+{% set page = "batches" %}
+{% from "_icons.html" import icon %}
+
+{% set status_choices = [
+  ('running', 'running'),
+  ('succeeded', 'succeeded'),
+  ('partial_success', 'partial'),
+  ('failed', 'failed'),
+] %}
+
+{% macro filter_url(eng, st, bgi) -%}
+  {%- set parts = [] -%}
+  {%- if eng %}{% set _ = parts.append('engine=' ~ eng) %}{% endif -%}
+  {%- if st %}{% set _ = parts.append('status=' ~ st) %}{% endif -%}
+  {%- if bgi %}{% set _ = parts.append('bulk_group_id=' ~ bgi) %}{% endif -%}
+  /genai/batches{% if parts %}?{{ parts|join('&') }}{% endif %}
+{%- endmacro %}
+
+{% block body %}
+<main class="gs-page gs-page--narrow">
+  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px">
+    <h1 class="gs-h1">Batches</h1>
+    <a href="/" class="gs-pill">{{ icon('plus', size=13) }} 새 batch</a>
+  </div>
+
+  <!-- 필터 -->
+  <div class="gs-filterbar">
+    <div class="gs-filterbar__row">
+      <span class="gs-filterbar__label gs-mono">engine</span>
+      <a href="{{ filter_url(None, filter_status, filter_bulk_group_id) }}"
+         class="gs-chip {% if not filter_engine %}is-active{% endif %}">all</a>
+      {% for e in engines %}
+        <a href="{{ filter_url(e, filter_status, filter_bulk_group_id) }}"
+           class="gs-chip {% if filter_engine == e %}is-active{% endif %}">{{ e }}</a>
+      {% endfor %}
+    </div>
+    <div class="gs-filterbar__row">
+      <span class="gs-filterbar__label gs-mono">status</span>
+      <a href="{{ filter_url(filter_engine, None, filter_bulk_group_id) }}"
+         class="gs-chip {% if not filter_status %}is-active{% endif %}">all</a>
+      {% for s_value, s_label in status_choices %}
+        <a href="{{ filter_url(filter_engine, s_value, filter_bulk_group_id) }}"
+           class="gs-chip {% if filter_status == s_value %}is-active{% endif %}">{{ s_label }}</a>
+      {% endfor %}
+    </div>
+    {% if bulk_groups %}
+    <div class="gs-filterbar__row">
+      <span class="gs-filterbar__label gs-mono">group</span>
+      <a href="{{ filter_url(filter_engine, filter_status, None) }}"
+         class="gs-chip {% if not filter_bulk_group_id %}is-active{% endif %}">all</a>
+      {% for bgi in bulk_groups %}
+        <a href="{{ filter_url(filter_engine, filter_status, bgi) }}"
+           class="gs-chip {% if filter_bulk_group_id == bgi %}is-active{% endif %}"
+           title="{{ bgi }}">{{ bgi }}</a>
+      {% endfor %}
+    </div>
+    {% endif %}
+    {% if filter_engine or filter_status or filter_bulk_group_id %}
+    <div class="gs-filterbar__meta gs-mono">
+      {{ batches|length }} batches
+      {% if filter_engine %}· engine={{ filter_engine }}{% endif %}
+      {% if filter_status %}· status={{ filter_status }}{% endif %}
+      {% if filter_bulk_group_id %}· group={{ filter_bulk_group_id }}{% endif %}
+      &nbsp;<a href="/genai/batches" class="gs-filterbar__clear">필터 해제 ✕</a>
+    </div>
+    {% endif %}
+  </div>
+
+  {% if batches %}
+  <div class="gs-card-block">
+    <table class="gs-table">
+      <thead>
+        <tr>
+          <th>batch_id</th><th>engine</th><th>media</th><th>status</th>
+          <th>jobs (✓/✗/total)</th><th>group</th><th>submitted</th><th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for b in batches %}
+        <tr>
+          <td><code>{{ b.batch_id }}</code></td>
+          <td>{{ b.engine }}</td>
+          <td>{{ b.output_media }}</td>
+          <td><span class="gs-badge {{ b.status }}">{{ b.status }}</span></td>
+          <td class="gs-mono">{{ b.n_succeeded }} / {{ b.n_failed }} / {{ b.n_total }}</td>
+          <td class="gs-mono" style="font-size:11px">
+            {% if b.bulk_group_id %}
+              <a href="{{ filter_url(None, None, b.bulk_group_id) }}"
+                 class="gs-chip gs-chip--tiny"
+                 title="{{ b.bulk_group_id }}">{{ b.bulk_group_id|truncate(20, true, '…') }}</a>
+            {% else %}—{% endif %}
+          </td>
+          <td class="gs-mono">{{ b.submitted_at }}</td>
+          <td><a href="/genai/batches/{{ b.batch_id }}">상세 →</a></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p class="gs-hint">
+    {% if filter_engine or filter_status or filter_bulk_group_id %}
+      해당 조건에 맞는 batch 가 없습니다. <a href="/genai/batches">전체 보기 →</a>
+    {% else %}
+      등록된 batch 가 없습니다. <a href="/">첫 batch 만들기 →</a>
+    {% endif %}
+  </p>
+  {% endif %}
+</main>
+{% endblock %}

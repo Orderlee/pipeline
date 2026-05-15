@@ -1,0 +1,56 @@
+{% extends "base.html" %}
+{% set page = "costs" %}
+{% from "_icons.html" import icon %}
+
+{% block body %}
+<main class="gs-page gs-page--narrow">
+  <h1 class="gs-h1">Cost / Activity <span class="gs-hint gs-mono" style="font-size:12px;font-weight:400">· {{ summary.since }} ~ now</span></h1>
+
+  <nav class="gs-range-tabs">
+    {% for r in ["day","week","month"] %}
+      <a href="/genai/costs?range={{ r }}" class="{% if summary.range == r %}is-active{% endif %}">{{ r }}</a>
+    {% endfor %}
+  </nav>
+
+  <h2 class="gs-h2">Totals</h2>
+  <div class="gs-card-block" style="padding:14px">
+    <dl class="gs-dl">
+      <dt>batches</dt><dd>{{ summary.totals.n_batches }}</dd>
+      <dt>users</dt><dd>{{ summary.totals.n_users }}</dd>
+      <dt>jobs done</dt><dd class="gs-mono">{{ summary.totals.n_done }}</dd>
+      <dt>jobs failed</dt><dd class="gs-mono">{{ summary.totals.n_failed }}</dd>
+      <dt>total cost</dt><dd class="gs-mono">{{ "%.4f"|format(summary.totals.total_cost) }}</dd>
+    </dl>
+  </div>
+
+  <h2 class="gs-h2">By Engine</h2>
+  {% if summary.by_engine %}
+  <div class="gs-card-block">
+    <table class="gs-table">
+      <thead><tr><th>engine</th><th>done</th><th>failed</th><th>cost</th></tr></thead>
+      <tbody>
+        {% for e in summary.by_engine %}
+        <tr>
+          <td>{{ e.engine }}</td>
+          <td class="gs-mono">{{ e.n_done }}</td>
+          <td class="gs-mono">{{ e.n_failed }}</td>
+          <td class="gs-mono">{{ "%.4f"|format(e.total_cost) }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p class="gs-hint">활동 없음.</p>
+  {% endif %}
+
+  <h2 class="gs-h2">Limits (env)</h2>
+  <div class="gs-card-block" style="padding:14px">
+    <dl class="gs-dl">
+      <dt>rate_limit_per_min</dt><dd class="gs-mono">{{ limits.rate_limit_per_min or "off" }}</dd>
+      <dt>daily_batch_limit</dt><dd class="gs-mono">{{ limits.daily_batch_limit or "off" }}</dd>
+      <dt>daily_bytes_limit</dt><dd class="gs-mono">{{ limits.daily_bytes_limit or "off" }}</dd>
+    </dl>
+  </div>
+</main>
+{% endblock %}

@@ -58,13 +58,10 @@ from .helpers_metadata import (
     _stable_gemini_label_id,
 )
 
-# Legacy underscore aliases for clip_windows re-exports — frame_extract.py 등에서 사용.
-_candidate_clip_window_plan_key = candidate_clip_window_plan_key
-_sort_process_candidates = sort_process_candidates
-_resolve_event_only_clip_extraction_window = resolve_event_only_clip_extraction_window
+# Legacy underscore aliases — test 호환을 위해 남는 2개만 유지(_resolve_event_clip_extraction_window
+# 과 _plan_asset_event_clip_extraction_windows). 나머지 4개는 캘러 0건으로 제거됨.
 _resolve_event_clip_extraction_window = resolve_event_clip_extraction_window
 _plan_asset_event_clip_extraction_windows = plan_asset_event_clip_extraction_windows
-_window_values_match = window_values_match
 
 __all__ = [
     # clip_windows re-exports (public + legacy underscore)
@@ -76,12 +73,8 @@ __all__ = [
     "resolve_event_only_clip_extraction_window",
     "sort_process_candidates",
     "window_values_match",
-    "_candidate_clip_window_plan_key",
-    "_sort_process_candidates",
-    "_resolve_event_only_clip_extraction_window",
     "_resolve_event_clip_extraction_window",
     "_plan_asset_event_clip_extraction_windows",
-    "_window_values_match",
     # clip_media
     "_extract_video_clip_media",
     "_extract_video_clip_path",

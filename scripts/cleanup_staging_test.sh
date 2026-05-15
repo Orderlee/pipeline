@@ -77,7 +77,7 @@ from botocore.config import Config as BotoConfig
 try:
     client = boto3.client(
         "s3",
-        endpoint_url="http://10.0.0.36:9002",
+        endpoint_url="http://10.0.0.51:9002",
         aws_access_key_id="minioadmin",
         aws_secret_access_key="minioadmin",
         config=BotoConfig(signature_version="s3v4", s3={"addressing_style": "path"}),

@@ -1,58 +1,58 @@
 # AGENTS.md — VLM Data Pipeline
 
-이 문서는 에이전트를 위한 **짧은 맵**입니다.  
-세부 설계, 계획, 운영 레퍼런스는 `docs/` 아래 기록 시스템을 우선 참조합니다.
+This document is a **short map** for agents.
+For detailed design, plans, and operational references, consult the `docs/` documentation system first.
 
-## 먼저 볼 문서
+## Documents to Read First
 
-1. `README.md` — 사람용 개요와 운영 흐름
-2. `docs/index.md` — 문서 전체 목차
-3. 작업 성격에 맞는 하위 인덱스
+1. `README.md` — human-facing overview and operational flow
+2. `docs/index.md` — full documentation table of contents
+3. Sub-indexes matching the nature of your task:
    - `docs/design-docs/index.md`
    - `docs/exec-plans/index.md`
    - `docs/references/index.md`
-4. 에이전트 라우팅·effort·escalation 룰: `docs/references/multi-agent.md`
+4. Agent routing, effort, and escalation rules: `docs/references/multi-agent.md`
 
-## 프로젝트 한 줄
+## Project in One Line
 
-CCTV/보안 영상 수집 → 중복 제거 → Gemini(Vertex) 라벨링 → YOLO-World 검출 → 학습 데이터셋 빌드  
-스택은 Dagster + DuckDB + MinIO + MotherDuck 입니다.
+CCTV/security footage ingestion → deduplication → Gemini (Vertex) labeling → YOLO-World detection → training dataset build.
+Stack: Dagster + DuckDB + MinIO + MotherDuck.
 
-## 핵심 경로
+## Key Paths
 
-- `src/vlm_pipeline/` — 파이프라인 패키지
+- `src/vlm_pipeline/` — pipeline package
 - `docker/` — Compose, workspace, env
-- `scripts/` — 운영/검증 스크립트
-- `docs/` — 설계, 실행 계획, 운영 참고 문서
+- `scripts/` — operational/validation scripts
+- `docs/` — design, execution plans, operational reference documents
 
-## 운영 환경 요약
+## Environment Summary
 
-| 항목 | Production (`main`) | Test (`dev`) |
+| Item | Production (`main`) | Test (`dev`) |
 |------|----------------------|--------------|
 | Incoming host path | `/home/user/mou/incoming` | `/home/user/mou/staging/incoming` |
 | DuckDB | `/data/pipeline.duckdb` | `/data/staging.duckdb` |
 | Dagster UI | `3030` | `3031` |
 | env | `docker/.env` | `docker/.env.test` |
 
-prod/test는 같은 compose 서비스 정의를 쓰고, branch와 env 파일만 다릅니다.
+Production and test share the same compose service definitions; they differ only by branch and env file.
 
-## 필수 규칙
+## Mandatory Rules
 
-- DuckDB는 단일 writer 원칙을 지킵니다.
-- MinIO 버킷은 `vlm-raw`, `vlm-labels`, `vlm-processed`, `vlm-dataset` 고정입니다.
-- 라벨 JSON source of truth는 `vlm-labels`입니다.
-- GCP auto-bootstrap manifest는 `pending -> processed -> completed(summary)`로 compact하며, `_DONE` 이후에는 chunk별 processed manifest 대신 source unit/signature summary 1개만 남깁니다.
-- 주요 설계 판단과 운영 규칙은 채팅만으로 끝내지 말고 `docs/`에 남깁니다.
-- 새 작업은 `AGENTS.md -> docs/index.md -> 관련 하위 index` 순서로 탐색합니다.
+- DuckDB enforces a single-writer principle.
+- MinIO buckets are fixed: `vlm-raw`, `vlm-labels`, `vlm-processed`, `vlm-dataset`.
+- The label JSON source of truth is `vlm-labels`.
+- GCP auto-bootstrap manifests compact as `pending -> processed -> completed (summary)`; after `_DONE`, only one source unit/signature summary remains instead of per-chunk processed manifests.
+- Major design decisions and operational rules must be documented in `docs/`, not left only in chat.
+- For new tasks, explore in order: `AGENTS.md -> docs/index.md -> relevant sub-index`.
 
-## 문서 운영 원칙
+## Documentation Operating Principles
 
-- `README.md`: 제품/운영 개요
-- `AGENTS.md`: 에이전트용 진입점
-- `docs/`: 설계, 계획, 참고 문서의 기록 시스템
-- 로컬 전용 메모나 IDE 설정은 보조 수단일 뿐, 핵심 source of truth가 아닙니다.
+- `README.md`: product and operational overview
+- `AGENTS.md`: agent entry point
+- `docs/`: record system for design, plans, and reference documents
+- Local-only notes and IDE settings are supplementary only, not the core source of truth.
 
-## 로컬 보조 자료
+## Local Supplementary Material
 
-- `CLAUDE.md`는 로컬 상세 요약으로 사용할 수 있습니다.
-- `CLAUDE2.md`처럼 git 추적하지 않는 장문 참고 자료가 있을 수 있지만, 핵심 판단은 가능하면 `docs/`로 이관합니다.
+- `CLAUDE.md` can be used as a local detailed summary.
+- Long-form reference material not tracked by git (e.g., `CLAUDE2.md`) may exist, but core decisions should be migrated to `docs/` where possible.

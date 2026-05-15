@@ -326,11 +326,43 @@ def _run_orphan_scan(con: duckdb.DuckDBPyConnection) -> bool:
     return True
 
 
-def _insert_sql(table: TableSpec) -> str:
+def _source_column_names(con: duckdb.DuckDBPyConnection, table_name: str) -> list[str]:
+    """source ATTACH catalog='src', schema='main' 의 컬럼명을 순서대로 반환.
+
+    PRAGMA table_info 는 attached catalog 의 unqualified 테이블을 인식하지 못하므로
+    information_schema.columns 로 우회.
+    """
+    rows = con.execute(
+        """
+        SELECT column_name
+        FROM information_schema.columns
+        WHERE table_catalog = 'src'
+          AND table_schema  = 'main'
+          AND table_name    = ?
+        ORDER BY ordinal_position
+        """,
+        [table_name],
+    ).fetchall()
+    return [r[0] for r in rows]
+
+
+def _insert_sql(table: TableSpec, con: duckdb.DuckDBPyConnection) -> str:
+    """source 컬럼 리스트를 명시한 INSERT.
+
+    이전엔 ``INSERT INTO target SELECT * FROM source`` 였으나, target 이 source 보다
+    뒤늦은 ALTER ADD COLUMN 으로 컬럼 수가 더 많은 경우 column count mismatch 로 실패.
+    실제 사례: ``raw_files`` 에 PG-only 002_genai 컬럼(``source_type``,
+    ``genai_engine``, ``label_policy``) 3개가 추가된 운영 환경. 추가 컬럼은
+    nullable + DEFAULT 가 정의되어 있으므로 explicit list 로 명시하면 자동 채워짐.
+    """
+    src_cols = _source_column_names(con, table.name)
+    if not src_cols:
+        raise RuntimeError(f"DuckDB source has no columns for table {table.name}")
+    column_list = ", ".join(_quote_ident(c) for c in src_cols)
     conflict_columns = ", ".join(_quote_ident(column) for column in table.pk_columns)
     return f"""
-        INSERT INTO {_pg_relation(table.name)}
-        SELECT *
+        INSERT INTO {_pg_relation(table.name)} ({column_list})
+        SELECT {column_list}
         FROM {_source_relation(table.name)}
         ON CONFLICT ({conflict_columns}) DO NOTHING
     """
@@ -387,7 +419,7 @@ def _copy_tables(con: duckdb.DuckDBPyConnection, *, apply_changes: bool, idempot
             _print_copy_row("[DRY-RUN]", table.name, source_count, target_before, None, "would insert")
             continue
 
-        con.execute(_insert_sql(table))
+        con.execute(_insert_sql(table, con))
         target_after = _count_rows(con, _pg_relation(table.name))
         inserted_for_table = max(0, target_after - target_before)
         inserted += inserted_for_table

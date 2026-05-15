@@ -424,20 +424,29 @@ class PostgresDedupMixin:
             with conn.cursor() as cur:
                 cur.execute(
                     f"""
-                    SELECT r.asset_id, r.raw_bucket, r.raw_key
+                    SELECT r.asset_id, r.raw_bucket, r.raw_key,
+                           r.source_type, r.genai_engine, r.label_policy
                     FROM raw_files r
                     JOIN video_metadata vm ON vm.asset_id = r.asset_id
                     WHERE r.media_type = 'video'
                       AND r.ingest_status = 'completed'
                       AND r.source_unit_name = %s
                       AND r.raw_key IS NOT NULL
+                      AND (r.source_type IS NULL OR r.source_type IN ('camera','nas_upload'))
                       {finalized_filter}
                     """,
                     (folder,),
                 )
                 rows = cur.fetchall()
             return [
-                {"asset_id": row[0], "raw_bucket": row[1], "raw_key": row[2]}
+                {
+                    "asset_id": row[0],
+                    "raw_bucket": row[1],
+                    "raw_key": row[2],
+                    "source_type": row[3],
+                    "genai_engine": row[4],
+                    "label_policy": row[5],
+                }
                 for row in rows
             ]
 
@@ -446,7 +455,8 @@ class PostgresDedupMixin:
     ) -> list[dict]:
         if require_ls_finalized:
             sql = """
-                SELECT DISTINCT im.image_id, im.image_bucket, im.image_key, im.source_asset_id
+                SELECT DISTINCT im.image_id, im.image_bucket, im.image_key, im.source_asset_id,
+                                r.source_type, r.genai_engine, r.label_policy
                 FROM image_metadata im
                 JOIN raw_files r ON r.asset_id = im.source_asset_id
                 JOIN image_labels il ON il.image_id = im.image_id
@@ -454,15 +464,18 @@ class PostgresDedupMixin:
                   AND im.image_key IS NOT NULL
                   AND im.image_bucket IS NOT NULL
                   AND il.review_status = 'finalized'
+                  AND (r.source_type IS NULL OR r.source_type IN ('camera','nas_upload'))
             """
         else:
             sql = """
-                SELECT im.image_id, im.image_bucket, im.image_key, im.source_asset_id
+                SELECT im.image_id, im.image_bucket, im.image_key, im.source_asset_id,
+                       r.source_type, r.genai_engine, r.label_policy
                 FROM image_metadata im
                 JOIN raw_files r ON r.asset_id = im.source_asset_id
                 WHERE r.source_unit_name = %s
                   AND im.image_key IS NOT NULL
                   AND im.image_bucket IS NOT NULL
+                  AND (r.source_type IS NULL OR r.source_type IN ('camera','nas_upload'))
             """
         with self.connect() as conn:
             with conn.cursor() as cur:
@@ -474,6 +487,9 @@ class PostgresDedupMixin:
                     "image_bucket": row[1],
                     "image_key": row[2],
                     "source_asset_id": row[3],
+                    "source_type": row[4],
+                    "genai_engine": row[5],
+                    "label_policy": row[6],
                 }
                 for row in rows
             ]
@@ -501,6 +517,50 @@ class PostgresDedupMixin:
                 "source_asset_id", "source_label_id",
                 "event_index", "clip_start_sec", "clip_end_sec",
                 "source_raw_key", "source_raw_bucket",
+            ]
+            return [dict(zip(columns, row)) for row in rows]
+
+    def find_project_genai_pairs(self, folder: str) -> list[dict]:
+        # GenAI label-free pair candidates: (input image, output video|image) per job.
+        # Build asset uses this for source_unit_name='genai_<batch_id>' folders.
+        with self.connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT j.job_id, j.batch_id, j.seq_in_batch,
+                           j.provider_job_id, j.cost_units,
+                           b.engine, b.prompt, b.output_media,
+                           src.asset_id   AS input_asset_id,
+                           src.raw_bucket AS input_raw_bucket,
+                           src.raw_key    AS input_raw_key,
+                           src.media_type AS input_media_type,
+                           out.asset_id   AS output_asset_id,
+                           out.raw_bucket AS output_raw_bucket,
+                           out.raw_key    AS output_raw_key,
+                           out.media_type AS output_media_type
+                      FROM genai_jobs j
+                      JOIN genai_batches b ON b.batch_id = j.batch_id
+                      JOIN raw_files src ON src.asset_id = j.input_asset_id
+                      JOIN raw_files out ON out.asset_id = j.output_asset_id
+                     WHERE src.source_unit_name = %s
+                       AND j.status = 'done'
+                       AND src.ingest_status = 'completed'
+                       AND out.ingest_status = 'completed'
+                       AND src.raw_key IS NOT NULL
+                       AND out.raw_key IS NOT NULL
+                     ORDER BY j.batch_id, j.seq_in_batch
+                    """,
+                    (folder,),
+                )
+                rows = cur.fetchall()
+            columns = [
+                "job_id", "batch_id", "seq_in_batch",
+                "provider_job_id", "cost_units",
+                "engine", "prompt", "output_media",
+                "input_asset_id", "input_raw_bucket",
+                "input_raw_key", "input_media_type",
+                "output_asset_id", "output_raw_bucket",
+                "output_raw_key", "output_media_type",
             ]
             return [dict(zip(columns, row)) for row in rows]
 

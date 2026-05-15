@@ -13,13 +13,12 @@ from vlm_pipeline.definitions_production import (
     build_motherduck_daily_schedule,
     build_production_assets,
     build_production_sensors,
-    ls_presign_renew_job,
-    ls_presign_renew_schedule,
 )
 from vlm_pipeline.defs.gcp.assets import gcs_download_to_incoming
 from vlm_pipeline.defs.ingest.assets import raw_ingest
 from vlm_pipeline.defs.ingest.upload_archived_asset import upload_archived
 from vlm_pipeline.defs.label.manual_import import manual_label_import
+from vlm_pipeline.defs.ls.sensor import ls_presign_renew_job, ls_presign_renew_schedule
 from vlm_pipeline.defs.sam.assets import sam3_shadow_compare
 from vlm_pipeline.defs.sam.detection_assets import sam3_image_detection
 from vlm_pipeline.defs.sync.assets import motherduck_sync

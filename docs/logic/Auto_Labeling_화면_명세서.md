@@ -1,43 +1,43 @@
-# Auto Labeling 화면 명세서
+# Auto Labeling UI Specification
 
-## 1. 문서 개요
+## 1. Document Overview
 
-- 전용 UI를 별도 개발하지 않으며, 기존 도구(Dagster UI, Slack)를 활용
-- **사용자 유형**
+- No dedicated UI will be developed; existing tools (Dagster UI, Slack) are used instead.
+- **User types**
 
-| 사용자 | 역할 | 주요 접점 |
+| User | Role | Primary touchpoints |
 | --- | --- | --- |
-| 파이프라인 운영자 (PM/DE) | 파이프라인 실행, 모니터링, config 관리 | Dagster UI, config 파일, Slack |
-| 데이터 요청자 | labeling 요청 발행, pending 확정 | openclaw, playwright, slackbot 등 |
+| Pipeline operator (PM/DE) | Pipeline execution, monitoring, config management | Dagster UI, config files, Slack |
+| Data requester | Submitting labeling requests, confirming pending specs | openclaw, playwright, slackbot, etc. |
 
 ---
 
-## 2. 인터페이스 목록
+## 2. Interface List
 
-| # | 인터페이스 | 유형 | 신규/기존 |
+| # | Interface | Type | New/Existing |
 | --- | --- | --- | --- |
-| 3-1 | Dagster Asset Lineage | 웹 UI | 기존 |
-| 3-2 | Dagster Run 상세 | 웹 UI | 기존 |
-| 3-3 | Dagster Sensor 관리 | 웹 UI | 기존 |
-| 3-4 | Slack /labeling-confirm | 대화형 | 신규 |
-| 3-5 | Slack /labeling-pending | 대화형 | 신규 |
-| 3-6 | Slack /labeling-status | 대화형 | 신규 |
-| 3-7 | Config 파일 관리 | 파일 편집 | 신규 |
-| 3-8 | 외부 인입 요청서 연동 | 외부 API | 신규 |
+| 3-1 | Dagster Asset Lineage | Web UI | Existing |
+| 3-2 | Dagster Run Details | Web UI | Existing |
+| 3-3 | Dagster Sensor Management | Web UI | Existing |
+| 3-4 | Slack /labeling-confirm | Conversational | New |
+| 3-5 | Slack /labeling-pending | Conversational | New |
+| 3-6 | Slack /labeling-status | Conversational | New |
+| 3-7 | Config file management | File edit | New |
+| 3-8 | External ingestion request integration | External API | New |
 
 ---
 
-## 3. 파이프라인 구조 (Asset Lineage 시점)
+## 3. Pipeline Structure (Asset Lineage View)
 
-- Dagster UI → Lineage 에서 확인할 수 있는 전체 DAG 구조.
-- **ingest_router는 spec 매칭·분기만 수행하며 config 조회는 하지 않는다.**
-- **config는 auto_labeling 첫 단계(timestamp_auto)에서 조회한다.**
-- **표준 auto_labeling**은 `timestamp_auto → captioning_auto → frame_extraction_auto → bbox_labeling_auto` 를 **항상 이 순서로** 수행한다. captioning 단계는 생략하지 않는다.
+- The full DAG structure visible in Dagster UI → Lineage.
+- **`ingest_router` performs only spec matching and branching — it does not look up config.**
+- **Config is looked up at the first step of `auto_labeling` (`timestamp_auto`).**
+- **Standard `auto_labeling`** always executes `timestamp_auto → captioning_auto → frame_extraction_auto → bbox_labeling_auto` **in this fixed order**. The captioning step is never skipped.
 
 ```mermaid
 graph TD
     subgraph external ["🔗 External"]
-        FLEX["Flex 인입 요청서"]
+        FLEX["Flex Ingestion Request Form"]
     end
 
     subgraph spec ["spec"]
@@ -45,18 +45,18 @@ graph TD
     end
 
     subgraph config ["config"]
-        CONFIG["config_sync<br/><small>JSON 파일 → DB 동기화</small>"]
+        CONFIG["config_sync<br/><small>JSON file → DB sync</small>"]
     end
 
     GCS["incoming/NAS folder"]
 
     subgraph ingest ["ingest"]
-        RAW["raw_ingest<br/><small>검증 · MinIO · archive · 메타등록</small>"]
-        ROUTER["ingest_router<br/><small>spec 매칭 → DB 상태 분기</small>"]
+        RAW["raw_ingest<br/><small>validation · MinIO · archive · metadata registration</small>"]
+        ROUTER["ingest_router<br/><small>spec matching → DB state branching</small>"]
     end
 
     subgraph pending ["pending"]
-        PENDING["pending_ingest<br/><small>pending_spec 집계</small>"]
+        PENDING["pending_ingest<br/><small>pending_spec aggregation</small>"]
     end
 
     subgraph auto_labeling ["auto_labeling"]
@@ -66,49 +66,49 @@ graph TD
         AL4["bbox_labeling_auto"]
     end
 
-    %% 의존 관계
+    %% Dependencies
     FLEX -.->|API/Bot| SPEC
     FLEX -->|source data| GCS
     GCS --> RAW --> ROUTER
     SPEC --> ROUTER
 
-    %% 분기
-    ROUTER -->|확정| AL1
-    ROUTER -->|미정| PENDING
+    %% Branching
+    ROUTER -->|confirmed| AL1
+    ROUTER -->|pending| PENDING
     CONFIG --> AL1
 
     AL1 --> AL2 --> AL3 --> AL4
 
-    %% Sensor (DAG 외부)
+    %% Sensor (outside DAG)
     PENDING -.->|Slack /labeling-confirm| SENSOR
-    SENSOR["⚡ spec_resolve_sensor<br/><small>pending_resolved 감지<br/>60초 폴링</small>"]
-    SENSOR -.->|auto_labeling_routed_job<br/>트리거| AL1
+    SENSOR["⚡ spec_resolve_sensor<br/><small>detects pending_resolved<br/>60-second polling</small>"]
+    SENSOR -.->|auto_labeling_routed_job<br/>trigger| AL1
 
-    %% 스타일
+    %% Styles
     style FLEX fill:#4a3d6b,stroke:#8957e5,color:#fff
     style SENSOR fill:#3d2d00,stroke:#d29922,color:#d29922,stroke-dasharray: 5 5
     style PENDING fill:#3d2d1a,stroke:#d29922,color:#fff
     style ROUTER fill:#2d3d2d,stroke:#2ea043,color:#fff
 ```
 
-**Dagster UI 조작 요약:**
+**Dagster UI Operations Summary:**
 
-| 화면 | 위치 | 주요 조작 |
+| Screen | Location | Key actions |
 | --- | --- | --- |
-| Asset Lineage | Lineage 탭 | 노드 클릭 → 상세, [Materialize] → 수동 실행 |
-| Run 상세 | Runs → 개별 Run | step별 로그 확인, [Re-execute] → 재실행 |
-| Sensor 관리 | Automation 탭 | ON/OFF 토글, tick 이력 확인 |
+| Asset Lineage | Lineage tab | Click node → details, [Materialize] → manual run |
+| Run Details | Runs → individual run | View per-step logs, [Re-execute] → re-run |
+| Sensor Management | Automation tab | ON/OFF toggle, view tick history |
 
-> config_sync는 Lineage에서 수동 Materialize로 실행한다.
+> `config_sync` is executed via manual Materialize from the Lineage view.
 
 ---
 
 ### 3-4. Slack /labeling-confirm
 
-- **채널:** #data-labeling
-- **목적:** pending 상태 spec의 labeling 정보 확정
+- **Channel:** #data-labeling
+- **Purpose:** Confirm labeling information for a spec in pending state
 
-**입력:**
+**Input:**
 
 ```
 /labeling-confirm <spec_id>
@@ -117,7 +117,7 @@ graph TD
     --classes <cls1,cls2>
 ```
 
-**입력 예시:**
+**Input example:**
 
 ```
 /labeling-confirm SPEC-20260313-001
@@ -126,123 +126,123 @@ graph TD
     --classes smoke,fire,flame
 ```
 
-(저장 시 `labeling_method`는 JSON 배열 `["timestamp","captioning","bbox"]`로 저장된다. 표준 파이프라인과 일치시키는 것을 권장한다.)
+(When saved, `labeling_method` is stored as a JSON array `["timestamp","captioning","bbox"]`. Aligning with the standard pipeline is recommended.)
 
-**응답 — 성공:**
+**Response — success:**
 
 ```
-✅ Spec 확정 완료
+✅ Spec confirmed
 ─────────────────
 spec_id     SPEC-20260313-001
 method      ["timestamp", "captioning", "bbox"]
 categories  smoke, fire
 classes     smoke, fire, flame
 status      pending → pending_resolved
-대상 파일    42건
+target files    42 records
 ─────────────────
-sensor가 자동으로 auto_labeling을 트리거합니다.
+The sensor will automatically trigger auto_labeling.
 ```
 
-**응답 — 실패:**
+**Response — failure:**
 
-| 상황 | 응답 |
+| Situation | Response |
 | --- | --- |
-| spec_id 없음 | `❌ spec_id를 찾을 수 없습니다.` |
-| 이미 확정 | `⚠️ 이미 처리된 spec입니다. (현재 상태: active)` |
-| 필수 파라미터 누락 | `❌ --method는 필수입니다.` |
+| spec_id not found | `❌ spec_id not found.` |
+| Already confirmed | `⚠️ This spec has already been processed. (current status: active)` |
+| Required parameter missing | `❌ --method is required.` |
 
 ---
 
 ### 3-5. Slack /labeling-pending
 
-- **채널:** #data-labeling
-- **목적:** pending 상태 spec 목록 조회
+- **Channel:** #data-labeling
+- **Purpose:** Retrieve list of specs in pending state
 
-**입력:**
+**Input:**
 
 ```
 /labeling-pending
 /labeling-pending --requester <requester_id>
 ```
 
-**응답:**
+**Response:**
 
 ```
-📋 Pending Spec 목록 (2건)
+📋 Pending Spec List (2 records)
 ─────────────────
 1. SPEC-20260312-005
-   요청자  kim_researcher (vision_team)
-   폴더    20260312_dashcam_seoul
-   대기    128건
-   생성    2026-03-12 14:30
+   Requester  kim_researcher (vision_team)
+   Folder     20260312_dashcam_seoul
+   Waiting    128 records
+   Created    2026-03-12 14:30
 
 2. SPEC-20260313-001
-   요청자  lee_engineer (ai_team)
-   폴더    20260313_cctv_busan
-   대기    42건
-   생성    2026-03-13 09:15
+   Requester  lee_engineer (ai_team)
+   Folder     20260313_cctv_busan
+   Waiting    42 records
+   Created    2026-03-13 09:15
 ─────────────────
-확정: /labeling-confirm <spec_id> --method ...
+Confirm: /labeling-confirm <spec_id> --method ...
 ```
 
-**응답 — 0건:**
+**Response — 0 records:**
 
 ```
-✅ 현재 대기 중인 spec이 없습니다.
+✅ No specs are currently pending.
 ```
 
 ---
 
 ### 3-6. Slack /labeling-status
 
-- **채널:** #data-labeling
-- **목적:** 특정 spec 처리 현황 조회
+- **Channel:** #data-labeling
+- **Purpose:** Query processing status of a specific spec
 
-**입력:**
+**Input:**
 
 ```
 /labeling-status <spec_id>
 ```
 
-**응답 — 진행 중:**
+**Response — in progress:**
 
 ```
-📊 Spec 처리 현황
+📊 Spec Processing Status
 ─────────────────
 spec_id      SPEC-20260313-001
-상태          active (retry: 0/3)
-요청자        lee_engineer (ai_team)
+status       active (retry: 0/3)
+requester    lee_engineer (ai_team)
 method       ["timestamp", "captioning", "bbox"]
 config       ai_team_bbox_v2 (team default)
 ─────────────────
-  ✅ timestamp 감지       42/42
-  🔄 captioning 생성      38/42
-  ⏳ frame 추출           대기
-  ⏳ bbox labeling        대기
+  ✅ timestamp detection     42/42
+  🔄 captioning generation   38/42
+  ⏳ frame extraction        waiting
+  ⏳ bbox labeling           waiting
 ```
 
-**응답 — 실패:**
+**Response — failed:**
 
 ```
-📊 Spec 처리 현황
+📊 Spec Processing Status
 ─────────────────
 spec_id      SPEC-20260313-001
-상태          failed (retry: 3/3)
+status       failed (retry: 3/3)
 ─────────────────
-  ✅ timestamp 감지       42/42
-  ❌ captioning 생성      실패
+  ✅ timestamp detection     42/42
+  ❌ captioning generation   failed
 ─────────────────
-수동 개입 필요. Dagster Run: <run_url>
+Manual intervention required. Dagster Run: <run_url>
 ```
 
 ---
 
-### 3-7. Config 파일 관리
+### 3-7. Config File Management
 
-- **위치:** `config/parameters/<config_id>.json`
-- **목적:** auto_labeling 파라미터 정의 및 DB 동기화 (조회 시점은 auto_labeling 첫 task)
+- **Location:** `config/parameters/<config_id>.json`
+- **Purpose:** Define auto_labeling parameters and sync to DB (config is looked up at the first task of auto_labeling)
 
-**파일 구조:**
+**File structure:**
 
 ```json
 {
@@ -275,59 +275,59 @@ spec_id      SPEC-20260313-001
 }
 ```
 
-**반영 절차:**
+**Rollout procedure:**
 
-1. JSON 파일 생성/수정 (`_fallback.json`은 반드시 존재)
+1. Create/edit JSON file (`_fallback.json` must always exist)
 2. Dagster UI → config_sync → [Materialize]
-3. 로그에서 synced 건수 확인
+3. Confirm synced count in logs
 
 ---
 
-### 3-8. 외부 인입 요청서 연동
+### 3-8. External Ingestion Request Integration
 
-- **원천:** Flex "[데이터] 데이터 인입 요청" 문서
-- **방향:** Flex → 파이프라인 (수신 전용)
-- **수집 도구:** 미정 (OpenClaw / Playwright API / Slack 봇 / 기타)
+- **Source:** Flex "[Data] Data Ingestion Request" form
+- **Direction:** Flex → pipeline (receive only)
+- **Collection tool:** TBD (OpenClaw / Playwright API / Slack bot / other)
 
-> [캡처: Flex 인입 요청서 폼 화면]
+> [Screenshot: Flex ingestion request form view]
 
-**수신 대상 필드:**
+**Fields to receive:**
 
-| Flex 폼 필드 | spec.json 필드 | 변환 규칙 |
+| Flex form field | spec.json field | Conversion rule |
 | --- | --- | --- |
-| 요청자 | `requester_id` | 이름 → ID 변환 |
-| 부서 | `team_id` | 부서명 → ID 변환 |
-| 소스 경로 | `source_unit_name` | 경로에서 incoming 폴더명 추출 |
-| 이벤트 타입 | `categories` | 다중 선택 → 배열 |
-| 기대 산출물 | `labeling_method` | 다중 선택 → 배열 (기능 명세서 6-1과 동일) |
+| Requester | `requester_id` | Name → ID conversion |
+| Department | `team_id` | Department name → ID conversion |
+| Source path | `source_unit_name` | Extract incoming folder name from path |
+| Event type | `categories` | Multi-select → array |
+| Expected output | `labeling_method` | Multi-select → array (same as Functional Spec 6-1) |
 
-**이벤트 타입 → categories + classes 자동 파생:**
+**Event type → categories + classes auto-derivation:**
 
-| 선택지 | categories | classes |
+| Selection | categories | classes |
 | --- | --- | --- |
-| 연기(Smoke) | `smoke` | `["smoke"]` |
-| 화재(Fire) | `fire` | `["fire", "flame"]` |
-| 쓰러짐(Falldown) | `falldown` | `["person_fallen"]` |
-| 무기 소지(Weapon) | `weapon` | `["knife", "gun", "weapon"]` |
-| 폭력(Violence) | `violence` | `["violence", "fight"]` |
+| Smoke | `smoke` | `["smoke"]` |
+| Fire | `fire` | `["fire", "flame"]` |
+| Falldown | `falldown` | `["person_fallen"]` |
+| Weapon | `weapon` | `["knife", "gun", "weapon"]` |
+| Violence | `violence` | `["violence", "fight"]` |
 
-**기대 산출물 → labeling_method (표준 파이프라인):**
+**Expected output → labeling_method (standard pipeline):**
 
-| 선택지 | 표준 파이프라인 |
+| Selection | Standard pipeline |
 | --- | --- |
 | timestamp | O |
-| captioning | O (생략 없음) |
+| captioning | O (never skipped) |
 | bbox | O |
-| image classification | X (미구현) |
-| video classification | X (미구현) |
+| image classification | X (not implemented) |
+| video classification | X (not implemented) |
 
-다중 선택 시 배열로 저장. 표준 실행과 맞추려면 예: `["timestamp", "captioning", "bbox"]`
+When multiple selections are made, stored as an array. To align with the standard run: e.g. `["timestamp", "captioning", "bbox"]`
 
-**spec.json 최종 포맷:**
+**Final spec.json format:**
 
 ```json
 {
-  "spec_id": "자동 생성",
+  "spec_id": "auto-generated",
   "requester_id": "jin_sanghun",
   "team_id": "data_team",
   "source_unit_name": "20260313_cctv_busan",
@@ -337,11 +337,11 @@ spec_id      SPEC-20260313-001
 }
 ```
 
-**labeling 미정 시:**
+**When labeling is not yet defined:**
 
 ```json
 {
-  "spec_id": "자동 생성",
+  "spec_id": "auto-generated",
   "requester_id": "kim_researcher",
   "team_id": "vision_team",
   "source_unit_name": "20260313_dashcam_seoul",
@@ -353,27 +353,27 @@ spec_id      SPEC-20260313-001
 
 ---
 
-## 4. 인터페이스 간 워크플로우(사용자 시점)
+## 4. Inter-interface Workflow (User Perspective)
 
 ```mermaid
 flowchart TD
-    A["[요청자] Flex 요청서 작성"] --> B["[시스템] spec 수신 + ingest 실행"]
-    B --> C{"spec 확정 여부"}
+    A["[Requester] Fill out Flex request form"] --> B["[System] Receive spec + run ingest"]
+    B --> C{"Spec confirmed?"}
 
-    C -->|확정| D["[운영자] Dagster Run 모니터링 (3-2)"]
-    D --> E["[요청자/PM] /labeling-status로 진행 확인 (3-6)"]
+    C -->|Confirmed| D["[Operator] Monitor Dagster Run (3-2)"]
+    D --> E["[Requester/PM] Check progress with /labeling-status (3-6)"]
 
-    C -->|미정| F["[PM] /labeling-pending으로 목록 확인 (3-5)"]
-    F --> G["[PM] /labeling-confirm으로 확정 (3-4)"]
-    G --> H["[시스템] sensor 감지 → auto_labeling 실행"]
-    H --> I["[운영자] Dagster Run 모니터링 (3-2)"]
+    C -->|Pending| F["[PM] View list with /labeling-pending (3-5)"]
+    F --> G["[PM] Confirm with /labeling-confirm (3-4)"]
+    G --> H["[System] Sensor detects → auto_labeling runs"]
+    H --> I["[Operator] Monitor Dagster Run (3-2)"]
 ```
 
-## 5. 알림/통지 정의
+## 5. Notification Definitions
 
-| **이벤트** | **알림 필요 여부** | **채널 예시** |
+| **Event** | **Notification required** | **Channel example** |
 | --- | --- | --- |
-| auto_labeling 완료 | 필요(있으면 좋음) | Slack #data-labeling |
-| auto_labeling 실패 | **필요** | Slack #data-labeling |
-| spec_status → failed (retry 3회 초과) | **필요** | Slack #data-labeling |
-| 새로운 pending 발생 | 필요(있으면 좋음) | Slack #data-labeling |
+| auto_labeling complete | Nice to have | Slack #data-labeling |
+| auto_labeling failure | **Required** | Slack #data-labeling |
+| spec_status → failed (retry exceeded 3 times) | **Required** | Slack #data-labeling |
+| New pending spec created | Nice to have | Slack #data-labeling |

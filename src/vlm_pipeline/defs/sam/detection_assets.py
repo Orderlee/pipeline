@@ -30,7 +30,6 @@ from vlm_pipeline.lib.env_utils import (
 )
 from vlm_pipeline.lib.sam3 import get_sam3_client
 from vlm_pipeline.lib.sam3_labeling import run_sam3_and_build_label_row
-from vlm_pipeline.lib.spec_config import parse_requested_outputs
 from vlm_pipeline.lib.yolo_thresholds import resolve_active_class_confidence_thresholds
 from vlm_pipeline.resources.duckdb import DuckDBResource
 from vlm_pipeline.resources.minio import MinIOResource

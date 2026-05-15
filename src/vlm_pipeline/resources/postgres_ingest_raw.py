@@ -24,6 +24,9 @@ class PostgresIngestRawMixin:
             columns = self._table_columns(conn, "raw_files")
             has_source_unit = "source_unit_name" in columns
             has_spec_id = "spec_id" in columns
+            has_source_type = "source_type" in columns
+            has_genai_engine = "genai_engine" in columns
+            has_label_policy = "label_policy" in columns
 
             base_cols = [
                 "asset_id", "source_path", "original_name", "media_type",
@@ -35,6 +38,12 @@ class PostgresIngestRawMixin:
                 base_cols.append("source_unit_name")
             if has_spec_id:
                 base_cols.append("spec_id")
+            if has_source_type:
+                base_cols.append("source_type")
+            if has_genai_engine:
+                base_cols.append("genai_engine")
+            if has_label_policy:
+                base_cols.append("label_policy")
 
             placeholders = ", ".join(["%s"] * len(base_cols))
             insert_cols = ", ".join(base_cols)
@@ -64,6 +73,12 @@ class PostgresIngestRawMixin:
                     row.append(rec.get("source_unit_name"))
                 if has_spec_id:
                     row.append(rec.get("spec_id"))
+                if has_source_type:
+                    row.append(rec.get("source_type", "camera"))
+                if has_genai_engine:
+                    row.append(rec.get("genai_engine"))
+                if has_label_policy:
+                    row.append(rec.get("label_policy", "required"))
                 rows.append(row)
 
             with conn.cursor() as cur:
