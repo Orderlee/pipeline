@@ -1,0 +1,30 @@
+body { font-family: -apple-system, sans-serif; max-width: 980px; margin: 2em auto; padding: 0 1em; }
+header h1 { margin-bottom: 0.2em; }
+nav a { margin-right: 1em; }
+fieldset { margin: 0.8em 0; padding: 0.6em 1em; border: 1px solid #ccc; border-radius: 4px; }
+fieldset legend { padding: 0 0.4em; font-weight: 600; }
+table { width: 100%; border-collapse: collapse; margin-top: 0.5em; }
+th, td { border-bottom: 1px solid #eee; padding: 0.4em 0.6em; text-align: left; vertical-align: top; }
+code { background: #f5f5f5; padding: 0.1em 0.3em; border-radius: 3px; font-size: 0.9em; }
+button { padding: 0.5em 1em; font-size: 1em; cursor: pointer; }
+.status { padding: 0.1em 0.5em; border-radius: 3px; }
+.status-pending { background: #eee; }
+.status-running, .status-submitted { background: #ffe9b8; }
+.status-done, .status-succeeded { background: #c5e8c5; }
+.status-failed { background: #f5b8b8; }
+.status-partial_success { background: #ffd9a3; }
+.hint { color: #666; font-size: 0.9em; }
+.tab-bar { display: flex; gap: 0; border-bottom: 1px solid #ccc; margin: 0.8em 0; }
+.tab-btn { padding: 0.5em 1.2em; border: 1px solid transparent; border-bottom: none; background: #f5f5f5; cursor: pointer; font-size: 0.95em; }
+.tab-btn.active { background: white; border-color: #ccc; border-bottom-color: white; margin-bottom: -1px; font-weight: 600; }
+.tab-panel { padding: 0.6em 0.2em; }
+.engine-opt label { display: inline-block; margin-right: 1em; margin-bottom: 0.4em; }
+.engine-opt select { padding: 0.2em 0.4em; font-size: 0.95em; margin-left: 0.3em; }
+.actions { margin: 1em 0; display: flex; gap: 0.6em; flex-wrap: wrap; }
+.btn { padding: 0.4em 1em; border: 1px solid #444; border-radius: 4px; background: white; color: #444; text-decoration: none; font-size: 0.95em; }
+.btn:hover { background: #444; color: white; }
+.range-tabs { margin: 0.5em 0; }
+.range-tabs a { display: inline-block; padding: 0.3em 0.8em; border: 1px solid #ccc; border-radius: 3px; margin-right: 0.4em; text-decoration: none; color: #444; }
+.range-tabs a.active { background: #444; color: white; border-color: #444; }
+dl { display: grid; grid-template-columns: max-content 1fr; gap: 0.3em 1em; }
+dt { font-weight: 600; }

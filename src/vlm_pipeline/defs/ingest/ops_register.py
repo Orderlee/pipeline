@@ -13,6 +13,11 @@ from vlm_pipeline.resources.duckdb import DuckDBResource
 
 from .ops_common import _append_ingest_rejection
 
+# GenAI provenance — manifest 가 명시한 경우만 통과. CHECK constraint 와 일치.
+_VALID_SOURCE_TYPES = frozenset({"camera", "nas_upload", "genai_source", "genai_output"})
+_VALID_GENAI_ENGINES = frozenset({"kling", "higgsfield", "nanobanana", "gpt_image"})
+_VALID_LABEL_POLICIES = frozenset({"required", "none"})
+
 
 def register_incoming(
     context,
@@ -32,6 +37,22 @@ def register_incoming(
     batch_id = manifest.get("manifest_id", f"batch_{datetime.now():%Y%m%d_%H%M%S}")
     source_unit_name = manifest.get("source_unit_name", "")
     source_unit_type = str(manifest.get("source_unit_type", "")).strip().lower()
+
+    # GenAI manifest 의 items[seq] 매핑 — orchestrator 가 _manifest.json 에 넣은 경우만.
+    # 미지정 시 빈 dict (legacy / 일반 NAS source 영향 없음).
+    _genai_batch_id = manifest.get("batch_id") if manifest.get("source_type") in (
+        "genai_source", "genai_output"
+    ) else None
+    _genai_filename_to_seq: dict[str, int] = {}
+    if _genai_batch_id:
+        for it in manifest.get("items", []) or []:
+            seq = it.get("seq")
+            if seq is None:
+                continue
+            for k in ("filename", "original_filename"):
+                fname = it.get(k)
+                if fname:
+                    _genai_filename_to_seq[fname] = int(seq)
 
     def _sanitize_path_parts(raw: str) -> str:
         parts = [p for p in Path(str(raw or "")).parts if p not in ("", ".", "..")]
@@ -163,7 +184,33 @@ def register_incoming(
         if source_unit_name:
             record["source_unit_name"] = source_unit_name
 
-        results.append({
+        # GenAI provenance — orchestrator(Phase 3) 가 manifest 에 명시한 경우만 통과.
+        # 미지정 시 DB DEFAULT (source_type='camera', label_policy='required') 적용.
+        # 잘못된 값은 PG CHECK 위반으로 INSERT 실패 → 배치 전체가 per-row fallback 으로
+        # 떨어져 디버깅이 어려우므로, 여기서 fail-loud 로 거른다.
+        genai_source_type = manifest.get("source_type")
+        if genai_source_type:
+            if genai_source_type not in _VALID_SOURCE_TYPES:
+                raise ValueError(
+                    f"manifest.source_type={genai_source_type!r} not in {sorted(_VALID_SOURCE_TYPES)}"
+                )
+            record["source_type"] = genai_source_type
+        genai_engine = manifest.get("genai_engine")
+        if genai_engine:
+            if genai_engine not in _VALID_GENAI_ENGINES:
+                raise ValueError(
+                    f"manifest.genai_engine={genai_engine!r} not in {sorted(_VALID_GENAI_ENGINES)}"
+                )
+            record["genai_engine"] = genai_engine
+        genai_label_policy = manifest.get("label_policy")
+        if genai_label_policy:
+            if genai_label_policy not in _VALID_LABEL_POLICIES:
+                raise ValueError(
+                    f"manifest.label_policy={genai_label_policy!r} not in {sorted(_VALID_LABEL_POLICIES)}"
+                )
+            record["label_policy"] = genai_label_policy
+
+        result_entry = {
             "asset_id": asset_id,
             "path": filepath,
             "original_name": original_name,
@@ -173,6 +220,23 @@ def register_incoming(
             "rel_path": rel_path,
             "status": "registered",
             "record": record,
-        })
+        }
+        # GenAI items 매핑 — ops_normalize 가 _link_genai_asset_if_any 로 사용.
+        if _genai_batch_id and _genai_filename_to_seq:
+            seq = _genai_filename_to_seq.get(original_name) \
+                  or _genai_filename_to_seq.get(sanitized_name)
+            if seq is not None:
+                result_entry["_genai_batch_id"] = _genai_batch_id
+                result_entry["_genai_seq_in_batch"] = int(seq)
+            else:
+                # batch_id 는 있는데 seq 매칭 실패 — orchestrator 의 manifest 와 실제
+                # 안착 파일명이 어긋난 케이스. genai_jobs FK 가 NULL 로 남아 build asset
+                # 의 pair query 가 해당 row 를 누락. 디버깅 위해 fail-loud 로 warn.
+                context.log.warning(
+                    f"genai filename->seq 매칭 실패 batch={_genai_batch_id} "
+                    f"original_name={original_name!r} sanitized={sanitized_name!r} "
+                    f"items={sorted(_genai_filename_to_seq.keys())[:5]}..."
+                )
+        results.append(result_entry)
 
     return results

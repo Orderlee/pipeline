@@ -1,0 +1,568 @@
+{% extends "base.html" %}
+{% set page = "submit" %}
+{% from "_icons.html" import icon %}
+
+{% block body %}
+<div class="gs-body">
+  <!-- LEFT — parameters / form -->
+  <form action="/genai/batches" method="post" enctype="multipart/form-data" id="gs-submit-form"
+        class="gs-panel">
+      <div class="gs-panel__tabs">
+        <button type="button" class="gs-panel__tab is-active" data-tab="image2video">
+          {{ icon('video', size=13) }} Image → Video
+        </button>
+        <button type="button" class="gs-panel__tab" data-tab="text2video">
+          {{ icon('sparkles', size=13) }} Text → Video
+        </button>
+        <button type="button" class="gs-panel__tab" data-tab="image2image">
+          {{ icon('image', size=13) }} Image → Image
+        </button>
+      </div>
+      {# text2video tab 활성 시에만 'mode=txt2video' 송신 — JS 가 토글 #}
+      <input type="hidden" name="mode" id="gs-hidden-mode" value="" disabled>
+
+      <div class="gs-panel__body">
+        <!-- Engine -->
+        <section class="gs-section">
+          <div class="gs-section__head">
+            <span class="gs-section__title">Engine</span>
+            <span class="gs-section__hint gs-mono">모델군</span>
+          </div>
+          <div class="gs-engine-grid">
+            {% for e in engines %}
+              {% set tab = engine_tab.get(e, 'image2image') %}
+              {% set sub = (
+                'kling · video' if e == 'kling'
+                else 'fal · motion' if e == 'higgsfield'
+                else 'google · veo' if e == 'veo'
+                else 'gemini · image' if e == 'nanobanana'
+                else 'openai · image' if e == 'gpt_image'
+                else '—'
+              ) %}
+              {# 각 input+label 을 wrapper 로 묶어 grid item 1개로. CSS sibling 안정. #}
+              <div class="gs-engine-item">
+                <input type="radio" name="engine" id="eng-{{ e }}" value="{{ e }}"
+                       class="gs-engine-radio" {% if loop.first %}checked{% endif %}>
+                <label class="gs-engine-card" for="eng-{{ e }}"
+                       data-engine="{{ e }}" data-tab="{{ tab }}">
+                  <div class="gs-engine-card__top">
+                    <span style="text-transform:capitalize">{{ e }}</span>
+                  </div>
+                  <div class="gs-engine-card__sub gs-mono">{{ sub }}</div>
+                </label>
+              </div>
+            {% endfor %}
+          </div>
+        </section>
+
+        <!-- 엔진 옵션 (engine 선택에 따라 동적 토글) -->
+        <section class="gs-section">
+          <div class="gs-section__head">
+            <span class="gs-section__title" id="gs-engine-opt-title">엔진 옵션</span>
+            <span class="gs-section__hint gs-mono" id="gs-engine-opt-hint">model parameters</span>
+          </div>
+
+          {# Kling — model/mode/duration/aspect #}
+          {% set k = engine_options.get("kling") %}
+          {% if k %}
+          <div class="gs-engine-opt" data-only-engine="kling">
+            <div class="gs-field">
+              <div class="gs-field__label gs-mono">model_name</div>
+              <div class="gs-select-shell">
+                <select name="model_name">
+                  {% for m in k.models %}<option value="{{ m }}" {% if m == k.default_model %}selected{% endif %}>{{ m }}</option>{% endfor %}
+                </select>
+                {{ icon('chevDown', size=13) }}
+              </div>
+            </div>
+            <div class="gs-row-2">
+              <div class="gs-field">
+                <div class="gs-field__label gs-mono">mode</div>
+                <div class="gs-segmented">
+                  {% for m in k.modes %}
+                    <input type="radio" name="mode" id="kling-mode-{{ m }}" value="{{ m }}" {% if m == k.default_mode %}checked{% endif %}>
+                    <label for="kling-mode-{{ m }}">{{ m }}</label>
+                  {% endfor %}
+                </div>
+              </div>
+              <div class="gs-field">
+                <div class="gs-field__label gs-mono">aspect_ratio</div>
+                <div class="gs-segmented">
+                  {% for a in ['16:9','9:16','1:1'] %}
+                    <input type="radio" name="aspect_ratio" id="kling-ar-{{ loop.index }}" value="{{ a }}" {% if a == '16:9' %}checked{% endif %}>
+                    <label for="kling-ar-{{ loop.index }}">{{ a }}</label>
+                  {% endfor %}
+                </div>
+              </div>
+            </div>
+            <div class="gs-field">
+              <div class="gs-field__label gs-mono">duration (sec)</div>
+              <div class="gs-segmented">
+                {% for d in k.durations %}
+                  <input type="radio" name="duration" id="kling-dur-{{ d }}" value="{{ d }}" {% if d == k.default_duration %}checked{% endif %}>
+                  <label for="kling-dur-{{ d }}">{{ d }}s</label>
+                {% endfor %}
+              </div>
+            </div>
+          </div>
+          {% endif %}
+
+          {# Veo — model_name + aspect_ratio + duration #}
+          {% set v = engine_options.get("veo") %}
+          {% if v %}
+          <div class="gs-engine-opt" data-only-engine="veo" style="display:none">
+            <div class="gs-field">
+              <div class="gs-field__label gs-mono">model_name</div>
+              <div class="gs-select-shell">
+                <select name="model_name" disabled>
+                  {% for m in v.models %}<option value="{{ m }}" {% if m == v.default_model %}selected{% endif %}>{{ m }}</option>{% endfor %}
+                </select>
+                {{ icon('chevDown', size=13) }}
+              </div>
+            </div>
+            <div class="gs-row-2">
+              <div class="gs-field">
+                <div class="gs-field__label gs-mono">aspect_ratio</div>
+                <div class="gs-segmented">
+                  {% for a in v.aspect_ratios %}
+                    <input type="radio" name="aspect_ratio" id="veo-ar-{{ loop.index }}" value="{{ a }}" {% if a == v.default_aspect_ratio %}checked{% endif %} disabled>
+                    <label for="veo-ar-{{ loop.index }}">{{ a }}</label>
+                  {% endfor %}
+                </div>
+              </div>
+              <div class="gs-field">
+                <div class="gs-field__label gs-mono">duration (sec)</div>
+                <div class="gs-segmented">
+                  {% for d in v.durations %}
+                    <input type="radio" name="duration" id="veo-dur-{{ d }}" value="{{ d }}" {% if d == v.default_duration %}checked{% endif %} disabled>
+                    <label for="veo-dur-{{ d }}">{{ d }}s</label>
+                  {% endfor %}
+                </div>
+              </div>
+            </div>
+            <p class="gs-hint" style="margin:8px 0 0">
+              Vertex AI Veo — GCP 청구로 차감. duration: {{ v.durations|join(' / ') }}s 가용 (Veo 3.1).
+              veo-3.0 은 8s 고정.
+            </p>
+          </div>
+          {% endif %}
+
+          {# Higgsfield (fal.ai) — 옵션 없음, 기본값 사용 #}
+          <div class="gs-engine-opt" data-only-engine="higgsfield" style="display:none">
+            <p class="gs-hint" style="margin:0">
+              Higgsfield (fal.ai) — 추가 옵션 없음. 기본 모델로 호출됩니다.<br>
+              <span class="gs-mono" style="font-size:10.5px">HIGGSFIELD_FAL_MODEL env 로 운영자가 모델 ID 설정</span>
+            </p>
+          </div>
+
+          {# Nanobanana — 옵션 없음 #}
+          <div class="gs-engine-opt" data-only-engine="nanobanana" style="display:none">
+            <p class="gs-hint" style="margin:0">
+              Nanobanana (<span class="gs-mono">gemini-2.5-flash-image</span>) — 동기 호출, 추가 옵션 없음. 결과는 PNG.
+            </p>
+          </div>
+
+          {# GPT Image — 옵션 없음 #}
+          <div class="gs-engine-opt" data-only-engine="gpt_image" style="display:none">
+            <p class="gs-hint" style="margin:0">
+              GPT Image (<span class="gs-mono">gpt-image-1</span>) — 동기 호출, 추가 옵션 없음. 결과는 PNG.
+            </p>
+          </div>
+        </section>
+
+        <!-- 이미지 dropzone (text2video 탭에선 hide) -->
+        <section class="gs-section" id="gs-image-section">
+          <div class="gs-section__head">
+            <span class="gs-section__title">이미지</span>
+            <span class="gs-section__hint gs-mono">≤ 20장 · png/jpg/webp · ≤50MB</span>
+          </div>
+          <label class="gs-dropzone" id="gs-dropzone-label" for="gs-files-input">
+            <span class="gs-dropzone__count" id="gs-dropzone-count" hidden>0/20</span>
+
+            <!-- 빈 상태 -->
+            <div class="gs-dropzone__empty" id="gs-dropzone-empty">
+              <span class="gs-dropzone__icon">{{ icon('upload', size=20) }}</span>
+              <span class="gs-dropzone__title">
+                이미지를 드래그하거나 <em>클릭하여 선택</em>
+              </span>
+              <span class="gs-dropzone__hint-line">png · jpg · webp · 최대 20장 · 각 50MB 이내</span>
+            </div>
+
+            <!-- 선택 후 미리보기 -->
+            <div class="gs-dropzone__thumbs" id="gs-dropzone-thumbs" hidden></div>
+
+            <input type="file" name="files" multiple accept=".png,.jpg,.jpeg,.webp"
+                   class="gs-file-input" id="gs-files-input">
+          </label>
+        </section>
+
+        <!-- Prompt -->
+        <section class="gs-section">
+          <div class="gs-section__head">
+            <span class="gs-section__title">프롬프트</span>
+            <span class="gs-section__hint gs-mono">ko / en</span>
+          </div>
+          <textarea class="gs-prompt-textarea" name="prompt" required
+                    placeholder="예: 도시 야경 위로 천천히 부풀어 오르는 오로라, 시네마틱한 카메라 워크"
+                    id="gs-prompt"></textarea>
+          <div class="gs-prompt-meta">
+            <span>{{ icon('sparkles', size=11, style='vertical-align:-1px;margin-right:4px') }}프롬프트로 영상/이미지 생성</span>
+            <span class="gs-mono" id="gs-prompt-count">0 chars</span>
+          </div>
+        </section>
+      </div>
+
+      <div class="gs-panel__footer">
+        <button type="submit" class="gs-submit">
+          {{ icon('sparkles', size=18, stroke=2) }}
+          생성 시작
+          <span class="gs-mono">⌘ ↵</span>
+        </button>
+      </div>
+  </form>
+
+  <!-- RIGHT — output gallery -->
+  {%- set status_choices = [
+    ('running', 'running'),
+    ('succeeded', 'succeeded'),
+    ('partial_success', 'partial'),
+    ('failed', 'failed'),
+  ] -%}
+  {%- macro home_filter_url(eng, st) -%}
+    {%- set parts = [] -%}
+    {%- if eng %}{% set _ = parts.append('engine=' ~ eng) %}{% endif -%}
+    {%- if st %}{% set _ = parts.append('status=' ~ st) %}{% endif -%}
+    /{% if parts %}?{{ parts|join('&') }}{% endif %}
+  {%- endmacro -%}
+  {%- macro full_list_url(eng, st) -%}
+    {%- set parts = [] -%}
+    {%- if eng %}{% set _ = parts.append('engine=' ~ eng) %}{% endif -%}
+    {%- if st %}{% set _ = parts.append('status=' ~ st) %}{% endif -%}
+    /genai/batches{% if parts %}?{{ parts|join('&') }}{% endif %}
+  {%- endmacro -%}
+  <main class="gs-gallery">
+    <div class="gs-gallery__head">
+      <div>
+        <div class="gs-gallery__title">최근 Batch</div>
+        <div class="gs-gallery__meta">
+          {% if recent_batches %}{{ recent_batches|length }} batches{% else %}아직 batch 없음{% endif %}
+          {% if filter_engine %}· engine={{ filter_engine }}{% endif %}
+          {% if filter_status %}· status={{ filter_status }}{% endif %}
+        </div>
+      </div>
+      <div style="display:flex;gap:6px;">
+        <a href="{{ full_list_url(filter_engine, filter_status) }}" class="gs-pill">{{ icon('layers', size=13) }} 전체 목록</a>
+        <a href="/" class="gs-pill muted" title="필터 해제 / 새로고침">{{ icon('refresh', size=13) }}</a>
+      </div>
+    </div>
+
+    <div class="gs-filterbar gs-filterbar--compact">
+      <div class="gs-filterbar__row">
+        <span class="gs-filterbar__label gs-mono">engine</span>
+        <a href="{{ home_filter_url(None, filter_status) }}"
+           class="gs-chip {% if not filter_engine %}is-active{% endif %}">all</a>
+        {% for e in engines %}
+          <a href="{{ home_filter_url(e, filter_status) }}"
+             class="gs-chip {% if filter_engine == e %}is-active{% endif %}">{{ e }}</a>
+        {% endfor %}
+      </div>
+      <div class="gs-filterbar__row">
+        <span class="gs-filterbar__label gs-mono">status</span>
+        <a href="{{ home_filter_url(filter_engine, None) }}"
+           class="gs-chip {% if not filter_status %}is-active{% endif %}">all</a>
+        {% for s_value, s_label in status_choices %}
+          <a href="{{ home_filter_url(filter_engine, s_value) }}"
+             class="gs-chip {% if filter_status == s_value %}is-active{% endif %}">{{ s_label }}</a>
+        {% endfor %}
+      </div>
+    </div>
+
+    {% for b in recent_batches %}
+      <a class="gs-batch" href="/genai/batches/{{ b.batch_id }}">
+        <div class="gs-batch__head">
+          <div style="min-width:0;flex:1">
+            <div style="display:flex;align-items:center;gap:10px;margin-bottom:4px">
+              <span class="gs-status {{ b.status }}">
+                <span class="gs-status__dot"></span>
+                {{ b.status }}
+              </span>
+              <span class="gs-batch__id gs-mono">{{ b.batch_id }}</span>
+              <span class="gs-batch__engine">· {{ b.engine }}</span>
+            </div>
+            <div class="gs-batch__prompt">{{ b.prompt or "—" }}</div>
+          </div>
+          <div class="gs-batch__time gs-mono">
+            {{ b.n_succeeded }}/{{ b.n_failed }}/{{ b.n_total }}
+          </div>
+        </div>
+        <div class="gs-batch__thumbs">
+          {% for i in range(b.n_total) %}
+            {% set tstate = 'done' if i < b.n_succeeded else ('failed' if i < b.n_succeeded + b.n_failed else b.status) %}
+            <div class="gs-thumb {{ tstate }}">
+              {% if tstate == 'done' or tstate == 'succeeded' %}
+                <span class="gs-thumb__play">{{ icon('play', size=12) }}</span>
+              {% elif tstate == 'failed' %}
+                <span class="gs-thumb__center">{{ icon('x', size=14) }}</span>
+              {% else %}
+                <span class="gs-thumb__center">{{ icon('clock', size=14) }}</span>
+              {% endif %}
+            </div>
+          {% endfor %}
+        </div>
+      </a>
+    {% else %}
+      {% if filter_engine or filter_status %}
+        <p class="gs-hint">해당 필터 조건의 batch 가 없습니다. <a href="/">전체 보기 →</a></p>
+      {% else %}
+        <p class="gs-hint">왼쪽 패널에 이미지/프롬프트를 입력하고 <b>생성 시작</b> 을 눌러주세요.</p>
+      {% endif %}
+    {% endfor %}
+  </main>
+</div>
+{% endblock %}
+
+{% block extra_scripts %}
+<script>
+  // text2video 탭은 Veo 만. img2video, img2image 는 ENGINE_TAB 정적 매핑 그대로.
+  const TXT2VIDEO_ENGINES = new Set(['veo']);
+
+  function currentTab() {
+    const active = document.querySelector('.gs-panel__tab.is-active');
+    return active ? active.dataset.tab : 'image2video';
+  }
+
+  // 탭 기준 엔진 카드 visibility (text2video → veo only)
+  function syncTabEngineFilter() {
+    const tab = currentTab();
+    document.querySelectorAll('.gs-engine-item').forEach(item => {
+      const card = item.querySelector('label.gs-engine-card');
+      const engine = card ? card.dataset.engine : null;
+      if (!engine) return;
+      let show;
+      if (tab === 'text2video') {
+        show = TXT2VIDEO_ENGINES.has(engine);
+      } else {
+        // 정적 ENGINE_TAB 매핑 — card 의 data-tab 와 일치하는 것만
+        show = card.dataset.tab === tab;
+      }
+      item.style.display = show ? '' : 'none';
+    });
+  }
+
+  // 이미지 입력 / hidden mode input 토글
+  function syncModeFromTab() {
+    const tab = currentTab();
+    const imgSection = document.getElementById('gs-image-section');
+    const filesInput = document.getElementById('gs-files-input');
+    const hiddenMode = document.getElementById('gs-hidden-mode');
+    if (tab === 'text2video') {
+      if (imgSection) imgSection.style.display = 'none';
+      if (filesInput) { filesInput.required = false; filesInput.disabled = true; }
+      if (hiddenMode) { hiddenMode.disabled = false; hiddenMode.value = 'txt2video'; }
+    } else {
+      if (imgSection) imgSection.style.display = '';
+      if (filesInput) { filesInput.required = true; filesInput.disabled = false; }
+      if (hiddenMode) { hiddenMode.disabled = true; hiddenMode.value = ''; }
+    }
+  }
+
+  // 엔진 라디오 → 옵션 패널 토글 + section title + (img tab 일 때) 탭 동기
+  function syncEngine() {
+    const checked = document.querySelector('input[name=engine]:checked');
+    if (!checked) return;
+    const eng = checked.value;
+    const label = document.querySelector(`label.gs-engine-card[for="eng-${eng}"]`);
+    const cardTab = label ? label.dataset.tab : null;
+    // 옵션 패널 토글
+    document.querySelectorAll('.gs-engine-opt').forEach(s => {
+      const show = s.dataset.onlyEngine === eng;
+      s.style.display = show ? '' : 'none';
+      s.querySelectorAll('select, input').forEach(i => { i.disabled = !show; });
+    });
+    // section title 동적 갱신
+    const titleEl = document.getElementById('gs-engine-opt-title');
+    if (titleEl) {
+      const pretty = {
+        'kling': 'Kling 옵션',
+        'veo': currentTab() === 'text2video' ? 'Veo 옵션 (Text → Video)' : 'Veo 옵션 (Vertex AI)',
+        'higgsfield': 'Higgsfield 옵션 (fal.ai)',
+        'nanobanana': 'Nanobanana 옵션 (Vertex Gemini)',
+        'gpt_image': 'GPT Image 옵션 (OpenAI)',
+      };
+      titleEl.textContent = pretty[eng] || (eng + ' 옵션');
+    }
+    // 탭 동기화 — 단, text2video 탭 안에서 veo 가 선택된 경우는 유지.
+    if (cardTab && currentTab() !== 'text2video') {
+      document.querySelectorAll('.gs-panel__tab').forEach(t => {
+        t.classList.toggle('is-active', t.dataset.tab === cardTab);
+      });
+    }
+  }
+  document.querySelectorAll('input[name=engine]').forEach(r => {
+    r.addEventListener('change', syncEngine);
+  });
+  syncTabEngineFilter();
+  syncModeFromTab();
+  syncEngine();
+
+  // 탭 클릭 → 첫 카드 자동 선택 + dropzone/hidden mode 토글
+  document.addEventListener('click', function(e) {
+    const tab = e.target.closest('.gs-panel__tab');
+    if (!tab) return;
+    e.preventDefault();
+    const target = tab.dataset.tab;
+    if (!target) return;
+    document.querySelectorAll('.gs-panel__tab').forEach(t => {
+      t.classList.toggle('is-active', t === tab);
+    });
+    syncTabEngineFilter();
+    syncModeFromTab();
+    // 첫 카드 선택 (visible 한 것만)
+    let firstInput = null;
+    if (target === 'text2video') {
+      firstInput = document.getElementById('eng-veo');
+    } else {
+      const firstLabel = document.querySelector(`label.gs-engine-card[data-tab="${target}"]`);
+      if (firstLabel) firstInput = document.getElementById(firstLabel.getAttribute('for'));
+    }
+    if (firstInput) {
+      document.querySelectorAll('input[name=engine]').forEach(r => { r.checked = (r === firstInput); });
+    }
+    syncEngine();
+  });
+
+  // 파일 선택 / drag-drop → dropzone 안에 thumb 미리보기
+  const filesInput  = document.getElementById('gs-files-input');
+  const dropzone    = document.getElementById('gs-dropzone-label');
+  const emptyEl     = document.getElementById('gs-dropzone-empty');
+  const thumbsEl    = document.getElementById('gs-dropzone-thumbs');
+  const dzCountEl   = document.getElementById('gs-dropzone-count');
+  const MAX_FILES   = 20;
+
+  // 누적 파일 보관 (DataTransfer 로 input.files 갱신)
+  let dt = new DataTransfer();
+
+  function renderThumbs() {
+    thumbsEl.innerHTML = '';
+    const files = [...dt.files];
+    if (files.length === 0) {
+      emptyEl.hidden = false;
+      thumbsEl.hidden = true;
+      dzCountEl.hidden = true;
+      return;
+    }
+    emptyEl.hidden = true;
+    thumbsEl.hidden = false;
+    dzCountEl.hidden = false;
+    dzCountEl.textContent = `${files.length}/${MAX_FILES}`;
+
+    files.forEach((f, idx) => {
+      const t = document.createElement('div');
+      t.className = 'gs-dropzone__thumb';
+      const reader = new FileReader();
+      reader.onload = e => { t.style.backgroundImage = `url(${e.target.result})`; };
+      reader.readAsDataURL(f);
+
+      const name = document.createElement('span');
+      name.className = 'gs-dropzone__thumb-name';
+      name.textContent = f.name;
+
+      const rm = document.createElement('button');
+      rm.type = 'button';
+      rm.className = 'gs-dropzone__thumb-remove';
+      rm.innerHTML = '<svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>';
+      rm.onclick = (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        const remain = [...dt.files].filter((_, i) => i !== idx);
+        dt = new DataTransfer();
+        remain.forEach(file => dt.items.add(file));
+        filesInput.files = dt.files;
+        renderThumbs();
+      };
+      t.appendChild(name);
+      t.appendChild(rm);
+      thumbsEl.appendChild(t);
+    });
+
+    // 추가 더미 (클릭 시 input 트리거 — pointer-events:none 라 label 의 기본 동작)
+    if (files.length < MAX_FILES) {
+      const add = document.createElement('div');
+      add.className = 'gs-dropzone__addmore';
+      add.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg><span>추가</span>';
+      thumbsEl.appendChild(add);
+    }
+  }
+
+  function addFiles(newFiles) {
+    [...newFiles].forEach(f => {
+      // 중복 제거 (이름+크기)
+      const dup = [...dt.files].some(x => x.name === f.name && x.size === f.size);
+      if (!dup && dt.files.length < MAX_FILES) dt.items.add(f);
+    });
+    filesInput.files = dt.files;
+    renderThumbs();
+  }
+
+  if (filesInput) {
+    filesInput.addEventListener('change', e => {
+      const incoming = filesInput.files;
+      // DataTransfer 리셋 후 incoming 누적
+      const merged = [...dt.files];
+      [...incoming].forEach(f => {
+        if (!merged.some(x => x.name === f.name && x.size === f.size)) merged.push(f);
+      });
+      dt = new DataTransfer();
+      merged.slice(0, MAX_FILES).forEach(f => dt.items.add(f));
+      filesInput.files = dt.files;
+      renderThumbs();
+    });
+  }
+
+  // drag & drop
+  if (dropzone) {
+    ['dragenter','dragover'].forEach(ev => dropzone.addEventListener(ev, e => {
+      e.preventDefault(); dropzone.classList.add('is-dragover');
+    }));
+    ['dragleave','drop'].forEach(ev => dropzone.addEventListener(ev, e => {
+      e.preventDefault(); dropzone.classList.remove('is-dragover');
+    }));
+    dropzone.addEventListener('drop', e => {
+      if (e.dataTransfer?.files) addFiles(e.dataTransfer.files);
+    });
+  }
+
+  // prompt char count
+  const promptEl = document.getElementById('gs-prompt');
+  const countEl = document.getElementById('gs-prompt-count');
+  if (promptEl && countEl) {
+    const upd = () => { countEl.textContent = `${promptEl.value.length} chars`; };
+    promptEl.addEventListener('input', upd); upd();
+  }
+
+  // Cmd+Enter submit shortcut
+  document.addEventListener('keydown', (e) => {
+    if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+      document.getElementById('gs-submit-form')?.requestSubmit();
+    }
+  });
+
+  // ?created=<batch_id> toast
+  (function showCreatedToast() {
+    const params = new URLSearchParams(location.search);
+    const created = params.get('created');
+    if (!created) return;
+    const t = document.createElement('div');
+    t.style.cssText = `position:fixed;right:24px;bottom:24px;z-index:100;padding:12px 16px;border-radius:10px;
+      background:var(--gs-elevated);border:1px solid var(--gs-border-strong);color:var(--gs-text);
+      font-size:12.5px;box-shadow:var(--gs-shadow-2);display:flex;align-items:center;gap:10px;max-width:360px`;
+    t.innerHTML = `<span style="width:6px;height:6px;border-radius:999px;background:var(--gs-success)"></span>
+      <div style="flex:1"><div style="font-weight:600">Batch 생성됨</div>
+      <div class="gs-mono" style="font-size:10.5px;color:var(--gs-text-faint);margin-top:2px">${created}</div></div>
+      <a href="/genai/batches/${created}" style="color:var(--gs-accent);font-size:11.5px;text-decoration:none">상세 →</a>`;
+    document.body.appendChild(t);
+    history.replaceState({}, '', '/');
+    setTimeout(() => { t.style.transition='opacity .3s'; t.style.opacity='0'; setTimeout(()=>t.remove(),320); }, 4500);
+  })();
+</script>
+{% endblock %}

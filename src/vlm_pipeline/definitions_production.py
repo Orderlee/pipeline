@@ -11,6 +11,7 @@ from dagster import EnvVar, ScheduleDefinition, define_asset_job
 from vlm_pipeline.defs.build.assets import build_dataset
 from vlm_pipeline.defs.build.classification import build_classification
 from vlm_pipeline.defs.build.sensor import build_dataset_on_finalize_sensor
+from vlm_pipeline.defs.genai import genai_poll_sensor
 from vlm_pipeline.defs.dispatch.archive_dispatch_sensor import build_archive_dispatch_sensor
 from vlm_pipeline.defs.dispatch.production_agent_sensor import build_production_agent_dispatch_sensor
 from vlm_pipeline.defs.dispatch.sensor import build_dispatch_sensor
@@ -31,9 +32,6 @@ from vlm_pipeline.defs.ingest.sensor import (
 from vlm_pipeline.defs.label.assets import classification_video, clip_timestamp
 from vlm_pipeline.defs.label.manual_import import manual_label_import
 from vlm_pipeline.defs.ls.sensor import (
-    ls_presign_renew_job,
-    ls_presign_renew_schedule,
-    ls_task_create_job,
     ls_task_create_sensor,
 )
 from vlm_pipeline.defs.process.assets import clip_captioning, clip_to_frame, raw_video_to_frame
@@ -46,16 +44,9 @@ from vlm_pipeline.defs.sync.assets import motherduck_sync
 from vlm_pipeline.lib.env_utils import (
     DB_BACKEND_DUAL_DUCKDB_PRIMARY,
     DB_BACKEND_DUAL_PG_PRIMARY,
-    DB_BACKEND_DUCKDB,
     DB_BACKEND_POSTGRES,
-    DUCKDB_LABEL_WRITER_TAG,
-    DUCKDB_LEGACY_WRITER_TAG,
-    DUCKDB_RAW_WRITER_TAG,
-    DUCKDB_SAM3_WRITER_TAG,
-    DUCKDB_YOLO_WRITER_TAG,
     build_duckdb_writer_tags,
     db_backend_mode,
-    default_duckdb_path,
     default_postgres_dsn,
 )
 from vlm_pipeline.resources.data_db import DualDBResource
@@ -122,7 +113,6 @@ def _build_db_resource() -> object:
     """
     mode = db_backend_mode()
 
-    duckdb_path = default_duckdb_path()
     postgres_dsn = default_postgres_dsn()
 
     duckdb_resource = DuckDBResource(db_path=EnvVar("DATAOPS_DUCKDB_PATH"))
@@ -273,6 +263,7 @@ def build_production_sensors(
         *motherduck_table_sensors,
         ls_task_create_sensor,
         build_dataset_on_finalize_sensor,
+        genai_poll_sensor,
     ]
     if archive_dispatch_jobs:
         # Phase 2b: from_archived=True dispatch JSON 만 처리

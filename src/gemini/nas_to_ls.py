@@ -32,7 +32,7 @@ Usage:
 환경변수:
     LS_API_KEY
     LS_URL               (기본: http://localhost:8080)
-    MINIO_ENDPOINT       (기본: 10.0.0.36:9000)
+    MINIO_ENDPOINT       (기본: 10.0.0.51:9000)
     MINIO_ACCESS_KEY     (기본: minioadmin)
     MINIO_SECRET_KEY     (기본: minioadmin)
     MINIO_IMPORT_BUCKET  (기본: vlm-poc-import)
@@ -57,7 +57,7 @@ from botocore.config import Config as BotoConfig
 # ---------------------------------------------------------------------------
 
 DEFAULT_LS_URL           = "http://localhost:8080"
-DEFAULT_MINIO_ENDPOINT   = "10.0.0.36:9000"
+DEFAULT_MINIO_ENDPOINT   = "10.0.0.51:9000"
 DEFAULT_MINIO_ACCESS_KEY = "minioadmin"
 DEFAULT_MINIO_SECRET_KEY = "minioadmin"
 DEFAULT_IMPORT_BUCKET    = "vlm-poc-import"

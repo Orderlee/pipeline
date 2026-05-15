@@ -1,0 +1,73 @@
+{% extends "base.html" %}
+{% set page = "batch_detail" %}
+{% from "_icons.html" import icon %}
+
+{% block body %}
+<main class="gs-page gs-page--narrow">
+  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px">
+    <h1 class="gs-h1">Batch <code>{{ batch.batch_id }}</code></h1>
+    <span class="gs-badge {{ batch.status }}">{{ batch.status }}</span>
+  </div>
+
+  <div class="gs-card-block" style="padding:18px;margin-bottom:24px">
+    <dl class="gs-dl">
+      <dt>engine</dt><dd>{{ batch.engine }} <span class="gs-hint">({{ batch.output_media }})</span></dd>
+      <dt>prompt</dt><dd><code>{{ batch.prompt }}</code></dd>
+      <dt>requested_by</dt><dd>{{ batch.requested_by or "—" }}</dd>
+      <dt>submitted_at</dt><dd class="gs-mono">{{ batch.submitted_at }}</dd>
+      <dt>completed_at</dt><dd class="gs-mono">{{ batch.completed_at or "—" }}</dd>
+      <dt>jobs</dt><dd class="gs-mono">{{ batch.n_succeeded }} / {{ batch.n_failed }} / {{ batch.n_total }}</dd>
+    </dl>
+  </div>
+
+  {% set output_ext = '.mp4' if batch.output_media == 'video' else '.png' %}
+  <h2 class="gs-h2">Jobs</h2>
+  <div class="gs-card-block">
+    <table class="gs-table">
+      <thead>
+        <tr><th>seq</th><th>job_id</th><th>status</th><th>provider_job_id</th><th>cost</th><th>error</th><th></th></tr>
+      </thead>
+      <tbody>
+        {% for j in batch.jobs %}
+        {% set fname = '%03d'|format(j.seq_in_batch) ~ output_ext %}
+        {% set out_url = '/genai/batches/' ~ batch.batch_id ~ '/outputs/' ~ fname %}
+        <tr>
+          <td>{{ j.seq_in_batch }}</td>
+          <td><code>{{ j.job_id }}</code></td>
+          <td><span class="gs-badge {{ j.status }}">{{ j.status }}</span></td>
+          <td><code style="font-size:11px">{{ (j.provider_job_id or "—")|truncate(48, true, '…') }}</code></td>
+          <td class="gs-mono">{{ j.cost_units if j.cost_units is not none else "—" }}</td>
+          <td class="gs-hint" style="max-width:280px;word-break:break-all">{{ (j.error_message or "—")|truncate(160, true, '…') }}</td>
+          <td>{% if j.status == "failed" %}
+            <button class="gs-retry"
+                    hx-post="/genai/jobs/{{ j.job_id }}/retry"
+                    hx-confirm="이 job 을 재시도할까요?"
+                    hx-swap="none"
+                    hx-on::after-request="window.location.reload()">retry</button>
+          {% elif j.status == "done" %}
+            <a href="{{ out_url }}" target="_blank" class="gs-pill" style="margin-right:4px">미리보기</a>
+            <a href="{{ out_url }}?download=true" class="gs-pill muted">다운로드</a>
+          {% endif %}</td>
+        </tr>
+        {% if j.status == 'done' %}
+        <tr class="gs-preview-row">
+          <td></td>
+          <td colspan="6" style="padding-top:0">
+            {% if batch.output_media == 'video' %}
+              <video controls preload="metadata"
+                     style="max-width:520px;max-height:300px;border-radius:8px;background:#0a0a0c">
+                <source src="{{ out_url }}" type="video/mp4">
+              </video>
+            {% else %}
+              <img src="{{ out_url }}" alt="seq {{ j.seq_in_batch }}"
+                   style="max-width:340px;max-height:340px;border-radius:8px">
+            {% endif %}
+          </td>
+        </tr>
+        {% endif %}
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</main>
+{% endblock %}

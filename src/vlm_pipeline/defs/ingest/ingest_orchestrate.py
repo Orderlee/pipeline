@@ -43,7 +43,8 @@ from .ingest_post import (
 from .ingest_state import RawIngestState
 from .inline_dedup import run_inline_dedup
 from .manifest import build_retry_manifest, maybe_write_archive_done_marker, write_ingest_failure_logs
-from .ops import ingest_summary, normalize_and_archive, register_incoming
+from .ops_normalize import ingest_summary, normalize_and_archive
+from .ops_register import register_incoming
 from .runtime_policy import resolve_ingest_runtime_policy
 
 if TYPE_CHECKING:
