@@ -1,0 +1,62 @@
+/* GenAI Studio — shared design tokens */
+:root {
+  --gs-font-sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  --gs-font-mono: "JetBrains Mono", "SF Mono", ui-monospace, Menlo, monospace;
+
+  /* Dark studio palette */
+  --gs-bg: #0a0a0a;
+  --gs-bg-2: #0f0f10;
+  --gs-panel: #141416;
+  --gs-card: #1a1a1d;
+  --gs-elevated: #202024;
+  --gs-border: #26262a;
+  --gs-border-soft: #1f1f23;
+  --gs-border-strong: #3a3a40;
+
+  --gs-text: #f5f5f5;
+  --gs-text-dim: #c8c8cc;
+  --gs-text-muted: #8a8a92;
+  --gs-text-faint: #5a5a62;
+
+  --gs-accent: #6366f1;
+  --gs-accent-hover: #7c7ff3;
+  --gs-accent-soft: rgba(99,102,241,0.12);
+  --gs-accent-ring: rgba(99,102,241,0.35);
+
+  --gs-success: #34d399;
+  --gs-warn: #f59e0b;
+  --gs-danger: #f87171;
+
+  --gs-radius-sm: 6px;
+  --gs-radius: 8px;
+  --gs-radius-lg: 12px;
+  --gs-radius-xl: 16px;
+
+  --gs-shadow-1: 0 1px 2px rgba(0,0,0,0.4);
+  --gs-shadow-2: 0 8px 24px rgba(0,0,0,0.5);
+}
+
+/* Base reset within an artboard */
+.gs-root, .gs-root * {
+  box-sizing: border-box;
+}
+.gs-root {
+  font-family: var(--gs-font-sans);
+  font-feature-settings: "cv02", "cv03", "cv04", "cv11", "ss01";
+  color: var(--gs-text);
+  background: var(--gs-bg);
+  width: 100%;
+  height: 100%;
+  letter-spacing: -0.005em;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+.gs-root button { font-family: inherit; color: inherit; cursor: pointer; border: 0; background: transparent; padding: 0; }
+.gs-root input, .gs-root textarea, .gs-root select { font-family: inherit; color: inherit; }
+.gs-mono { font-family: var(--gs-font-mono); font-feature-settings: "tnum"; }
+
+/* tiny scrollbar (webkit) */
+.gs-root ::-webkit-scrollbar { width: 8px; height: 8px; }
+.gs-root ::-webkit-scrollbar-thumb { background: #2a2a2f; border-radius: 4px; }
+.gs-root ::-webkit-scrollbar-thumb:hover { background: #3a3a40; }
+.gs-root ::-webkit-scrollbar-track { background: transparent; }

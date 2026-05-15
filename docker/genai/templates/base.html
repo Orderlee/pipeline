@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}GenAI Studio{% endblock %}</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  {% set asset_v = "20260512-15" %}
+  <link rel="stylesheet" href="/static/tokens.css?v={{ asset_v }}">
+  <link rel="stylesheet" href="/static/studio.css?v={{ asset_v }}">
+  <script src="/static/htmx.min.js"></script>
+</head>
+<body class="gs-root">
+{% from "_icons.html" import icon %}
+{% set page = page|default("submit") %}
+
+<div class="gs-app">
+  <header class="gs-header">
+    <div class="gs-brand">
+      <span class="gs-brand__logo">{{ icon('spark', size=13, stroke=2) }}</span>
+      <span class="gs-brand__name">GenAI Studio</span>
+      <span class="gs-brand__sub">/ workspace</span>
+    </div>
+    <nav class="gs-header__nav">
+      <a href="/" class="{% if page == 'submit' %}is-active{% endif %}">Submit</a>
+      <a href="/genai/batches" class="{% if page in ['batches','batch_detail','submit_result'] %}is-active{% endif %}">Batches</a>
+      <a href="/genai/costs" class="{% if page == 'costs' %}is-active{% endif %}">Costs</a>
+    </nav>
+    <div class="gs-header__spacer"></div>
+    <div class="gs-header__credit">
+      {{ icon('cost', size=13) }} <span class="gs-mono">staging · dev</span>
+    </div>
+    <span class="gs-header__avatar">{{ (user[:2]|upper) if user else "PI" }}</span>
+  </header>
+
+  {% block body %}{% endblock %}
+</div>
+
+{% block extra_scripts %}{% endblock %}
+</body>
+</html>

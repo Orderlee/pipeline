@@ -5,7 +5,7 @@
 
 x-common-env: &common-env
   PIPELINE_RUNTIME_ENV: ${PIPELINE_RUNTIME_ENV:-production}
-  MINIO_ENDPOINT: ${MINIO_ENDPOINT:-http://10.0.0.36:9000}
+  MINIO_ENDPOINT: ${MINIO_ENDPOINT:-http://10.0.0.51:9000}
   MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-minioadmin}
   MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-minioadmin}
   DUCKDB_PATH: ${DATAOPS_DUCKDB_PATH:-/data/pipeline.duckdb}
@@ -71,10 +71,15 @@ x-runtime-volumes: &runtime-volumes
 
 x-runtime-dagster-env: &runtime-dagster-env
   <<: *common-env
-  DATAOPS_MINIO__ENDPOINT: ${MINIO_ENDPOINT:-http://10.0.0.36:9000}
+  DATAOPS_MINIO__ENDPOINT: ${MINIO_ENDPOINT:-http://10.0.0.51:9000}
   DATAOPS_MINIO__ACCESS_KEY: ${MINIO_ACCESS_KEY:-minioadmin}
   DATAOPS_MINIO__SECRET_KEY: ${MINIO_SECRET_KEY:-minioadmin}
   DATAOPS_MINIO__BUCKET: raw-data
+  # GenAI polling sensor (Phase 3.5+) — HTTP 경유로 docker/genai 컨테이너의 internal API 호출
+  GENAI_INTERNAL_BASE: ${GENAI_INTERNAL_BASE:-http://genai:8088}
+  GENAI_INTERNAL_TOKEN: ${GENAI_INTERNAL_TOKEN:-}
+  GENAI_POLL_INTERVAL_SECONDS: ${GENAI_POLL_INTERVAL_SECONDS:-30}
+  GENAI_POLL_BATCH: ${GENAI_POLL_BATCH:-20}
 
 x-runtime-dagster-common: &runtime-dagster-common
   image: ${IMAGE_NAME:-datapipeline:gpu-cu124}
@@ -304,6 +309,62 @@ services:
       start_period: 60s
       retries: 3
     restart: unless-stopped
+
+  genai:
+    profiles: ["genai"]
+    build:
+      context: ./genai
+      dockerfile: Dockerfile
+    image: datapipeline-genai:0.1
+    ports:
+      - "${GENAI_PORT:-8088}:8088"
+    env_file:
+      - ${PIPELINE_ENV_FILE:-.env}
+    environment:
+      GENAI_NAS_INCOMING: /nas/staging/incoming
+      DATAOPS_POSTGRES_DSN: ${DATAOPS_POSTGRES_DSN}
+      KLING_ACCESS_KEY: ${KLING_ACCESS_KEY:-}
+      KLING_SECRET_KEY: ${KLING_SECRET_KEY:-}
+      KLING_MODEL_NAME: ${KLING_MODEL_NAME:-kling-video-o1}
+      KLING_AVAILABLE_MODELS: ${KLING_AVAILABLE_MODELS:-}
+      KLING_MODE: ${KLING_MODE:-pro}
+      KLING_DURATION: ${KLING_DURATION:-5}
+      FAL_KEY: ${FAL_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      GEMINI_GOOGLE_APPLICATION_CREDENTIALS: ${GEMINI_GOOGLE_APPLICATION_CREDENTIALS:-}
+      GOOGLE_APPLICATION_CREDENTIALS: ${GEMINI_GOOGLE_APPLICATION_CREDENTIALS:-}
+      GEMINI_PROJECT: ${GEMINI_PROJECT:-your-gcp-project}
+      GEMINI_LOCATION: ${GEMINI_LOCATION:-us-central1}
+      VEO_MODEL_NAME: ${VEO_MODEL_NAME:-veo-3.1-generate-001}
+      VEO_AVAILABLE_MODELS: ${VEO_AVAILABLE_MODELS:-}
+      VEO_ASPECT_RATIO: ${VEO_ASPECT_RATIO:-16:9}
+      VEO_OUTPUT_GCS_URI: ${VEO_OUTPUT_GCS_URI:-}
+      GENAI_BASIC_AUTH_USER: ${GENAI_BASIC_AUTH_USER:-}
+      GENAI_BASIC_AUTH_PASS: ${GENAI_BASIC_AUTH_PASS:-}
+      GENAI_AUTH_DISABLED: ${GENAI_AUTH_DISABLED:-}
+      GENAI_INTERNAL_TOKEN: ${GENAI_INTERNAL_TOKEN:-}
+      GENAI_ENGINES_ENABLED: ${GENAI_ENGINES_ENABLED:-kling,higgsfield,nanobanana,gpt_image}
+      GENAI_MAX_BYTES_PER_FILE: ${GENAI_MAX_BYTES_PER_FILE:-52428800}
+      GENAI_MAX_FILES_PER_BATCH: ${GENAI_MAX_FILES_PER_BATCH:-20}
+      # Phase 5 — quota / rate-limit (0 = off)
+      GENAI_RATE_LIMIT_PER_MIN: ${GENAI_RATE_LIMIT_PER_MIN:-0}
+      GENAI_DAILY_BATCH_LIMIT: ${GENAI_DAILY_BATCH_LIMIT:-0}
+      GENAI_DAILY_BYTES_LIMIT: ${GENAI_DAILY_BYTES_LIMIT:-0}
+    volumes:
+      - /home/user/mou/staging:/nas/staging
+      - ./app/credentials:/app/credentials:ro
+    networks:
+      - default
+      - pipeline-network
+    healthcheck:
+      test: ["CMD-SHELL", "python -c 'import urllib.request; urllib.request.urlopen(\"http://localhost:8088/healthz\").read()'"]
+      interval: 30s
+      timeout: 5s
+      start_period: 30s
+      retries: 3
+    restart: unless-stopped
+    depends_on:
+      - postgres
 
 volumes:
   minio_data:

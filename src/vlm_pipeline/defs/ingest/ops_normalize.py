@@ -38,6 +38,44 @@ from .ops_common import (
 )
 
 
+def _link_genai_asset_if_any(db, entry: dict, context) -> None:
+    """raw_files INSERT 직후, 해당 row 가 GenAI source/output 이면 genai_jobs FK 연결.
+
+    ops_register 가 manifest 의 items[seq].asset_id 매핑을 entry 에 _genai_batch_id /
+    _genai_seq_in_batch / _genai_role 로 통과시킨 경우만 동작. 누락 시 no-op.
+    """
+    db_record = entry.get("db_record") or {}
+    role = (db_record.get("source_type") or "").strip()
+    if role not in ("genai_source", "genai_output"):
+        return
+    batch_id = entry.get("_genai_batch_id")
+    seq = entry.get("_genai_seq_in_batch")
+    if not batch_id or not seq:
+        return
+    asset_id = db_record.get("asset_id")
+    if not asset_id:
+        return
+    update = getattr(db, "update_genai_job_assets", None)
+    if not callable(update):
+        # legacy DuckDB backend — Phase 3 은 PG 전제. 누락 시 warn 후 skip.
+        context.log.warning(
+            f"genai link skipped (no update_genai_job_assets on {type(db).__name__}): "
+            f"batch={batch_id} seq={seq}"
+        )
+        return
+    kwargs = {"batch_id": batch_id, "seq_in_batch": int(seq)}
+    if role == "genai_source":
+        kwargs["input_asset_id"] = asset_id
+    else:
+        kwargs["output_asset_id"] = asset_id
+    try:
+        update(**kwargs)
+    except Exception as exc:  # noqa: BLE001
+        context.log.warning(
+            f"update_genai_job_assets 실패 batch={batch_id} seq={seq} role={role}: {exc}"
+        )
+
+
 def normalize_and_archive(
     context,
     db: DuckDBResource,
@@ -208,6 +246,7 @@ def normalize_and_archive(
             for entry in batch_entries:
                 try:
                     db.insert_raw_files_batch([entry["db_record"]])
+                    _link_genai_asset_if_any(db, entry, context)
                     _stage_upload_task(entry)
                 except Exception as single_exc:  # noqa: BLE001
                     _handle_pending_db_error(entry, single_exc)
@@ -215,6 +254,7 @@ def normalize_and_archive(
 
         for entry in batch_entries:
             try:
+                _link_genai_asset_if_any(db, entry, context)
                 _stage_upload_task(entry)
             except Exception as exc:  # noqa: BLE001
                 _handle_pending_db_error(entry, exc)
@@ -381,6 +421,9 @@ def normalize_and_archive(
                     "meta": meta,
                     "rel_path": rel_path,
                     "record_ref": rec,
+                    # GenAI 연결 키 (ops_register 가 통과시킨 값) — 미설정 시 None
+                    "_genai_batch_id": rec.get("_genai_batch_id"),
+                    "_genai_seq_in_batch": rec.get("_genai_seq_in_batch"),
                 }
             )
             pending_checksums[str(meta["checksum"])] = str(asset_id)

@@ -1,0 +1,70 @@
+"""BaseGenAIAdapter — 4 엔진 (Kling, Higgsfield, Nanobanana, GPT Image) 공통 인터페이스.
+
+엔진별 동작 차이를 흡수하는 얇은 Protocol:
+  - 동기 엔진(Nanobanana, GPT Image): submit() 안에서 결과까지 받아 download_result()
+    가 즉시 bytes 반환. poll() 은 항상 'done' 반환.
+  - 비동기 엔진(Kling, Higgsfield): submit() 은 provider_job_id 반환 후 종료.
+    Dagster polling sensor 가 poll() 으로 상태 갱신, 'done' 시 download_result()
+    호출.
+
+Adapter 는 외부 API 호출만 책임지고, DB/NAS 쓰기는 호출자(orchestrator)가 처리.
+"""
+
+from __future__ import annotations
+
+from typing import Protocol
+
+
+class SubmitResult:
+    def __init__(
+        self,
+        provider_job_id: str | None,
+        immediate_result: bytes | None = None,
+        immediate_ext: str | None = None,
+        cost_units: float | None = None,
+        is_synchronous: bool = False,
+    ):
+        self.provider_job_id = provider_job_id
+        self.immediate_result = immediate_result
+        self.immediate_ext = immediate_ext
+        self.cost_units = cost_units
+        self.is_synchronous = is_synchronous
+
+
+class PollResult:
+    def __init__(
+        self,
+        status: str,             # 'running' | 'done' | 'failed'
+        result_url: str | None = None,
+        error_message: str | None = None,
+        cost_units: float | None = None,
+    ):
+        self.status = status
+        self.result_url = result_url
+        self.error_message = error_message
+        self.cost_units = cost_units
+
+
+class BaseGenAIAdapter(Protocol):
+    engine: str               # 'kling' | 'higgsfield' | 'nanobanana' | 'gpt_image'
+    output_media: str         # 'video' | 'image'
+    is_synchronous: bool      # True: submit 시 결과 즉시. False: polling 필요.
+    output_ext: str           # default 출력 확장자 (.mp4, .png)
+
+    def submit(
+        self,
+        image_bytes: bytes,
+        image_filename: str,
+        prompt: str,
+        options: dict | None = None,
+    ) -> SubmitResult:
+        """이미지 + 프롬프트 → 외부 API submit. 동기 엔진은 결과까지 포함."""
+        ...
+
+    def poll(self, provider_job_id: str) -> PollResult:
+        """비동기 엔진의 진행 상태 조회. 동기 엔진은 ('done', '<inline>') 반환."""
+        ...
+
+    def download_result(self, result_url: str) -> bytes:
+        """완료된 결과 URL → bytes. 동기 엔진은 submit 시 받은 bytes 를 직접 반환 가능."""
+        ...

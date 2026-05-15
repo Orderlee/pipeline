@@ -46,7 +46,7 @@ import requests
 from botocore.config import Config as BotoConfig
 
 DEFAULT_LS_URL = "http://localhost:8080"
-DEFAULT_MINIO_ENDPOINT = "10.0.0.36:9000"
+DEFAULT_MINIO_ENDPOINT = "10.0.0.51:9000"
 DEFAULT_MINIO_ACCESS_KEY = "minioadmin"
 DEFAULT_MINIO_SECRET_KEY = "minioadmin"
 DEFAULT_BUCKET = "vlm-labels"
@@ -97,7 +97,7 @@ def write_json(client, bucket: str, key: str, data: list | dict) -> None:
 def _extract_raw_key_from_video_url(video_url: str, raw_bucket: str = "vlm-raw") -> str | None:
     """LS task data.video presigned URL → raw_files.raw_key 형태.
 
-    예: 'http://10.0.0.36:9000/vlm-raw/smart-city/normal_case/cam6.mp4?X-Amz-...'
+    예: 'http://10.0.0.51:9000/vlm-raw/smart-city/normal_case/cam6.mp4?X-Amz-...'
         → 'smart-city/normal_case/cam6.mp4'
 
     fileuri 쿼리 파라미터(legacy)가 있으면 그걸 우선 사용하고,

@@ -19,7 +19,7 @@ import boto3
 from botocore.config import Config as BotoConfig
 from botocore.exceptions import ClientError
 
-_DEFAULT_PRODUCTION_ENDPOINT = "http://10.0.0.36:9000"
+_DEFAULT_PRODUCTION_ENDPOINT = "http://10.0.0.51:9000"
 
 _SYNC_TARGETS = [
     ("vlm-processed", "{folder}/clips/"),

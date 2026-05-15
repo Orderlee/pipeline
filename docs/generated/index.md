@@ -1,5 +1,5 @@
 # Generated Docs
 
-자동 생성 스냅샷, 스키마 덤프, 일회성 생성 문서를 두는 예약 디렉터리입니다.
+Reserved directory for auto-generated snapshots, schema dumps, and one-off generated documents.
 
-현재는 구조만 준비해 두고, 실제 생성물은 필요할 때 추가합니다.
+The structure is set up now; actual generated artifacts will be added as needed.
