@@ -1,88 +1,88 @@
-# GenAI Studio CLI Plan
+# GenAI Studio CLI 계획서
 
-**Written**: 2026-05-12 / Opus + Codex consensus
-**Target environment**: staging (`feature/genai-studio` branch)
-**Purpose**: CLI that performs the same operations as the web UI (`http://10.0.0.10:8088`) from the terminal
-
----
-
-## 1. Goals / Non-Goals
-
-### In scope
-- Single command `genai-cli` (or `genai`) for batch creation, listing, retry, and cost aggregation
-- Non-interactive mode (CI / cron / script automation)
-- Synchronous progress wait (`--wait`) + separate `wait` command (resumable)
-- Three-tier credential resolution: environment variable / config / prompt
-- Both human-readable table and machine-readable JSON output
-- Directory batch input (`--images-from-dir`)
-
-### Out of scope
-- Visual features from the UI (thumbnail previews, toasts, etc.)
-- Business logic in the CLI itself — REST API is the single source of truth (CLI is a thin client)
-- External network exposure — the existing internal network + REST API auth trust model applies
+**작성**: 2026-05-12 / Opus + Codex 합의
+**대상 환경**: staging (`feature/genai-studio` branch)
+**목적**: 웹 UI (`http://10.0.0.10:8088`) 동일 작업을 터미널에서 수행 가능한 CLI
 
 ---
 
-## 2. Key Design Decisions (Codex Consensus)
+## 1. 목표 / 비목표
 
-| # | Area | Choice | Rationale |
-|---|------|--------|-----------|
-| 1 | Approach | **HTTP client** (call REST API via `requests`) | Reuse container's auth/quota/rate-limit. CLI stays lean. |
-| 2 | Command structure | **git-style subcommands** (`genai submit kling`, `genai batches list`) | 1:1 mapping to REST resources; easy to remember. |
-| 3 | Progress tracking | **`--wait` flag + separate `wait` command** | Human = one shot; CI = preserve batch_id for later resume. |
-| 4 | Credential storage | **env > config > prompt** three-tier priority | env = CI, config = interactive operator, prompt = first run. |
-| 5 | Output format | **TTY auto-detect + `--json`/`--table` override** | Safe for CI/scripts, human-friendly. |
-| 6 | Batch input | **`--images-from-dir <DIR>`** (alphabetical sort) | Avoids shell glob, explicit order, validatable. |
-| 7 | Library | **argparse (stdlib)** | Consistent with existing `scripts/*.py`; zero extra dependencies. |
+### 포함
+- 단일 명령 `genai-cli` (또는 `genai`) 로 batch 생성·조회·재시도·비용 집계
+- 비대화 모드 (CI / cron / 스크립트 자동화)
+- 동기적 진행 대기 (`--wait`) + 별도 `wait` 명령 (resume 가능)
+- 환경변수 / config / 프롬프트 3단 인증
+- 사람용 table + 기계용 JSON 양쪽 출력
+- 디렉토리 일괄 입력 (`--images-from-dir`)
+
+### 제외
+- UI 의 visual feature (썸네일 미리보기, 토스트 등)
+- CLI 자체의 비즈니스 로직 — REST API 가 single source of truth (CLI 는 thin client)
+- 외부망 노출 — 사내망 + REST API auth 의 신뢰모델 그대로
 
 ---
 
-## 3. Command Table (final)
+## 2. 핵심 설계 결정 (Codex 합의)
 
-| Command | Mapping | Description |
-|---------|---------|-------------|
-| `genai-cli submit <engine> --image <PATH> [...]` | `POST /genai/batches` | Submit a 1-image batch |
-| `genai-cli submit <engine> --images-from-dir <DIR> [...]` | `POST /genai/batches` | Submit N images from a directory |
-| `genai-cli batches list [--status X --engine Y --limit N]` | `GET /genai/batches` (API addition needed) | List batches |
-| `genai-cli batches show <batch_id>` | `GET /genai/batches/{id}` (API addition needed) | Batch + job details |
-| `genai-cli wait <batch_id> [--timeout SEC --interval SEC]` | `GET /genai/batches/{id}` poll | Poll until done/failed/partial |
-| `genai-cli jobs retry <job_id>` | `POST /genai/jobs/{id}/retry` | Retry a failed job |
-| `genai-cli costs [--range day|week|month]` | `GET /genai/costs` (JSON response needed) | Cost/activity aggregation |
-| `genai-cli engines` | `GET /healthz` | List available engines |
-| `genai-cli config init` | (local) | Initialize `~/.config/genai-cli/config.toml` |
+| # | 영역 | 선택 | 사유 |
+|---|------|------|------|
+| 1 | 접근 방식 | **HTTP client** (`requests` 로 REST API 호출) | 컨테이너의 auth/quota/rate-limit 재사용. CLI 가 비즈니스 로직 비대해지지 않음 |
+| 2 | 명령 구조 | **git-style 서브커맨드** (`genai submit kling`, `genai batches list`) | REST 리소스에 1:1 매핑, 명령어 기억 쉬움 |
+| 3 | 진행 추적 | **`--wait` flag + 별도 `wait` 명령** | 사람 = 한 번에, CI = batch_id 보존 후 별도 resume |
+| 4 | 인증 보관 | **env > config > prompt** 3단 우선순위 | env = CI, config = 대화형 운영자, prompt = 첫 실행 |
+| 5 | 출력 포맷 | **TTY 자동감지 + `--json`/`--table` override** | CI/스크립트 안전, 사람 친화 |
+| 6 | 일괄 입력 | **`--images-from-dir <DIR>`** (alphabetical sort) | shell glob 회피, 순서 명확, validation 가능 |
+| 7 | 라이브러리 | **argparse (stdlib)** | 기존 `scripts/*.py` 와 일관성, 의존성 0 |
 
-### Common Options
-- `--base URL` — API base (default `http://10.0.0.10:8088` or from config)
-- `--json` / `--table` — force output format
-- `-q` / `--quiet` — show errors only
-- `-v` / `--verbose` — debug logging
+---
 
-### `submit <engine>` Options (per-engine mapping)
-Common:
-- `--prompt TEXT` (required, or `--prompt-file FILE`)
-- `--image PATH` or `--images-from-dir DIR`
-- `--wait` — wait until result arrives (default: return immediately)
-- `--timeout SEC` (default 900, used with `--wait`)
-- `--interval SEC` (default 10, polling interval)
-- `--max-batch INT` (default 20, per-batch limit for directory input)
+## 3. 명령어 표 (final)
 
-Per-engine:
+| 명령 | 매핑 | 설명 |
+|------|------|------|
+| `genai-cli submit <engine> --image <PATH> [...]` | `POST /genai/batches` | 1장 이미지 batch 제출 |
+| `genai-cli submit <engine> --images-from-dir <DIR> [...]` | `POST /genai/batches` | 디렉토리 안 N장 일괄 |
+| `genai-cli batches list [--status X --engine Y --limit N]` | `GET /genai/batches` (API 추가 필요) | batch 목록 |
+| `genai-cli batches show <batch_id>` | `GET /genai/batches/{id}` (API 추가 필요) | batch + jobs 상세 |
+| `genai-cli wait <batch_id> [--timeout SEC --interval SEC]` | `GET /genai/batches/{id}` poll | done/failed/partial 까지 polling |
+| `genai-cli jobs retry <job_id>` | `POST /genai/jobs/{id}/retry` | 실패 job 재시도 |
+| `genai-cli costs [--range day|week|month]` | `GET /genai/costs` (JSON 응답 필요) | 비용/활동 집계 |
+| `genai-cli engines` | `GET /healthz` | 사용 가능 엔진 목록 |
+| `genai-cli config init` | (로컬) | `~/.config/genai-cli/config.toml` 초기화 |
+
+### 공통 옵션
+- `--base URL` — API base (default `http://10.0.0.10:8088` 또는 config)
+- `--json` / `--table` — 출력 포맷 강제
+- `-q` / `--quiet` — 에러만 표시
+- `-v` / `--verbose` — debug 로그
+
+### `submit <engine>` 옵션 (engine 별 매핑)
+공통:
+- `--prompt TEXT` (필수, 또는 `--prompt-file FILE`)
+- `--image PATH` 또는 `--images-from-dir DIR`
+- `--wait` — 결과 도착까지 대기 (default: 즉시 반환)
+- `--timeout SEC` (default 900, `--wait` 와 함께)
+- `--interval SEC` (default 10, polling 주기)
+- `--max-batch INT` (default 20, dir 입력 시 한 batch 당 한도)
+
+engine 별:
 - **kling**: `--model`, `--mode std|pro|master`, `--duration 5|10`, `--aspect-ratio 16:9|9:16|1:1`
 - **veo**: `--model`, `--aspect-ratio 16:9|9:16`, `--duration 4|6|8`
-- **higgsfield / nanobanana / gpt_image**: no additional options
+- **higgsfield / nanobanana / gpt_image**: 추가 옵션 없음
 
 ---
 
-## 4. Output Format
+## 4. 출력 포맷
 
-### TTY Auto-detect
+### TTY 자동감지
 ```python
 if sys.stdout.isatty(): fmt = "table"
 else: fmt = "json"
 ```
-`--json` / `--table` forces a specific format when specified.
+`--json` / `--table` 명시 시 강제.
 
-### Example — `genai-cli batches list`
+### 예시 — `genai-cli batches list`
 
 **table** (TTY):
 ```
@@ -99,7 +99,7 @@ caffafc4-e93    nanobanana  failed        0 / 1 / 1     2026-05-12 15:00:00
 ]
 ```
 
-### Example — `genai-cli wait`
+### 예시 — `genai-cli wait`
 
 ```
 $ genai-cli wait caffafc4-e93
@@ -113,18 +113,18 @@ batch caffafc4-e93 failed:
 exit code: 2
 ```
 
-Exit codes:
+종료 코드:
 - 0 = succeeded
-- 1 = client error (auth/input)
+- 1 = client error (인증/입력)
 - 2 = job(s) failed
 - 3 = partial success
-- 4 = timeout (limit exceeded while waiting)
+- 4 = timeout (대기 중 한도 초과)
 
 ---
 
-## 5. Authentication / Configuration
+## 5. 인증 / 설정
 
-### Priority (env > config > prompt)
+### 우선순위 (env > config > prompt)
 
 1. **env**: `GENAI_CLI_BASE`, `GENAI_CLI_USER`, `GENAI_CLI_PASS`
 2. **config**: `~/.config/genai-cli/config.toml` (`chmod 0600`)
@@ -134,39 +134,39 @@ Exit codes:
    user = "user"
    password = "..."
    ```
-3. **prompt**: if neither of the above is set, prompt via `getpass` on first run and ask whether to save to config
+3. **prompt**: 위 둘 모두 없으면 첫 실행 시 `getpass` 로 입력 받고 config 에 저장 여부 확인
 
-### Security
-- Password is **not accepted as a CLI flag** (prevents shell history exposure)
-- Config file mode 0600 enforced (warn and reject if mode is 0644)
-- Keyring integration can be disabled with `--no-keyring` (no keyring by default; simple config only)
+### 보안
+- 비밀번호는 **CLI flag 로 받지 않음** (shell history 누출 방지)
+- config 파일 mode 0600 강제 (mode 0644 면 경고 후 거부)
+- `--no-keyring` 으로 keyring 통합 비활성화 가능 (기본은 keyring 없음, 단순 config)
 
 ---
 
-## 6. Directory Input Sorting
+## 6. 디렉토리 입력 정렬
 
 ```
 genai-cli submit kling --images-from-dir ./batch/ --prompt "..."
 ```
 
-- Extension whitelist: `.png .jpg .jpeg .webp`
-- Sort: **alphabetical** (locale-independent); `seq_in_batch` maps to sorted order
-- Error if more than 20 images (or override with `--max-batch` → truncate to that limit)
-- No subdirectory recursion (current directory only)
+- 확장자 화이트리스트: `.png .jpg .jpeg .webp`
+- 정렬: **alphabetical** (locale-independent), `seq_in_batch` 가 정렬 결과 그대로 매핑
+- 20장 초과 시 에러 (또는 `--max-batch` 로 override → 그 한도 안에서 truncate)
+- subdir 미재귀 (한 디렉토리 안만)
 
 ---
 
-## 7. CI / Automation Patterns
+## 7. CI / 자동화 패턴
 
-### Single batch + wait + download result
+### 1장 batch + 대기 + 결과 다운로드
 ```bash
 batch_id=$(genai-cli submit veo --image scene.png --prompt "..." --json | jq -r .batch_id)
 genai-cli wait "$batch_id" --timeout 600
-# Branch on exit code
+# 종료 코드로 분기
 [[ $? -eq 0 ]] && echo "OK" || exit 1
 ```
 
-### N-image directory batch
+### N장 batch 디렉토리 일괄
 ```bash
 for engine in kling veo; do
   genai-cli submit "$engine" --images-from-dir ./batch_test/ \
@@ -174,7 +174,7 @@ for engine in kling veo; do
 done
 ```
 
-### Nightly cron — clean up completed batches
+### 야간 cron — 결과 batch 정리
 ```cron
 30 23 * * * /usr/local/bin/genai-cli batches list --status done --json \
             | jq -r '.[].batch_id' \
@@ -183,16 +183,16 @@ done
 
 ---
 
-## 8. Code Structure
+## 8. 코드 구조
 
 ```
 scripts/genai_cli/
   __init__.py
-  __main__.py            # python -m genai_cli entry point
-  cli.py                 # argparse router
+  __main__.py            # python -m genai_cli 진입점
+  cli.py                 # argparse 라우터
   client.py              # HTTPClient (requests + auth)
-  config.py              # env > toml > prompt priority
-  output.py              # JSON/table rendering (TTY detection)
+  config.py              # env > toml > prompt 우선순위
+  output.py              # JSON/table 렌더링 (TTY 감지)
   commands/
     __init__.py
     submit.py            # submit <engine> ...
@@ -209,90 +209,90 @@ tests/unit/genai_cli/
   test_submit.py         # mock requests
 ```
 
-Deployment:
-- Runnable as-is from `scripts/genai_cli/`: `python -m genai_cli ...`
-- Or via `scripts/genai-cli` shim (shebang + `python -m genai_cli`)
-- Registration under pyproject.toml `[project.scripts]` is a follow-up (currently stdlib only)
+배포:
+- `scripts/genai_cli/` 자체로 실행 가능: `python -m genai_cli ...`
+- 또는 `scripts/genai-cli` shim (shebang + `python -m genai_cli`)
+- pyproject.toml 의 [project.scripts] 에 등록할지는 follow-up (현재는 stdlib 만으로)
 
 ---
 
-## 9. REST API Changes Needed
+## 9. REST API 변경 필요 항목
 
-For the CLI to work, some API endpoints need to support JSON responses:
+CLI 가 동작하려면 API 측에 일부 endpoint 가 JSON 응답을 지원해야 함:
 
-| Endpoint | Current | Required |
-|----------|---------|----------|
-| `GET /healthz` | JSON ✓ | unchanged |
-| `POST /genai/batches` | HTTP 303 redirect (HTML) / JSON (Accept: json) ✓ | unchanged |
-| `GET /genai/batches` | HTML only | **add JSON response** (branch on `Accept: application/json`) |
-| `GET /genai/batches/{id}` | HTML only | **add JSON response** |
-| `GET /genai/costs` | HTML only | **add JSON response** |
-| `POST /genai/jobs/{id}/retry` | JSON ✓ | unchanged |
+| Endpoint | 현재 | 필요 |
+|----------|------|------|
+| `GET /healthz` | JSON ✓ | 그대로 |
+| `POST /genai/batches` | HTTP 303 redirect (HTML) / JSON (Accept: json) ✓ | 그대로 |
+| `GET /genai/batches` | HTML 만 | **JSON 응답 추가** (Accept: application/json 분기) |
+| `GET /genai/batches/{id}` | HTML 만 | **JSON 응답 추가** |
+| `GET /genai/costs` | HTML 만 | **JSON 응답 추가** |
+| `POST /genai/jobs/{id}/retry` | JSON ✓ | 그대로 |
 
-Add Accept header branching to each endpoint (same pattern already in use for `submit`) — small change.
-
----
-
-## 10. Risks / Mitigations (Codex Consensus)
-
-| # | Risk | Level | Mitigation |
-|---|------|-------|------------|
-| R1 | CLI behavior drifts from REST API semantics | HIGH | Keep CLI as thin client (1:1 endpoint mapping, zero local logic) |
-| R2 | Async batch_id lost → wait cannot resume | HIGH | Print batch_id as first stdout line immediately after submit (can be separated to stderr even with `--quiet`) |
-| R3 | Password exposed in shell history | MED | `--password` flag prohibited. env / config / prompt only |
-| R4 | Config file committed to git | MED | Use `~/.config/...` path, outside operator git scope |
-| R5 | TTY auto-detect wrong in some CI environments | LOW | `--json`/`--table` explicit override always available |
-| R6 | Container down during `submit` → connection error | LOW | 1-2 retries + clear error message + exit code 1 |
+각 endpoint 에 Accept 헤더 분기 추가 (이미 `submit` 에서 사용 중인 패턴) — small change.
 
 ---
 
-## 11. Phased Rollout
+## 10. 위험 / 완화 (Codex 합의)
 
-### Phase 1 — Core client + submit (1 session, ~2 hours)
-- [ ] `scripts/genai_cli/` directory + skeleton (cli.py, client.py, config.py)
-- [ ] `genai-cli submit <engine> --image <PATH> --prompt "..."` working
-- [ ] env / config / prompt authentication
-- [ ] TTY auto-detect output
-- [ ] 1 end-to-end run (nanobanana mock mode for quick validation)
+| # | 위험 | 등급 | 완화 |
+|---|------|------|------|
+| R1 | CLI 동작이 REST API semantic 와 drift | HIGH | CLI 를 thin client 로 유지 (1:1 endpoint 매핑, 로컬 로직 0) |
+| R2 | async batch_id 분실 → wait 재개 불가 | HIGH | submit 직후 stdout 첫 줄에 batch_id 출력 (`--quiet` 와도 분리 stderr 가능) |
+| R3 | 비밀번호가 shell history 에 노출 | MED | `--password` flag 금지. env / config / prompt 만 |
+| R4 | config 파일이 git 에 commit | MED | `~/.config/...` 경로 사용, 운영자 git scope 밖 |
+| R5 | TTY 자동감지가 일부 CI 환경에서 잘못 판단 | LOW | `--json`/`--table` 명시 override 항상 가능 |
+| R6 | `submit` 시점에 컨테이너 다운 → connection error | LOW | retry 1-2회 + 명확한 에러 메시지 + exit code 1 |
 
-### Phase 2 — Remaining commands + batch input (1 session)
+---
+
+## 11. 단계별 롤아웃
+
+### Phase 1 — 핵심 client + submit (1세션, ~2시간)
+- [ ] `scripts/genai_cli/` 디렉토리 + 골격 (cli.py, client.py, config.py)
+- [ ] `genai-cli submit <engine> --image <PATH> --prompt "..."` 동작
+- [ ] env / config / prompt 인증
+- [ ] TTY auto-detect 출력
+- [ ] e2e 1회 (mocking 모드 nanobanana 로 즉시 검증)
+
+### Phase 2 — 나머지 명령 + 일괄 입력 (1세션)
 - [ ] `--images-from-dir`
 - [ ] `batches list / show`, `jobs retry`, `costs`, `engines`, `wait`
-- [ ] Add JSON response branching to 4 REST API endpoints
-- [ ] Table renderer (auto width)
+- [ ] REST API 의 JSON 응답 분기 추가 (4 endpoint)
+- [ ] table renderer (자동 width)
 
-### Phase 3 — Hardening + tests (1 session)
-- [ ] `config init` interactive
-- [ ] Unit tests (client validation via requests mock)
-- [ ] Exit code cleanup (0/1/2/3/4)
-- [ ] README + operator guide
+### Phase 3 — 강화 + 테스트 (1세션)
+- [ ] `config init` 인터랙티브
+- [ ] unit tests (requests mock 으로 client 검증)
+- [ ] 종료 코드 정리 (0/1/2/3/4)
+- [ ] README + 운영 가이드
 
-### Phase 4 — Operations
-- [ ] 1 actual call per engine in staging
-- [ ] Validate cron / CI integration scenarios
-- [ ] Include in main PR merge
-
----
-
-## 12. Validation Checklist
-
-- [ ] `genai-cli submit nanobanana --image test.png --prompt "test" --wait` works (synchronous engine)
-- [ ] `genai-cli submit kling --image test.png --prompt "test"` async, batch_id printed immediately
-- [ ] `genai-cli wait <batch_id>` can be resumed in a separate call
-- [ ] `genai-cli batches list --status running --json | jq .[0]` pipe-safe
-- [ ] CI environment (no TTY) → JSON automatically
-- [ ] Warning when config file is chmod 0644
-- [ ] Clear error when `--images-from-dir` exceeds 20 images
-- [ ] Connection error + exit 1 when container is down
-- [ ] All endpoints respond to both JSON / HTML (Accept header branching)
+### Phase 4 — 운영
+- [ ] staging 에서 실제 호출 1회 (각 엔진)
+- [ ] cron / CI 통합 시나리오 검증
+- [ ] main PR 머지 시 동봉
 
 ---
 
-## 13. Next Steps
+## 12. 검증 체크리스트
 
-After user approval:
-1. **Review this plan + command structure/names**
-2. **Write Phase 1 code** — minimum working in staging (submit + auth)
-3. **Phase 2-3** in sequence
+- [ ] `genai-cli submit nanobanana --image test.png --prompt "test" --wait` 동작 (동기 엔진)
+- [ ] `genai-cli submit kling --image test.png --prompt "test"` 비동기, batch_id 즉시 출력
+- [ ] `genai-cli wait <batch_id>` 별도 호출로 resume 가능
+- [ ] `genai-cli batches list --status running --json | jq .[0]` 파이프 안전
+- [ ] CI 환경 (TTY 없음) → JSON 자동
+- [ ] config 파일 chmod 0644 시 경고
+- [ ] `--images-from-dir` 가 20장 초과 시 명확한 에러
+- [ ] 컨테이너 다운 시 connection error + exit 1
+- [ ] 모든 endpoint 가 JSON / HTML 모두 응답 (Accept 헤더 분기)
 
-Proceed to Phase 1 code writing once approval is given.
+---
+
+## 13. 다음 단계
+
+사용자 승인 후 진행:
+1. **이 계획서 확인 + 명령어 구조/이름 검토**
+2. **Phase 1 코드 작성** — staging 에서 실제 동작 가능한 minimum (submit + auth)
+3. **Phase 2-3** 순차
+
+승인 신호 주시면 Phase 1 코드 작성 시작합니다.
