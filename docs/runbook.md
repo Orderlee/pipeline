@@ -1,45 +1,45 @@
-# Operational Troubleshooting Runbook
+# 운영 트러블슈팅 런북
 
-Diagnosis and immediate action guide organized by problem type.
+문제 유형별 진단 및 즉시 조치 가이드.
 
-Current branch-based runtime baseline:
+현재 branch-based runtime 기준:
 - `main` = production
 - `dev` = test
-- Legacy `staging` references remaining in this document refer to the current **test data plane** (`/data/staging.duckdb`, `/home/user/mou/staging/...`) unless noted otherwise.
+- 이 문서에 남아 있는 과거 `staging` 표기는 특별한 언급이 없으면 현재 **test 데이터 plane** (`/data/staging.duckdb`, `/home/user/mou/staging/...`)를 뜻합니다.
 
-**Common tools:**
+**공통 도구:**
 ```bash
-# DuckDB read (lock-avoidance)
+# DuckDB 읽기 (락 회피)
 python3 scripts/query_local_duckdb.py --sql "<SQL>"
 
-# Host DB path:      ./docker/data/pipeline.duckdb
-# Container DB path: /data/pipeline.duckdb
-# Manifest path:     /nas/incoming/.manifests/pending | failed
+# 호스트 DB 경로: ./docker/data/pipeline.duckdb
+# 컨테이너 DB 경로: /data/pipeline.duckdb
+# Manifest 경로: /nas/incoming/.manifests/pending | failed
 ```
 
 ---
 
-## 1. Dagster Server / Process
+## 1. Dagster 서버/프로세스
 
-### Dagster UI Unreachable (Port Conflict, LOCATION_ERROR)
+### Dagster UI 접속 불가 (포트 충돌, LOCATION_ERROR)
 ```bash
 docker logs pipeline-dagster-1 | tail -n 100
 docker compose restart dagster
 ss -tln | grep 3030
 ```
 
-### Test Daemon Heartbeat Collision
-- **Cause:** Test shares the same Dagster runtime storage as production
-- **Permanent fix:**
-  - Test runtime uses a separate `DAGSTER_HOME`/storage from production
-  - Runtime storage is isolated outside the git working tree
-- **Verification:** No heartbeat collision logs after restart, sensor ticks cycling normally
+### test daemon heartbeat 충돌
+- **원인:** test가 production과 동일한 Dagster runtime storage 공유
+- **영구 조치:**
+  - test runtime은 production과 별도 `DAGSTER_HOME`/storage를 사용
+  - runtime storage는 git working tree 밖으로 분리
+- **확인:** 재기동 후 heartbeat 충돌 로그 없음, sensor tick 정상 순환
 
-### STARTED/CANCELING Runs Blocking for a Long Time (Backpressure Issue)
-- **Cause:** `duckdb_writer=true` (legacy dispatch) or `duckdb_raw_writer` / `duckdb_label_writer` / `duckdb_yolo_writer` slot contention. Worker process is gone but `STARTED` / `CANCELING` runs linger in the UI.
-- **Immediate action:**
+### STARTED/CANCELING run이 장시간 점유 (backpressure 문제)
+- **원인:** `duckdb_writer=true`(legacy dispatch) 또는 `duckdb_raw_writer` / `duckdb_label_writer` / `duckdb_yolo_writer` 슬롯 경쟁. worker 프로세스가 없는데 UI에 `STARTED` / `CANCELING` 잔류
+- **즉시 조치:**
   ```bash
-  # 1) Check for abnormal run statuses
+  # 1) 비정상 run 상태 확인
   docker exec pipeline-dagster-1 bash -lc "python3 - <<'PY'
   from dagster import DagsterInstance
   from dagster._core.storage.dagster_run import RunsFilter, DagsterRunStatus
@@ -53,7 +53,7 @@ ss -tln | grep 3030
       print(run.run_id, run.job_name, run.status)
   PY"
 
-  # 2) Dry-run first to check which runs would be terminated
+  # 2) 먼저 dry-run으로 terminalize 대상인지 점검
   docker exec pipeline-dagster-1 bash -lc "
     python3 /src/vlm/scripts/repair_stale_dagster_runs.py --dry-run \
       41c4fe3d-0072-4a33-9af2-4acf0055c5f6 \
@@ -61,7 +61,7 @@ ss -tln | grep 3030
       8e455842-55d5-4c4f-b90e-4200d682cf70
   "
 
-  # 3) Run actual repair
+  # 3) 실제 복구 실행
   docker exec pipeline-dagster-1 bash -lc "
     python3 /src/vlm/scripts/repair_stale_dagster_runs.py \
       41c4fe3d-0072-4a33-9af2-4acf0055c5f6 \
@@ -69,10 +69,10 @@ ss -tln | grep 3030
       8e455842-55d5-4c4f-b90e-4200d682cf70
   "
 
-  # 4) After 30–60 seconds, verify the queue relaunches
+  # 4) 30~60초 뒤 queue가 다시 launch되는지 확인
   docker exec pipeline-dagster-daemon-1 bash -lc "tail -n 200 /opt/dagster/logs/daemon.log | grep -E 'Launching run|QueuedRunCoordinator|backpressure' | tail -n 50"
   ```
-- **Permanent fix:**
+- **영구 조치:**
   ```
   STUCK_RUN_GUARD_ENABLED=true
   STUCK_RUN_GUARD_INTERVAL_SEC=120
@@ -81,7 +81,7 @@ ss -tln | grep 3030
   STUCK_RUN_GUARD_AUTO_REQUEUE_ENABLED=true
   STUCK_RUN_GUARD_TARGET_JOBS=mvp_stage_job,ingest_job,motherduck_sync_job
   ```
-- **Disk / build cache check:** If you see `database or disk is full` or `disk I/O error`, check the following before cleaning up stale runs:
+- **디스크/빌드 캐시 점검:** `database or disk is full`, `disk I/O error`가 보이면 stale run 정리 전에 아래를 같이 확인
   ```bash
   df -h /
   docker system df
@@ -89,18 +89,18 @@ ss -tln | grep 3030
   docker builder prune -f
   ```
 
-### git switch Blocked (Legacy Test Runtime File Collision)
-- **Cause:** Runtime files such as `runs.db`, `schedules.db`, `.nux/`, `.telemetry/` created inside the git working tree
-- **Permanent fix:** Keep test Dagster storage outside the git working tree. Stop the test container before switching branches.
+### git switch 차단 (legacy test runtime 파일 충돌)
+- **원인:** `runs.db`, `schedules.db`, `.nux/`, `.telemetry/` 같은 runtime 파일이 git working tree 내 생성
+- **영구 조치:** test Dagster storage를 git working tree 밖으로 유지. 브랜치 전환 전 test 컨테이너 중지
 
 ---
 
 ## 2. DuckDB
 
-### raw_files Table Does Not Exist
-- **Typical error:** `Catalog Error: Table with name raw_files does not exist`
-- **Cause:** DB file exists but tables have not been created; queried immediately
-- **Immediate recovery:**
+### raw_files 테이블 미존재
+- **대표 에러:** `Catalog Error: Table with name raw_files does not exist`
+- **원인:** DB 파일만 있고 테이블이 없는 상태에서 즉시 조회
+- **즉시 복구:**
   ```bash
   python3 - <<'PY'
   import duckdb; from pathlib import Path
@@ -108,86 +108,86 @@ ss -tln | grep 3030
   conn = duckdb.connect('/data/pipeline.duckdb'); conn.execute(ddl); conn.close()
   PY
   ```
-- **Permanent fix:** Call `db.ensure_schema()` immediately after `ingested_raw_files()` starts
+- **영구 조치:** `ingested_raw_files()` 시작 직후 `db.ensure_schema()` 호출
 
-### DuckDB Lock / Conflict
-- **Typical errors:** `Could not set lock on file`, `Conflicting lock is held`
-- **Diagnosis:**
+### DuckDB lock/conflict
+- **대표 에러:** `Could not set lock on file`, `Conflicting lock is held`
+- **확인:**
   ```bash
   lsof ./docker/data/pipeline.duckdb
   python3 scripts/query_local_duckdb.py --sql "SELECT COUNT(*) FROM raw_files;"
   ls -1 /nas/incoming/.manifests/pending/retry_*.json 2>/dev/null | tail -n 20
   ```
-- **Action:** Wait for writer run to finish → confirm transient errors are auto-captured by retry manifests → adjust backpressure values if queue is overloaded
-- **Resolution criteria:** Errors absorbed via retry manifests, no continued increase in `raw_files.failed`
+- **조치:** writer run 종료 대기 → transient 오류는 retry manifest 자동 생성 확인 → queue 과적재 시 backpressure 값 조정
+- **완료 조건:** retry manifest로 흡수, `raw_files.failed` 누적 증가 없음
 
-### WAL Problem When Replacing DuckDB File
-- **Cause:** Existing `.wal` remains after DB file replacement and stale WAL is replayed
-- **Immediate action:** Stop the application → move stale WAL to a separate path
-- **Operational rule:** Always replace DB files with the service stopped; always check whether an existing WAL is present
+### DuckDB 파일 교체 시 WAL 문제
+- **원인:** DB 파일 교체 후 기존 `.wal`이 남아 stale WAL 재적용
+- **즉시 조치:** app 중지 → stale WAL을 별도 경로로 이동
+- **운영 원칙:** DB 파일 교체는 항상 서비스 중지 상태에서, 기존 WAL 존재 여부 반드시 확인
 
-### Checksum Duplicates (Missing UNIQUE Constraint)
-- **Cause:** Tables created with `CREATE TABLE IF NOT EXISTS` before the current `UNIQUE(checksum)` constraint was introduced do not have it applied automatically
-- **Diagnosis sequence:**
-  1. Investigate `raw_key` duplicates and `checksum` duplicates separately
-  2. Check `archive_path` duplicates separately
-  3. Verify whether `UNIQUE(checksum)` actually exists in the production DB
-  4. Do not trust DB checksums blindly — re-hash from archive source files
-- **Recovery:**
+### checksum 중복 (UNIQUE 제약 누락)
+- **원인:** `CREATE TABLE IF NOT EXISTS` 방식이라 예전에 만들어진 테이블은 현재 `UNIQUE(checksum)` 제약이 자동 적용 안됨
+- **진단 순서:**
+  1. `raw_key` 중복과 `checksum` 중복 분리해서 확인
+  2. `archive_path` 중복 별도 확인
+  3. 운영 DB에 `UNIQUE(checksum)` 실제 존재 여부 확인
+  4. DB checksum 그대로 믿지 말고 archive 원본 파일 재해시
+- **복구:**
   ```bash
-  python3 scripts/recompute_archive_checksums.py  # recompute checksums from archive
-  python3 scripts/cleanup_duplicate_assets.py      # clean up duplicate groups
-  # ※ Always back up the DB before running
+  python3 scripts/recompute_archive_checksums.py  # archive 기준 checksum 재계산
+  python3 scripts/cleanup_duplicate_assets.py      # duplicate group 정리
+  # ※ 실행 전 반드시 DB 백업
   ```
 
-### image_metadata Migration Error
-- **Typical error:** `image_metadata__migrated does not exist`
-- **Cause:** Risky runtime behavior in `ensure_schema()`, schema catalog state inconsistency
-- **Action:**
+### image_metadata 마이그레이션 오류
+- **대표 에러:** `image_metadata__migrated does not exist`
+- **원인:** `ensure_schema()` 런타임 위험 동작, 스키마 카탈로그 상태 불일치
+- **조치:**
   ```bash
   python3 scripts/repair_image_metadata_schema.py
-  # Then restart the production Dagster, clean up stale runs, and re-run
+  # 이후 운영 Dagster 재기동, stale run 정리, 재실행
   ```
 
-### Test DuckDB Not Found
-- **Typical error:** `DuckDB not found: /data/staging.duckdb`
-- **Recovery options:**
-  - Reproduce production state: copy `pipeline.duckdb` → `staging.duckdb`
-  - Fresh test re-run: delete `staging.duckdb` and create a new DB with only the schema applied
+### test DuckDB not found
+- **대표 에러:** `DuckDB not found: /data/staging.duckdb`
+- **복구 방법:**
+  - 운영 상태 재현: `pipeline.duckdb -> staging.duckdb` 복제
+  - 빈 test 재테스트: `staging.duckdb` 삭제 후 스키마만 적용한 새 DB 생성
 
 ---
 
-## 3. Sensor / auto_bootstrap
+## 3. 센서 / auto_bootstrap
 
-### auto_bootstrap 180-Second gRPC Timeout
-- **Typical errors:** `DagsterUserCodeUnreachableError`, `Deadline Exceeded`
-- **Cause:** NAS/NFS latency causes discovery/scan I/O to exceed the limit, including hidden entries
-- **Recommended settings for NAS latency:**
+### auto_bootstrap 180초 gRPC timeout
+- **대표 에러:** `DagsterUserCodeUnreachableError`, `Deadline Exceeded`
+- **원인:** NAS/NFS 지연으로 discovery·스캔 I/O 초과, hidden entry 포함
+- **NAS 지연 시 권장 설정:**
   ```
   AUTO_BOOTSTRAP_DISCOVERY_MAX_TOP_ENTRIES=20
   AUTO_BOOTSTRAP_MAX_UNITS_PER_TICK=3
   DAGSTER_SENSOR_GRPC_TIMEOUT_SECONDS=300
   ```
-- **On recurrence, check:**
-  1. Whether hidden entry discovery is included (`.Trash-1000`, `.DS_Store`, etc.)
-  2. Values of `max_units_per_tick` and `discovery_max_top_entries`
-  3. `processed_units/budget/discovery_elapsed/scan_elapsed` in recent tick logs
+- **재발 시 확인:**
+  1. hidden entry discovery 포함 여부 (`.Trash-1000`, `.DS_Store` 등)
+  2. `max_units_per_tick`, `discovery_max_top_entries` 값
+  3. 최근 tick 로그에서 `processed_units/budget/discovery_elapsed/scan_elapsed`
 
-### Sensor Scan Delay (Folder Growth)
-- **Cause:** Insufficient scan budget, missing `_DONE` marker check
-- **Action:**
+### 센서 스캔 지연 (폴더 증가)
+- **원인:** 스캔 한도 부족, `_DONE` 마커 확인 미비
+- **조치:**
   ```
-  AUTO_BOOTSTRAP_MAX_UNITS_PER_TICK=100  # (increase from default if needed)
+  AUTO_BOOTSTRAP_MAX_UNITS_PER_TICK=100  # (기본값에서 상향 필요 시)
   ```
-- **Check:** `AUTO_BOOTSTRAP_MAX_UNITS_PER_TICK` value in `.env`, presence of `_DONE` files inside date folders
+- **확인:** `.env`의 `AUTO_BOOTSTRAP_MAX_UNITS_PER_TICK` 값, 날짜 폴더 내 `_DONE` 파일 존재 여부
 
-### Pending Queue Overload
-- **Diagnosis:**
+### pending queue 과적재
+- **확인:**
   ```bash
   find /nas/incoming/.manifests/pending -maxdepth 1 -name '*.json' | wc -l
   ls -lt /nas/incoming/.manifests/pending/*.json 2>/dev/null | head -n 20
   ```
-- **Recommended defaults:**
+- **권장 기본값:**
   ```
   INCOMING_SENSOR_INTERVAL_SEC=180
   AUTO_BOOTSTRAP_SENSOR_INTERVAL_SEC=180
@@ -195,54 +195,54 @@ ss -tln | grep 3030
   AUTO_BOOTSTRAP_MAX_NEW_MANIFESTS_PER_TICK=20
   INCOMING_SENSOR_MAX_IN_FLIGHT_RUNS=2
   ```
-- **Resolution criteria:** Pending backlog stabilizes, lock/conflict recurrence frequency decreases
+- **완료 조건:** pending backlog 안정 구간 회복, lock/conflict 재발 빈도 감소
 
 ---
 
 ## 4. MinIO
 
-### Endpoint Mix-up (Production 9000/9001, Test 9002/9003)
-- **Cause:** Confusion between Console port and S3 API port
-- **Action:** Keep production at `MINIO_ENDPOINT=http://10.0.0.51:9000` and test at `MINIO_ENDPOINT=http://10.0.0.51:9002`
+### endpoint 혼재 (production 9000/9001, test 9002/9003)
+- **원인:** Console 포트와 S3 API 포트 혼동
+- **조치:** production은 `MINIO_ENDPOINT=http://10.0.0.51:9000`, test는 `MINIO_ENDPOINT=http://10.0.0.51:9002`로 유지
 - `9001 = production Console`, `9003 = test Console`
 
-### Console Download Failure (Test)
-- **Cause:** Not object corruption. Issue with `Console(9003) -> API(9002)` routing or browser session.
-- **Diagnosis sequence:**
-  1. Confirm the object exists at the test endpoint (`9002`)
-  2. Verify directly with `boto3.head_object()` / `get_object()`
-  3. Confirm actual download via presigned URL or `download_file()`
-- **Operational rule:** Do not recreate or delete objects based solely on a Console download failure
+### Console 다운로드 실패 (test)
+- **원인:** 객체 손상 아님. `Console(9003) -> API(9002)` 경로 또는 브라우저 세션 문제
+- **진단 순서:**
+  1. test endpoint(`9002`)에 있는지 확인
+  2. `boto3.head_object()` / `get_object()`로 직접 확인
+  3. presigned URL 또는 `download_file()`로 실제 다운로드 확인
+- **운영 기준:** Console 다운로드 실패만으로 객체 재생성/삭제 금지
 
-### Bucket Not Auto-Created
-- **Cause:** MinIO does not auto-create buckets on write. `ensure_bucket()` helper is not called in the upload/copy path.
-- **Permanent fix:** Call `_ensure_bucket_once()` before every `upload()`, `upload_fileobj()`, and `copy()`
+### 버킷 자동 생성 안됨
+- **원인:** MinIO는 write 시 bucket auto-create 안함. `ensure_bucket()` helper가 upload/copy 경로에서 미호출
+- **영구 조치:** `upload()`, `upload_fileobj()`, `copy()` 전에 `_ensure_bucket_once()` 호출
 
-### `YYYY/MM` Prefix Mixed into raw_key
-- **Cause:** Legacy ingest logic prepended a `datetime.now().strftime("%Y/%m")` prefix
-- **Current correct rule:** `raw_key = <source_unit_name>/<rel_path>` (e.g. `source-b-event-bucket/20260204/fire_1_131000.mp4`)
-- **Recovery:**
+### raw_key에 `YYYY/MM` prefix 혼재
+- **원인:** 과거 ingest 로직이 `datetime.now().strftime("%Y/%m")` prefix를 붙임
+- **현재 정상 규칙:** `raw_key = <source_unit_name>/<rel_path>` (예: `source-b-event-bucket/20260204/fire_1_131000.mp4`)
+- **복구 절차:**
   ```bash
-  python3 scripts/reupload_minio_from_archive.py  # re-upload aligned to archive baseline
-  # Also update DuckDB raw_files.raw_key to the same convention
+  python3 scripts/reupload_minio_from_archive.py  # archive 기준 재정렬 업로드
+  # DuckDB raw_files.raw_key도 동일 기준으로 갱신
   ```
 
-### Frame Path Rules
-- **Correct path:** `vlm-processed/<raw-prefix>/<video-stem>/<video-stem>_00000001.jpg`
-- **Forbidden:** `_tmp/...` prefix, `/frames/` subdirectory, filenames without the original stem
-- **Cleanup required after path change:**
-  1. Cancel in-progress extraction runs
-  2. Clean up the `vlm-processed` bucket
-  3. Delete `video_frame` rows from `image_metadata`
-  4. Reset `video_metadata.frame_extract_*`
-  5. Re-run extraction
+### frame 경로 규칙
+- **정상 경로:** `vlm-processed/<raw-prefix>/<video-stem>/<video-stem>_00000001.jpg`
+- **금지:** `_tmp/...` prefix, `/frames/` 하위 폴더, 원본 stem 없는 파일명
+- **경로 변경 후 필요한 정리:**
+  1. 진행 중 extraction run cancel
+  2. `vlm-processed` 버킷 정리
+  3. `image_metadata`의 `video_frame` row 삭제
+  4. `video_metadata.frame_extract_*` 초기화
+  5. extraction 재실행
 
 ---
 
 ## 5. Ingest
 
-### raw_files vs video_metadata Count Mismatch
-- **Diagnosis:**
+### raw_files vs video_metadata 개수 불일치
+- **확인:**
   ```bash
   python3 scripts/query_local_duckdb.py --sql "SELECT COUNT(*) FROM raw_files;"
   python3 scripts/query_local_duckdb.py --sql "SELECT COUNT(*) FROM video_metadata;"
@@ -251,17 +251,17 @@ ss -tln | grep 3030
     LEFT JOIN video_metadata vm ON rf.asset_id = vm.asset_id
     WHERE rf.media_type='video' AND vm.asset_id IS NULL;"
   ```
-- **Action:**
+- **조치:**
   ```bash
-  # Host
+  # 호스트
   python3 scripts/backfill_video_metadata.py --db ./docker/data/pipeline.duckdb --statuses completed --log-every 20
-  # Container
+  # 컨테이너
   python3 /src/vlm/scripts/backfill_video_metadata.py --db /data/pipeline.duckdb --statuses completed --log-every 20
   ```
-- **Resolution criteria:** `missing_video_meta=0`
+- **완료 조건:** `missing_video_meta=0`
 
-### Spike in Failed Records
-- **Diagnosis:**
+### failed 급증
+- **확인:**
   ```bash
   python3 scripts/query_local_duckdb.py --sql "
     SELECT ingest_status, COUNT(*) FROM raw_files GROUP BY 1 ORDER BY 1;"
@@ -270,33 +270,33 @@ ss -tln | grep 3030
     FROM raw_files WHERE ingest_status='failed' GROUP BY 1 ORDER BY cnt DESC LIMIT 30;"
   ls -lt /nas/incoming/.manifests/failed/*.jsonl 2>/dev/null | head
   ```
-- **Action:** File errors (`file_missing`, `empty_file`, `ffprobe_failed`) are excluded from DB insertion — recover the source file and re-ingest
-- **Resolution criteria:** Same error does not recur, only failure logs remain with no DB corruption
+- **조치:** 파일 오류(`file_missing`, `empty_file`, `ffprobe_failed`)는 DB 미삽입 대상이므로 원본 파일 복구 후 재수집
+- **완료 조건:** 동일 오류 재발 없음, 실패 로그만 남고 DB 오염 없음
 
-### Archive Move Failure
-- **Diagnosis:**
+### archive 이동 실패
+- **확인:**
   ```bash
   python3 scripts/query_local_duckdb.py --sql "
     SELECT asset_id, source_path, archive_path, error_message
     FROM raw_files WHERE ingest_status='failed' AND error_message LIKE 'archive_move_failed%'
     ORDER BY updated_at DESC LIMIT 30;"
-  find /nas/archive -type f -name '<filename>' | head
+  find /nas/archive -type f -name '<파일명>' | head
   ```
-- **Action:**
-  - Archive exists → recover as `completed + archive_path`
-  - Archive does not exist → re-issue manifest for reprocessing
-- **Resolution criteria:** Files confirmed in archive have status `completed`, no orphan rows
+- **조치:**
+  - archive 실존 시 → `completed + archive_path`로 복구
+  - archive 미존재 시 → manifest 재발행으로 재처리
+- **완료 조건:** archive 존재 건의 상태가 `completed`, orphan row 없음
 
 ---
 
-## 6. GCS Download
+## 6. GCS 다운로드
 
-### Zero-Byte Files
-- **Diagnosis:**
+### 0바이트 파일
+- **확인:**
   ```bash
   find /nas/incoming/gcp -type f \( -iname '*.mp4' -o -iname '*.mov' -o -iname '*.jpg' \) -size 0 | head -n 30
   ```
-- **Action:**
+- **조치:**
   ```bash
   python3 gcp/download_from_gcs_rclone.py \
     --download --mode date-folders \
@@ -304,104 +304,104 @@ ss -tln | grep 3030
     --buckets source-a-rtsp-bucket \
     --zero-byte-retries 4
   ```
-- **Resolution criteria:** Zero zero-byte media files, target folder has a valid `_DONE` marker
+- **완료 조건:** 0바이트 미디어 파일 0건, 대상 폴더 정상 `_DONE` 생성
 
-### Auth / Permission Check
+### 인증/권한 확인
 ```bash
 gcloud auth list
 gsutil ls gs://source-a-rtsp-bucket/
-# Required permissions: storage.objects.list, storage.objects.get
+# 필요 권한: storage.objects.list, storage.objects.get
 ```
 
 ---
 
 ## 7. Gemini / VertexAI
 
-### vertexai Import Failure
-- **Typical error:** `ModuleNotFoundError: No module named 'vertexai'`
-- **Cause:** `google-cloud-aiplatform` not installed or missing from Docker dependency
-- **Permanent fix:**
-  - Add `google-cloud-aiplatform` to `docker/app/requirements.txt` and `pyproject.toml`
-  - Rebuild Docker image, then restart `app` and `dagster`
-- **Verification:**
+### vertexai import 실패
+- **대표 에러:** `ModuleNotFoundError: No module named 'vertexai'`
+- **원인:** `google-cloud-aiplatform` 미설치 또는 Docker dependency 누락
+- **영구 조치:**
+  - `docker/app/requirements.txt`, `pyproject.toml`에 `google-cloud-aiplatform` 추가
+  - Docker 이미지 재빌드 후 `app`, `dagster` 재기동
+- **검증:**
   ```bash
   docker exec pipeline-app-1 python3 -c "import vertexai"
   docker exec pipeline-dagster-1 python3 -c "from gemini.assets.config import VIDEO_PROMPT"
   ```
 
-### Gemini Credentials Not Found (Test)
-- **Typical error:** `FileNotFoundError: Gemini credentials not found`
-- **Cause:** Credential path missing from `docker/.env.test`
-- **Permanent fix:** Keep at least the following in `docker/.env.test`:
+### Gemini credentials not found (test)
+- **대표 에러:** `FileNotFoundError: Gemini credentials not found`
+- **원인:** `docker/.env.test`에 credential 경로 누락
+- **영구 조치:** `docker/.env.test`에 최소 아래 값 유지:
   ```
   GEMINI_PROJECT=<project>
   GEMINI_LOCATION=<location>
   GEMINI_GOOGLE_APPLICATION_CREDENTIALS=/app/credentials/<service-account>.json
   ```
 
-### Large File Payload Exceeded
-- **Typical error:** `400 Request payload size exceeds the limit: 524288000 bytes`
-- **Cause:** Source video (>500 MB) included directly in the request payload
-- **Permanent fix:** For videos >450 MB, generate a preview mp4 before calling Gemini (audio removed, reduced resolution/fps/bitrate)
-- **When estimating cost:** Separate the raw-source scenario from the current-pipeline-preview scenario
+### 대용량 파일 payload 초과
+- **대표 에러:** `400 Request payload size exceeds the limit: 524288000 bytes`
+- **원인:** 원본 영상(>500MB)을 직접 request payload에 포함
+- **영구 조치:** `>450MB` 영상은 Gemini 호출 전 preview mp4 먼저 생성 (오디오 제거, 해상도/fps/bitrate 축소)
+- **비용 산정 시:** raw source 기준 vs current pipeline preview 기준 두 시나리오 분리
 
-### ffmpeg Temp File Overwrite Error
-- **Typical error:** `ffmpeg_clip_extract_failed: File '/tmp/tmp....mp4' already exists. Overwrite? [y/N]`
-- **Cause:** Clip output temp path pre-created with `NamedTemporaryFile(delete=False)` → ffmpeg prompts for overwrite, gets non-interactive `N`
-- **Permanent fix:** Pass only a temp path string that does not yet exist to ffmpeg output. Clean up partial temp files on failure.
+### ffmpeg temp 파일 overwrite 오류
+- **대표 에러:** `ffmpeg_clip_extract_failed: File '/tmp/tmp....mp4' already exists. Overwrite? [y/N]`
+- **원인:** clip 출력 temp 경로를 `NamedTemporaryFile(delete=False)`로 선생성 → ffmpeg가 overwrite 여부 묻고 비대화식 `N` 처리
+- **영구 조치:** ffmpeg 출력에 "아직 존재하지 않는 temp 경로 문자열"만 전달. partial temp file 실패 시 cleanup
 
 ---
 
 ## 8. YOLO
 
-### Model / Dependency Issues
-- **Model in use:** `yolov8l-worldv2.pt` (`docker/data/models/yolo/yolov8l-worldv2.pt`)
-- **Required env vars:**
+### 모델/dependency 문제
+- **사용 모델:** `yolov8l-worldv2.pt` (`docker/data/models/yolo/yolov8l-worldv2.pt`)
+- **필수 env:**
   ```
   YOLO_MODEL_PATH=/data/models/yolo/yolov8l-worldv2.pt
   YOLO_DEFAULT_CLASSES=...
   ```
-- **Missing CLIP dependency:** YOLO-World image requires `git+https://github.com/ultralytics/CLIP.git`
-- **Verification:**
+- **CLIP dependency 누락:** YOLO-World 이미지에 `git+https://github.com/ultralytics/CLIP.git` 필요
+- **확인:**
   ```bash
-  # pipeline-yolo-1 is healthy
-  # /health returns model_loaded=true
-  # /info model path matches expected value
+  # pipeline-yolo-1이 healthy
+  # /health에서 model_loaded=true
+  # /info에서 모델 경로 기대값 일치
   ```
 
-### YOLO Execution Order Problem
-- **Cause:** YOLO asset fires before frame generation completes
-- **Permanent fix:** Isolate legacy test-only YOLO asset to guarantee order `raw_ingest -> clip/frame generation -> yolo_image_detection`
+### YOLO 실행 순서 문제
+- **원인:** frame 생성 전 YOLO asset이 먼저 뜸
+- **영구 조치:** legacy test 전용 YOLO asset을 분리해 `raw_ingest -> clip/frame 생성 -> yolo_image_detection` 순서 보장
 
 ---
 
-## 9. Data Consistency
+## 9. 데이터 정합성
 
-### Local vs MotherDuck Mismatch
-- **Diagnosis:**
+### Local vs MotherDuck 불일치
+- **확인:**
   ```bash
-  # Local
+  # 로컬
   python3 scripts/query_local_duckdb.py --sql "SELECT COUNT(*) FROM raw_files;"
   python3 scripts/query_local_duckdb.py --sql "SELECT COUNT(*) FROM video_metadata;"
   python3 scripts/query_local_duckdb.py --sql "SELECT COUNT(*) FROM raw_files WHERE ingest_status='failed';"
-  # MotherDuck: re-run the same queries after running motherduck_sync_job
+  # MotherDuck: motherduck_sync_job 실행 후 동일 쿼리 재확인
   ```
-- **Action:** Clean up local anomalies first → run sync → verify simultaneously in local/cloud with the same queries
-- **Manual MotherDuck sync:**
+- **조치:** sync 전에 로컬 이상치 먼저 정리 → sync 실행 → 동일 쿼리로 local/cloud 동시 검증
+- **MotherDuck 수동 동기화:**
   ```bash
   python3 /src/python/local_duckdb_to_motherduck_sync.py \
     --db pipeline_db --local-db-path /data/pipeline.duckdb \
     --share-update MANUAL --tables raw_files video_metadata
   ```
 
-### Archive / MinIO / DuckDB / MotherDuck Count Mismatch
-- **Reconciliation approach:**
-  1. Full audit of files in archive that are not in the DB
-  2. Classify excess files into three categories: operational markers (`_DONE`) / junk files (`.DS_Store`) / actual data
-  3. Rules: `_DONE` → keep, `.DS_Store` → delete, actual data → determine duplicates by checksum
-- **Operational standard:** "Consistent" means the **archive data file count** matches, not the total physical file count in archive
+### archive / MinIO / DuckDB / MotherDuck 개수 불일치
+- **정렬 방법:**
+  1. archive에서 DB에 없는 파일 전수 확인
+  2. 초과 파일을 세 종류로 분리: 운영 marker(`_DONE`) / 잡파일(`.DS_Store`) / 실제 데이터
+  3. 규칙: `_DONE`→유지, `.DS_Store`→삭제, 실제 데이터→checksum으로 duplicate 판단
+- **운영 기준:** "정합"은 archive 전체 물리 파일 수가 아니라 **archive 데이터 파일 수** 기준
 
-### Manual MotherDuck Sync
+### MotherDuck 수동 동기화
 ```bash
 python3 /src/python/local_duckdb_to_motherduck_sync.py \
   --db pipeline_db --local-db-path /data/pipeline.duckdb \
@@ -410,25 +410,25 @@ python3 /src/python/local_duckdb_to_motherduck_sync.py \
 
 ---
 
-## 10. Test Reset
+## 10. Test 초기화
 
-Full reset sequence for a clean test re-run:
+test 재테스트를 위한 완전 초기화 순서:
 ```bash
-# 1. Stop test runtime
-# 2. Delete all test MinIO objects (endpoint: 10.0.0.51:9002)
+# 1. test runtime 중지
+# 2. test MinIO 객체 전부 삭제 (endpoint: 10.0.0.51:9002)
 #    - vlm-raw, vlm-labels, vlm-processed, vlm-dataset
-# 3. Delete test DuckDB
+# 3. test DuckDB 삭제
 rm docker/data/staging.duckdb
-# 4. Delete test Dagster runtime DB
+# 4. test Dagster runtime DB 삭제
 rm -rf docker/data/dagster_home_staging/storage
-# 5. Restart
+# 5. 재기동
 ```
 
-**Never delete:**
+**절대 지우면 안 되는 것:**
 - `/home/user/mou/staging/incoming`
 - `/home/user/mou/staging/archive`
 
-**Required test data plane volume mounts:**
+**test 데이터 plane 볼륨 마운트 필수:**
 ```yaml
 - /home/user/mou/staging/incoming:/nas/staging/incoming
 - /home/user/mou/staging/archive:/nas/staging/archive
@@ -438,100 +438,100 @@ rm -rf docker/data/dagster_home_staging/storage
 
 ## 11. Label Studio
 
-### Initial Startup Sequence
+### 최초 기동 순서
 ```bash
 docker compose -f docker-compose.yaml -f docker-compose.labelstudio.yaml up -d
-# Access LS → create admin account → issue API key from Account Settings
-# Set LS_API_KEY and WEBHOOK_HOST in .env, then restart ls-webhook
+# LS 접속 후 admin 계정 생성 → Account Settings에서 API key 발급
+# .env에 LS_API_KEY, WEBHOOK_HOST 설정 후 ls-webhook 재기동
 ```
 
-### Webhook Registration (Once per Project After Creation)
+### webhook 등록 (프로젝트 생성 후 1회)
 ```bash
 python src/gemini/ls_webhook.py register --project <project_id>
-python src/gemini/ls_webhook.py list  # confirm registration
+python src/gemini/ls_webhook.py list  # 등록 확인
 ```
 
-### Presigned URL Expiry (Default 7 Days)
+### presigned URL 만료 (기본 7일)
 ```bash
 python src/gemini/ls_tasks.py renew --project-name <project_name>
 ```
 
-### ls_task_create_sensor Not Running
-- Dagster UI → Sensors → manually turn ON `ls_task_create_sensor` (default=STOPPED)
-- Job fails if `LS_API_KEY` is not set → check `.env`
+### ls_task_create_sensor 미동작
+- Dagster UI → Sensors → `ls_task_create_sensor` 수동 ON (default=STOPPED)
+- `LS_API_KEY` 미설정 시 job 실패 → `.env` 확인
 
-### LS → MinIO Access Failure (Presigned URL Error)
-- Presigned URLs are generated based on `MINIO_ENDPOINT` → verify the LS container can reach that address
+### LS → MinIO 접근 불가 (presigned URL 오류)
+- presigned URL은 `MINIO_ENDPOINT` 기준 생성 → LS 컨테이너에서 해당 주소 도달 가능한지 확인
 - `docker exec pipeline-labelstudio-1 curl -I <presigned_url>`
 
 ---
 
-## 11. NAS (CIFS) Failure Response
+## 11. NAS (CIFS) 장애 대응
 
-### Symptom: Pipeline Hang (archive_finalize Stalls, File Access Timeout)
+### 증상: 파이프라인 hang (archive_finalize 멈춤, 파일 접근 타임아웃)
 
-**Diagnosis:**
+**진단:**
 ```bash
-# Check NAS network connectivity
+# NAS 네트워크 연결 확인
 timeout 3 ping -c 3 10.0.0.51
 
-# Test NAS file access (5-second timeout)
+# NAS 파일 접근 테스트 (5초 타임아웃)
 timeout 5 stat /home/user/mou/incoming/
 timeout 5 ls /home/user/mou/archive/
 
-# CIFS connection statistics (reconnect count, open files, errors)
+# CIFS 연결 통계 (reconnect 횟수, open files, 에러 확인)
 cat /proc/fs/cifs/Stats
 
-# Kernel CIFS error logs
+# 커널 CIFS 에러 로그
 sudo dmesg | grep -i cifs | tail -20
 ```
 
-**Warning signs:**
-- `open on server` value is negative → CIFS session state corruption
-- Reconnect count increasing rapidly → SMB service instability
-- `stat`/`ls` commands time out → NAS I/O hang
+**주요 이상 징후:**
+- `open on server` 값이 음수 → CIFS 세션 상태 corruption
+- reconnect 횟수가 빠르게 증가 → SMB 서비스 불안정
+- `stat`/`ls` 명령이 타임아웃 → NAS I/O hang
 
-**Immediate action: CIFS remount**
+**즉시 조치: CIFS 재마운트**
 ```bash
 sudo umount -l /home/user/mou/incoming
 sudo umount -l /home/user/mou/archive
 sudo umount -l /home/user/mou/staging
 sudo mount -a
-# Verify
+# 검증
 timeout 5 ls /home/user/mou/incoming/
 ```
 
-**Pipeline protection mechanisms:**
-- `raw_ingest` runs a NAS health check at startup (5-second timeout, skip on failure)
-- `archive_finalize` applies a timeout to `shutil.move` (`ARCHIVE_MOVE_TIMEOUT_SEC`, default 300 seconds)
-- On timeout, skip the archive move and keep uploads already completed as `completed` → continue to subsequent steps
+**파이프라인 보호 메커니즘:**
+- `raw_ingest` 시작 시 NAS 헬스체크 (5초 타임아웃, 실패 시 skip)
+- `archive_finalize`의 `shutil.move`에 타임아웃 적용 (`ARCHIVE_MOVE_TIMEOUT_SEC`, 기본 300초)
+- 타임아웃 시 archive 건너뛰고 업로드 완료분은 `completed` 처리 → 후속 스텝 진행
 
-### Recommended CIFS Mount Options
+### CIFS 마운트 옵션 권장 설정
 
-Adding the following to the current `/etc/fstab` base options speeds up NAS failure detection and recovery:
+현재 `/etc/fstab` 기본 옵션에 아래를 추가하면 NAS 장애 감지와 복원이 빨라진다:
 
 ```
-# Recommended additional options
+# 추가 권장 옵션
 soft,echo_interval=30,actimeo=1,closetimeo=1
 ```
 
-| Option | Current | Recommended | Effect |
+| 옵션 | 현재 | 권장 | 효과 |
 |------|------|------|------|
-| `soft` | Not set | Add | Returns an error when unresponsive (hard mount waits indefinitely) |
-| `echo_interval` | 60 | 30 | Halves the connection loss detection interval |
-| `actimeo` | Not set | 1 | 1-second file attribute cache (already applied) |
+| `soft` | 미설정 | 추가 | 응답 없을 때 에러 반환 (hard mount는 무한 대기) |
+| `echo_interval` | 60 | 30 | 연결 끊김 감지 주기 절반으로 단축 |
+| `actimeo` | 미설정 | 1 | 파일 속성 캐시 1초 (이미 적용 중) |
 
-**How to apply (requires sudo):**
+**변경 방법 (sudo 필요):**
 ```bash
-# After editing /etc/fstab
+# /etc/fstab 편집 후
 sudo mount -o remount /home/user/mou/incoming
 sudo mount -o remount /home/user/mou/archive
 ```
 
-### Related Environment Variables
+### 관련 환경변수
 
-| Variable | Default | Purpose |
+| 변수 | 기본값 | 용도 |
 |------|--------|------|
-| `ARCHIVE_MOVE_TIMEOUT_SEC` | 300 | archive shutil.move timeout (seconds) |
-| `INGEST_META_WORKERS` | 4 | Parallel workers for checksum/ffprobe (max 8) |
-| `INGEST_UPLOAD_WORKERS` | 4 | Parallel workers for MinIO uploads (max 16) |
+| `ARCHIVE_MOVE_TIMEOUT_SEC` | 300 | archive shutil.move 타임아웃 (초) |
+| `INGEST_META_WORKERS` | 4 | 체크섬/ffprobe 병렬 워커 수 (최대 8) |
+| `INGEST_UPLOAD_WORKERS` | 4 | MinIO 업로드 병렬 워커 수 (최대 16) |

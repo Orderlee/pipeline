@@ -1,30 +1,30 @@
 # Exec Plans Index
 
-Entry point for execution plans, work plans, and phase-progress documents.
+실행 계획, 작업 계획, 단계별 진행 문서의 진입점입니다.
 
-## Active Plans
+## 활성 계획
 
-- [Production PostgreSQL Transition Rollout Plan](active/production-pg-rollout-plan.md) — 7-phase, dual_pg_primary → postgres phased transition + rollback (2026-05-07)
-- [Production-Test Environment Separation and Automatic Deployment Plan](운영_테스트_환경_분리_자동배포_계획.md) — GitHub Actions + self-hosted runner automatic deployment (2026-04-10)
-- [MLOps Enhancement Roadmap & 3-Person Team R&R](mlops-roadmap-and-rr.md) — 12 enhancement items, dependencies, 6-month timeline, R&R (2026-04-08)
-- [DuckDB Lock Contention Fix — Execution Plan](duckdb-lock-fix-plan.md) — switch sensor ensure_runtime_schema to single initialization (2026-04-03)
+- [Production PostgreSQL 전환 롤아웃 계획](active/production-pg-rollout-plan.md) — 7-phase, dual_pg_primary → postgres 단계적 전환 + 롤백 (2026-05-07)
+- [운영-테스트 환경 분리 및 자동 배포 계획](운영_테스트_환경_분리_자동배포_계획.md) — GitHub Actions + self-hosted runner 자동 배포 (2026-04-10)
+- [MLOps 고도화 로드맵 & 3인 팀 R&R](mlops-roadmap-and-rr.md) — 12가지 고도화 항목, 의존성, 6개월 타임라인, R&R (2026-04-08)
+- [DuckDB Lock Contention 수정 실행 계획](duckdb-lock-fix-plan.md) — 센서 ensure_runtime_schema 1회 초기화로 전환 (2026-04-03)
 
-## Current Plan Documents
+## 현재 계획 문서
 
-- [Production-Test Environment Separation and Automatic Deployment Plan](운영_테스트_환경_분리_자동배포_계획.md)
+- [운영-테스트 환경 분리 및 자동 배포 계획](운영_테스트_환경_분리_자동배포_계획.md)
 - [PLAN](../PLAN.md)
 - [CODEX_STAGING_AUTO_LABELING_UNIFIED_SPEC_TASK](../CODEX_STAGING_AUTO_LABELING_UNIFIED_SPEC_TASK.md)
 - [CODEX_STAGING_UNIFIED_SPEC_REVIEW](../CODEX_STAGING_UNIFIED_SPEC_REVIEW.md)
 - [CODEX_SUBAGENT_VIDEO_EXTRACT_YOLO_TEST](../CODEX_SUBAGENT_VIDEO_EXTRACT_YOLO_TEST.md)
 
-## Historical Plan Documents
+## 역사 계획 문서
 
 - [staging_agent_api_dispatch_plan](../staging_agent_api_dispatch_plan.md)
 - [staging_agent_waiting_dispatch_plan](../staging_agent_waiting_dispatch_plan.md)
 
-## Going Forward
+## 앞으로의 위치
 
-- Plans in progress: `active/`
-- Completed plans: `completed/`
+- 진행 중 계획: `active/`
+- 완료된 계획: `completed/`
 
-Existing documents will not be moved immediately; the structure above will be applied to new plans first.
+기존 문서는 당장 이동하지 않고, 새 계획부터 위 구조를 우선 사용합니다.

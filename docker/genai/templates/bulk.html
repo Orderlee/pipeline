@@ -1,0 +1,544 @@
+{% extends "base.html" %}
+{% set page = "bulk" %}
+{% from "_icons.html" import icon %}
+
+{% block body %}
+<div class="gs-body">
+  <!-- LEFT — form panel (mirror of submit page layout) -->
+  <form action="/genai/bulk-batches" method="post" enctype="multipart/form-data" id="gs-bulk-form"
+        class="gs-panel">
+
+    <div class="gs-panel__tabs">
+      <button type="button" class="gs-panel__tab is-active" id="gs-bulk-tab-images">
+        {{ icon('image', size=13) }} Images × Prompts
+      </button>
+      <button type="button" class="gs-panel__tab" id="gs-bulk-tab-textonly">
+        {{ icon('sparkles', size=13) }} Text → Video (veo)
+      </button>
+    </div>
+    <input type="hidden" name="idempotency_token" id="gs-idem-token" value="">
+    <input type="hidden" name="text_only" id="gs-bulk-text-only" value="false">
+
+    <div class="gs-panel__body">
+      <!-- Engine -->
+      <section class="gs-section">
+        <div class="gs-section__head">
+          <span class="gs-section__title">Engine</span>
+          <span class="gs-section__hint gs-mono">모델군</span>
+        </div>
+        <div class="gs-engine-grid">
+          {% for e in engines %}
+            {% set sub = (
+              'kling · video' if e == 'kling'
+              else 'fal · motion' if e == 'higgsfield'
+              else 'google · veo' if e == 'veo'
+              else 'gemini · image' if e == 'nanobanana'
+              else 'openai · image' if e == 'gpt_image'
+              else '—'
+            ) %}
+            <div class="gs-engine-item" data-engine-wrap="{{ e }}">
+              <input type="radio" name="engine" id="bulk-eng-{{ e }}" value="{{ e }}"
+                     class="gs-engine-radio" {% if loop.first %}checked{% endif %}>
+              <label class="gs-engine-card" for="bulk-eng-{{ e }}" data-engine="{{ e }}">
+                <div class="gs-engine-card__top">
+                  <span style="text-transform:capitalize">{{ e }}</span>
+                </div>
+                <div class="gs-engine-card__sub gs-mono">{{ sub }}</div>
+              </label>
+            </div>
+          {% endfor %}
+        </div>
+      </section>
+
+      <!-- 엔진 옵션 (engine 선택 따라 동적) -->
+      <section class="gs-section">
+        <div class="gs-section__head">
+          <span class="gs-section__title" id="gs-bulk-opt-title">엔진 옵션</span>
+          <span class="gs-section__hint gs-mono">model parameters</span>
+        </div>
+
+        {% set k = engine_options.get('kling') %}
+        {% if k %}
+        <div class="gs-engine-opt" data-only-engine="kling">
+          <div class="gs-field">
+            <div class="gs-field__label gs-mono">model_name</div>
+            <div class="gs-select-shell">
+              <select name="model_name">
+                <option value="">— default —</option>
+                {% for m in k.models %}<option value="{{ m }}">{{ m }}</option>{% endfor %}
+              </select>
+              {{ icon('chevDown', size=13) }}
+            </div>
+          </div>
+          <div class="gs-row-2">
+            <div class="gs-field">
+              <div class="gs-field__label gs-mono">mode</div>
+              <div class="gs-segmented">
+                {% for m in k.modes %}
+                  <input type="radio" name="mode" id="bulk-kl-mode-{{ m }}" value="{{ m }}" {% if m == k.default_mode %}checked{% endif %}>
+                  <label for="bulk-kl-mode-{{ m }}">{{ m }}</label>
+                {% endfor %}
+              </div>
+            </div>
+            <div class="gs-field">
+              <div class="gs-field__label gs-mono">aspect_ratio</div>
+              <div class="gs-segmented">
+                {% for a in ['16:9','9:16','1:1'] %}
+                  <input type="radio" name="aspect_ratio" id="bulk-kl-ar-{{ loop.index }}" value="{{ a }}" {% if a == '16:9' %}checked{% endif %}>
+                  <label for="bulk-kl-ar-{{ loop.index }}">{{ a }}</label>
+                {% endfor %}
+              </div>
+            </div>
+          </div>
+          <div class="gs-field">
+            <div class="gs-field__label gs-mono">duration (sec)</div>
+            <div class="gs-segmented">
+              {% for d in k.durations %}
+                <input type="radio" name="duration" id="bulk-kl-dur-{{ d }}" value="{{ d }}" {% if d == k.default_duration %}checked{% endif %}>
+                <label for="bulk-kl-dur-{{ d }}">{{ d }}s</label>
+              {% endfor %}
+            </div>
+          </div>
+        </div>
+        {% endif %}
+
+        {% set v = engine_options.get('veo') %}
+        {% if v %}
+        <div class="gs-engine-opt" data-only-engine="veo" style="display:none">
+          <div class="gs-field">
+            <div class="gs-field__label gs-mono">model_name</div>
+            <div class="gs-select-shell">
+              <select name="model_name" disabled>
+                <option value="">— default —</option>
+                {% for m in v.models %}<option value="{{ m }}">{{ m }}</option>{% endfor %}
+              </select>
+              {{ icon('chevDown', size=13) }}
+            </div>
+          </div>
+          <div class="gs-row-2">
+            <div class="gs-field">
+              <div class="gs-field__label gs-mono">aspect_ratio</div>
+              <div class="gs-segmented">
+                {% for a in v.aspect_ratios %}
+                  <input type="radio" name="aspect_ratio" id="bulk-veo-ar-{{ loop.index }}" value="{{ a }}" {% if a == v.default_aspect_ratio %}checked{% endif %} disabled>
+                  <label for="bulk-veo-ar-{{ loop.index }}">{{ a }}</label>
+                {% endfor %}
+              </div>
+            </div>
+            <div class="gs-field">
+              <div class="gs-field__label gs-mono">duration (sec)</div>
+              <div class="gs-segmented">
+                {% for d in v.durations %}
+                  <input type="radio" name="duration" id="bulk-veo-dur-{{ d }}" value="{{ d }}" {% if d == v.default_duration %}checked{% endif %} disabled>
+                  <label for="bulk-veo-dur-{{ d }}">{{ d }}s</label>
+                {% endfor %}
+              </div>
+            </div>
+          </div>
+        </div>
+        {% endif %}
+
+        <div class="gs-engine-opt" data-only-engine="higgsfield" style="display:none">
+          <p class="gs-hint" style="margin:0">
+            Higgsfield (fal.ai) — 추가 옵션 없음. 기본 모델로 호출됩니다.
+          </p>
+        </div>
+        <div class="gs-engine-opt" data-only-engine="nanobanana" style="display:none">
+          <p class="gs-hint" style="margin:0">
+            Nanobanana (<span class="gs-mono">gemini-2.5-flash-image</span>) — 동기 호출, 추가 옵션 없음.
+          </p>
+        </div>
+        <div class="gs-engine-opt" data-only-engine="gpt_image" style="display:none">
+          <p class="gs-hint" style="margin:0">
+            GPT Image (<span class="gs-mono">gpt-image-1</span>) — 동기 호출, 추가 옵션 없음.
+          </p>
+        </div>
+      </section>
+
+      <!-- Pair mode -->
+      <section class="gs-section" id="gs-bulk-pair-section">
+        <div class="gs-section__head">
+          <span class="gs-section__title">Pair mode</span>
+          <span class="gs-section__hint gs-mono">매핑 규칙</span>
+        </div>
+        <div class="gs-segmented">
+          <input type="radio" name="pair_mode" id="bulk-mode-paired" value="paired" checked>
+          <label for="bulk-mode-paired">paired (1:1, N==M)</label>
+          <input type="radio" name="pair_mode" id="bulk-mode-cartesian" value="cartesian">
+          <label for="bulk-mode-cartesian">cartesian (N×M)</label>
+        </div>
+      </section>
+
+      <!-- 이미지 dropzone -->
+      <section class="gs-section" id="gs-bulk-image-section">
+        <div class="gs-section__head">
+          <span class="gs-section__title">이미지</span>
+          <span class="gs-section__hint gs-mono">png · jpg · webp · ≤ {{ max_files_per_batch }}장/batch · 50MB/장</span>
+        </div>
+        <label class="gs-dropzone" id="gs-bulk-dz-label" for="gs-bulk-files">
+          <span class="gs-dropzone__count" id="gs-bulk-dz-count" hidden>0</span>
+          <div class="gs-dropzone__empty" id="gs-bulk-dz-empty">
+            <span class="gs-dropzone__icon">{{ icon('upload', size=20) }}</span>
+            <span class="gs-dropzone__title">
+              이미지를 드래그하거나 <em>클릭하여 선택</em>
+            </span>
+            <span class="gs-dropzone__hint-line">여러 장 선택 가능 · 누적 추가</span>
+          </div>
+          <div class="gs-dropzone__thumbs" id="gs-bulk-dz-thumbs" hidden></div>
+          <input type="file" name="files" multiple accept=".png,.jpg,.jpeg,.webp"
+                 class="gs-file-input" id="gs-bulk-files">
+        </label>
+      </section>
+
+      <!-- Prompts -->
+      <section class="gs-section">
+        <div class="gs-section__head">
+          <span class="gs-section__title">프롬프트</span>
+          <span class="gs-section__hint gs-mono">한 줄에 하나 · <span id="gs-bulk-prompt-count">0</span> prompts</span>
+        </div>
+        <textarea class="gs-prompt-textarea" name="prompts_text" id="gs-prompts" required
+                  rows="8"
+                  placeholder="첫 번째 프롬프트
+두 번째 프롬프트
+세 번째 프롬프트
+..."></textarea>
+        <div class="gs-prompt-meta">
+          <span>{{ icon('sparkles', size=11, style='vertical-align:-1px;margin-right:4px') }}여러 프롬프트 × 이미지 일괄 생성</span>
+          <span class="gs-mono" id="gs-bulk-chars">0 chars</span>
+        </div>
+      </section>
+
+      <!-- Group ID -->
+      <section class="gs-section">
+        <div class="gs-section__head">
+          <span class="gs-section__title">Group ID</span>
+          <span class="gs-section__hint gs-mono">선택 · 미입력 시 자동 bgi-…</span>
+        </div>
+        <input type="text" name="bulk_group_id" id="gs-bulk-gid" class="gs-bulk-gid-input"
+               placeholder="예: nightly.2026-05-13  (영숫자 / _ / - / . 1~64자)"
+               pattern="[A-Za-z0-9_.\-]{1,64}">
+      </section>
+    </div>
+
+    <div class="gs-panel__footer">
+      <button type="submit" class="gs-submit" id="gs-bulk-submit-btn">
+        {{ icon('sparkles', size=18, stroke=2) }}
+        생성 시작
+        <span class="gs-mono" id="gs-bulk-submit-meta"></span>
+      </button>
+    </div>
+  </form>
+
+  <!-- RIGHT — preview gallery (same wrapper as submit page) -->
+  <main class="gs-gallery">
+    <div class="gs-gallery__head">
+      <div>
+        <div class="gs-gallery__title">Plan preview</div>
+        <div class="gs-gallery__meta">
+          서버 호출 없이 클라이언트에서 실시간 추정 · 한도 <span class="gs-mono">{{ max_bulk_jobs }} jobs</span>
+        </div>
+      </div>
+      <div style="display:flex;gap:6px;">
+        <a href="/" class="gs-pill muted" title="단건 submit">{{ icon('plus', size=13) }} 단건</a>
+      </div>
+    </div>
+
+    <div class="gs-batch" style="cursor:default">
+      <div class="gs-batch__head" style="display:block">
+        <dl class="gs-dl">
+          <dt>engine</dt>      <dd class="gs-mono"><span id="pv-engine">—</span></dd>
+          <dt>prompts</dt>     <dd class="gs-mono"><span id="pv-prompts">0</span></dd>
+          <dt>images</dt>      <dd class="gs-mono"><span id="pv-images">0</span></dd>
+          <dt>pair mode</dt>   <dd class="gs-mono"><span id="pv-mode">paired</span></dd>
+          <dt>batches</dt>     <dd class="gs-mono"><span id="pv-batches">0</span></dd>
+          <dt>jobs (total)</dt><dd class="gs-mono"><b id="pv-jobs">0</b></dd>
+          <dt>input bytes</dt> <dd class="gs-mono"><span id="pv-bytes">0</span></dd>
+          <dt>est cost*</dt>   <dd class="gs-mono"><span id="pv-cost">—</span></dd>
+        </dl>
+        <p class="gs-hint" style="margin-top:10px;font-size:11px;line-height:1.55">
+          서버 hard cap <span class="gs-mono">GENAI_MAX_BULK_JOBS={{ max_bulk_jobs }}</span>.
+          초과 시 자동 차단 — 더 큰 batch 는 CLI <span class="gs-mono">bulk-submit</span> 사용.<br>
+          * 비용은 Veo $0.40/sec 기준 추정. 다른 엔진은 unknown.
+        </p>
+        <div id="pv-warn" class="gs-bulk-warn" hidden></div>
+      </div>
+    </div>
+
+    <p class="gs-hint" style="margin-top:14px">
+      <b>Tip</b> — Cmd/Ctrl+Enter 로 빠르게 제출. <span class="gs-mono">window.confirm</span> 으로 한 번 더 확인.
+    </p>
+  </main>
+</div>
+{% endblock %}
+
+{% block extra_scripts %}
+<script>
+(() => {
+  const MAX_BULK_JOBS = {{ max_bulk_jobs }};
+  const MAX_FILES_PER_BATCH = {{ max_files_per_batch }};
+
+  // ----- elements -----
+  const formEl    = document.getElementById('gs-bulk-form');
+  const promptsEl = document.getElementById('gs-prompts');
+  const filesEl   = document.getElementById('gs-bulk-files');
+  const dzLabel   = document.getElementById('gs-bulk-dz-label');
+  const dzEmpty   = document.getElementById('gs-bulk-dz-empty');
+  const dzThumbs  = document.getElementById('gs-bulk-dz-thumbs');
+  const dzCount   = document.getElementById('gs-bulk-dz-count');
+  const imgSection  = document.getElementById('gs-bulk-image-section');
+  const pairSection = document.getElementById('gs-bulk-pair-section');
+  const textOnlyEl  = document.getElementById('gs-bulk-text-only');
+  const submitBtn   = document.getElementById('gs-bulk-submit-btn');
+  const submitMeta  = document.getElementById('gs-bulk-submit-meta');
+  const idemEl      = document.getElementById('gs-idem-token');
+  const promptCntEl = document.getElementById('gs-bulk-prompt-count');
+  const charsEl     = document.getElementById('gs-bulk-chars');
+  const tabImages   = document.getElementById('gs-bulk-tab-images');
+  const tabTextOnly = document.getElementById('gs-bulk-tab-textonly');
+
+  // preview side
+  const pvEngine  = document.getElementById('pv-engine');
+  const pvPrompts = document.getElementById('pv-prompts');
+  const pvImages  = document.getElementById('pv-images');
+  const pvMode    = document.getElementById('pv-mode');
+  const pvBatches = document.getElementById('pv-batches');
+  const pvJobs    = document.getElementById('pv-jobs');
+  const pvBytes   = document.getElementById('pv-bytes');
+  const pvCost    = document.getElementById('pv-cost');
+  const pvWarn    = document.getElementById('pv-warn');
+
+  // ----- idempotency token (UUID v4) -----
+  function uuid4() {
+    if (window.crypto && window.crypto.randomUUID) return window.crypto.randomUUID();
+    const a = new Uint8Array(16); window.crypto.getRandomValues(a);
+    a[6] = (a[6] & 0x0f) | 0x40; a[8] = (a[8] & 0x3f) | 0x80;
+    const h = [...a].map(b => b.toString(16).padStart(2, '0')).join('');
+    return `${h.slice(0,8)}-${h.slice(8,12)}-${h.slice(12,16)}-${h.slice(16,20)}-${h.slice(20)}`;
+  }
+  idemEl.value = uuid4();
+
+  // ----- engine 옵션 패널 토글 -----
+  function syncEngineOpt() {
+    const eng = document.querySelector('input[name=engine]:checked')?.value;
+    document.querySelectorAll('.gs-engine-opt').forEach(s => {
+      const show = s.dataset.onlyEngine === eng;
+      s.style.display = show ? '' : 'none';
+      s.querySelectorAll('select, input').forEach(i => { i.disabled = !show; });
+    });
+    const titleEl = document.getElementById('gs-bulk-opt-title');
+    if (titleEl) {
+      const pretty = {
+        'kling': 'Kling 옵션',
+        'veo': textOnlyEl.value === 'true' ? 'Veo 옵션 (Text → Video)' : 'Veo 옵션 (Vertex AI)',
+        'higgsfield': 'Higgsfield 옵션 (fal.ai)',
+        'nanobanana': 'Nanobanana 옵션 (Vertex Gemini)',
+        'gpt_image': 'GPT Image 옵션 (OpenAI)',
+      };
+      titleEl.textContent = pretty[eng] || (eng + ' 옵션');
+    }
+    updatePreview();
+  }
+  document.querySelectorAll('input[name=engine]').forEach(r => r.addEventListener('change', syncEngineOpt));
+
+  // ----- 탭: Images×Prompts vs Text → Video -----
+  function setTextOnly(on) {
+    textOnlyEl.value = on ? 'true' : 'false';
+    tabImages.classList.toggle('is-active', !on);
+    tabTextOnly.classList.toggle('is-active', on);
+    if (on) {
+      const veo = document.getElementById('bulk-eng-veo');
+      if (veo) veo.checked = true;
+      // veo 외 engine card 숨김
+      document.querySelectorAll('.gs-engine-item').forEach(i => {
+        i.style.display = (i.dataset.engineWrap === 'veo') ? '' : 'none';
+      });
+      imgSection.style.display = 'none';
+      pairSection.style.display = 'none';
+      filesEl.disabled = true;
+    } else {
+      document.querySelectorAll('.gs-engine-item').forEach(i => { i.style.display = ''; });
+      imgSection.style.display = '';
+      pairSection.style.display = '';
+      filesEl.disabled = false;
+    }
+    syncEngineOpt();
+  }
+  tabImages.addEventListener('click', (e) => { e.preventDefault(); setTextOnly(false); });
+  tabTextOnly.addEventListener('click', (e) => { e.preventDefault(); setTextOnly(true); });
+
+  // ----- dropzone -----
+  let dt = new DataTransfer();
+  function renderThumbs() {
+    dzThumbs.innerHTML = '';
+    const files = [...dt.files];
+    if (files.length === 0) {
+      dzEmpty.hidden = false; dzThumbs.hidden = true; dzCount.hidden = true;
+      return;
+    }
+    dzEmpty.hidden = true; dzThumbs.hidden = false; dzCount.hidden = false;
+    dzCount.textContent = `${files.length}`;
+    files.forEach((f, idx) => {
+      const t = document.createElement('div');
+      t.className = 'gs-dropzone__thumb';
+      const reader = new FileReader();
+      reader.onload = e => { t.style.backgroundImage = `url(${e.target.result})`; };
+      reader.readAsDataURL(f);
+      const name = document.createElement('span');
+      name.className = 'gs-dropzone__thumb-name';
+      name.textContent = f.name;
+      const rm = document.createElement('button');
+      rm.type = 'button'; rm.className = 'gs-dropzone__thumb-remove';
+      rm.innerHTML = '<svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>';
+      rm.onclick = (ev) => {
+        ev.preventDefault(); ev.stopPropagation();
+        const remain = [...dt.files].filter((_, i) => i !== idx);
+        dt = new DataTransfer();
+        remain.forEach(file => dt.items.add(file));
+        filesEl.files = dt.files;
+        renderThumbs();
+        updatePreview();
+      };
+      t.appendChild(name); t.appendChild(rm);
+      dzThumbs.appendChild(t);
+    });
+  }
+  filesEl.addEventListener('change', () => {
+    const incoming = filesEl.files;
+    const merged = [...dt.files];
+    [...incoming].forEach(f => {
+      if (!merged.some(x => x.name === f.name && x.size === f.size)) merged.push(f);
+    });
+    dt = new DataTransfer();
+    merged.forEach(f => dt.items.add(f));
+    filesEl.files = dt.files;
+    renderThumbs();
+    updatePreview();
+  });
+  ['dragenter','dragover'].forEach(ev => dzLabel.addEventListener(ev, e => {
+    e.preventDefault(); dzLabel.classList.add('is-dragover');
+  }));
+  ['dragleave','drop'].forEach(ev => dzLabel.addEventListener(ev, e => {
+    e.preventDefault(); dzLabel.classList.remove('is-dragover');
+  }));
+  dzLabel.addEventListener('drop', e => {
+    if (!e.dataTransfer?.files) return;
+    [...e.dataTransfer.files].forEach(f => {
+      if (![...dt.files].some(x => x.name === f.name && x.size === f.size)) dt.items.add(f);
+    });
+    filesEl.files = dt.files;
+    renderThumbs();
+    updatePreview();
+  });
+
+  // ----- preview -----
+  function parsePrompts() {
+    return promptsEl.value.split('\n').map(l => l.trim()).filter(Boolean);
+  }
+  function chunks(n, k) { return Math.max(1, Math.ceil(n / k)); }
+  function estCostUSD(engine, jobs, durationSec) {
+    if (engine === 'veo') {
+      const sec = Number(durationSec || 8);
+      return jobs * sec * 0.40;
+    }
+    return null;
+  }
+  function fmtBytes(n) {
+    if (n < 1024) return `${n} B`;
+    if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+    if (n < 1024 * 1024 * 1024) return `${(n / 1024 / 1024).toFixed(1)} MB`;
+    return `${(n / 1024 / 1024 / 1024).toFixed(2)} GB`;
+  }
+  function updatePreview() {
+    const prompts = parsePrompts();
+    promptCntEl.textContent = prompts.length;
+    charsEl.textContent = `${promptsEl.value.length} chars`;
+    const filesArr = [...dt.files];
+    const textOnly = textOnlyEl.value === 'true';
+    const mode = document.querySelector('input[name=pair_mode]:checked')?.value || 'paired';
+    const engine = document.querySelector('input[name=engine]:checked')?.value;
+    const durationEl = document.querySelector('input[name=duration]:not(:disabled):checked');
+    const duration = durationEl ? durationEl.value : null;
+
+    pvEngine.textContent = engine || '—';
+    pvPrompts.textContent = prompts.length;
+    pvImages.textContent = textOnly ? '— (text-only)' : filesArr.length;
+    pvMode.textContent = textOnly ? '— (text-only)' : mode;
+
+    let batches = 0, jobs = 0, warning = '';
+    if (prompts.length === 0) {
+      pvBatches.textContent = '0'; pvJobs.textContent = '0';
+      pvBytes.textContent = '0'; pvCost.textContent = '—';
+      pvWarn.hidden = true;
+      submitBtn.disabled = true;
+      submitMeta.textContent = '';
+      return;
+    }
+    if (textOnly) {
+      batches = prompts.length; jobs = prompts.length;
+    } else {
+      if (filesArr.length === 0) {
+        warning = '이미지를 1장 이상 선택하세요 (text-only 탭이 아니면 필수).';
+      } else if (mode === 'paired') {
+        if (filesArr.length !== prompts.length) {
+          warning = `paired 모드는 N==M 필요. images=${filesArr.length}, prompts=${prompts.length}. cartesian 으로 변경 또는 개수 맞추기.`;
+        }
+        batches = prompts.length; jobs = prompts.length;
+      } else {
+        batches = prompts.length * chunks(filesArr.length, MAX_FILES_PER_BATCH);
+        jobs = prompts.length * filesArr.length;
+      }
+    }
+    pvBatches.textContent = batches;
+    pvJobs.textContent = jobs;
+    pvBytes.textContent = fmtBytes(filesArr.reduce((s, f) => s + f.size, 0));
+    const cost = estCostUSD(engine, jobs, duration);
+    pvCost.textContent = cost === null ? '—' : `≈ $${cost.toFixed(2)}`;
+
+    let disabled = false;
+    if (warning) {
+      pvWarn.textContent = warning; pvWarn.hidden = false; disabled = true;
+    } else if (jobs > MAX_BULK_JOBS) {
+      pvWarn.textContent = `한도 초과: jobs=${jobs} > GENAI_MAX_BULK_JOBS=${MAX_BULK_JOBS}. CLI bulk-submit 을 사용하세요.`;
+      pvWarn.hidden = false; disabled = true;
+    } else {
+      pvWarn.hidden = true;
+    }
+    submitBtn.disabled = disabled || jobs === 0;
+    submitMeta.textContent = jobs > 0 ? `(${jobs} jobs)` : '';
+  }
+
+  promptsEl.addEventListener('input', updatePreview);
+  document.querySelectorAll('input[name=pair_mode], input[name=duration], input[name=aspect_ratio]').forEach(
+    r => r.addEventListener('change', updatePreview)
+  );
+  syncEngineOpt();
+  updatePreview();
+
+  // submit confirm + disable
+  formEl.addEventListener('submit', (e) => {
+    const jobs = parseInt(pvJobs.textContent, 10) || 0;
+    const cost = pvCost.textContent;
+    const gid = document.getElementById('gs-bulk-gid').value || '<auto bgi-...>';
+    if (!window.confirm(
+      `진짜 제출하시겠습니까?\n\n` +
+      `jobs: ${jobs}\n` +
+      `예상 비용: ${cost}\n` +
+      `group: ${gid}\n\n` +
+      `(확인 후 취소 불가)`
+    )) {
+      e.preventDefault();
+      return;
+    }
+    submitBtn.disabled = true;
+    submitMeta.textContent = '제출 중…';
+  });
+
+  // Cmd/Ctrl + Enter
+  document.addEventListener('keydown', (e) => {
+    if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+      formEl.requestSubmit();
+    }
+  });
+})();
+</script>
+{% endblock %}

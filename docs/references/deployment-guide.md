@@ -1,46 +1,46 @@
-# Deployment Guide — Production/Staging Environment Separation
+# 배포 가이드 — 운영/테스트 환경 분리
 
-> Written: 2026-04-10
+> 작성일: 2026-04-10
 
-## Architecture overview
+## 아키텍처 개요
 
 ```
-Local PC
-  ├── dev branch work + pytest
-  ├── local verification with docker-compose.dev.yaml
-  ├── dev push  -> staging auto-deploy
-  └── main push -> production auto-deploy
+로컬 PC
+  ├── dev 브랜치 작업 + pytest
+  ├── docker-compose.dev.yaml로 로컬 확인
+  ├── dev push  -> test 자동 배포
+  └── main push -> production 자동 배포
          │
          ▼
 GitHub Actions
   ├── Unit test
-  ├── Determines whether to rebuild image based on change scope
-  └── Self-hosted runner deploys to prod/test root on the server respectively
+  ├── 변경 범위에 따라 이미지 재빌드 여부 판단
+  └── Self-hosted runner가 서버의 prod/test 루트에 각각 배포
 ```
 
-## Branch strategy
+## 브랜치 전략
 
-| Branch | Purpose | Deployment |
+| 브랜치 | 용도 | 배포 |
 |--------|------|------|
-| `dev` | Staging environment deploy branch | Auto-deploys to staging on push |
-| `main` | Production deploy branch | Auto-deploys to production on push |
-| `feature/*` | Feature development | Merge into dev |
+| `dev` | 테스트 환경 배포 브랜치 | push 시 test 자동 배포 |
+| `main` | 운영 배포 브랜치 | push 시 production 자동 배포 |
+| `feature/*` | 기능 개발 | dev에 merge |
 
-**Rules:**
-- No direct commits/pushes from the production server
-- Validate on staging via `dev` deploy before merging to `main`
-- Emergency fix: direct push to `main` is allowed (manual deploy also possible via workflow_dispatch)
+**규칙:**
+- 운영 서버에서 직접 커밋/push 금지
+- `dev`에서 test 배포 검증 후 `main`에 merge
+- 긴급 수정: `main`에 직접 push 가능 (workflow_dispatch로 수동 배포도 가능)
 
-## Local development environment
+## 로컬 개발 환경
 
-### 1. Environment setup
+### 1. 환경 설정
 
 ```bash
 cp .env.dev.example .env.dev
-# Edit .env.dev — adjust to local paths
+# .env.dev 편집 — 로컬 경로에 맞게 수정
 ```
 
-### 2. Local Docker run
+### 2. 로컬 Docker 실행
 
 ```bash
 docker compose -f docker/docker-compose.dev.yaml up -d
@@ -48,124 +48,124 @@ docker compose -f docker/docker-compose.dev.yaml up -d
 # MinIO Console: http://localhost:9001
 ```
 
-### 3. Run pytest
+### 3. pytest 실행
 
 ```bash
 pip install -e ".[dev]"
 pytest tests/unit -q
 ```
 
-## Production server initial setup
+## 운영 서버 초기 설정
 
-### 1. Install self-hosted runner
+### 1. Self-Hosted Runner 설치
 
 ```bash
 bash scripts/deploy/setup-runner.sh
 ```
 
-There are three ways to pass the token.
+토큰 전달 방식은 3가지입니다.
 
 ```bash
-# 1) Paste into the prompt during execution
+# 1) 실행 중 프롬프트에 붙여넣기
 bash scripts/deploy/setup-runner.sh
 
-# 2) Pass as argument
+# 2) 인자로 전달
 bash scripts/deploy/setup-runner.sh --token <registration-token>
 
-# 3) Pass as environment variable (recommended)
+# 3) 환경변수로 전달 (권장)
 RUNNER_TOKEN=<registration-token> bash scripts/deploy/setup-runner.sh
 ```
 
-Obtain the token from GitHub repo Settings > Actions > Runners.
-The default runner label `self-hosted,linux,deploy,production,test` is recommended.
+GitHub repo Settings > Actions > Runners에서 토큰을 발급받아 입력합니다.
+기본 runner label은 `self-hosted,linux,deploy,production,test`를 권장합니다.
 
-### 2. Check runner status
+### 2. Runner 상태 확인
 
 ```bash
-# systemd service status
+# systemd 서비스 상태
 cd ~/actions-runner && sudo ./svc.sh status
 
-# Check logs
+# 로그 확인
 journalctl -u actions.runner.*.service -f
 ```
 
-### 3. Verify Docker permissions
+### 3. Docker 권한 확인
 
 ```bash
-# Runner user must be in the docker group
+# runner 사용자가 docker 그룹에 포함되어야 함
 groups $USER | grep docker || sudo usermod -aG docker $USER
 ```
 
-## Deployment flow
+## 배포 흐름
 
-### Automatic deployment (normal)
+### 자동 배포 (일반)
 
 1. `dev` push:
-   - Sync to test root
-   - Uses `docker/.env.test` or the server's test env file
+   - test root에 sync
+   - `docker/.env.test` 또는 서버의 test env 파일 사용
    - Dagster health check `http://10.0.0.10:3031/server_info`
 2. `main` push:
-   - Sync to production root
-   - Uses the server's production `.env`
+   - production root에 sync
+   - 서버의 production `.env` 사용
    - Dagster health check `http://10.0.0.10:3030/server_info`
-3. Common GitHub Actions behavior:
-   - Unit test → abort deploy on failure
-   - Rebuild image if change scope covers Docker/runtime areas
-   - Restart dagster-code-server → wait 15 seconds
-   - Restart dagster-daemon + dagster
-   - Health check (up to 60 seconds)
+3. 공통 GitHub Actions 동작:
+   - Unit test → 실패 시 배포 중단
+   - 변경 범위가 Docker/runtime 영역이면 이미지 재빌드
+   - dagster-code-server 재시작 → 15초 대기
+   - dagster-daemon + dagster 재시작
+   - Health check (최대 60초)
 
-### Manual deployment (emergency)
+### 수동 배포 (긴급)
 
-GitHub repo > Actions > "Deploy to Test" or "Deploy to Production" > "Run workflow"
-- Use `skip_tests: true` option to skip tests
+GitHub repo > Actions > "Deploy to Test" 또는 "Deploy to Production" > "Run workflow" 클릭
+- `skip_tests: true` 옵션으로 테스트 건너뛰기 가능
 
-### Excluded from deployment
+### 배포 제외 대상
 
-Pushes that only change the following paths do not trigger a deployment:
+다음 경로만 변경된 push는 배포를 트리거하지 않습니다:
 - `docs/**`, `*.md`, `tests/**`, `.cursor/**`, `.agent/**`
 
-## Rollback
+## 롤백
 
 ```bash
-# Check available image tags
+# 사용 가능한 이미지 태그 확인
 bash scripts/deploy/rollback.sh
 
-# Rollback to a specific version
+# 특정 버전으로 롤백
 bash scripts/deploy/rollback.sh datapipeline:abc12345
 ```
 
-The image tag from a previous deployment can be found in the "Deploy summary" of the GitHub Actions run log.
+이전 배포의 이미지 태그는 GitHub Actions 실행 로그의 "Deploy summary"에서 확인할 수 있습니다.
 
-## Safe procedure when changing workspace code location
+## workspace code location 변경 시 안전 절차
 
-Changing the loader in [docker/app/workspace.yaml](../../docker/app/workspace.yaml) (`python_file` → `grpc_server` switch, `relative_path`/`attribute` change, `location_name` specification, etc.) changes the code location identifier recognized by Dagster. Queued runs that were enqueued with the old identifier will fail with `DagsterCodeLocationNotFoundError` when dequeued by the daemon. Always follow the steps below before deploying.
+[docker/app/workspace.yaml](../../docker/app/workspace.yaml) 의 loader(`python_file` → `grpc_server` 전환, `relative_path`/`attribute` 변경, `location_name` 지정 등)를 바꾸면 Dagster 가 인식하는 code location 식별자가 달라진다. 이전 식별자로 enqueue 돼 있던 queued run 은 daemon dequeue 시점에 `DagsterCodeLocationNotFoundError` 로 실패 처리되므로 배포 전 아래 순서를 반드시 지킬 것.
 
-1. **Clear the queue** — Check for waiting runs via UI (`/runs` → Queued filter) or CLI:
+1. **큐 비우기** — UI(`/runs` → Queued 필터) 또는 CLI 로 대기 중인 run 확인:
    ```bash
    docker exec docker-dagster-1 dagster run list --status QUEUED --limit 100
    ```
-   If not empty, review each run in the UI then Terminate. (Bulk CLI terminate risks killing important runs, so avoid it.)
-2. **Deploy workspace file** — Commit and push the [docker/app/workspace.yaml](../../docker/app/workspace.yaml) change (or wait for the runner to sync).
-3. **Restart containers** — in order: `dagster-code-server` → `dagster` → `dagster-daemon`.
-4. **Verify registration** —
+   비어 있지 않으면 UI 에서 각 run 을 검토 후 Terminate. (CLI 일괄 terminate 는 중요한 run 을 함께 죽일 위험이 있어 지양.)
+2. **workspace 파일 배포** — [docker/app/workspace.yaml](../../docker/app/workspace.yaml) 변경을 커밋·push (또는 runner 가 sync 하도록 대기).
+3. **컨테이너 재시작** — `dagster-code-server` → `dagster` → `dagster-daemon` 순서.
+4. **등록 확인** —
    ```bash
    curl -s http://127.0.0.1:3030/server_info | jq .
    ```
-   The new location should appear in the response, and the `Deployment` tab in the UI should show `Loaded`.
-5. **Monitor daemon logs for 10 minutes** —
+   응답에 새 location 이 보이고, 이어서 UI `Deployment` 탭에서 상태가 `Loaded` 여야 함.
+5. **daemon 로그 10 분 모니터링** —
    ```bash
    docker logs -f docker-dagster-daemon-1 2>&1 | grep -i "CodeLocationNotFound"
    ```
-   Normal once the same error no longer appears.
+   동일 에러가 더는 출력되지 않으면 정상.
 
-## Caveats / notes
+## 주의사항
 
-- **DuckDB**: Volume-mounted, so no impact from deployment
-- **MinIO**: Docker named volume, safe across container restarts
-- **Dagster run history**: Preserved in `dagster_home/storage/` volume
-- **GPU services (YOLO, SAM3)**: Unrelated to pipeline code changes — no separate restart needed
-- **NAS mount**: Host bind mount, unrelated to deployment
-- **env files**: Production uses server-local `.env`, staging is managed from `docker/.env.test`
-- **MinIO Console address**: production `9001`, staging `9003`
-- **Application endpoint**: production `9000`, staging `9002`
+- **DuckDB**: 볼륨 마운트이므로 배포 시 영향 없음
+- **MinIO**: Docker named volume이므로 컨테이너 재시작에 안전
+- **Dagster run history**: `dagster_home/storage/` 볼륨으로 보존
+- **GPU 서비스 (YOLO, SAM3)**: 파이프라인 코드 변경과 무관 — 별도 재시작 불필요
+- **NAS 마운트**: 호스트 바인드 마운트이므로 배포와 무관
+- **env 파일**: production은 서버 로컬 `.env`, test는 `docker/.env.test` 기반으로 관리
+- **MinIO Console 주소**: production `9001`, test `9003`
+- **애플리케이션 endpoint**: production `9000`, test `9002`

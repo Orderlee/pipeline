@@ -68,6 +68,19 @@ _ALLOWED_EXT = {".png", ".jpg", ".jpeg", ".webp"}
 # bulk-submit 묶음 id — 영숫자 / _ / - / . 1~64자. namespacing (team-a.run-001) 용도로 . 허용.
 _BULK_GROUP_ID_RE = re.compile(r"[A-Za-z0-9_.-]{1,64}")
 
+# bulk 한 번에 허용하는 최대 jobs (이미지×prompt 조합 총합). default 25 — Veo 8s 기준
+# 동기 호출시간 ~12s 안에 끝나서 브라우저 timeout 피함. env 로 운영자 override 가능.
+_MAX_BULK_JOBS = int(os.getenv("GENAI_MAX_BULK_JOBS", "25"))
+_BULK_SLEEP_SECONDS = float(os.getenv("GENAI_BULK_SLEEP_SECONDS", "0.5"))
+
+# 이중 제출 방지 — client 가 보낸 UUID idempotency token 을 TTL 캐시. 브라우저 새로고침
+# / double-click 으로 같은 요청이 두 번 들어오면 두 번째는 짧은 미니 response 만 반환.
+# ⚠️ in-memory 라 단일 uvicorn worker 가정 (Dockerfile CMD 가 --workers 미지정 → default 1).
+# 여러 worker 로 운영하려면 Redis 등 외부 store 로 교체 필요.
+_IDEMPOTENCY_TTL = 1800  # 30 분
+_idempotency_cache: dict[str, tuple[float, dict]] = {}
+_idempotency_lock = __import__("threading").Lock()
+
 
 def _wants_json(request: Request) -> bool:
     """Accept 헤더 우선순위로 JSON 요청 판정. text/html 보다 application/json 가
@@ -342,6 +355,206 @@ def create_app() -> FastAPI:
                 "max_bytes_per_file": _MAX_BYTES_PER_FILE,
             },
         })
+
+    # ----- UI bulk-submit -------------------------------------------------
+    @app.get("/genai/bulk", response_class=HTMLResponse)
+    def bulk_form(request: Request, user: str = Depends(_check_auth)):
+        """대량 (이미지 × 프롬프트) 제출 폼. 클라이언트 JS 가 plan/cost preview."""
+        return templates.TemplateResponse(
+            request=request,
+            name="bulk.html",
+            context={
+                "engines": enabled_engines(),
+                "engine_options": all_engine_options(),
+                "engine_tab": ENGINE_TAB,
+                "max_bulk_jobs": _MAX_BULK_JOBS,
+                "max_files_per_batch": _MAX_FILES_PER_BATCH,
+                "user": user,
+            },
+        )
+
+    @app.post("/genai/bulk-batches")
+    async def bulk_submit(
+        request: Request,
+        engine: Annotated[str, Form()],
+        prompts_text: Annotated[str, Form()],
+        idempotency_token: Annotated[str, Form()],
+        pair_mode: Annotated[str, Form()] = "paired",
+        text_only: Annotated[str, Form()] = "false",
+        bulk_group_id: Annotated[str | None, Form()] = None,
+        files: Annotated[list[UploadFile] | None, File()] = None,
+        model_name: Annotated[str | None, Form()] = None,
+        mode: Annotated[str | None, Form()] = None,
+        duration: Annotated[str | None, Form()] = None,
+        aspect_ratio: Annotated[str | None, Form()] = None,
+        user: str = Depends(_check_auth),
+    ):
+        import asyncio as _asyncio
+        import time as _time
+        import uuid as _uuid
+
+        # 1) Idempotency 체크 — 같은 token 이 30분 안에 또 들어오면 첫 응답 그대로 반환.
+        # 브라우저 새로고침 / double-click 으로 인한 중복 제출 차단.
+        if not idempotency_token or len(idempotency_token) < 8 or len(idempotency_token) > 128:
+            raise HTTPException(status_code=400, detail="idempotency_token 형식 오류")
+        cache_key = f"{user}:{idempotency_token}"
+        with _idempotency_lock:
+            # TTL purge
+            now = _time.time()
+            expired = [k for k, (ts, _) in _idempotency_cache.items() if now - ts > _IDEMPOTENCY_TTL]
+            for k in expired:
+                _idempotency_cache.pop(k, None)
+            cached = _idempotency_cache.get(cache_key)
+            if cached:
+                _, prev_result = cached
+                return JSONResponse({
+                    "duplicate": True,
+                    "message": "동일 idempotency_token 의 이전 요청 결과 재반환.",
+                    "result": prev_result,
+                })
+
+        # 2) 기본 검증
+        if engine not in enabled_engines():
+            raise HTTPException(status_code=400, detail=f"engine {engine!r} not enabled")
+        is_text_only = (text_only or "").strip().lower() in ("true", "1", "yes")
+        if is_text_only and engine != "veo":
+            raise HTTPException(status_code=400,
+                                detail=f"text_only 는 veo 전용 (got engine={engine!r})")
+        if pair_mode not in ("paired", "cartesian"):
+            raise HTTPException(status_code=400,
+                                detail=f"pair_mode 는 paired|cartesian (got {pair_mode!r})")
+        if bulk_group_id:
+            bgi = bulk_group_id.strip()
+            if bgi and not _BULK_GROUP_ID_RE.fullmatch(bgi):
+                raise HTTPException(status_code=400,
+                                    detail="bulk_group_id 형식 오류 (영숫자/_/-/. 1~64자)")
+        else:
+            bgi = None
+
+        prompts = [p.strip() for p in (prompts_text or "").splitlines() if p.strip()]
+        if not prompts:
+            raise HTTPException(status_code=400, detail="prompts_text 비어있음")
+
+        # 3) 파일 검증 (text-only 면 skip)
+        files = [f for f in (files or []) if (f.filename or "").strip()]
+        loaded: list[tuple[str, bytes]] = []
+        if not is_text_only:
+            if not files:
+                raise HTTPException(status_code=400,
+                                    detail="이미지 없음 (text-only 가 아니면 필수)")
+            for f in files:
+                ext = Path(f.filename or "").suffix.lower()
+                if ext not in _ALLOWED_EXT:
+                    raise HTTPException(status_code=415,
+                                        detail=f"unsupported ext {ext} ({f.filename})")
+                blob = await f.read()
+                if len(blob) > _MAX_BYTES_PER_FILE:
+                    raise HTTPException(status_code=413,
+                                        detail=f"파일 너무 큼 ({f.filename}, {len(blob)} > {_MAX_BYTES_PER_FILE})")
+                loaded.append((f.filename or "image", blob))
+
+        # 4) plan 구성
+        plan: list[dict] = []
+        if is_text_only:
+            plan = [{"prompt": p, "files": []} for p in prompts]
+        elif pair_mode == "paired":
+            if len(loaded) != len(prompts):
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"paired 모드는 N==M 필요 "
+                        f"(images={len(loaded)}, prompts={len(prompts)}). "
+                        "cartesian 모드로 변경하거나 개수를 맞춰주세요."
+                    ),
+                )
+            for p, item in zip(prompts, loaded):
+                plan.append({"prompt": p, "files": [item]})
+        else:  # cartesian: 같은 prompt 마다 _MAX_FILES_PER_BATCH 단위 chunk
+            for p in prompts:
+                for i in range(0, len(loaded), _MAX_FILES_PER_BATCH):
+                    plan.append({"prompt": p, "files": loaded[i:i + _MAX_FILES_PER_BATCH]})
+
+        # 5) hard cap — 총 jobs 수
+        total_jobs = sum(max(1, len(b["files"])) for b in plan)
+        if total_jobs > _MAX_BULK_JOBS:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"bulk 한도 초과: total_jobs={total_jobs} > GENAI_MAX_BULK_JOBS={_MAX_BULK_JOBS}. "
+                    "CLI bulk-submit 사용 또는 GENAI_MAX_BULK_JOBS env 상향 검토."
+                ),
+            )
+
+        # 6) limits 사전 체크 (server-side 정직성 — preview/confirm 분리 안 하므로 1회 검사)
+        n_batches = len(plan)
+        usage = limits.usage(user)
+        rem_b = usage.get("daily_batches", {}).get("remaining")
+        rem_bytes = usage.get("daily_bytes", {}).get("remaining")
+        total_input_bytes = sum(len(b) for _, b in loaded)
+        if rem_b is not None and n_batches > rem_b:
+            raise HTTPException(status_code=429,
+                                detail=f"일별 배치 한도 초과: 제출 {n_batches} > 잔여 {rem_b}")
+        if rem_bytes is not None and total_input_bytes > rem_bytes:
+            raise HTTPException(status_code=429,
+                                detail=f"일별 bytes 한도 초과: 제출 {total_input_bytes:,} > 잔여 {rem_bytes:,}")
+
+        # 7) options
+        bgi = bgi or f"bgi-{_uuid.uuid4().hex[:12]}"
+        common_opts: dict[str, str] = {}
+        if model_name:
+            common_opts["model_name"] = model_name
+        if mode:
+            common_opts["mode"] = mode
+        if duration:
+            common_opts["duration"] = duration
+        if aspect_ratio:
+            common_opts["aspect_ratio"] = aspect_ratio
+        if is_text_only:
+            common_opts.setdefault("mode", "txt2video")
+        common_opts["bulk_group_id"] = bgi
+
+        # 8) 순차 submit (sleep with throttle)
+        submitted: list[dict] = []
+        failed: list[dict] = []
+        for i, b in enumerate(plan, 1):
+            try:
+                result = submit_batch(
+                    engine=engine, prompt=b["prompt"],
+                    files=b["files"], requested_by=user,
+                    options=dict(common_opts),
+                )
+                submitted.append({
+                    "i": i,
+                    "batch_id": result.get("batch_id"),
+                    "n_images": len(b["files"]),
+                })
+            except Exception as exc:
+                failed.append({"i": i, "error": str(exc), "type": type(exc).__name__})
+            # async sleep — blocking time.sleep 사용 시 uvicorn event loop 자체가 정지 →
+            # 다른 요청 처리 불가. asyncio.sleep 으로 양보.
+            if i < len(plan) and _BULK_SLEEP_SECONDS > 0:
+                await _asyncio.sleep(_BULK_SLEEP_SECONDS)
+
+        result_payload = {
+            "bulk_group_id": bgi,
+            "engine": engine,
+            "total_planned": len(plan),
+            "submitted": submitted,
+            "failed": failed,
+        }
+
+        # 9) idempotency cache 저장 (응답 직전, 결과 포함)
+        with _idempotency_lock:
+            _idempotency_cache[cache_key] = (_time.time(), result_payload)
+
+        # 10) 응답 — JSON 요청이면 JSON, 브라우저 폼이면 결과 페이지 redirect (group 필터)
+        accept = (request.headers.get("accept") or "").lower()
+        if "application/json" in accept and "text/html" not in accept:
+            return JSONResponse(result_payload)
+        return RedirectResponse(
+            url=f"/genai/batches?bulk_group_id={bgi}&created_bulk={len(submitted)}",
+            status_code=303,
+        )
 
     @app.get("/genai/costs", response_class=HTMLResponse)
     def costs(request: Request, range: str = "week", user: str = Depends(_check_auth)):
