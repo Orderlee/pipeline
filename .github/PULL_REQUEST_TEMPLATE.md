@@ -1,43 +1,43 @@
 <!--
-PR authoring guide: see docs/git-workflow-guide.md "Quick Reference (cheat card)" section
+PR 작성 가이드: docs/git-workflow-guide.md "빠른 참조 (체크카드)" 섹션 참고
 -->
 
-## Target Branch
+## Target 브랜치
 
-- [ ] **`dev`** — to be validated on staging (:3031). A separate `dev → main` PR is required after validation passes.
-- [ ] **`main`** — one of the following:
-  - [ ] Merging commits already validated on dev
-  - [ ] Hotfix (branched from main) — **`main → dev` back-merge required** after merge (prevents regression in next release)
+- [ ] **`dev` 대상** — 스테이징(3031)에서 검증 예정. 검증 완료 후 별도로 `dev → main` PR 필요
+- [ ] **`main` 대상** — 다음 중 하나:
+  - [ ] dev에서 이미 검증 완료된 커밋 머지
+  - [ ] 핫픽스(main 기반) — 머지 후 **`main → dev` 백머지 필수** (다음 릴리즈 회귀 방지)
 
-## What Changed
+## 변경 내용
 
-<!-- 1–3 sentences on what and why. Leave out the how — the diff shows that. -->
+<!-- 무엇을·왜 변경했는지 1-3문장. "어떻게"는 diff에서 보이므로 생략. -->
 
-## Deploy Impact
+## 배포 영향
 
-- [ ] `src/vlm_pipeline/**` changes — rsync only, no image rebuild (fast)
-- [ ] `Dockerfile` / `docker/app/**` / `configs/**` / `scripts/**` / `gcp/**` / `split_dataset/**` / `src/python/**` changes — **image rebuild required** (slow)
-- [ ] Only `*.md` (root) / `docs/**` / `tests/**` changes — `paths-ignore` suppresses CI trigger (expected)
-- [ ] Env change required — `.env`/`.env.test` are git-untracked. Edit on host directly + restart Dagster for the affected environment.
+- [ ] `src/vlm_pipeline/**` 변경 — rsync만, 이미지 재빌드 없음 (빠름)
+- [ ] `Dockerfile` / `docker/app/**` / `configs/**` / `scripts/**` / `gcp/**` / `split_dataset/**` / `src/python/**` 변경 — **이미지 재빌드** (느림)
+- [ ] `*.md` (루트) / `docs/**` / `tests/**` 만 변경 — `paths-ignore`로 CI 미트리거 (정상)
+- [ ] env 변경 필요 — `.env`/`.env.test`는 git 미추적. 호스트에서 직접 편집 + 해당 환경 Dagster 재기동
 
-## Validation
+## 검증
 
-- [ ] Feature confirmed locally or on staging (evidence/screenshot if applicable)
-- [ ] Relevant unit tests pass (`pytest tests/unit -q`)
-- [ ] If DuckDB schema/query changed, sample-checked with `scripts/query_local_duckdb.py`
-- [ ] If new sensor/asset/schedule, tick log or run materialization confirmed
+- [ ] 로컬 또는 스테이징에서 기능 확인 (해당 시 증빙/스크린샷)
+- [ ] 관련 유닛 테스트 통과 (`pytest tests/unit -q`)
+- [ ] DuckDB 스키마/쿼리 변경이 있으면 `scripts/query_local_duckdb.py`로 샘플 확인
+- [ ] 새 sensor/asset/schedule이면 tick 로그 또는 run materialization 확인
 
-## Post-Deploy Checklist (do this yourself after merge)
+## 배포 후 체크 (머지 후 본인이 직접)
 
 - [ ] [Actions run](https://github.com/Orderlee/Datapipeline-Data-data_pipeline/actions) success
-- [ ] Target environment Dagster UI returns 200 OK
+- [ ] 해당 환경 Dagster UI 200 OK
   - PROD: http://10.0.0.10:3030/
   - STAGING: http://10.0.0.10:3031/
-- [ ] Code location **LOADED** (no PythonError)
-- [ ] Asset/sensor/schedule in the changed scope behaves correctly
-- [ ] (Hotfix) `main → dev` back-merge complete
-- [ ] (After production is stable post-main merge) Upstream contribution: `./tools/pr-to-upstream.sh`
+- [ ] code location **LOADED** (PythonError 없음)
+- [ ] 변경 범위의 asset/sensor/schedule 정상 동작
+- [ ] (핫픽스) `main → dev` 백머지 완료
+- [ ] (main 머지 후 프로덕션 안정 확인) upstream 기여: `./tools/pr-to-upstream.sh`
 
-## Related Issues / References
+## 관련 이슈 / 참고
 
-<!-- Linear / GitHub Issue links, reference docs, prior PRs, etc. -->
+<!-- Linear / GitHub Issue 링크, 참고 문서, 이전 PR 등 -->

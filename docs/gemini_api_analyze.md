@@ -1,249 +1,250 @@
-# Gemini API Auto-Labeling Pipeline Guide
+# Gemini API 오토 라벨링 파이프라인 가이드
 
-> Baseline: no audio · default resolution · GS E&C 38 files (155,957 seconds, average 68.4 minutes)
-> References: [https://ai.google.dev/gemini-api/docs/tokens](https://ai.google.dev/gemini-api/docs/tokens), [https://ai.google.dev/gemini-api/docs/video-understanding](https://ai.google.dev/gemini-api/docs/video-understanding)
+> 기준: 오디오 없음 · 기본 해상도 · GS건설 38건 (155,957초, 평균 68.4분)
+> 검증: [https://ai.google.dev/gemini-api/docs/tokens](https://ai.google.dev/gemini-api/docs/tokens), [https://ai.google.dev/gemini-api/docs/video-understanding](https://ai.google.dev/gemini-api/docs/video-understanding)
 
 ---
 
-## 1. Token Formula
+## 1. 토큰 공식
 
 ```
 tokens = duration_sec × 258
 
-200k boundary = 200,000 / 258 = 775 seconds = 12.9 minutes
+200k 경계 = 200,000 / 258 = 775초 = 12.9분
 ```
 
-- Regardless of the original FPS (10–15), Gemini internally samples at a **fixed 1 FPS** (configurable — see FPS strategy below)
+- 원본 FPS(10~15)와 무관하게 Gemini는 내부적으로 **1 FPS로 고정 샘플링** (변경 가능, 아래 FPS 전략 참고)
 - 1 FPS × 258 tokens/frame = 258 tokens/sec
-- 258 tokens/frame is a fixed value regardless of resolution (Gemini internal normalization)
+- 258 tokens/frame은 해상도 무관 고정값 (Gemini 내부 정규화)
 
 ---
 
-## 2. Pricing Structure
+## 2. 가격 구조
 
 
 |             | Flash        | Pro            |
 | ----------- | ------------ | -------------- |
 | Input ≤200k | $0.30/M      | $1.25/M        |
-| Input >200k | $0.30/M (same) | $2.50/M (2×)  |
-| Output      | $2.50/M      | $10.00–15.00/M |
+| Input >200k | $0.30/M (동일) | $2.50/M (2배)   |
+| Output      | $2.50/M      | $10.00~15.00/M |
 
 
-> **M = 1 million tokens**
-> Pro price doubles for any single request exceeding 200k tokens.
-> Even with the same total tokens, cost varies depending on how the requests are split.
+> **M = 100만 토큰**
+> Pro는 요청 1건이 200k 초과하면 단가 2배.
+> 총 토큰이 같아도 어떻게 나눠서 넣느냐에 따라 비용이 달라짐.
 
 ---
 
-## 3. Cost Per Unit
+## 3. 단위별 비용
 
 
-| Unit            | Tokens      | Flash     | Pro ≤200k | Pro >200k |
+| 단위            | 토큰 수      | Flash     | Pro ≤200k | Pro >200k |
 | ------------- | --------- | --------- | --------- | --------- |
-| 1 second            | 258       | $0.000077 | $0.000323 | $0.000645 |
-| 1 minute            | 15,480    | $0.0046   | $0.0194   | $0.0387   |
-| 1 hour           | 928,800   | $0.279    | $1.161    | $2.322    |
-| Average 1 file (68.4 min) | 1,058,832 | $0.319    | —         | $2.652    |
+| 1초            | 258       | $0.000077 | $0.000323 | $0.000645 |
+| 1분            | 15,480    | $0.0046   | $0.0194   | $0.0387   |
+| 1시간           | 928,800   | $0.279    | $1.161    | $2.322    |
+| 평균 1건 (68.4분) | 1,058,832 | $0.319    | —         | $2.652    |
 
 
-> **1 hour Pro >200k**: 928,800 / 1,000,000 × $2.50 = $2.322
-> (Differs from the $2.50 unit rate because 1 hour is not exactly 1 million tokens)
+> **1시간 Pro >200k**: 928,800 / 1,000,000 × $2.50 = $2.322
+> (단가 $2.50과 다른 이유: 1시간이 100만 토큰이 아니기 때문)
 >
-> **Average 1 file Pro ≤200k "—"**: 68.4 min = 1,058,832 tokens → always in the >200k tier
+> **평균 1건 Pro ≤200k "—"**: 68.4분 = 1,058,832 tokens → 항상 >200k 구간
 
 ---
 
-## 4. Cost by Scenario (GS E&C 38 files)
+## 4. 시나리오별 비용 (GS건설 38건)
 
 
-| Scenario           | Unit price            | Requests | Calculation                                 | Cost                    |
+| 시나리오           | 단가            | 요청 수 | 계산식                                 | 비용                    |
 | -------------- | ------------- | ---- | ----------------------------------- | --------------------- |
-| Flash 60-min (current) | $0.30/M       | 78   | 40.24M × $0.30                      | **$12.1 (₩17,900)**   |
-| Pro 60-min (current)   | $2.50/M       | 78   | 40.24M × $2.50                      | **$100.7 (₩148,800)** |
-| Pro 10-min chunk     | $1.25/M       | 260  | 40.24M × $1.25                      | **$50.3 (₩74,300)**   |
+| Flash 60분 (현재) | $0.30/M       | 78   | 40.24M × $0.30                      | **$12.1 (₩17,900)**   |
+| Pro 60분 (현재)   | $2.50/M       | 78   | 40.24M × $2.50                      | **$100.7 (₩148,800)** |
+| Pro 10분 청크     | $1.25/M       | 260  | 40.24M × $1.25                      | **$50.3 (₩74,300)**   |
 | 2-Pass Hybrid  | $0.30+$1.25/M | 253  | (40.24M × $0.30) + (26.47M × $1.25) | **$45.2 (₩66,800)**   |
 
 
 ```
-Common:          total tokens = 155,957 sec × 258 = 40.24M tokens
-2-Pass stage 2:  155,957 × 25/38 × 258  = 26.47M tokens (25 files)
+공통:         총 토큰 = 155,957초 × 258 = 40.24M tokens
+2-Pass 2단계: 155,957 × 25/38 × 258  = 26.47M tokens (25건분)
 ```
 
-### Why Pro 10-min chunks are cheaper
+### Pro 10분 청크가 저렴한 이유
 
 ```
-Sending as a whole: 1 file = 516,000 tokens > 200k → $2.50/M applies
-Splitting into 10-min chunks: 1 chunk = 154,800 tokens < 200k → $1.25/M applies
+통으로 넣을 때: 1건 = 516,000 tokens > 200k → $2.50/M 적용
+10분으로 자를 때: 1청크 = 154,800 tokens < 200k → $1.25/M 적용
 
-Total tokens are the same; only the unit price changes: $2.50 → $1.25 (half)
+총 토큰은 동일, 단가만 $2.50 → $1.25 (절반)
 → $100.7 → $50.3
 ```
 
 ---
 
-## 5. Processing Flow for a 1-Hour Video (Pro 10-min chunks)
+## 5. 1시간 영상 처리 프로세스 (Pro 10분 청크 기준)
 
 ```
-Source video (60 min, ~525 MB)
+원본 영상 (60분, ~525MB)
   ↓
-[Step 1] Preview transcoding (if >450 MB)
-  Source (~525 MB) → preview (~150 MB, audio removed)
-  Purpose: 4× upload speed improvement, audio token removal
-  Source file is preserved
+[Step 1] Preview 트랜스코딩 (450MB 초과 시)
+  원본 (~525MB) → preview (~150MB, 오디오 제거)
+  목적: 업로드 속도 4배 향상, 오디오 토큰 제거
+  원본 파일은 보존
 
   ↓
-[Step 2] Chunk splitting (with 60-second overlap)
-  chunk_01: 0:00 – 11:00
-  chunk_02: 9:00 – 20:00
-  chunk_03: 19:00 – 30:00
-  chunk_04: 29:00 – 40:00
-  chunk_05: 39:00 – 50:00
-  chunk_06: 49:00 – 60:00
+[Step 2] 청크 분할 (60초 오버랩 포함)
+  chunk_01: 0:00 ~ 11:00
+  chunk_02: 9:00 ~ 20:00
+  chunk_03: 19:00 ~ 30:00
+  chunk_04: 29:00 ~ 40:00
+  chunk_05: 39:00 ~ 50:00
+  chunk_06: 49:00 ~ 60:00
 
   ↓
-[Step 3] Gemini API calls (concurrent parallel)
-  Each chunk → event timestamps returned (relative to chunk start)
-  e.g. {"timestamp": [330, 375], "category": "vehicle_movement"}
+[Step 3] Gemini API 호출 (concurrent 병렬)
+  각 청크 → 이벤트 타임스탬프 반환 (청크 내부 기준)
+  예: {"timestamp": [330, 375], "category": "vehicle_movement"}
 
   ↓
-[Step 4] Offset correction (required)
-  chunk_04 start = 1,800 seconds (30:00)
-  330 sec → 1,800 + 330 = 2,130 sec (original 35:30)
+[Step 4] 오프셋 보정 (필수)
+  chunk_04 시작 = 1,800초 (30:00)
+  330초 → 1,800 + 330 = 2,130초 (원본 35:30)
 
   ↓
-[Step 5] Deduplication (overlap region)
-  Adjacent chunks with timestamp difference < 60 sec + same category → merge
+[Step 5] 중복 제거 (오버랩 구간)
+  인접 청크에서 타임스탬프 차이 < 60초 + 동일 카테고리 → 병합
 
   ↓
-[Step 6] Clip extraction (from source)
-  No buffer (unnecessary for YOLO purposes)
-  Cut directly from source using timestamps
+[Step 6] 클립 추출 (원본에서)
+  버퍼 없음 (YOLO 목적 시 불필요)
+  타임스탬프 그대로 원본에서 잘라냄
 
   ↓
-[Step 7] Frame extraction → YOLO
-  clips × f(d) frames extracted → YOLO object detection
+[Step 7] 프레임 추출 → YOLO
+  clips × f(d)장 추출 → YOLO 객체 감지
 ```
 
 ---
 
-## 6. Operational Optimization
+## 6. 운영 최적화
 
-### Chunk Strategy
-
-```
-Flash: 30-min chunks
-  → No cost change, minimizes API overhead
-
-Pro:   10-min chunks
-  600 sec × 258 = 154,800 tokens < 200k → $1.25/M maintained
-  → $100.7 → $50.3 (50% savings)
-
-Overlap: 60 seconds required
-  660 sec × 258 = 170,280 tokens < 200k ✓
-  Prevents boundary event loss; ~10% cost increase (negligible)
-```
-
-### FPS Strategy
+### 청크 전략
 
 ```
-Default: 1 FPS (sufficient for construction site events lasting 5+ seconds)
-         Configurable via Gemini API parameter
-Exception: 2–3 FPS (when sub-3-second event detection is needed)
-           → 2–3× cost; apply selectively to suspected segments only
+Flash: 30분 청크
+  → 비용 변화 없음, API 오버헤드 최소화
+
+Pro:   10분 청크
+  600초 × 258 = 154,800 tokens < 200k → $1.25/M 유지
+  → $100.7 → $50.3 (50% 절감)
+
+오버랩: 60초 필수
+  660초 × 258 = 170,280 tokens < 200k 유지 ✓
+  경계 이벤트 누락 방지, 비용 10% 증가 (무시 가능)
 ```
 
-### Maximizing Concurrency
+### FPS 전략
 
 ```
-max_concurrent = RPM / 60 × average_response_time_sec
+기본: 1 FPS (건설현장 5초 이상 이벤트 충분)
+      Gemini API 파라미터로 변경 가능
+예외: 2~3 FPS (3초 미만 이벤트 감지 필요 시)
+      → 비용 2~3배, 의심 구간에만 선택적 적용
+```
 
-Flash: 1,000 RPM, avg 9 sec → theoretical max 150, recommended 20–30
-Pro:   150 RPM,   avg 18 sec → theoretical max 45,  recommended 10–15
+### Concurrent 최대화
 
-For 260 requests with 10-min chunks:
-  concurrent=3  → ~22 min
-  concurrent=10 → ~7 min
+```
+max_concurrent = RPM / 60 × 평균응답시간(초)
 
-On 429 (Too Many Requests) errors: reduce concurrency or apply exponential backoff
+Flash: 1,000 RPM, 평균 9초 → 이론 상한 150, 권장 20~30
+Pro:   150 RPM,   평균 18초 → 이론 상한 45,  권장 10~15
+
+10분 청크 260 요청 기준:
+  concurrent=3  → ~22분
+  concurrent=10 → ~7분
+
+429 에러(Too Many Requests) 발생 시 concurrent 감소 또는 지수 백오프 적용
 ```
 
 ---
 
-## 7. Processing Time
+## 7. 처리 시간
 
 
-| Stage            | Flash    | Pro (10-min chunks) | Notes              |
+| 단계            | Flash    | Pro (10분 청크) | 비고              |
 | ------------- | -------- | ------------ | --------------- |
-| Preview transcoding | ~10 min     | ~10 min         | Model-independent, 3 parallel      |
-| Gemini API    | ~8 min      | ~22 min         | At concurrent=3 |
-| Clip extraction         | ~1.5 min    | ~1.5 min        | Extracted from source         |
-| YOLO          | ~0.3 min    | ~0.3 min        | batch=4         |
-| **Total**        | **~20 min** | **~34 min**     |                 |
+| Preview 트랜스코딩 | ~10분     | ~10분         | 모델 무관, 3병렬      |
+| Gemini API    | ~8분      | ~22분         | concurrent=3 기준 |
+| 클립 추출         | ~1.5분    | ~1.5분        | 원본에서 추출         |
+| YOLO          | ~0.3분    | ~0.3분        | batch=4         |
+| **전체**        | **~20분** | **~34분**     |                 |
 
 
-> Gemini calls start as soon as preview transcoding completes → stages overlap, so actual wall time is shorter than the sum
-
----
-
-## 8. Storage
-
-```
-Source 38 files:   22.74 GB (100%)
-Preview 30 files:   ~5 GB   (~22%)    Transcoding output
-Event clips:        ~2–5% of source   Extracted from source
-Frame images:       ~3–4% of source   JPEG input for YOLO
-Chunk files:        ~1–2 GB           Temporary, deleted after processing
-─────────────────────────────────────────────────────────────
-Maximum required space (peak):    ~130–150% of source
-Space after processing (final):   ~10% of source (estimated)
-```
-
-### Image Count Formula
-
-```
-clips  = V × n          V: number of videos / n: events per video (estimated)
-images = clips × f(d)   d: clip length (seconds)
-
-f(d): d < 10s    → 3 frames
-      10 – 30s   → 5 frames
-      30 – 120s  → 8 frames
-      120s+      → 12 frames
-```
+> Preview 트랜스코딩 완료분부터 Gemini 호출 시작 → 단계 겹침으로 실제 wall time은 합산보다 짧음
 
 ---
 
-## 9. Resources
+## 8. 용량
+
+```
+원본 38건:      22.74 GB (100%)
+Preview 30건:   ~5 GB   (~22%)    트랜스코딩 결과물
+이벤트 클립:    원본의 ~2~5%      원본에서 추출
+프레임 이미지:  원본의 ~3~4%      YOLO 입력용 JPEG
+청크 파일:      ~1~2 GB           임시, 처리 후 삭제
+─────────────────────────────────
+최대 필요 공간(초기 용량): 원본의 약 130~150%
+처리 이후 공간(최종 용량): 원본의 약 10% 내외 예상
+```
+
+### 이미지 수 공식
+
+```
+clips  = V × n          V: 비디오 수 / n: 이벤트 수/비디오 (가정치)
+images = clips × f(d)   d: 클립 길이(초)
+
+f(d): d < 10s    → 3장
+      10 ~ 30s   → 5장
+      30 ~ 120s  → 8장
+      120s+      → 12장
+```
+
+---
+
+## 9. 리소스
 
 
-| Resource        | Bottleneck      | Management notes                    |
+| 리소스        | 병목      | 관리 포인트                    |
 | ---------- | ------- | ------------------------- |
-| Gemini API | 🔴 Primary bottleneck | Check RPM limits, maximize concurrency |
-| Network       | 🟡 Secondary bottleneck  | Larger chunks increase upload time          |
-| CPU        | 🟡 Secondary bottleneck  | 3 parallel transcoding is currently optimal           |
-| GPU (YOLO) | 🟢 Headroom   | Verify cuda device setting         |
-| Disk        | 🟢 Headroom   | Reserve 150% of source as free space         |
+| Gemini API | 🔴 주 병목 | RPM 한도 확인, concurrent 최대화 |
+| 네트워크       | 🟡 준병목  | 청크 클수록 업로드 시간 증가          |
+| CPU        | 🟡 준병목  | 트랜스코딩 3병렬 현재 최적           |
+| GPU (YOLO) | 🟢 여유   | cuda device 설정 확인         |
+| 디스크        | 🟢 여유   | 원본의 150% 여유 공간 확보         |
 
 
 ---
 
-## 10. Data Quality
+## 10. 데이터 품질
 
 
-| Item        | Detail                                        |
+| 항목        | 내용                                        |
 | --------- | ----------------------------------------- |
-| Timestamp accuracy | ±1 second (structural limit of 1 FPS)                        |
-| Boundary events    | 60-second overlap + post-deduplication processing                       |
-| Clip extraction source  | Source (not preview; preserves YOLO quality)               |
-| Buffer        | Unnecessary for YOLO purposes                             |
-| Review priority   | Flag clips from chunk boundaries (`from_chunk_boundary`) for priority review |
+| 타임스탬프 정확도 | ±1초 (1 FPS 구조적 한계)                        |
+| 경계 이벤트    | 오버랩 60초 + 중복 제거 후처리                       |
+| 클립 추출 소스  | 원본 (preview 아님, YOLO 품질 유지)               |
+| 버퍼        | YOLO 목적 시 불필요                             |
+| 검수 우선순위   | 경계 출처 플래그(`from_chunk_boundary`) 달아 우선 검수 |
 
 
 ---
 
-## Selection Criteria
+## 선택 기준
 
 ```
-Cost first     → Flash 30-min chunks    $12.1/batch
-Quality first  → Pro 10-min chunks      $50.3/batch
-Optimal balance → 2-Pass Hybrid         $45.2/batch
+비용 최우선    → Flash 30분 청크    $12.1/배치
+품질 최우선    → Pro 10분 청크      $50.3/배치
+최적 균형      → 2-Pass Hybrid     $45.2/배치
 ```
+

@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 import os
 from datetime import datetime
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 from uuid import uuid4
 
 from dagster import Field, RetryPolicy, asset
@@ -27,6 +27,13 @@ DATASET_BUCKET = "vlm-dataset"
 LABELS_BUCKET = "vlm-labels"
 RAW_BUCKET = "vlm-raw"
 
+# vlm-dataset NFS migration (B-narrow):
+#   DATASET_STORAGE=fs (default) → NFS path (NFS_DATASET_ROOT 기준)
+#   DATASET_STORAGE=minio        → 옛 MinIO 모드 (rollback용)
+# DB의 dataset_bucket 값은 _dataset_bucket_value() 로 일관 결정.
+DATASET_STORAGE = os.getenv("DATASET_STORAGE", "fs").lower()
+NFS_DATASET_ROOT = os.getenv("NFS_DATASET_ROOT", "/nas/vlm_datasets")
+
 # GenAI pair 빌드 — 출력 미디어별 dataset 하위 디렉토리.
 _GENAI_OUTPUT_DIR = {"video": "videos", "image": "generated_images"}
 
@@ -36,9 +43,56 @@ def _require_ls_finalized() -> bool:
     return os.getenv("DATASET_REQUIRE_LS_FINALIZED", "0") == "1"
 
 
+def _dataset_bucket_value() -> str:
+    """DB에 저장할 dataset_bucket 컬럼 값. fs 모드면 'fs', 아니면 'vlm-dataset'."""
+    return "fs" if DATASET_STORAGE == "fs" else DATASET_BUCKET
+
+
+def _ensure_dataset_root(minio: MinIOResource) -> None:
+    """dataset 저장소 root 보장 (NFS 폴더 또는 MinIO 버킷)."""
+    if DATASET_STORAGE == "fs":
+        Path(NFS_DATASET_ROOT).mkdir(parents=True, exist_ok=True)
+    else:
+        minio.ensure_bucket(DATASET_BUCKET)
+
+
+def _copy_to_nfs_if_outdated(minio: MinIOResource, src_bucket: str, src_key: str,
+                             dst_path: Path, log) -> bool:
+    """MinIO src → NFS dst_path. src size != dst size 면 재copy. atomic (tmp + rename)."""
+    if dst_path.exists():
+        src_head = minio.head(src_bucket, src_key)
+        if src_head is not None and src_head.get("size") == dst_path.stat().st_size:
+            return False
+    dst_path.parent.mkdir(parents=True, exist_ok=True)
+    data = minio.download(src_bucket, src_key)
+    tmp = dst_path.with_suffix(dst_path.suffix + ".tmp")
+    tmp.write_bytes(data)
+    os.replace(tmp, dst_path)
+    log.debug(f"copy: {src_bucket}/{src_key} → fs:{dst_path}")
+    return True
+
+
+def _write_dataset_artifact(minio: MinIOResource, dst_key: str, data: bytes,
+                            content_type: str) -> None:
+    """dataset artifact (manifest.json 등) 저장. fs/minio 분기."""
+    if DATASET_STORAGE == "fs":
+        dst_path = Path(NFS_DATASET_ROOT) / dst_key
+        dst_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = dst_path.with_suffix(dst_path.suffix + ".tmp")
+        tmp.write_bytes(data)
+        os.replace(tmp, dst_path)
+    else:
+        minio.upload(DATASET_BUCKET, dst_key, data, content_type)
+
+
 def _copy_if_outdated(minio: MinIOResource, src_bucket: str, src_key: str,
                       dst_key: str, log,
                       dst_bucket: str = DATASET_BUCKET) -> bool:
+    # DATASET_STORAGE=fs (default) → NFS write
+    # DATASET_STORAGE=minio        → MinIO server-side copy (legacy)
+    if DATASET_STORAGE == "fs":
+        dst_path = Path(NFS_DATASET_ROOT) / dst_key
+        return _copy_to_nfs_if_outdated(minio, src_bucket, src_key, dst_path, log)
     # src ETag != dst ETag 일 때만 copy. dst 없거나 stale 이면 True.
     # dst 존재만 확인하던 기존 방식은 LS 재submit 으로 src 가 갱신돼도
     # vlm-dataset 에 옛 Gemini auto 버전이 영구히 남는 회귀를 일으켰다.
@@ -169,7 +223,7 @@ def _build_project_genai(context, db, minio: MinIOResource,
             "source_unit_name": folder,
         }),
         "split_ratio": None,
-        "dataset_bucket": DATASET_BUCKET,
+        "dataset_bucket": _dataset_bucket_value(),
         "dataset_prefix": folder_prefix,
         "build_status": "building",
     })
@@ -269,7 +323,7 @@ def _build_project_genai(context, db, minio: MinIOResource,
         "schema_version": 1,
         "label_free": True,
         "built_at": datetime.utcnow().isoformat() + "Z",
-        "bucket": DATASET_BUCKET,
+        "bucket": _dataset_bucket_value(),
         "prefix": folder_prefix,
         "build_status": final_status,
         "counts": {
@@ -284,8 +338,8 @@ def _build_project_genai(context, db, minio: MinIOResource,
         "pairs": pair_entries,
         "skipped_pairs": skipped_entries,
     }
-    minio.upload(
-        DATASET_BUCKET,
+    _write_dataset_artifact(
+        minio,
         f"{folder_prefix}/manifest.json",
         json.dumps(manifest, ensure_ascii=False, indent=2).encode("utf-8"),
         "application/json",
@@ -375,7 +429,7 @@ def _build_project(context, db: DuckDBResource, minio: MinIOResource,
         "version": "v1",
         "config": json.dumps({"schema": "project_flat", "with_timestamp": True, "with_bbox": True}),
         "split_ratio": None,
-        "dataset_bucket": DATASET_BUCKET,
+        "dataset_bucket": _dataset_bucket_value(),
         "dataset_prefix": folder_prefix,
         "build_status": "building",
     })
@@ -486,7 +540,7 @@ def _build_project(context, db: DuckDBResource, minio: MinIOResource,
         "project": folder,
         "folder_prefix": folder_prefix,
         "built_at": datetime.utcnow().isoformat() + "Z",
-        "bucket": DATASET_BUCKET,
+        "bucket": _dataset_bucket_value(),
         "prefix": folder_prefix,
         "counts": {
             "videos": len(video_entries),
@@ -499,8 +553,8 @@ def _build_project(context, db: DuckDBResource, minio: MinIOResource,
         "clips": clip_entries,
         "images": image_entries,
     }
-    minio.upload(
-        DATASET_BUCKET,
+    _write_dataset_artifact(
+        minio,
         f"{folder_prefix}/manifest.json",
         json.dumps(manifest, ensure_ascii=False, indent=2).encode("utf-8"),
         "application/json",
@@ -553,7 +607,7 @@ def build_dataset(
         context.log.info("BUILD 대상 프로젝트 없음")
         return {"projects": 0, "summaries": []}
 
-    minio.ensure_bucket(DATASET_BUCKET)
+    _ensure_dataset_root(minio)
 
     summaries: list[dict] = []
     errors: list[tuple[str, Exception]] = []
