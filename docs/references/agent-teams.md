@@ -1,70 +1,68 @@
 # Agent Teams — VLM Data Pipeline
 
-> This document elaborates on the 3-tier model roles defined in [`multi-agent.md`](multi-agent.md) (Opus leader / Sonnet implementer / Codex validator) into **this project's specific sub-agent configuration**. It is a routing table for which team to assemble by task type.
+> This document elaborates the 3-tier model roles from [`multi-agent.md`](multi-agent.md) (Opus orchestrator / Sonnet implementer / Codex validator) into **this project's concrete sub-agent layout**. It is a routing guide: given a task, which team to assemble.
 
-## 1. Team Members (sub-agents)
-
-Sub-agents currently defined in `.claude/agents/` and their respective roles.
+## 1. Team members (sub-agents)
 
 | Sub-agent | Model | Mode | Role (multi-agent.md mapping) |
 |---|---|---|---|
-| (main session) | Opus 4.7 | r/w | Tier 1 — Orchestrator / Architect (§2.1) |
-| [`qa-strategist`](.claude/agents/qa-strategist.md) | Opus 4.7 | read-only | Tier 1-style — QA strategy / coverage gap analysis / test plan design. Authoring and execution are delegated |
-| [`dagster-impl`](.claude/agents/dagster-impl.md) | Sonnet 4.6 | r/w | Tier 2 — Main implementer (§2.2). Project rules built-in: 5-layer import, `duckdb_writer` tag, fail-forward, archive policy, MinIO key convention |
-| [`pipeline-explorer`](.claude/agents/pipeline-explorer.md) | Sonnet 4.6 | read-only | Tier 2 — Project-specific navigator. Compressed responses on code location/flow |
-| [`deploy-auditor`](.claude/agents/deploy-auditor.md) | Sonnet 4.6 | read-only | Tier 2 — CI/CD blast radius auditor. Detects prod/staging drift |
-| [`codex`](.claude/agents/codex.md) | Sonnet 4.6 liaison → GPT-5.5 | read-only | Tier 2 — Cross-validator (§2.3). Different family, second perspective. Effort matrix §3.3 applied |
+| (main session) | Opus 4.7 | r/w | Tier 1 — orchestrator / architect (§2.1) |
+| [`qa-strategist`](../../.claude/agents/qa-strategist.md) | Opus 4.7 | read-only | Tier 1-style — QA strategy, coverage gap analysis, test plan design. Authoring and execution are delegated |
+| [`dagster-impl`](../../.claude/agents/dagster-impl.md) | Sonnet 4.6 | r/w | Tier 2 — main implementer (§2.2). Project rules built-in: 5-layer import, `duckdb_writer` tag, fail-forward, archive policy, MinIO key conventions |
+| [`pipeline-explorer`](../../.claude/agents/pipeline-explorer.md) | Sonnet 4.6 | read-only | Tier 2 — project-specific navigator. Compressed answers about code location and flow |
+| [`deploy-auditor`](../../.claude/agents/deploy-auditor.md) | Sonnet 4.6 | read-only | Tier 2 — CI/CD blast radius auditor + prod/staging drift detector |
+| [`codex`](../../.claude/agents/codex.md) | Sonnet 4.6 liaison → GPT-5.5 | read-only | Tier 2 — cross-validator (§2.3). Different family, second perspective. Effort matrix §3.3 |
 
-Additionally, **skills** defined in `.agent/skill/` are workflow macros that combine the above sub-agents — `codex_collab`, `codex_arbitration`, `codex_refactor`, `codex_db_migration`, `dagster_lineage_fixer`, `staging_reset`, `duckdb_staging_wiper`, `daily_worklog`.
+In addition, **skills** in `.agent/skill/` are workflow macros that compose the above sub-agents — `codex_collab`, `codex_arbitration`, `codex_refactor`, `codex_db_migration`, `dagster_lineage_fixer`, `staging_reset`, `duckdb_staging_wiper`, `daily_worklog`.
 
-### 1.1 Work allocation by model (reflecting multi-agent.md principles)
+### 1.1 Model allocation (reflecting multi-agent.md spirit)
 
-The number of agents does not equate to model usage. In actual workflows, models are divided as follows.
+Agent count does not equal model usage. In actual workflow, models split as follows.
 
-| Model | Assigned work | Call frequency (target) | Call path |
+| Model | Assigned work | Target call frequency | Call path |
 |---|---|---|---|
-| **Opus 4.7** | Task decomposition · architecture decisions · QA strategy · final stage of difficult debugging · multi-model answer arbitration | ~10–20% | main session + `qa-strategist` |
-| **Sonnet 4.6** | Implementation · unit test authoring · exploration · general auditing · review worker | ~60–70% | `dagster-impl` · `pipeline-explorer` · `deploy-auditor` · `codex` liaison shell |
-| **GPT-5.5 (Codex)** | Cross-validation · dual solution · test code quality review (§3.3 medium) · security/migration extra_high validation | ~15–25% | `codex` agent + `codex_*` skills |
+| **Opus 4.7** | what & why — task decomposition, architecture decisions, QA strategy, final stage of difficult debugging, multi-model arbitration | ~10–20% | main session + `qa-strategist` |
+| **Sonnet 4.6** | how — implementation, unit test authoring, exploration, general auditing, review worker | ~60–70% | `dagster-impl`, `pipeline-explorer`, `deploy-auditor`, `codex` liaison shell |
+| **GPT-5.5 (Codex)** | is-it-correct — cross-validation, test code quality review (§3.3 `medium`), security/migration `extra_high` validation | ~15–25% | `codex` agent + `codex_*` skills |
 
 **Principles**:
-1. Decisions requiring reasoning effort (architecture, QA strategy, security judgement) → Opus
-2. Pattern/implementation-focused work → Sonnet
-3. Work requiring a second look from a different perspective → Codex
-4. **What & why** questions such as "where should the code live?" / "what tests should be added?" are in Opus's domain; **how** questions such as "implement this function" / "write this test" are in Sonnet's domain; **is-it-correct** questions such as "is this code safe?" / "does this test actually catch the gap?" are in Codex's domain.
+1. Decisions that require reasoning effort (architecture, QA strategy, security judgment) → Opus
+2. Pattern/implementation work → Sonnet
+3. Work that benefits from a different-family second look → Codex
+4. **what & why** questions ("where should this code live?" / "what tests should we add?") → Opus. **how** questions ("implement this function" / "write this test") → Sonnet. **is-it-correct** questions ("is this code safe?" / "does this test really catch the gap?") → Codex.
 
-## 2. Task Type → Team Routing
+## 2. Task type → team routing
 
-This is the general matrix from `multi-agent.md` §3.1 adapted to this project. The main session (Opus) consults this table at the start to decide the delegation path.
+This is `multi-agent.md` §3.1's general matrix adapted to this project. The main session (Opus) consults this table at the start of each task to decide delegation.
 
 | Task type | Primary owner | Secondary / validator | Notes |
 |---|---|---|---|
-| **Test strategy / coverage gap analysis / test plan design** | **`qa-strategist`** (Opus) | `codex` `medium` (second opinion on the plan itself) | "What to test / why" — what & why |
-| **Test code authoring** | `dagster-impl` (Sonnet) | `codex` `medium` review (multi-agent §3.3) | Delegate starting from P0 cases in the qa-strategist plan — how |
-| **Test quality review** | `codex` (`Effort: medium`) | — | "Does this test actually catch the gap?" — is-it-correct |
-| **E2E / staging runtime validation** | `pipeline-explorer` (DuckDB row count, MinIO object check) | Manual `staging_test_dispatch.py` run if needed | Read-only assertions, no mutations |
-| **Regression test execution + result analysis** | main or `dagster-impl` (`pytest -q`) | `codex` (if failure cause is ambiguous) | qa-strategist does not run tests |
-| New Dagster asset / sensor / op | `dagster-impl` | `codex` (50+ line changes) + `qa-strategist` (test plan) | 5-layer rules validated internally by dagster-impl |
-| Single-file bug fix (trivial) | main directly | — | Calling codex is wasteful (`codex_collab` SKILL's "handle directly" case) |
+| **Test strategy / coverage gap analysis / plan design** | **`qa-strategist`** (Opus) | `codex` `medium` (second opinion on the plan) | "what to test / why" — what & why |
+| **Test code authoring** | `dagster-impl` (Sonnet) | `codex` `medium` review (multi-agent §3.3) | Start with P0 cases from the qa-strategist plan — how |
+| **Test quality review** | `codex` (`Effort: medium`) | — | "does this test actually catch the gap?" — is-it-correct |
+| **E2E / staging runtime validation** | `pipeline-explorer` (DuckDB row counts, MinIO object checks) | Manual `staging_test_dispatch.py` when needed | Read-only assertions, no mutations |
+| **Regression test execution + result analysis** | main or `dagster-impl` (`pytest -q`) | `codex` (if failure cause is ambiguous) | qa-strategist does not execute tests |
+| New Dagster asset / sensor / op | `dagster-impl` | `codex` (50+ line changes) + `qa-strategist` (test plan) | 5-layer rule self-validated by dagster-impl |
+| Single-file bug fix (trivial) | main directly | — | Calling codex is wasteful (`codex_collab` SKILL "handle directly" case) |
 | Single-file bug fix (non-trivial) | `dagster-impl` or `codex_collab` skill | `codex` review | Grep callers when signature changes |
-| Module split / rename / structural rearrangement | `codex_refactor` skill | byte-preservation required | Logic must not change |
-| DuckDB schema / migration | `dagster-impl` authoring + `codex_db_migration` skill | `codex` `extra_high` validation | multi-agent.md §3.3 — subtle consistency reasoning hazard |
+| Module split / rename / structural rearrangement | `codex_refactor` skill | Byte-preservation required | Logic must not change |
+| DuckDB schema / migration | `dagster-impl` authoring + `codex_db_migration` skill | `codex` `extra_high` validation | multi-agent.md §3.3 — subtle consistency hazard |
 | Difficult algorithm / concurrency bug | `codex_arbitration` skill (Sonnet + Codex dual + Opus arbitration) | — | multi-agent.md §4.2 Pattern B |
 | "Where is it?" / code flow tracing | `pipeline-explorer` | — | Protects main context |
-| Pre-deploy change impact analysis | `deploy-auditor` | `codex` (if 🔴 detected) | Recommended just before dev→main merge |
+| Pre-deploy change impact analysis | `deploy-auditor` | `codex` (if 🔴 detected) | Recommended right before dev→main merge |
 | Suspected prod/staging drift | `deploy-auditor` | — | Two-worktree comparison + `gh run list` |
 | Staging reset | `staging_reset` skill | — | Operational task — user approval required |
 | DuckDB host lock / stale WAL | `duckdb_staging_wiper` skill | — | For clean re-testing |
-| Dagster lineage validation / repair | `dagster_lineage_fixer` skill | Trace impact scope with `pipeline-explorer` then fix with `dagster-impl` | |
+| Dagster lineage validation / repair | `dagster_lineage_fixer` skill | Trace scope with `pipeline-explorer` then fix with `dagster-impl` | |
 | Daily work log | `daily_worklog` skill | — | Auto-organizes WORKLOG.md |
 | Architecture decision / new resource / new bucket | main (Opus) alone | (optional) `codex` analysis | multi-agent.md §2.1 — delegation prohibited |
-| Security · auth · secrets | `dagster-impl` authoring | `codex` `extra_high` + Opus final review | multi-agent.md §3.3 |
+| Security / auth / secrets | `dagster-impl` authoring | `codex` `extra_high` + Opus final review | multi-agent.md §3.3 |
 | Label Studio / Slack / external API integration | `dagster-impl` | `codex` `high` (contract consistency) | Watch for webhook URL, presigned URL expiry |
 | Documentation / comments / README | `dagster-impl` (or main) | — | Default is "do not write" — CLAUDE.md rule |
 
-## 3. Team Composition by Scenario
+## 3. Team composition by scenario
 
-Flows that the table alone cannot capture — member call order is specified for four commonly occurring scenarios.
+Flows the table alone cannot capture — for five commonly recurring scenarios, the calling order of members is specified.
 
 ### 3.1 Scenario A — Feature development (feature branch → dev → main)
 
@@ -87,9 +85,9 @@ User request ("Add dry-run mode to this sensor")
 ### 3.2 Scenario B — Difficult bug / algorithm (Pattern B dual)
 
 ```
-User request ("There's a case where this dedup logic produces false negatives")
+User request ("This dedup logic produces false negatives in some case")
   │
-  ├─ main: Problem abstraction + confirm reproducibility
+  ├─ main: Problem abstraction + reproducibility check
   │     ↓
   ├─ pipeline-explorer: Compress relevant code + data flow
   │     ↓
@@ -97,7 +95,7 @@ User request ("There's a case where this dedup logic produces false negatives")
   │     ├─ dagster-impl: Solves independently
   │     ├─ codex:        Solves independently (answers not shared between them)
   │     ↓
-  ├─ main: Compare two answers → select better one or create hybrid
+  ├─ main: Compare two answers → pick better one or hybridize
   │     ↓
   └─ dagster-impl: Apply final solution + regression tests
 ```
@@ -105,141 +103,158 @@ User request ("There's a case where this dedup logic produces false negatives")
 ### 3.3 Scenario C — Operational incident (staging stuck / Dagster halted)
 
 ```
-User request ("The staging pipeline has stopped")
+User request ("staging pipeline is stuck")
   │
-  ├─ pipeline-explorer: Check last sensor tick, recent failed manifests
+  ├─ pipeline-explorer: Last sensor tick, most recent failed manifest
   │     ↓
   ├─ (branch)
   │     ├─ Suspected DuckDB lock → duckdb_staging_wiper skill
-  │     ├─ Run state corruption  → staging_reset skill
+  │     ├─ Run state corrupted   → staging_reset skill
   │     ├─ Lineage broken        → dagster_lineage_fixer skill
-  │     └─ Other                 → main diagnoses directly
+  │     └─ Other                 → main direct diagnosis
   │     ↓
   ├─ (if fix needed) dagster-impl or codex_collab skill
   │     ↓
-  └─ Restart validation — Dagster UI :3031, MinIO :9003, DuckDB row count
+  └─ Restart verification — Dagster UI :3031, MinIO :9003, DuckDB row counts
 ```
 
-### 3.4 Scenario D — Migration (e.g. NAS 10.0.0.36 → 10.0.0.51)
+### 3.4 Scenario D — Migration (e.g., NAS 10.0.0.36 → 10.0.0.51)
 
 ```
-User request ("Create a PR to move incoming to the 10.0.0.51 NFS mount")
+User request ("Make a PR moving incoming to the 10.0.0.51 NFS mount")
   │
   ├─ main: Migration plan (including rollback path)
   │     ↓
-  ├─ codex: Second opinion on the plan (extra_high — data model/path impact)
+  ├─ codex: Second opinion on the plan (extra_high — data model / path impact)
   │     ↓
   ├─ dagster-impl: Apply compose / mount / config changes
   │     ↓
-  ├─ deploy-auditor: Confirm rsync impact + image rebuild needed + .env changes required
+  ├─ deploy-auditor: rsync impact + image rebuild + .env requirement check
   │     ↓
   ├─ (user) Operate on staging for 1 week
   │     ↓
-  └─ codex + deploy-auditor final review before promoting to prod
+  └─ codex + deploy-auditor final review → promote to prod
 ```
 
-### 3.5 Scenario E — QA / coverage reinforcement (natural distribution across Opus + Sonnet + Codex)
+### 3.5 Scenario E — QA / coverage push (Opus + Sonnet + Codex natural split)
 
-This scenario is **the form where the 3-model team operates most naturally**. Since reasoning, implementation, and validation are clearly separated, the roles fall cleanly along model lines.
+**This scenario is where the 3-model team works most naturally** — reasoning, implementation, and validation each land in their own lane.
 
 ```
-User request ("I want to strengthen test coverage for the dispatch module")
+User request ("I want to strengthen test coverage of the dispatch module")
   │
-  ├─ main (Opus): Task decomposition — 4 stages: "strategy → write → review → validate"
+  ├─ main (Opus): Decompose — "strategy → authoring → review → validation" 4 steps
   │     ↓
   ├─ qa-strategist (Opus): Coverage gap analysis + P0/P1/P2 test plan
-  │     │  - grep existing dispatch-related tests
-  │     │  - risk category mapping (DuckDB lock, NFS transient, archive collision, etc.)
-  │     │  - return JSON plan (each case specifies delegate_to)
+  │     │   - grep existing dispatch-related tests
+  │     │   - map risk categories (DuckDB lock, NFS transient, archive collision, ...)
+  │     │   - returns JSON plan with `delegate_to` per case
   │     ↓
-  ├─ codex (medium): Second opinion on the plan itself (optional, recommended if P0 ≥ 5)
+  ├─ codex (medium): Second opinion on the plan itself (optional, recommended when 5+ P0 cases)
   │     ↓
-  ├─ main: Present plan to user + obtain approval
+  ├─ main: Present plan to user + get approval
   │     ↓
-  ├─ dagster-impl (Sonnet): Write approved P0 cases — fixture reuse, fail-forward validation
+  ├─ dagster-impl (Sonnet): Write approved P0 cases — reuse fixtures, verify fail-forward
   │     ↓
-  ├─ codex (medium): Review written test code — "Does this test verify real invariants?"
-  │     │  - multi-agent §3.3: test quality review is medium effort
+  ├─ codex (medium): Review the written test code — "does this test really defend the invariant?"
+  │     │   - multi-agent §3.3: test self-quality review is `medium` effort
   │     ↓
-  ├─ main: Incorporate Codex feedback, re-invoke dagster-impl if needed
+  ├─ main: Re-invoke dagster-impl with codex feedback (if any)
   │     ↓
-  ├─ pytest tests/unit -q  (actual execution — do not trust model's self-report)
+  ├─ pytest tests/unit -q   (actually run — never trust the model's self-report)
   │     ↓
-  └─ pipeline-explorer (Sonnet): Run one dispatch cycle on staging, verify DuckDB rows · MinIO objects
+  └─ pipeline-explorer (Sonnet): On staging, run dispatch once and verify DuckDB rows + MinIO objects
 ```
 
-**Why this scenario is the model case for 3-model distribution**:
-- Opus spends reasoning time on *what & why* (which risks to prevent)
-- Sonnet rapidly produces *how* (actual test code)
-- Codex views *is-it-correct* (does the test actually catch it) from a different family's perspective
-- There is structurally no blind spot where one model validates its own output (multi-agent §4.3 Pattern C)
+**Why this scenario is the model-distribution exemplar**:
+- Opus spends its reasoning budget on *what & why* (which risks to defend)
+- Sonnet produces the *how* (actual test code) quickly
+- Codex looks at *is-it-correct* (does the test really catch the gap) from a different family
+- No model reviews its own work — the blind-spot pattern is avoided structurally (multi-agent §4.3 Pattern C)
 
+## 4. Calling rules (multi-agent.md §5–6 applied)
 
-## 4. Call Rules (applying multi-agent.md §5–6)
+### 4.1 Context to pass
 
-### 4.1 Context delivery
+When calling a sub-agent via `Agent({prompt: ...})`, always include in the prompt:
 
-When calling a sub-agent, always include in the `Agent({prompt: ...})` prompt:
+1. **Task goal** — one sentence: "what / why"
+2. **Target file absolute paths** (for implementer / explorer agents)
+3. **Constraints** — backward compatibility, test pass criteria, behavior to preserve
+4. **Output format** — `dagster-impl` returns §6.1 JSON; `codex` may return markdown or JSON; `pipeline-explorer` and `deploy-auditor` use their own defined shapes; `qa-strategist` returns its plan JSON
 
-1. **Task objective** — "what / why" summarized in one sentence
-2. **Target file absolute paths** (implementation/exploration agents)
-3. **Constraints** — backward compatibility, test pass criteria, behavior that must be preserved
-4. **Output format** — `dagster-impl` uses §6.1 JSON, `codex` uses markdown/JSON choice, `pipeline-explorer` and `deploy-auditor` use their own defined shapes
-
-Do not include:
-
-- Raw answers from other sub-agents (prevent contamination — always have main summarize and re-deliver)
+Never pass:
+- Another sub-agent's raw answer (pollution prevention — always relay through main as a summary)
 - `.env` / `credentials/` / tokens / secrets
-- Irrelevant file history
+- Unrelated file history
 
 ### 4.2 Parallel vs sequential
 
-- **Parallelizable** — independent information gathering (e.g. simultaneous `pipeline-explorer` + `deploy-auditor` call)
-- **Must be sequential** — output of one agent is input of the next (e.g. `pipeline-explorer` → `dagster-impl`)
+- **Parallel allowed** — independent information gathering (e.g., `pipeline-explorer` + `deploy-auditor` simultaneously)
+- **Sequential required** — one agent's output is the next's input (e.g., `pipeline-explorer` → `dagster-impl`)
 
-main decides. When in doubt, go sequential for safety.
+main decides. When in doubt, sequential is safer.
 
-### 4.3 Escalation thresholds (multi-agent.md §7)
+### 4.3 Escalation triggers (multi-agent.md §7)
 
-- `dagster-impl` returns `status: partial` → main branches to `codex` validation
-- `codex` and `dagster-impl` opinions differ meaningfully → `codex_arbitration` skill or Opus handles directly
-- Both models fail → main handles directly (Opus alone)
+- `dagster-impl` returns `status: partial` → main routes to `codex` validation
+- `codex` and `dagster-impl` disagree meaningfully → `codex_arbitration` skill or Opus direct
+- Both models fail → main directly (Opus alone)
 
 ## 5. Opus absence fallback (multi-agent.md §8)
 
-When Opus is unavailable (quota/cost), Sonnet 4.6 acts as temporary orchestrator:
+When Opus is unavailable (quota / cost / availability), Sonnet 4.6 temporarily orchestrates:
 
-- Increase reliance on `pipeline-explorer` beyond normal (protects Sonnet's context)
-- Increase `codex` call frequency (↑ validation dependency)
-- The following require user confirmation before proceeding:
+- Increase `pipeline-explorer` usage (protects Sonnet's smaller context window)
+- Increase `codex` call frequency (compensate with validation density)
+- Get user confirmation before proceeding on:
   - Data model / migration
   - External API contract changes
-  - Security · auth
-  - Production deployment impact
-- Deferred decisions are recorded in `decisions.log` (batch re-review when Opus returns)
+  - Security / auth
+  - Production deploy impact
+- Record deferred decisions in [`.agent/decisions.log`](../../.agent/decisions.log) (review when Opus returns)
 
 ## 6. Monitoring / improvement (multi-agent.md §9)
 
-Tracking the following during operations provides grounds for incrementally improving the §2 matrix:
+The harness is actively wired — call data is collected, not aspirational. As data accumulates, use it to incrementally improve §2's routing matrix.
 
-- Per-sub-agent task success rate (separated by task type)
-- `codex` call → was there actually a difference of opinion? (if not, reduce frequency)
-- `deploy-auditor`'s 🔴 predictions vs actual incidents (false positive/negative)
-- Ratio of main handling directly vs delegating to sub-agents (update guide when main handled cases that could have been delegated)
+### Live harness components
 
-Use this data to update the §2, §3 routing tables once per quarter.
+| Component | Path | Role |
+|---|---|---|
+| PreToolUse hook | [`.claude/settings.json`](../../.claude/settings.json) | Fires the logger on every `Agent` tool invocation |
+| Logger | [`scripts/agent_log.py`](../../scripts/agent_log.py) | Reads hook payload from stdin → appends JSONL to log |
+| JSONL log | `.claude/agent-log.jsonl` (runtime, gitignored) | One entry per agent call — ts, session_id, subagent_type, description, model_override |
+| Stats reporter | [`scripts/agent_stats.py`](../../scripts/agent_stats.py) | Parses the JSONL log → markdown or JSON aggregates |
+| Decisions log | [`.agent/decisions.log`](../../.agent/decisions.log) | Append-only audit trail for orchestration decisions (committed) |
+
+### Quarterly review
+
+```bash
+python3 scripts/agent_stats.py --since 2026-02-01           # markdown
+python3 scripts/agent_stats.py --since 2026-02-01 --json    # JSON for further processing
+```
+
+What to look for:
+
+- **Model distribution drift** — if Codex (`sonnet-liaison`) is under 10% of calls, you're under-validating. If Opus is over 25%, you're over-decomposing.
+- **Empty agents** — a sub-agent with zero calls in a quarter is either redundant or routed wrong. Drop it or fix the routing matrix.
+- **Decisions log size** — many `revisit: Y` entries mean Sonnet fallback ran long; flag to user for batched re-review.
+- **Sub-agent error rate** — track manually for now (no instrumentation yet). If we see `status: failed` more than 10% of the time, tighten agent descriptions.
+
+Then update §2 (routing matrix) and §1.1 (model allocation targets) based on the data.
 
 ## 7. Quick checklist
 
 Before starting a new task:
-- [ ] Identified the task type in the §2 routing table?
-- [ ] Is the primary sub-agent clear? If ambiguous, call `pipeline-explorer` first to determine scope
-- [ ] Included all §4.1 context items in the prompt?
-- [ ] Specified the output format?
+- [ ] Identified the task type in §2's routing table?
+- [ ] Is the primary owner sub-agent clear? If unclear, call `pipeline-explorer` first to scope.
+- [ ] Are all §4.1 context items in the prompt?
+- [ ] Output format specified?
 
-Before finishing a task:
-- [ ] Besides the sub-agent's self-report, did actual tests run and pass?
-- [ ] Per §3.3, were security/migration/external API changes given additional validation?
-- [ ] If the change has deploy impact, did it go through `deploy-auditor`?
-- [ ] **For new features / non-trivial changes, did `qa-strategist` review the test plan?** (Without it, there is no safety net to catch regressions)
-- [ ] If operating in Opus absence mode, was `decisions.log` updated?
+Before wrapping up:
+- [ ] Did tests actually run + pass (not just the agent's self-report)?
+- [ ] For security / migration / external API per §3.3, was extra validation applied?
+- [ ] If change touches deploy, did `deploy-auditor` review?
+- [ ] **For new features / non-trivial fixes, did `qa-strategist` see the test plan?** (no safety net otherwise)
+- [ ] If in Opus absence mode, was `.agent/decisions.log` updated?

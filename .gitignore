@@ -60,10 +60,26 @@ docker/.env.test.template
 # etc
 pyproject.toml
 
-# MCP 설정 (API 키 포함)
+# MCP config (contains API keys)
 .mcp.json
+
+# .agent/ — track shared skill/orchestration infra, ignore drafts
 .agent/*
-.claude/
+!.agent/skill/
+!.agent/skill/**
+!.agent/decisions.log
+# re-ignore Python bytecode under skill scripts (caught by the .agent/skill/** unignore above)
+.agent/skill/**/__pycache__/
+.agent/skill/**/*.py[cod]
+
+# .claude/ — track team-shared agent config, ignore per-user state and runtime data
+.claude/*
+!.claude/settings.json
+!.claude/agents/
+!.claude/agents/**
+# (the following stay ignored under the .claude/* pattern above; listed for clarity)
+# .claude/settings.local.json   — contains LINEAR_API_KEY, per-user permissions
+# .claude/agent-log.jsonl       — runtime hook output, append-only session activity
 
 # 일일 작업 로그 자동 생성 로그
 .worklog_logs/
@@ -86,3 +102,22 @@ result/*.txt
 
 # 1회성 복구 스크립트 (날짜 suffix)
 scripts/recover_*_[0-9]*.py
+
+.env
+
+.env.*
+
+*.env
+
+*.env.*
+
+*.bak
+
+*.bak.*
+
+docker/.env*
+
+docker/**/*.env*
+
+docker/**/*.bak*
+

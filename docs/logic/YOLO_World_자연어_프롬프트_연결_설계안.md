@@ -1,104 +1,104 @@
-# YOLO-World / SAM3.1 Natural Language Prompt Integration Design and Implementation Plan
+# YOLO-World / SAM3.1 자연어 프롬프트 연결 설계 및 구현 계획
 
-> Last updated: 2026-04-09
-> Status: Codebase analysis complete, implementation pending
+> 최종 갱신: 2026-04-09
+> 상태: 코드베이스 분석 완료, 구현 대기
 
-## Purpose
+## 목적
 
-- Document the design and implementation plan for wiring natural language-based detection requests into the dispatch path.
-- When a user puts a natural language phrase such as `"a scene where smoke is rising near the warehouse entrance"` into the dispatch JSON, a Gemini text resolver normalizes it into a `classes` list that YOLO-World/SAM3.1 can consume.
-- Build a preprocessing layer that supplies identical detection classes to both YOLO-World and SAM3.1.
-- Define a structure that normalizes natural language input while maximally preserving the existing dispatch-centric pipeline.
+- dispatch 경로에 자연어 기반 탐지 요청을 연결하기 위한 설계 및 구현 계획을 문서화한다.
+- 사용자가 `"창고 입구에서 연기가 나는 장면"` 같은 자연어를 dispatch JSON에 넣으면, Gemini text resolver가 이를 YOLO-World/SAM3.1이 소비 가능한 `classes` 목록으로 정규화한다.
+- YOLO-World와 SAM3.1 양쪽에 동일한 detection classes를 공급하는 전처리 계층을 구축한다.
+- 기존 dispatch 중심 파이프라인을 최대한 유지하면서, 자연어 입력을 정규화하는 구조를 정의한다.
 
 ---
 
-## Current Structure Summary
+## 현행 구조 요약
 
-### Pipeline Flow
+### 파이프라인 흐름
 
 ```text
 dispatch JSON
   -> parse_dispatch_request_payload()
   -> prepare_dispatch_request()
-  -> classes/categories stored in run tags
-  -> each asset calls resolve_target_classes(tags, db)
+  -> run tags에 classes/categories 저장
+  -> 각 asset에서 resolve_target_classes(tags, db) 호출
 ```
 
-### YOLO-World Path
+### YOLO-World 경로
 
 - `dispatch JSON -> dispatch_sensor/service -> run tags -> defs/yolo/assets.py -> lib/yolo_world.py -> docker/yolo/app.py`
-- Server receives `classes_json` (array of English phrases), calls `model.set_classes()`, then performs detection
-- Does not accept free-form sentence prompts directly
+- 서버는 `classes_json`(영문 phrase 배열)을 받아 `model.set_classes()` 후 detection 수행
+- 자유문장 프롬프트를 직접 받지 않음
 
-### SAM3.1 Path
+### SAM3.1 경로
 
 - `dispatch JSON -> dispatch_sensor/service -> run tags -> defs/sam/detection_assets.py -> lib/sam3.py -> docker/sam3/app.py`
-- Server receives `prompts_json` (array of English text), calls `set_text_prompt()`, then performs segmentation
-- Text prompt is required — skips if `target_classes` is empty
+- 서버는 `prompts_json`(영문 텍스트 배열)을 받아 `set_text_prompt()` 후 segmentation 수행
+- 텍스트 프롬프트가 필수 — `target_classes`가 비어 있으면 스킵
 
-### Common Class Resolution
+### 공통 클래스 해석
 
-- `resolve_target_classes()` in `lib/detection_common.py` is used identically by both YOLO and SAM3
-- Resolution priority: `spec_id` -> `tags["classes"]` -> `tags["categories"]` -> `server_default`
+- `lib/detection_common.py`의 `resolve_target_classes()`가 YOLO/SAM3 양쪽에서 동일하게 사용됨
+- 해석 우선순위: `spec_id` -> `tags["classes"]` -> `tags["categories"]` -> `server_default`
 
-### Current Limitations
+### 현재 제약
 
-- YOLO-World's open-vocabulary capability is used only at the level of "text class/phrase list"
-- No intermediate layer to accept natural language sentences as detection targets
-- `GeminiAnalyzer` has no text-only method (only `analyze_image` and `analyze_video` exist)
-
----
-
-## Codebase Analysis Findings
-
-### Key Findings
-
-1. **SAM3 and YOLO already share the same `resolve_target_classes()` function** — injecting natural language resolution results upstream of this function automatically applies to both
-2. **A text-only method must be added to `GeminiAnalyzer`** — it just needs to pass a string to the existing `_generate_content_with_retry()`
-3. **SAM3 requires a text prompt** — the natural language prompt feature provides greater value to SAM3
-4. **Gemini can be called from the dispatch ingress path** — credentials are shared via environment variables
-5. **Minimal DB schema change needed** — adding 2 columns to `staging_dispatch_requests` is sufficient
-
-### Implementation Feasibility: Feasible
-
-This can be implemented without major architectural changes.
-
-- Since `resolve_target_classes()` is already shared by YOLO/SAM3, converting natural language → classes at the dispatch stage and putting them into run tags' `classes` automatically applies to both
-- Gemini text-only calls reuse the existing retry logic as-is
-- No changes needed to the YOLO HTTP API or SAM3 HTTP API
+- YOLO-World의 open-vocabulary 기능을 "텍스트 클래스/phrase 목록" 수준으로만 활용
+- 자연어 문장을 직접 입력받아 탐지 대상으로 해석하는 중간 계층이 없음
+- `GeminiAnalyzer`에 text-only 메서드가 없음 (`analyze_image`, `analyze_video`만 존재)
 
 ---
 
-## Architecture Flow
+## 코드베이스 분석 결과
+
+### 핵심 발견
+
+1. **SAM3와 YOLO는 이미 동일한 `resolve_target_classes()` 함수를 공유** — 자연어 해석 결과를 이 함수의 상위에서 주입하면 양쪽 모두 자동 적용됨
+2. **GeminiAnalyzer에 text-only 메서드 추가 필요** — 기존 `_generate_content_with_retry()`에 문자열만 넘기면 됨
+3. **SAM3는 텍스트 프롬프트가 필수** — 자연어 프롬프트 기능이 SAM3에 더 큰 가치를 줌
+4. **dispatch ingress 경로에서 Gemini 호출 가능** — credentials 설정이 환경변수로 공유됨
+5. **DB 스키마 변경 최소화 가능** — `staging_dispatch_requests`에 2개 컬럼 추가로 충분
+
+### 구현 가능성: 가능
+
+기존 아키텍처를 크게 변경하지 않고 구현 가능하다.
+
+- `resolve_target_classes()`가 이미 YOLO/SAM3 공통이므로, dispatch 단계에서 자연어 -> classes 변환 후 run tags의 `classes`에 넣으면 양쪽 모두 자동 적용
+- Gemini text-only 호출은 기존 retry 로직을 그대로 재사용
+- YOLO HTTP API, SAM3 HTTP API 모두 변경 불필요
+
+---
+
+## 아키텍처 흐름
 
 ```mermaid
 flowchart TD
-    A[dispatch JSON] -->|includes yolo_prompts| B[parse_dispatch_request_payload]
-    B --> C{yolo_prompts present?}
+    A[dispatch JSON] -->|yolo_prompts 포함| B[parse_dispatch_request_payload]
+    B --> C{yolo_prompts 존재?}
     C -->|Yes| D[Gemini text resolver]
-    D --> E{Resolution succeeded?}
-    E -->|Yes| F["Adopt resolved classes\nyolo_class_source = yolo_prompts_resolved"]
-    E -->|No| G{explicit classes present?}
+    D --> E{해석 성공?}
+    E -->|Yes| F["resolved classes 채택\nyolo_class_source = yolo_prompts_resolved"]
+    E -->|No| G{explicit classes 존재?}
     G -->|Yes| H["explicit classes fallback\nyolo_class_source = dispatch_classes_fallback"]
-    G -->|No| I{categories present?}
+    G -->|No| I{categories 존재?}
     I -->|Yes| J["derived classes fallback\nyolo_class_source = dispatch_categories_fallback"]
     I -->|No| K[reject: no_fallback]
-    C -->|No| L[retain existing logic]
-    F --> M[store classes + yolo_class_source in run tags]
+    C -->|No| L[기존 로직 유지]
+    F --> M[run tags에 classes + yolo_class_source 저장]
     H --> M
     J --> M
-    M --> N["resolve_target_classes() - shared"]
+    M --> N["resolve_target_classes() - 공통"]
     N --> O[YOLO-World asset]
     N --> P[SAM3.1 asset]
 ```
 
 ---
 
-## Input/Output Interface Changes
+## 입력/출력 인터페이스 변경안
 
-### 1. Dispatch JSON Input
+### 1. Dispatch JSON 입력
 
-New field: `yolo_prompts: list[str]`
+신규 필드: `yolo_prompts: list[str]`
 
 ```json
 {
@@ -106,71 +106,71 @@ New field: `yolo_prompts: list[str]`
   "folder_name": "sample-folder",
   "labeling_method": ["bbox"],
   "yolo_prompts": [
-    "a scene where smoke is spreading near the warehouse entrance",
-    "a person lying on the floor"
+    "창고 출입문 근처에서 연기가 발생한 장면",
+    "바닥에 쓰러져 있는 사람"
   ]
 }
 ```
 
-### 2. Existing Fields Retained
+### 2. 기존 필드 유지
 
-- `prompts`: retained exclusively for Gemini `timestamp` and `captioning`
-- `classes`: retained as explicit YOLO/SAM3 classes or phrase list
-- `categories`: retained as existing derived fallback input
+- `prompts`: Gemini `timestamp`, `captioning` 전용으로 유지
+- `classes`: 명시 YOLO/SAM3 클래스 또는 phrase 목록으로 유지
+- `categories`: 기존 파생 fallback 입력으로 유지
 
-### 3. DB Storage Fields (staging_dispatch_requests)
+### 3. DB 저장 필드 (staging_dispatch_requests)
 
-- `yolo_prompts TEXT` — original natural language input (JSON array string)
-- `yolo_class_source VARCHAR` — which path determined the final classes
+- `yolo_prompts TEXT` — 원본 자연어 입력 (JSON 배열 문자열)
+- `yolo_class_source VARCHAR` — 최종 classes가 어떤 경로로 결정되었는지
 
-### 4. Run Tags
+### 4. Run tags
 
-- `classes` — final YOLO/SAM3 classes (reuse existing field)
-- `yolo_prompts` — original natural language input
-- `yolo_class_source` — resolution path
+- `classes` — 최종 YOLO/SAM3 classes (기존 필드 재사용)
+- `yolo_prompts` — 원본 자연어 입력
+- `yolo_class_source` — 결정 경로
 
-### 5. YOLO/SAM3 API Contract
+### 5. YOLO/SAM3 API 계약
 
-In v1, neither the YOLO HTTP API nor the SAM3 HTTP API is changed.
+v1에서는 YOLO HTTP API, SAM3 HTTP API 모두 변경하지 않는다.
 
-- YOLO: sends only the final `classes_json`
-- SAM3: sends only the final `prompts_json`
+- YOLO: 최종 `classes_json`만 전송
+- SAM3: 최종 `prompts_json`만 전송
 
 ---
 
-## Processing Flow
+## 처리 흐름
 
 ```text
-Receive dispatch JSON
+dispatch JSON 수신
 -> parse_dispatch_request_payload()
--> Check for bbox request
--> If yolo_prompts present, run Gemini text resolver
--> Generate resolved classes
--> Apply fallback policy
--> Save to staging_dispatch_requests (including yolo_prompts, yolo_class_source)
--> Generate run tags (including classes, yolo_prompts, yolo_class_source)
--> resolve_target_classes() prioritizes tags["classes"] as before
--> YOLO: lib/yolo_world.py sends classes_json
--> SAM3: lib/sam3.py sends prompts_json
+-> bbox 요청 여부 확인
+-> yolo_prompts 존재 시 Gemini text resolver 실행
+-> resolved classes 생성
+-> fallback 정책 적용
+-> staging_dispatch_requests 저장 (yolo_prompts, yolo_class_source 포함)
+-> run tags 생성 (classes, yolo_prompts, yolo_class_source 포함)
+-> resolve_target_classes() 에서 기존처럼 tags["classes"] 우선 해석
+-> YOLO: lib/yolo_world.py 가 classes_json 전송
+-> SAM3: lib/sam3.py 가 prompts_json 전송
 ```
 
-Detailed steps:
+세부 순서:
 
-1. Normalize dispatch payload
-2. Check for `bbox` request
-3. If `yolo_prompts` present, run text resolver
-4. If resolver result is valid, adopt as `classes`
-5. If failed or empty result, apply fallback
-6. Record final classes and source in request DB and run tags
-7. YOLO/SAM3 stages proceed with existing logic unchanged
+1. dispatch payload 정규화
+2. `bbox` 요청 여부 확인
+3. `yolo_prompts` 존재 시 text resolver 실행
+4. resolver 결과가 유효하면 `classes`로 채택
+5. 실패 또는 빈 결과면 fallback 적용
+6. 최종 classes와 source를 request DB 및 run tags에 기록
+7. 이후 YOLO/SAM3 stage는 기존 로직 그대로 수행
 
 ---
 
-## Natural Language → Classes Conversion Rules
+## 자연어 -> classes 변환 규칙
 
-### 1. Output Contract
+### 1. 출력 계약
 
-Only strict JSON is accepted:
+strict JSON만 허용:
 
 ```json
 {
@@ -178,32 +178,32 @@ Only strict JSON is accepted:
 }
 ```
 
-### 2. Output Rules
+### 2. 출력 규칙
 
-- Lowercase English only
-- No duplicates
-- Maximum 12 items
-- Each item is 1–5 words
-- Include only visually detectable targets
-- Remove policies, intentions, situation descriptions, and action directives
+- 영어 소문자만 사용
+- 중복 제거
+- 최대 12개 항목
+- 각 항목은 1~5단어
+- 시각적으로 탐지 가능한 대상만 포함
+- 정책, 의도, 상황 설명, 행위 지시문은 제거
 
-### 3. Conversion Principles
+### 3. 변환 원칙
 
-Make phrases as short as possible to favor YOLO-World/SAM3.1.
+가능한 한 YOLO-World/SAM3.1에 유리한 짧은 phrase로 만든다.
 
-| Input (natural language) | Output (classes) |
-|--------------------------|------------------|
-| `"a scene where smoke is spreading near the warehouse entrance"` | `["smoke", "warehouse door"]` |
-| `"a person lying on the floor"` | `["person lying on floor"]` |
-| `"a person threatening with a knife"` | `["person with knife", "knife"]` |
-| `"a suspicious situation"` | excluded (non-visual concept) |
-| `"a dangerous-looking atmosphere"` | excluded (non-visual concept) |
+| 입력 (자연어) | 출력 (classes) |
+|--------------|----------------|
+| `"창고 출입문 근처에서 연기가 발생한 장면"` | `["smoke", "warehouse door"]` |
+| `"바닥에 쓰러져 있는 사람"` | `["person lying on floor"]` |
+| `"칼을 들고 위협하는 사람"` | `["person with knife", "knife"]` |
+| `"수상한 상황"` | 제외 (비가시적 개념) |
+| `"위험해 보이는 분위기"` | 제외 (비가시적 개념) |
 
-### 4. Examples
+### 4. 예시
 
-#### Example 1. Korean natural language only
+#### 예시 1. 한국어 자연어만 있는 경우
 
-Input:
+입력:
 
 ```json
 {
@@ -215,7 +215,7 @@ Input:
 }
 ```
 
-Expected resolution:
+예상 해석:
 
 ```json
 {
@@ -223,9 +223,9 @@ Expected resolution:
 }
 ```
 
-#### Example 2. Natural language + explicit classes fallback
+#### 예시 2. 자연어 + 명시 classes fallback
 
-Input:
+입력:
 
 ```json
 {
@@ -235,11 +235,11 @@ Input:
 }
 ```
 
-On resolution failure, final classes: `["knife", "gun"]`
+해석 실패 시 최종 classes: `["knife", "gun"]`
 
-#### Example 3. Failure case
+#### 예시 3. 실패 케이스
 
-Input:
+입력:
 
 ```json
 {
@@ -250,95 +250,95 @@ Input:
 }
 ```
 
-Result: natural language resolution yields empty result + no fallback source → request rejected
+처리 결과: 자연어 해석 결과 비어 있음 + fallback source 없음 -> request reject
 
 ---
 
-## Fallback Policy
+## Fallback 정책
 
-### Priority (fixed)
+### 우선순위 (고정)
 
-1. `yolo_prompts` → Gemini resolver → resolved classes
-2. Explicit `classes` (dispatch JSON)
-3. `categories` → `derive_classes_from_categories()`
-4. If all absent and `bbox` was requested → reject
+1. `yolo_prompts` -> Gemini resolver -> resolved classes
+2. explicit `classes` (dispatch JSON)
+3. `categories` -> `derive_classes_from_categories()`
+4. 모두 없고 `bbox`가 요청된 경우 reject
 
-### Failure Conditions
+### 실패 조건
 
-- Gemini text resolver call failure
-- JSON parse failure
-- `classes` field missing
-- Result array is empty
-- Result items do not satisfy the rules
+- Gemini text resolver 호출 실패
+- JSON 파싱 실패
+- `classes` 필드 누락
+- 결과 배열이 비어 있음
+- 결과 항목이 규칙을 만족하지 않음
 
-### Behavior Rules
+### 동작 규칙
 
-| Condition | Final classes | yolo_class_source |
-|-----------|--------------|-------------------|
-| `yolo_prompts` resolution succeeded | resolved classes | `yolo_prompts_resolved` |
-| `yolo_prompts` resolution failed + explicit `classes` present | explicit classes | `dispatch_classes_fallback` |
-| `yolo_prompts` resolution failed + `categories` present | derived classes | `dispatch_categories_fallback` |
-| None of the three present | reject | error: `yolo_prompt_resolution_failed_no_fallback` |
-
----
-
-## SAM3.1 Application Method
-
-SAM3 already uses `resolve_target_classes(tags, db)`, so it is **automatically applied without additional code changes**.
-
-Once resolved classes are placed in run tags' `classes` at the dispatch stage:
-
-- **YOLO**: `resolve_target_classes()` → `class_source="dispatch_tags"` → sent as `classes_json`
-- **SAM3**: `resolve_target_classes()` → `class_source="dispatch_tags"` → sent as `prompts`
-
-The `yolo_class_source` tag is additionally recorded to maintain traceability — "these classes came from natural language resolution".
-
-Since SAM3 requires a text prompt (skips if `target_classes` is empty), the natural language prompt feature provides greater value to SAM3.
+| 조건 | 최종 classes | yolo_class_source |
+|------|-------------|-------------------|
+| `yolo_prompts` 해석 성공 | resolved classes | `yolo_prompts_resolved` |
+| `yolo_prompts` 해석 실패 + explicit `classes` 존재 | explicit classes | `dispatch_classes_fallback` |
+| `yolo_prompts` 해석 실패 + `categories` 존재 | derived classes | `dispatch_categories_fallback` |
+| 셋 다 없음 | reject | 에러: `yolo_prompt_resolution_failed_no_fallback` |
 
 ---
 
-## Files to Change
+## SAM3.1 적용 방식
 
-### Step 1: Interface/Schema Updates
+SAM3는 이미 `resolve_target_classes(tags, db)`를 사용하므로 **추가 코드 변경 없이** 자동 적용된다.
 
-| File | Changes |
-|------|---------|
-| `src/vlm_pipeline/sql/schema.sql` | Add `yolo_prompts TEXT`, `yolo_class_source VARCHAR` to `staging_dispatch_requests` |
-| `src/vlm_pipeline/resources/duckdb_migration.py` | Add ALTER TABLE migration |
-| `src/vlm_pipeline/lib/staging_dispatch.py` | Add `yolo_prompts` parsing to `parse_dispatch_request_payload()` |
-| `src/vlm_pipeline/defs/dispatch/service.py` | Add `yolo_prompts`, `yolo_class_source` fields to `PreparedDispatchRequest`; reflect in run tags via `build_dispatch_run_request()` |
+dispatch 단계에서 resolved classes가 run tags의 `classes`에 들어가면:
 
-### Step 2: Gemini Text Resolver + Dispatch Wiring
+- **YOLO**: `resolve_target_classes()` -> `class_source="dispatch_tags"` -> `classes_json`으로 전송
+- **SAM3**: `resolve_target_classes()` -> `class_source="dispatch_tags"` -> `prompts`로 전송
 
-| File | Changes |
-|------|---------|
-| `src/vlm_pipeline/lib/gemini.py` | Add `GeminiAnalyzer.generate_text()` text-only method |
-| `src/vlm_pipeline/lib/gemini_prompts.py` | Add `YOLO_PROMPT_RESOLVER_TEMPLATE` — system prompt for natural language → detection phrases conversion |
-| `src/vlm_pipeline/lib/yolo_prompt_resolver.py` (new) | `resolve_yolo_prompts_to_classes(prompts) -> ResolverResult` — Gemini call + JSON parsing + validation + fallback logic |
-| `src/vlm_pipeline/defs/dispatch/service.py` | Within `process_dispatch_ingress_request()`: call resolver when `bbox` is requested + `yolo_prompts` present; reflect result as `classes`/`yolo_class_source` |
+`yolo_class_source` 태그를 추가로 기록하여 "이 classes가 자연어 해석에서 왔다"는 추적성을 확보한다.
 
-### Step 3: Tests
-
-| File | Changes |
-|------|---------|
-| `tests/unit/test_yolo_prompt_resolver.py` (new) | Resolver unit tests (Gemini mocked) |
-| `tests/unit/test_staging_dispatch.py` (existing) | Add `yolo_prompts` parsing tests |
+SAM3는 텍스트 프롬프트가 필수(`target_classes`가 비어 있으면 스킵)이므로, 자연어 프롬프트 기능이 SAM3에 더 큰 가치를 준다.
 
 ---
 
-## Detailed Design
+## 변경 대상 파일
 
-### Gemini Text Resolver Prompt (YOLO_PROMPT_RESOLVER_TEMPLATE)
+### 1단계: 인터페이스/스키마 반영
 
-Implement the conversion rules from the design proposal as a system prompt:
+| 파일 | 변경 내용 |
+|------|-----------|
+| `src/vlm_pipeline/sql/schema.sql` | `staging_dispatch_requests`에 `yolo_prompts TEXT`, `yolo_class_source VARCHAR` 추가 |
+| `src/vlm_pipeline/resources/duckdb_migration.py` | ALTER TABLE migration 추가 |
+| `src/vlm_pipeline/lib/staging_dispatch.py` | `parse_dispatch_request_payload()`에 `yolo_prompts` 파싱 추가 |
+| `src/vlm_pipeline/defs/dispatch/service.py` | `PreparedDispatchRequest`에 `yolo_prompts`, `yolo_class_source` 필드 추가. `build_dispatch_run_request()`에서 run tags에 반영 |
 
-- Input: array of natural language sentences (Korean/English mix allowed)
-- Output: strict JSON `{"classes": ["smoke", "person lying on floor"]}`
-- Rules: lowercase English, no duplicates, max 12 items, 1–5 words, visual targets only
+### 2단계: Gemini text resolver + dispatch wiring
+
+| 파일 | 변경 내용 |
+|------|-----------|
+| `src/vlm_pipeline/lib/gemini.py` | `GeminiAnalyzer.generate_text()` text-only 메서드 추가 |
+| `src/vlm_pipeline/lib/gemini_prompts.py` | `YOLO_PROMPT_RESOLVER_TEMPLATE` 추가 — 자연어 -> detection phrases 변환 시스템 프롬프트 |
+| `src/vlm_pipeline/lib/yolo_prompt_resolver.py` (신규) | `resolve_yolo_prompts_to_classes(prompts) -> ResolverResult` — Gemini 호출 + JSON 파싱 + 검증 + fallback 로직 |
+| `src/vlm_pipeline/defs/dispatch/service.py` | `process_dispatch_ingress_request()` 내에서 `bbox` 요청 + `yolo_prompts` 존재 시 resolver 호출, 결과를 `classes`/`yolo_class_source`로 반영 |
+
+### 3단계: 테스트
+
+| 파일 | 변경 내용 |
+|------|-----------|
+| `tests/unit/test_yolo_prompt_resolver.py` (신규) | resolver 단위 테스트 (Gemini mock) |
+| `tests/unit/test_staging_dispatch.py` (기존) | `yolo_prompts` 파싱 테스트 추가 |
+
+---
+
+## 세부 설계
+
+### Gemini text resolver 프롬프트 (YOLO_PROMPT_RESOLVER_TEMPLATE)
+
+설계안의 변환 규칙을 시스템 프롬프트로 구현:
+
+- 입력: 자연어 문장 배열 (한국어/영어 혼용 가능)
+- 출력: strict JSON `{"classes": ["smoke", "person lying on floor"]}`
+- 규칙: 영어 소문자, 중복 제거, 최대 12개, 1~5단어, 시각적 대상만
 
 ### GeminiAnalyzer.generate_text()
 
-Add a text-only wrapper reusing the existing `_generate_content_with_retry()` internal method:
+기존 `_generate_content_with_retry()` 내부 메서드를 재사용하여 text-only 래퍼 추가:
 
 ```python
 def generate_text(self, prompt: str, *, source_name: str = "text") -> str:
@@ -350,7 +350,7 @@ def generate_text(self, prompt: str, *, source_name: str = "text") -> str:
     return _extract_response_text(response)
 ```
 
-### yolo_prompt_resolver.py Structure
+### yolo_prompt_resolver.py 구조
 
 ```python
 @dataclass(frozen=True)
@@ -365,117 +365,117 @@ def resolve_yolo_prompts_to_classes(
     explicit_classes: list[str],
     categories: list[str],
 ) -> PromptResolverResult:
-    # 1. Call Gemini text resolver
-    # 2. JSON parsing + validation
-    # 3. Apply fallback on failure
+    # 1. Gemini text resolver 호출
+    # 2. JSON 파싱 + 검증
+    # 3. 실패 시 fallback 적용
     ...
 ```
 
-### DB Changes
+### DB 변경
 
-Only 2 columns added to `staging_dispatch_requests`:
+`staging_dispatch_requests`에만 2개 컬럼 추가:
 
 ```sql
 ALTER TABLE staging_dispatch_requests ADD COLUMN IF NOT EXISTS yolo_prompts TEXT;
 ALTER TABLE staging_dispatch_requests ADD COLUMN IF NOT EXISTS yolo_class_source VARCHAR;
 ```
 
-The existing `classes` field in run tags is reused as-is; only `yolo_class_source` and `yolo_prompts` tags are added.
+run tags에는 기존 `classes` 필드를 그대로 활용하고, `yolo_class_source`와 `yolo_prompts` 태그만 추가한다.
 
 ---
 
-## Caveats
+## 주의사항
 
-- Gemini text resolver calls execute inside the dispatch sensor, so **sensor tick timeout** must be considered (`DAGSTER_SENSOR_GRPC_TIMEOUT_SECONDS`)
-- Gemini 429 rate limit: existing retry logic (`_generate_content_with_retry`) is automatically applied
-- On resolver failure, fallback is applied so there is no pipeline interruption
-- YOLO HTTP API and SAM3 HTTP API are not changed in v1
+- Gemini text resolver 호출은 dispatch sensor 내에서 실행되므로, **sensor tick timeout**에 주의 필요 (`DAGSTER_SENSOR_GRPC_TIMEOUT_SECONDS` 고려)
+- Gemini 429 rate limit 시 기존 retry 로직(`_generate_content_with_retry`)이 자동 적용됨
+- resolver 실패 시 fallback으로 넘어가므로 파이프라인 중단 없음
+- YOLO HTTP API, SAM3 HTTP API는 v1에서 변경하지 않음
 
 ---
 
-## Test Scenarios
+## 테스트 시나리오
 
 ### 1. yolo_prompts only
 
-- `bbox` request
-- Only `yolo_prompts` present
-- Resolver generates valid classes
-- Final YOLO receives only `classes_json`; SAM3 receives only `prompts_json`
+- `bbox` 요청
+- `yolo_prompts`만 존재
+- resolver가 유효 classes를 생성
+- 최종 YOLO는 `classes_json`만 수신, SAM3는 `prompts_json`만 수신
 
 ### 2. yolo_prompts + classes
 
-- `yolo_prompts` resolution fails
-- Explicit `classes` present
-- Successful fallback to explicit classes
-- Same classes applied to both YOLO/SAM3
+- `yolo_prompts` 해석 실패
+- explicit `classes` 존재
+- explicit classes로 정상 fallback
+- YOLO/SAM3 양쪽에 동일 classes 적용
 
 ### 3. yolo_prompts + categories
 
-- `yolo_prompts` resolution fails
-- No explicit `classes`
-- Fallback via `categories -> classes`
+- `yolo_prompts` 해석 실패
+- explicit `classes` 없음
+- `categories -> classes`로 fallback
 
-### 4. Invalid or empty natural-language resolution
+### 4. invalid or empty natural-language resolution
 
-- Resolver response is empty array or malformed JSON
-- No fallback source → request rejected
+- resolver 응답이 빈 배열 또는 잘못된 JSON
+- fallback source 없으면 request reject
 
-### 5. bbox not requested
+### 5. bbox 미요청
 
-- `labeling_method` does not include `bbox`
-- `yolo_prompts` is ignored even if present
-- No impact on Gemini `prompts` behavior
+- `labeling_method`에 `bbox` 없음
+- `yolo_prompts`가 있어도 무시
+- Gemini `prompts` 동작에는 영향 없음
 
 ### 6. YOLO/SAM3 stage receives final classes only
 
-- YOLO asset and SAM3 asset do not use the original natural language text
-- Verify that only final normalized classes are passed
+- YOLO asset과 SAM3 asset은 자연어 원문을 사용하지 않음
+- 최종 정규화된 classes만 전달됨을 검증
 
-### 7. SAM3 standalone run
+### 7. SAM3 단독 실행
 
-- `ENABLE_SAM3_DETECTION=true` + `yolo_prompts` present
-- Resolved classes are correctly passed to SAM3 `prompts`
-- SAM3 server performs text prompt-based segmentation
-
----
-
-## Out of Scope
-
-- Extension of `labeling_specs`-based spec flow
-- YOLO HTTP API changes
-- SAM3 HTTP API changes
-- Structure where YOLO/SAM3 servers directly receive natural language sentences
-- Structure where free-form prompts are re-interpreted in real time at each runtime
-- Introduction of a separate LLM microservice
-- Modification of README or other operational documents in general
+- `ENABLE_SAM3_DETECTION=true` + `yolo_prompts` 존재
+- resolved classes가 SAM3 `prompts`로 정상 전달
+- SAM3 서버가 텍스트 프롬프트 기반 segmentation 수행
 
 ---
 
-## Per-Step Implementation Checklist
+## 비범위
 
-### Step 1. Interface/Schema Updates
+- `labeling_specs` 기반 spec flow 확장
+- YOLO HTTP API 변경
+- SAM3 HTTP API 변경
+- YOLO/SAM3 서버가 자연어 문장을 직접 받는 구조
+- 자유문장 프롬프트를 runtime마다 실시간 재해석하는 구조
+- 별도 LLM 마이크로서비스 도입
+- README 또는 운영 문서 전반 수정
 
-- [ ] Add `yolo_prompts` field to dispatch JSON (payload parsing)
-- [ ] Add tracking fields to `staging_dispatch_requests` (schema + migration)
-- [ ] Add fields to `PreparedDispatchRequest`
-- [ ] Reflect run tags design
+---
 
-### Step 2. Gemini Text Resolver + Dispatch Wiring
+## 구현 단계별 체크리스트
 
-- [ ] Add `GeminiAnalyzer.generate_text()` text-only method
-- [ ] Add `YOLO_PROMPT_RESOLVER_TEMPLATE` prompt
-- [ ] Create `lib/yolo_prompt_resolver.py`
-- [ ] Implement `yolo_prompts -> classes` resolution and fallback in dispatch ingress
-- [ ] Reflect result in run tags/DB
+### 1단계. 인터페이스/스키마 반영
 
-### Step 3. Tests
+- [ ] dispatch JSON에 `yolo_prompts` 필드 추가 (payload 파싱)
+- [ ] `staging_dispatch_requests`에 추적 필드 추가 (schema + migration)
+- [ ] `PreparedDispatchRequest`에 필드 추가
+- [ ] run tags 설계 반영
 
-- [ ] `test_yolo_prompt_resolver.py` unit tests
-- [ ] `test_staging_dispatch.py` yolo_prompts parsing tests
-- [ ] Staging environment E2E validation
+### 2단계. Gemini text resolver + dispatch wiring
 
-### Step 4. Operational Validation and Prompt Quality Tuning
+- [ ] `GeminiAnalyzer.generate_text()` text-only 메서드 추가
+- [ ] `YOLO_PROMPT_RESOLVER_TEMPLATE` 프롬프트 추가
+- [ ] `lib/yolo_prompt_resolver.py` 신규 생성
+- [ ] dispatch ingress에서 `yolo_prompts -> classes` 해석 및 fallback 적용
+- [ ] run tags/DB에 결과 반영
 
-- [ ] Adjust phrase quality based on real request examples
-- [ ] Strengthen rules for removing overly abstract results
-- [ ] Quality refinement for frequently used domain phrases
+### 3단계. 테스트
+
+- [ ] `test_yolo_prompt_resolver.py` 단위 테스트
+- [ ] `test_staging_dispatch.py` yolo_prompts 파싱 테스트
+- [ ] staging 환경 E2E 검증
+
+### 4단계. 운영 검증 및 prompt quality tuning
+
+- [ ] 실제 요청 예시 기반 phrase 품질 조정
+- [ ] 과도하게 추상적인 결과 제거 규칙 강화
+- [ ] 자주 쓰는 도메인 phrase의 품질 보정

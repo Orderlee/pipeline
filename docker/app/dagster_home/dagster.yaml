@@ -4,24 +4,14 @@ run_storage:
   config:
     base_dir: /app/dagster_home/storage
 
+# DuckDB single-writer lock 정책 제거 (PG primary 전환 후 multi-process 활용).
+# 코드의 build_duckdb_writer_tags() 는 그대로 두되 dagster.yaml의 limit 정책만 풀어서
+# 자동 직렬화 해제. max_concurrent_runs 4 → 20.
 run_coordinator:
   module: dagster._core.run_coordinator
   class: QueuedRunCoordinator
   config:
-    max_concurrent_runs: 4
-    tag_concurrency_limits:
-      - key: duckdb_writer
-        value: "true"
-        limit: 1
-      - key: duckdb_raw_writer
-        value: "true"
-        limit: 1
-      - key: duckdb_label_writer
-        value: "true"
-        limit: 1
-      - key: duckdb_yolo_writer
-        value: "true"
-        limit: 1
+    max_concurrent_runs: 20
 
 event_log_storage:
   module: dagster._core.storage.event_log

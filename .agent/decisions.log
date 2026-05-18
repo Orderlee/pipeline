@@ -1,0 +1,55 @@
+# Agent Orchestration Decisions Log
+
+Append-only audit trail for non-trivial orchestration decisions made during
+agent-team work. Required by [`docs/references/multi-agent.md`](../docs/references/multi-agent.md) §8.3
+("Sonnet orchestrator fallback mode"): when Opus is unavailable, every
+deferred or risky decision must be recorded here so Opus can review on return.
+
+## When to write an entry
+
+- Sonnet (or any sub-agent) is acting as fallback orchestrator and makes a
+  decision normally reserved for Opus (architecture, schema, external API
+  contract, security).
+- A `status: partial` was accepted and the unresolved part was deferred.
+- A risky routing call was overridden against the matrix
+  (e.g. skipped `codex` review for time pressure).
+- An agent's auto-classifier or permission system blocked a step and the
+  user manually unblocked it — the trail matters.
+
+Do NOT log every routine call here — those go to `.claude/agent-log.jsonl`
+via the PreToolUse hook. This file is for *decisions worth reviewing*.
+
+## Entry format (one block per entry, blank line between blocks)
+
+```
+ts:       <ISO timestamp>
+mode:     opus | sonnet-fallback | other
+decided:  <one-line headline>
+why:      <reasoning, multi-line OK>
+by:       main | <agent-id>
+revisit:  Y | N    # Y means "review when Opus returns"
+links:    [optional] file paths, PR/issue links, commit SHAs
+```
+
+## Review cadence
+
+- Quarterly: `python3 scripts/agent_stats.py --since <date>` + walk this log,
+  cross-check against [`docs/references/agent-teams.md`](../docs/references/agent-teams.md) §2 routing matrix.
+- After Opus absence ends: walk all `revisit: Y` entries, decide accept / revise / revert.
+
+---
+
+ts:      2026-05-18T10:00:00+00:00
+mode:    opus
+decided: Stand up the agent harness substrate (PreToolUse hook + JSONL log + stats reporter + this decisions log).
+why:     User explicitly authorized "real harness engineering". Pareto: logging substrate first (item #1
+         from the proposal); decisions convention with this file; stats reporter as a third leg. Skipped
+         auto-routing (item #5) and cross-agent message bus (item #6) per multi-agent.md §5 — bus is
+         explicitly forbidden by spec, auto-routing has low ROI versus the existing routing matrix.
+         The hook itself (`.claude/settings.json`) was blocked by Claude Code's auto-classifier (security
+         gate around arbitrary command execution); the user must create that file by hand. All other
+         pieces (this file, scripts/agent_log.py, scripts/agent_stats.py, .gitignore) created directly.
+by:      main
+revisit: N
+links:   scripts/agent_log.py · scripts/agent_stats.py · .claude/agent-log.jsonl (runtime-created) ·
+         docs/references/agent-teams.md §6

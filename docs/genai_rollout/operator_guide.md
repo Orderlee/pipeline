@@ -1,24 +1,24 @@
-# GenAI Studio — Operator Guide (Phase 5)
+# GenAI Studio — 운영 가이드 (Phase 5)
 
-Items for operators to verify immediately before staging stabilization + main promotion.
+staging 안정화 + main 승격 직전 운영자가 확인할 항목 정리.
 
 ---
 
-## 1. API Key Entry
+## 1. API 키 입력
 
-Replace the following items in `docker/.env.test` with real values (not git-tracked; edit directly on the host).
+`docker/.env.test` 의 다음 항목을 실제 값으로 교체 (git 미추적, 호스트 직접 편집).
 
-| Key | Source | Notes |
-|----|--------|-------|
-| `KLING_ACCESS_KEY` / `KLING_SECRET_KEY` | klingai.com console | For JWT signing (HS256) |
-| `FAL_KEY` | fal.ai dashboard | Higgsfield model calls |
-| `OPENAI_API_KEY` | platform.openai.com | gpt-image-1 calls |
-| `HIGGSFIELD_FAL_MODEL` | Verify exact model ID on fal.ai dashboard (Codex HIGH) | Default `fal-ai/higgsfield/i2v-soul` needs verification |
-| `GEMINI_GOOGLE_APPLICATION_CREDENTIALS` | Reuse existing `/app/credentials/your-gcp-project-*.json` | For Nanobanana |
-| `GENAI_BASIC_AUTH_USER` / `GENAI_BASIC_AUTH_PASS` | Operator-chosen | Internal network user auth. Returns 503 if not set (or bypass with `GENAI_AUTH_DISABLED=true`) |
-| `GENAI_INTERNAL_TOKEN` | Arbitrary secret (32+ chars recommended) | For Dagster sensor ↔ genai container communication |
+| 키 | 발급처 | 비고 |
+|----|--------|------|
+| `KLING_ACCESS_KEY` / `KLING_SECRET_KEY` | klingai.com 콘솔 | JWT 서명용 (HS256) |
+| `FAL_KEY` | fal.ai 대시보드 | Higgsfield 모델 호출 |
+| `OPENAI_API_KEY` | platform.openai.com | gpt-image-1 호출 |
+| `HIGGSFIELD_FAL_MODEL` | fal.ai 대시보드에서 정확한 모델 ID 확인 (Codex HIGH) | 기본 `fal-ai/higgsfield/i2v-soul` 검증 필요 |
+| `GEMINI_GOOGLE_APPLICATION_CREDENTIALS` | 기존 `/app/credentials/your-gcp-project-*.json` 재사용 | Nanobanana 용 |
+| `GENAI_BASIC_AUTH_USER` / `GENAI_BASIC_AUTH_PASS` | 운영자 임의 | 사내망 사용자 인증. 미설정 시 503 (또는 `GENAI_AUTH_DISABLED=true` 명시 우회) |
+| `GENAI_INTERNAL_TOKEN` | 임의 secret (32자+ 권장) | Dagster sensor ↔ genai 컨테이너 통신용 |
 
-After entering keys:
+키 입력 후:
 
 ```bash
 cd /home/user/work_p/Datapipeline-Data-data_pipeline_test/docker
@@ -26,86 +26,85 @@ docker compose --profile genai up -d genai
 docker compose restart dagster dagster-code-server
 ```
 
-## 2. End-to-End Validation (mocking → real keys)
+## 2. e2e 검증 (mocking → 실 키)
 
-### 2-1. Mocking Mode End-to-End
+### 2-1. Mocking 모드 e2e
 
-All flows can be validated even without keys set.
+키 미설정 상태에서도 모든 흐름 검증 가능.
 
 ```bash
-# Start containers
+# 컨테이너 부팅
 docker compose --profile genai up -d genai
 
-# Access UI from internal network
+# UI 접속 → 사내망에서
 http://10.0.0.10:8088/
 
-# Or call directly via curl
+# 또는 curl 로 직접
 curl -u user:pass -F "engine=kling" -F "prompt=cat jumping" \
   -F "files=@/path/to/img1.png" -F "files=@/path/to/img2.png" \
   http://10.0.0.10:8088/genai/batches
 ```
 
-Verify:
-- Rows created in Postgres `genai_batches` / `genai_jobs`
-- Files atomically written to `/nas/staging/incoming/genai/<batch_id>/originals/`
-- (Kling/Higgsfield) `outputs/<seq>.mp4` (placeholder) appears ~2 seconds later
-- (Nanobanana/GPT Image) `outputs/<seq>.png` appears immediately on submit
-- INGEST sensor picks up → `raw_files` contains `genai_source` / `genai_output` rows
-- When build asset runs: paired manifest created at `vlm-dataset/genai_<batch_id>/`
+확인:
+- Postgres `genai_batches` / `genai_jobs` 에 row 생성
+- `/nas/staging/incoming/genai/<batch_id>/originals/` 에 atomic write 된 파일
+- (Kling/Higgsfield) 약 2초 후 `outputs/<seq>.mp4` (placeholder)
+- (Nanobanana/GPT Image) submit 즉시 `outputs/<seq>.png`
+- INGEST sensor 픽업 → `raw_files` 안에 `genai_source` / `genai_output` rows
+- build asset 실행 시 `vlm-dataset/genai_<batch_id>/` 에 paired manifest
 
-### 2-2. Real Key Validation (once per engine)
+### 2-2. 실 키 검증 (엔진별 1회씩)
 
-Minimize cost by using 1 batch (1 image input) per engine:
+각 엔진 별 1 batch (1장 입력) 로 비용 최소화하며 확인:
 
 ```bash
 # Kling
 curl ... -F "engine=kling" -F "prompt=test" -F "files=@cat.png" /genai/batches
-# After ~5-10 minutes (real API response): outputs/001.mp4 settled + status='done'
+# 약 5-10분 후 (실 API 응답) outputs/001.mp4 안착 + status='done'
 
 # Higgsfield
 curl ... -F "engine=higgsfield" ...
 
-# Nanobanana — synchronous, immediate response
+# Nanobanana — 동기, 즉시 응답
 curl ... -F "engine=nanobanana" ...
 
-# GPT Image — synchronous, immediate response
+# GPT Image — 동기, 즉시 응답
 curl ... -F "engine=gpt_image" ...
 ```
 
-## 3. Dagster Sensor Activation
+## 3. Dagster sensor 활성화
 
-Switch `genai_poll_sensor` to **manually ON** in Dagster UI (`http://10.0.0.10:3031`).
-It does not start automatically as default_status=STOPPED.
+Dagster UI (`http://10.0.0.10:3031`) 에서 `genai_poll_sensor` 를 **수동 ON** 으로 전환.
+default_status=STOPPED 라 자동 시작 안 됨.
 
-Status indicators:
-- Normal: `SkipReason: no GenAI jobs to poll` every 30s
-- Async batch in progress: `polled=N done=X failed=Y running=Z`
-- Token not set: `GENAI_INTERNAL_TOKEN not set — sensor inactive`
-- Container down: `genai container query failed`
+상태 확인:
+- 평소: `SkipReason: 폴링 대상 GenAI jobs 없음` 매 30s
+- 비동기 batch 진행 중: `polled=N done=X failed=Y running=Z`
+- 토큰 미설정: `GENAI_INTERNAL_TOKEN 미설정 — sensor 비활성`
+- 컨테이너 다운: `genai 컨테이너 조회 실패`
 
-## 4. Enable Operational Limits (optional)
+## 4. 운영 한도 활성화 (선택)
 
-Default is 0 = off. Assumed to be internal network trusted. Enable if exposed externally or concerned about cost runaway:
+기본 0 = off. 사내망 신뢰 가정. 외부망 노출 또는 비용 폭주 우려 시:
 
 ```env
-GENAI_RATE_LIMIT_PER_MIN=10        # 10 requests per user per minute
-GENAI_DAILY_BATCH_LIMIT=50         # 50 batches per user per day
-GENAI_DAILY_BYTES_LIMIT=5368709120 # 5GB per user per day
+GENAI_RATE_LIMIT_PER_MIN=10        # 사용자별 분당 10건
+GENAI_DAILY_BATCH_LIMIT=50         # 사용자별 일별 50 batch
+GENAI_DAILY_BYTES_LIMIT=5368709120 # 사용자별 일별 5GB
 ```
 
-Returns 429 when exceeded.
+초과 시 429 응답.
 
-⚠ **Single-container assumption** (Codex Q1 MED) — `GENAI_RATE_LIMIT_PER_MIN` uses an in-memory
-sliding window, so it is isolated per genai container instance. If scaling out workers, migrate to
-a Postgres/Redis-based distributed rate state. Current staging/prod policy is single container →
-can be used as-is.
+⚠ **Single-container 전제** (Codex Q1 MED) — `GENAI_RATE_LIMIT_PER_MIN` 은 in-memory sliding
+window 라 genai 컨테이너 인스턴스별로 분리됨. 워커 증설 시 Postgres/Redis 기반 분산 rate
+state 로 이전 필수. 현재 staging/prod 모두 단일 컨테이너 정책 → 그대로 사용 가능.
 
-## 5. Cost Monitoring
+## 5. 비용 모니터링
 
-Via `/genai/costs?range=day|week|month` UI or:
+`/genai/costs?range=day|week|month` UI 또는:
 
 ```sql
--- 7-day aggregation by engine
+-- 엔진별 7일 집계
 SELECT b.engine,
        COUNT(j.*) FILTER (WHERE j.status='done') AS done,
        COUNT(j.*) FILTER (WHERE j.status='failed') AS failed,
@@ -116,63 +115,62 @@ SELECT b.engine,
  GROUP BY b.engine;
 ```
 
-Accuracy of cost_units per real API call depends on the adapter's cost extraction logic. Precise calculation is a Phase 6 follow-up.
+실 API 호출별 cost_units 정확도는 어댑터의 cost 추출 정확성에 의존. Phase 6 follow-up 으로 정밀 계산 가능.
 
-## 6. Partial Failure Retry
+## 6. 부분 실패 재시도
 
-The `retry` button is visible in the batch detail UI (failed jobs only).
-Or:
+batch detail UI 에 `retry` 버튼 노출 (status='failed' 인 job 만).
+또는:
 
 ```bash
 curl -u user:pass -X POST http://10.0.0.10:8088/genai/jobs/<job_id>/retry
 ```
 
-The original input image must still be on NAS (returns 410 if already archived).
-Retry issues a new provider_job_id + status='submitted'.
+원본 input image 는 NAS 에 보존되어 있어야 함 (archive 이동 후엔 410).
+재시도는 새 provider_job_id 발급 + status='submitted'.
 
-## 7. Main Promotion Checklist
+## 7. main 승격 체크리스트
 
-After staging stabilization on dev, before creating the main PR:
+dev 에서 staging 안정화 후 main PR 생성 전:
 
-- [ ] `KLING_*` / `FAL_KEY` / `OPENAI_API_KEY` / `GEMINI_*` all entered in prod `docker/.env`
-- [ ] `GENAI_INTERNAL_TOKEN` differs between prod and staging
-- [ ] `GENAI_BASIC_AUTH_*` filled in or `GENAI_AUTH_DISABLED=false` explicit
-- [ ] `GENAI_RATE_LIMIT_PER_MIN` / `GENAI_DAILY_*` production policy decided
-- [ ] `HIGGSFIELD_FAL_MODEL` replaced with verified ID
-- [ ] End-to-end success once per engine, all 4 (real keys)
-- [ ] Dagster `genai_poll_sensor` ON + 24 hours stable (SkipReason normal flow)
-- [ ] `002_genai.sql` applied to Postgres + 4 indexes confirmed present
-- [ ] `vlm-genai-jobs` MinIO bucket not used (NAS only — v3 decision)
-- [ ] All Phase 5 checklist items in `docs/genai_rollout/plan.md` are ✓
-- [ ] dev → main PR. Body contains "GenAI Studio v0.1 — 4 engines" + commit range (51433041 ~ HEAD)
-- [ ] PR review passed + squash merge → auto-triggers deploy-production.yml
+- [ ] `KLING_*` / `FAL_KEY` / `OPENAI_API_KEY` / `GEMINI_*` 모두 prod `docker/.env` 에도 입력
+- [ ] `GENAI_INTERNAL_TOKEN` 은 prod 와 staging 다른 값
+- [ ] `GENAI_BASIC_AUTH_*` 채우거나 `GENAI_AUTH_DISABLED=false` 명시
+- [ ] `GENAI_RATE_LIMIT_PER_MIN` / `GENAI_DAILY_*` prod 정책 결정
+- [ ] `HIGGSFIELD_FAL_MODEL` 검증된 ID 로 교체
+- [ ] e2e 4 엔진 각 1회 성공 (실 키)
+- [ ] Dagster `genai_poll_sensor` ON 후 24시간 stable (SkipReason 정상 흐름)
+- [ ] Postgres 에 `002_genai.sql` 적용 + 인덱스 4개 존재 확인
+- [ ] `vlm-genai-jobs` MinIO 버킷은 사용 안 함 (NAS 만 사용 — v3 결정)
+- [ ] `docs/genai_rollout/plan.md` 의 Phase 5 체크리스트 모두 ✓
+- [ ] dev → main PR. 본문에 "GenAI Studio v0.1 — 4 엔진" + 변경 commit 범위 (51433041 ~ HEAD)
+- [ ] PR 리뷰 통과 후 squash merge → 자동 deploy-production.yml 트리거
 
-⚠ **Prohibited actions reminder** (CLAUDE.md): do not manually edit `src/` / `configs/` /
-`scripts/` / `docker-compose*.yaml` / `Dockerfile` on the prod host — any such edits will be
-lost by the next CI deployment's `rsync --delete` + `git reset --hard`. **Changes must go through
-git commit → push → CI automatic deployment only.** `.env` / `.env.test` are the only files
-that may be edited directly on the host (not git-tracked).
+⚠ **금기 사항 재확인** (CLAUDE.md): prod 호스트의 `src/` / `configs/` / `scripts/` /
+`docker-compose*.yaml` / `Dockerfile` 수동 편집 금지 — 다음 CI 배포의 `rsync --delete`
++ `git reset --hard` 로 소실됨. **반드시 git commit → push → CI 자동 배포** 경로로만 반영.
+`.env` / `.env.test` 만 호스트에서 직접 편집 (git 미추적).
 
-## 8. Troubleshooting
+## 8. 트러블슈팅
 
-| Symptom | Cause / Action |
-|---------|----------------|
-| 503 on UI access | `GENAI_BASIC_AUTH_USER/PASS` not set. Or specify `GENAI_AUTH_DISABLED=true` |
-| 401 on submit | Basic auth credentials mismatch |
-| 415 on submit | File extension not in whitelist (png/jpg/webp only) |
-| 413 on submit | File size / batch count exceeded |
-| 429 on submit | Rate-limit or daily quota exceeded |
-| Job status stuck at 'pending' | adapter.submit() failed or PG transaction rolled back — check `docker logs genai` |
-| Job status stuck at 'submitted' | Dagster `genai_poll_sensor` is STOPPED. Manually turn ON in UI or call `/internal/jobs/.../poll` directly |
-| `outputs/_manifest.json` not created | Not all jobs are in done/failed state. Check `genai_jobs` status |
-| Build asset not picking up GenAI batch | source_unit_name='genai_<batch_id>' mismatch or other value. Or `find_project_genai_pairs` has input/output asset_id=NULL → check ops_register manifest items[].seq matching warn |
-| nanobanana failing with "block_reason" | Safety filter — change prompt/image |
-| Higgsfield submit 'model not found' | `HIGGSFIELD_FAL_MODEL` ID wrong. Check fal.ai dashboard |
+| 증상 | 원인/조치 |
+|------|-----------|
+| UI 접속 시 503 | `GENAI_BASIC_AUTH_USER/PASS` 미설정. 또는 `GENAI_AUTH_DISABLED=true` 명시 |
+| submit 시 401 | basic auth 자격 불일치 |
+| submit 시 415 | 파일 확장자 화이트리스트 외 (png/jpg/webp 만) |
+| submit 시 413 | 파일 크기 / batch 장수 초과 |
+| submit 시 429 | rate-limit 또는 daily quota 초과 |
+| job status 가 'pending' 에서 안 바뀜 | adapter.submit() 실패 또는 PG 트랜잭션 롤백 — `docker logs genai` 확인 |
+| job status 'submitted' 에서 안 바뀜 | Dagster `genai_poll_sensor` 가 STOPPED. UI 에서 수동 ON 또는 `/internal/jobs/.../poll` 직접 호출 |
+| outputs/_manifest.json 안 생김 | 모든 job 이 done/failed 가 아닌 상태. `genai_jobs` status 확인 |
+| build asset 이 GenAI batch 를 못 잡음 | source_unit_name='genai_<batch_id>' 가 아닌 다른 값. 또는 `find_project_genai_pairs` 가 input/output asset_id NULL → ops_register 의 manifest items[].seq 매칭 warn 확인 |
+| nanobanana 가 "block_reason" 으로 실패 | safety filter — 프롬프트/이미지 변경 |
+| Higgsfield submit 'model not found' | `HIGGSFIELD_FAL_MODEL` ID 잘못. fal.ai 대시보드 확인 |
 
-## 9. Known Constraints / Phase 6 Follow-up Candidates
+## 9. 알려진 제약 / Phase 6 follow-up 후보
 
-- `fal-ai/higgsfield/i2v-soul` model ID confirmation verification needed
-- Vertex SA prod permission separation (currently staging/prod share `your-gcp-project`)
-- BackgroundTask finalize may be missed on container restart — after actual production stabilization, consider extending sensor to also handle fallback finalize
-- Partial retry cannot handle originals that have been archived — consider adding a path to recover from archive
-- `GENAI_DAILY_BYTES_LIMIT` SQL uses regex parsing on options_json — separate column recommended later
+- `fal-ai/higgsfield/i2v-soul` 모델 ID 확정 검증 필요
+- Vertex SA 의 prod 권한 분리 (현재 staging/prod 동일 `your-gcp-project`)
+- BackgroundTask 의 finalize 가 컨테이너 재시작 시 누락 가능 — 실제 production 안정화 후 sensor 가 fallback finalize 도 가능하게 확장
+- partial retry 가 archive 이동된 원본은 못 다룸 — archive 에서 원복하는 path 추가 검토
+- `GENAI_DAILY_BYTES_LIMIT` SQL 이 options_json 정규식 파싱 — 추후 별도 column 으로 분리 권장

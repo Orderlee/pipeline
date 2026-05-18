@@ -1,229 +1,229 @@
 # Multi-Agent Coding Environment
 
-This document describes the configuration and operational guidelines for a multi-agent environment for coding tasks. CLI agents (e.g. Claude Code and other multi-model orchestrators) should load this file as a system prompt or context, then distribute, execute, and integrate work according to the rules below.
+이 문서는 코딩 작업을 위한 멀티 에이전트 환경의 설정과 운영 지침입니다. CLI 에이전트(예: Claude Code, 그 외 멀티모델 오케스트레이터)는 이 파일을 시스템 프롬프트 또는 컨텍스트로 로드한 뒤, 아래 규칙에 따라 작업을 분배·실행·통합해야 합니다.
 
 ---
 
-## 1. Architecture overview
+## 1. 아키텍처 개요
 
-Follows a 3-tier multi-agent structure.
+3-tier 멀티 에이전트 구조를 따릅니다.
 
-- **Leader (Tier 1)**: Claude Opus 4.7 — sole orchestrator
-- **Sub-agents (Tier 2)**:
-  - Claude Sonnet 4.6 — main implementer
-  - GPT-5.5 (Codex) — cross-validator / dual author
+- **리더 (Tier 1)**: Claude Opus 4.7 — 단독 오케스트레이터
+- **서브에이전트 (Tier 2)**:
+  - Claude Sonnet 4.6 — 메인 구현 담당
+  - GPT-5.5 (Codex) — 교차 검증자 / 듀얼 작성자
 
-The leader does not write much code directly. It focuses on task decomposition, routing, integration, and final review. Sub-agents return results conforming to the interfaces and schemas defined by the leader.
-
----
-
-## 2. Model role definitions
-
-### 2.1 Claude Opus 4.7 — Leader Architect (Orchestrator)
-
-- **Model ID**: `claude-opus-4-7`
-- **Context**: 1M tokens (holds the entire codebase)
-- **Call frequency**: Low (approximately 10–20% of total)
-
-**Responsibilities**:
-- Interpret user requirements and perform task decomposition
-- Architecture design and technology selection decisions
-- Routing each sub-task to Sonnet or Codex
-- Integrating sub-agent outputs and verifying consistency
-- Final code review (security, performance, rule compliance)
-- Directly handling difficult problems where all sub-agents have failed
-
-**When not to call**:
-- Simple boilerplate generation
-- Trivial bug fixes within a single file
-- Formal refactoring (variable renaming, import cleanup, etc.)
-- Adding test cases
-
-### 2.2 Claude Sonnet 4.6 — Main Implementation Agent (Implementer)
-
-- **Model ID**: `claude-sonnet-4-6`
-- **Context**: Only files needed for the task are passed (not the full codebase)
-- **Call frequency**: High (approximately 60–70% of total)
-
-**Responsibilities**:
-- Implement functions/modules according to interfaces defined by the leader
-- Write unit tests, integration tests, fixtures
-- API endpoints, DTOs, migrations and other structural code
-- Single-file refactoring
-- Docstrings, READMEs, comments
-- Variant work applying the same pattern repeatedly across multiple files
-
-**Constraints**:
-- Does not review its own code (prevents simultaneous blind spots)
-- Does not make architecture-level decisions (that is the leader's job)
-
-### 2.3 GPT-5.5 (Codex) — Cross-Validator
-
-- **Model ID**: `gpt-5.5` (or the identifier used in your environment)
-- **Reasoning effort**: **Flexible per task** — default `high`, `extra_high` for security/financial/complex algorithms, `medium` for small change validations. See detailed matrix at §3.3. `low` is prohibited as it is unsuitable for the validator role.
-- **Context**: Only validation target code and specification are passed
-- **Call frequency**: Medium (approximately 15–25% of total)
-
-**Responsibilities**:
-- Independent review of code written by Sonnet (quantitative reviewer role)
-- Solve the same problem independently and compare with Sonnet's answer (ensemble)
-- Second opinion on difficult algorithm problems
-- Find patterns/edge cases that the Anthropic family commonly misses
-
-**Core principle**:
-Codex is not "another worker" but "a different perspective". Do not assign it the same task as Sonnet simultaneously. Use it only for comparison, validation, and creating differences.
+리더는 직접 코드를 많이 작성하지 않습니다. 작업 분해, 라우팅, 통합, 최종 검토에 집중합니다. 서브에이전트는 리더가 정의한 인터페이스와 스키마에 맞춰 결과물을 반환합니다.
 
 ---
 
-## 3. Routing rules
+## 2. 모델 역할 정의
 
-### 3.1 Routing matrix by task type
+### 2.1 Claude Opus 4.7 — 리더 아키텍트 (Orchestrator)
 
-| Task type | Primary owner | Secondary / validator |
+- **모델 ID**: `claude-opus-4-7`
+- **컨텍스트**: 1M 토큰 (전체 코드베이스 보유)
+- **호출 빈도**: 낮음 (전체의 약 10–20%)
+
+**책임**:
+- 사용자 요구사항 해석 및 작업 분해(task decomposition)
+- 아키텍처 설계 및 기술 선택 결정
+- 각 서브태스크를 Sonnet 또는 Codex에 라우팅
+- 서브에이전트 결과물 통합과 일관성 검증
+- 최종 코드 리뷰 (보안, 성능, 규칙 준수)
+- 서브에이전트가 모두 실패한 어려운 문제 직접 처리
+
+**호출하지 말아야 할 경우**:
+- 단순 보일러플레이트 생성
+- 단일 파일 내 직관적인 버그 수정
+- 형식적 리팩토링 (변수명 변경, import 정리 등)
+- 테스트 케이스 추가
+
+### 2.2 Claude Sonnet 4.6 — 메인 구현 에이전트 (Implementer)
+
+- **모델 ID**: `claude-sonnet-4-6`
+- **컨텍스트**: 작업에 필요한 파일만 전달 (전체 코드베이스 X)
+- **호출 빈도**: 높음 (전체의 약 60–70%)
+
+**책임**:
+- 리더가 정의한 인터페이스대로 함수/모듈 구현
+- 단위 테스트, 통합 테스트, 픽스처 작성
+- API 엔드포인트, DTO, 마이그레이션 등 구조적 코드
+- 단일 파일 내 리팩토링
+- docstring, README, 주석 작성
+- 여러 파일에 동일 패턴을 반복 적용하는 변형 작업
+
+**제약**:
+- 자기가 짠 코드를 자기가 리뷰하지 않음 (사각지대 동시 방지)
+- 아키텍처 수준의 결정을 내리지 않음 (그건 리더의 일)
+
+### 2.3 GPT-5.5 (Codex) — 교차 검증자 (Validator)
+
+- **모델 ID**: `gpt-5.5` (또는 환경에서 사용하는 식별자)
+- **추론 강도 (reasoning effort)**: **작업별 유연 적용** — 기본 `high`, 보안·금융·복잡 알고리즘은 `extra_high`, 작은 변경 검증은 `medium`. 자세한 매트릭스는 §3.3 참고. `low`는 검증자 역할에 부적합하므로 사용 금지.
+- **컨텍스트**: 검증 대상 코드와 명세만 전달
+- **호출 빈도**: 중간 (전체의 약 15–25%)
+
+**책임**:
+- Sonnet이 작성한 코드의 독립 리뷰 (정량적 리뷰어 역할)
+- 같은 문제를 독립적으로 풀어 Sonnet의 답과 비교 (앙상블)
+- 어려운 알고리즘 문제에 두 번째 의견(second opinion)
+- Anthropic 패밀리가 공통으로 놓치는 패턴/엣지케이스 발견
+
+**핵심 원칙**:
+Codex는 "또 다른 일꾼"이 아니라 "다른 관점"입니다. Sonnet과 같은 작업을 동시에 시키지 마세요. 비교·검증·차이 만들기에만 사용합니다.
+
+---
+
+## 3. 라우팅 규칙
+
+### 3.1 작업 유형별 라우팅 매트릭스
+
+| 작업 유형 | 1차 담당 | 2차 / 검증 |
 |---|---|---|
-| Requirements analysis, task decomposition | Opus | — |
-| Architecture design, technology selection | Opus | — |
-| Module implementation, function authoring | Sonnet | (optional) Codex review |
-| Unit test authoring | Sonnet | — |
-| API endpoints, CRUD | Sonnet | — |
-| Single-file refactoring | Sonnet | — |
-| Security-sensitive code authoring | Sonnet | Codex review + Opus final review |
-| Difficult algorithms / data structures | Sonnet + Codex dual | Opus arbitration |
-| Tricky debugging (reproducible) | Sonnet | Codex if failed |
-| Blocked debugging (both fail) | Opus | — |
-| Code review (general) | Codex | — |
-| Code review (final, pre-merge) | Opus | — |
-| Documentation (docstring, README) | Sonnet | — |
-| Bulk repetitive variant work | Sonnet | — |
+| 요구사항 분석, 작업 분해 | Opus | — |
+| 아키텍처 설계, 기술 선택 | Opus | — |
+| 모듈 구현, 함수 작성 | Sonnet | (선택) Codex 리뷰 |
+| 단위 테스트 작성 | Sonnet | — |
+| API 엔드포인트, CRUD | Sonnet | — |
+| 단일 파일 리팩토링 | Sonnet | — |
+| 보안에 민감한 코드 작성 | Sonnet | Codex 리뷰 + Opus 최종 검토 |
+| 어려운 알고리즘 / 자료구조 | Sonnet + Codex 듀얼 | Opus 중재 |
+| 까다로운 디버깅 (재현 가능) | Sonnet | 실패 시 Codex |
+| 막힌 디버깅 (둘 다 실패) | Opus | — |
+| 코드 리뷰 (일반) | Codex | — |
+| 코드 리뷰 (최종, 머지 전) | Opus | — |
+| 문서화 (docstring, README) | Sonnet | — |
+| 대량 반복 변형 | Sonnet | — |
 
-### 3.2 Routing decision flow
+### 3.2 라우팅 의사결정 흐름
 
 ```
-Request arrives
-  ├─ Simple variant/generation task?        → Sonnet alone
-  ├─ Security/performance sensitive?        → Sonnet write + Codex review + Opus review
-  ├─ Difficult reasoning/algorithm?         → Sonnet and Codex dual → Opus arbitration
-  ├─ Architecture/design decision?          → Opus alone
-  └─ Other                                  → Opus decomposes then distributes to Sonnet
+요청 도착
+  ├─ 단순 변형/생성 작업?         → Sonnet 단독
+  ├─ 보안/성능 민감?              → Sonnet 작성 + Codex 리뷰 + Opus 검토
+  ├─ 어려운 추론/알고리즘?        → Sonnet과 Codex 듀얼 → Opus 중재
+  ├─ 아키텍처/설계 결정?          → Opus 단독
+  └─ 그 외                        → Opus가 분해 후 Sonnet에 분배
 ```
 
-### 3.3 Codex reasoning effort matrix
+### 3.3 Codex 추론 강도 매트릭스
 
-Different reasoning effort levels are applied per task type to balance validation quality against cost and latency. Call frequency (§3.1) and reasoning effort (§3.3) are adjusted independently — for the same task, it is valid to reduce frequency while maintaining effort level.
+검증 품질과 비용·지연의 균형을 위해 작업 유형별로 추론 강도를 다르게 적용합니다. 호출 빈도(§3.1)와 추론 강도(§3.3)는 독립적으로 조정합니다 — 같은 작업이라도 상황에 따라 빈도는 줄이고 강도는 유지하는 식의 조합이 가능합니다.
 
-#### `extra_high` — areas where mistakes become incidents
+#### `extra_high` — 실수가 곧 사고가 되는 영역
 
-| Task type | Rationale |
+| 작업 유형 | 근거 |
 |---|---|
-| Security · auth · cryptography code validation | Subtle vulnerabilities become incidents |
-| Payment · financial · transaction logic validation | Boundary conditions and consistency are critical |
-| Difficult algorithm correctness validation (Pattern B) | Deep self-verification cycle needed |
-| Second opinion on blocked debugging | Must avoid surface-level answers |
-| Data model · schema change validation | Migration impact tracking |
+| 보안·인증·암호화 코드 검증 | 미묘한 취약점이 곧 사고 |
+| 결제·금융·트랜잭션 로직 검증 | 경계조건과 정합성이 핵심 |
+| 어려운 알고리즘 정확성 검증 (패턴 B) | 깊은 자기 검증 사이클 필요 |
+| 막힌 디버깅의 second opinion | 표면적 답을 피해야 함 |
+| 데이터 모델·스키마 변경 검증 | 마이그레이션 영향 추적 |
 
-#### `high` — validator's standard default
+#### `high` — 검증자의 표준 기본값
 
-| Task type | Rationale |
+| 작업 유형 | 근거 |
 |---|---|
-| General code review (final pre-merge) | Standard validator work |
-| Concurrency · lock · race condition related | Deep reasoning needed but narrow scope |
-| External API integration code | Contract consistency verification |
-| General validation of large changes (50+ lines) | Potential for traps beyond the surface |
+| 일반 코드 리뷰 (머지 전 최종) | 검증자의 표준 작업 |
+| 동시성·락·race condition 관련 | 깊은 추론 필요하나 범위 좁음 |
+| 외부 API 통합 코드 | 계약 일관성 확인 |
+| 큰 변경(50줄 이상)의 일반 검증 | 표면 외 함정 가능성 |
 
-#### `medium` — tasks with high pattern-matching component
+#### `medium` — 패턴 매칭 비중이 큰 작업
 
-| Task type | Rationale |
+| 작업 유형 | 근거 |
 |---|---|
-| Small change (< 50 lines) validation | Change area is narrow, fast response prioritized |
-| Style · idiom violation checks | High pattern-matching component |
-| Test code quality review | Simpler patterns than general code |
-| Documentation · comment accuracy checks | Primarily fact-checking |
+| 작은 변경(50줄 미만) 검증 | 변경 영역이 좁아 빠른 회신 우선 |
+| 스타일·관용 위반 체크 | 패턴 매칭 비중 큼 |
+| 테스트 자체의 품질 리뷰 | 일반 코드보다 패턴 단순 |
+| 문서·주석 정확성 체크 | 사실 확인 위주 |
 
-#### `low` — prohibited
+#### `low` — 사용 금지
 
-The ability to find edge cases and conduct quantitative review, which is the essence of the validator role, is weakened. If cost control is needed, instead of lowering reasoning effort, **remove the call entirely** from the §3.1 routing matrix. "Not calling Codex" is always a clearer choice than "calling Codex weakly".
+검증자 역할의 본질인 엣지케이스 발견과 정량적 검토 능력이 약해집니다. 비용 통제가 필요하면 추론 강도를 낮추는 대신 §3.1 라우팅 매트릭스에서 **호출 자체를 빼세요**. "Codex를 약하게 부르는 것"보다 "안 부르는 것"이 항상 더 명확한 선택입니다.
 
-#### Default rule
+#### 기본값 규칙
 
-Unspecified tasks are handled at `high`. When a task type falls under two entries in the matrix above, adopt the higher effort level (e.g. security-related small change → `extra_high`).
+명시되지 않은 작업은 `high`로 처리합니다. 작업 유형이 위 매트릭스 중 두 곳에 걸칠 경우 더 높은 강도를 채택합니다(예: 보안 관련 작은 변경 → `extra_high`).
 
-#### Note: reasoning/thinking settings for other models
+#### 참고: 다른 모델의 추론·thinking 설정
 
-The same principle applies to Sonnet and Opus. Keep thinking short for simple implementations, and longer for difficult debugging and design. However, since these two models are implementers/orchestrators rather than validators, this document does not impose a forced matrix — it is left to the caller to judge based on task difficulty.
+같은 원리가 Sonnet과 Opus에도 적용됩니다. 단순 구현에는 thinking을 짧게, 어려운 디버깅·설계에는 길게 가져가는 식입니다. 다만 두 모델은 검증자가 아니라 구현자/오케스트레이터이므로, 이 문서에서는 강제 매트릭스를 두지 않고 호출하는 쪽에서 작업 난이도에 맞춰 판단하도록 둡니다.
 
 ---
 
-## 4. Workflow patterns
+## 4. 워크플로우 패턴
 
-### 4.1 Pattern A — Plan · distribute · integrate (baseline)
+### 4.1 패턴 A — 계획·분배·통합 (기본형)
 
-1. Opus receives requirements and decomposes into a task tree
-2. Distributes each task to the appropriate sub-agent (parallel execution possible)
-3. (Optional) Codex reviews Sonnet's result
-4. Opus integrates results, verifies consistency, performs final review
+1. Opus가 요구사항을 받고 작업 트리로 분해
+2. 각 작업을 적절한 서브에이전트에 분배 (병렬 실행 가능)
+3. (선택) Codex가 Sonnet 결과 리뷰
+4. Opus가 결과 통합, 일관성 확인, 최종 검토
 
-Used for most standard tasks.
+대부분의 표준 작업에 사용.
 
-### 4.2 Pattern B — Dual solution + arbitration
+### 4.2 패턴 B — 듀얼 솔루션 + 중재
 
-Have Sonnet and Codex solve the same difficult problem **independently**.
+같은 어려운 문제를 Sonnet과 Codex에게 **독립적으로** 풀게 함.
 
-1. Deliver the same specification to both agents (do not show each other's answers)
-2. Receive both answers and pass them to Opus
-3. Opus compares and evaluates, selecting the better one or composing a new answer combining the strengths of both approaches
+1. 두 에이전트에 동일 명세 전달 (서로의 답을 보여주지 않음)
+2. 두 답을 받아서 Opus에게 전달
+3. Opus가 비교·평가하여 더 나은 쪽 선택, 또는 두 접근의 장점을 합친 새 답안 작성
 
-Used for algorithm problems, tricky bugs, design trade-offs.
+알고리즘 문제, 까다로운 버그, 설계 트레이드오프에 사용.
 
-### 4.3 Pattern C — Author/reviewer separation
+### 4.3 패턴 C — 작성자/리뷰어 분리
 
-When the same model reviews its own code, the same blind spots remain.
+같은 모델이 자기 코드를 리뷰하면 같은 사각지대가 남습니다.
 
-- Sonnet writes → Codex reviews
-- Or Codex writes → Sonnet reviews
+- Sonnet이 작성 → Codex가 리뷰
+- 또는 Codex가 작성 → Sonnet이 리뷰
 
-The reviewer must always be from a different family than the author.
+리뷰어는 반드시 작성자와 다른 패밀리여야 합니다.
 
-### 4.4 Pattern D — Escalation
+### 4.4 패턴 D — 에스컬레이션
 
-Default is Sonnet, escalating step-by-step to a stronger model when stuck.
+기본은 Sonnet, 막히면 단계적으로 강한 모델로 승격합니다.
 
 ```
-1st: Try with Sonnet (up to N retries, judged by test pass/fail)
-   └─ If failed ↓
-2nd: Retry same problem with Codex
-   └─ If failed ↓
-3rd: Opus handles directly
+1차: Sonnet으로 시도 (최대 N회 재시도, 테스트 통과 여부로 판정)
+   └─ 실패 시 ↓
+2차: Codex로 동일 문제 재시도
+   └─ 실패 시 ↓
+3차: Opus가 직접 처리
 ```
 
-A method that significantly reduces costs while using a powerful model only at moments of being blocked.
+비용을 크게 아끼면서도 막히는 순간만 강력한 모델을 사용하는 방식입니다.
 
 ---
 
-## 5. Context management rules
+## 5. 컨텍스트 관리 규칙
 
-- **Only Opus holds the full codebase**. Pass only files directly relevant to the task to sub-agents.
-- **Always include** when calling sub-agents:
-  - Task specification (goal, constraints, success criteria)
-  - Output schema (see chapter 6 below)
-  - Relevant files (direct modification/reference targets)
-  - Coding conventions (only those applicable to this project)
-- **Do not include**:
-  - Irrelevant files or historical context
-  - Other sub-agents' answers (prevent contamination)
-  - User personal information or secret keys
+- **전체 코드베이스는 Opus만 보유**합니다. 서브에이전트에는 해당 작업에 직접 관련된 파일만 잘라서 전달합니다.
+- **서브에이전트 호출 시 항상 포함**해야 할 것:
+  - 작업 명세 (목표, 제약, 성공 기준)
+  - 출력 스키마 (아래 6장 참고)
+  - 관련 파일 (직접 수정·참조 대상)
+  - 코딩 컨벤션 (해당 프로젝트에 적용되는 것만)
+- **포함하지 말아야 할 것**:
+  - 무관한 파일이나 역사적 맥락
+  - 다른 서브에이전트의 답변 (오염 방지)
+  - 사용자 개인정보 또는 비밀키
 
 ---
 
-## 6. Output format requirements
+## 6. 출력 포맷 요구사항
 
-Sub-agents must always respond in structured format. This reduces parsing cost when Opus integrates results.
+서브에이전트는 항상 구조화된 형식으로 응답해야 합니다. Opus가 통합할 때 파싱 비용을 줄이기 위함입니다.
 
-### 6.1 Standard response schema (JSON)
+### 6.1 표준 응답 스키마 (JSON)
 
 ```json
 {
   "status": "success | partial | failed",
-  "summary": "one-line summary",
+  "summary": "한 줄 요약",
   "files_changed": [
     { "path": "src/foo.py", "action": "created | modified | deleted" }
   ],
@@ -235,107 +235,107 @@ Sub-agents must always respond in structured format. This reduces parsing cost w
 }
 ```
 
-### 6.2 Code changes must always be diff or full file
+### 6.2 코드 변경은 항상 diff 또는 전체 파일
 
-Prose descriptions ("change this part like so") are prohibited. Only full file or unified diff format is allowed.
-
----
-
-## 7. Escalation policy
-
-### 7.1 Sonnet → Codex trigger
-
-- Sonnet fails tests after N attempts (default 2)
-- Sonnet explicitly responds with "not confident" or "multiple approaches exist"
-- Task where algorithm correctness is important
-
-### 7.2 Codex → Opus trigger
-
-- Sonnet and Codex answers differ meaningfully (excluding simple style differences)
-- Both models fail to pass tests
-- Decision with large security/performance impact is needed
-
-### 7.3 Immediate Opus call
-
-- New module/service design
-- Dependency/library selection decisions
-- Data model or API contract changes
-- User explicitly requests "full review"
+산문 설명("이 부분을 이렇게 바꾸세요")은 금지합니다. 파일 단위 전체 또는 unified diff 형식만 허용.
 
 ---
 
-## 8. Opus token budget limit fallback policy
+## 7. 에스컬레이션 정책
 
-When Opus calls become unavailable (quota, cost limit, availability, etc.), Sonnet 4.6 serves as temporary orchestrator.
+### 7.1 Sonnet → Codex 트리거
 
-### 8.1 Sonnet orchestrator mode — generally safe areas
+- Sonnet이 N회(기본 2회) 시도 후 테스트 실패
+- Sonnet이 명시적으로 "확신 없음" 또는 "여러 접근이 있음"으로 응답
+- 알고리즘 정확성이 중요한 작업
 
-- Task decomposition and routing
-- Sub-agent result integration
-- General code review
-- Standard pattern handling (CRUD, common algorithms)
+### 7.2 Codex → Opus 트리거
 
-### 8.2 Areas requiring caution
+- Sonnet과 Codex의 답이 의미 있게 다름 (단순 스타일 차이 제외)
+- 두 모델 모두 테스트를 통과시키지 못함
+- 보안/성능 영향이 큰 결정이 필요함
 
-The following areas may see reduced quality in Sonnet orchestrator mode.
+### 7.3 즉시 Opus 호출
 
-- **Complex architecture trade-off decisions**: Large decisions requiring simultaneous awareness of multiple constraints.
-- **Blocked debugging**: Problems that Opus would dig into deeply may be abandoned sooner.
-- **Long autonomous execution**: Consistency may degrade slightly in multi-step autonomous tasks.
-- **Last gate of security review**: Probability of missing subtle vulnerabilities increases.
-
-### 8.3 Sonnet orchestrator mode behavioral rules
-
-When Opus is absent, Sonnet follows these rules.
-
-1. **Break tasks into smaller pieces**. Decompose tasks that Opus handled in one step into 2–3 steps.
-2. **Flag uncertain decisions and defer them**. Instead of immediate answers, record in `"deferred_decisions"` and explicitly state "recommended for re-review when Opus returns" to the user.
-3. **Increase Codex dependency**. Request Codex cross-validation more frequently than usual.
-4. **Obtain user confirmation for high-risk tasks**:
-   - Data model/schema changes
-   - External API contract changes
-   - Security · auth related code
-   - Changes with production deployment impact
-5. **Maintain a decision log**. Record what decisions were made and on what basis in `decisions.log` → enables batch re-review when Opus returns.
-
-### 8.4 Post-Opus-return procedure
-
-1. Pass deferred items from `decisions.log` to Opus in batch
-2. Prioritize re-review of risk areas (architecture, security) processed during Sonnet orchestrator mode
-3. Proceed with any refactoring or corrections through the normal workflow as needed
+- 새 모듈/서비스 설계
+- 의존성·라이브러리 선택 결정
+- 데이터 모델 또는 API 계약 변경
+- 사용자가 명시적으로 "전체 검토"를 요청
 
 ---
 
-## 9. Failure modes and debugging
+## 8. Opus 토큰 예산 제한 폴백 정책
 
-### 9.1 Common failure modes
+Opus 호출이 불가능해지면(쿼터, 비용 한도, 가용성 등), Sonnet 4.6이 임시 오케스트레이터 역할을 대행합니다.
 
-- **Sub-agent reports false success**: Enforce the output schema and always verify test passage by actual execution.
-- **Style conflicts between models**: Explicitly pass project conventions in every call.
-- **Context contamination**: Never pass one sub-agent's answer directly to another. Always deliver only in the form integrated by Opus.
-- **Infinite escalation loop**: Limit escalation to a maximum of 3 levels.
+### 8.1 Sonnet 오케스트레이터 모드 — 대체로 안전한 영역
 
-### 9.2 Monitoring items
+- 작업 분해 및 라우팅
+- 서브에이전트 결과 통합
+- 일반적인 코드 리뷰
+- 표준적인 패턴(CRUD, 흔한 알고리즘) 처리
 
-Logging the following during operations enables incremental routing improvements.
+### 8.2 주의가 필요한 영역
 
-- Task success rate per model (separated by task type)
-- Escalation frequency and final processing model
-- Token usage distribution
-- Sonnet orchestrator mode usage time and decision log size
+다음은 Sonnet 오케스트레이터 모드에서 품질이 떨어질 수 있는 영역입니다.
 
-Over time, data will accumulate such as "Codex performs better in this area" or "Sonnet is sufficient for that area". Use that data to periodically update the §3 routing matrix.
+- **복잡한 아키텍처 트레이드오프 결정**: 여러 제약을 동시에 인지하는 큰 결정.
+- **막힌 디버깅**: Opus가 깊이 파고들어 푸는 종류의 문제는 더 빨리 포기할 수 있음.
+- **장시간 자율 실행**: 다단계 자율 작업에서 일관성이 약간 떨어질 수 있음.
+- **보안 리뷰의 마지막 관문**: 미묘한 취약점을 놓칠 가능성이 높아짐.
+
+### 8.3 Sonnet 오케스트레이터 모드 행동 규칙
+
+Opus 부재 시 Sonnet은 다음을 따릅니다.
+
+1. **작업을 더 잘게 쪼갤 것**. Opus가 한 단계로 처리하던 작업을 2–3단계로 분해.
+2. **불확실한 결정은 표시하고 보류**. 즉답 대신 `"deferred_decisions"` 항목에 적어두고, 사용자에게 "Opus 복귀 시 재검토 권장"을 명시.
+3. **Codex 의존도를 높일 것**. 평소보다 더 자주 Codex의 교차 검증을 요청.
+4. **위험도가 높은 작업은 사용자 확인을 받을 것**:
+   - 데이터 모델/스키마 변경
+   - 외부 API 계약 변경
+   - 보안·인증 관련 코드
+   - 프로덕션 배포 영향이 있는 변경
+5. **결정 로그를 남길 것**. 어떤 결정을 어떤 근거로 내렸는지 `decisions.log`에 기록 → Opus 복귀 시 일괄 재검토 가능.
+
+### 8.4 Opus 복귀 후 절차
+
+1. `decisions.log`의 보류 항목들을 Opus에게 일괄 전달
+2. Sonnet 오케스트레이터 모드에서 처리된 위험 영역(아키텍처, 보안)을 우선 재검토
+3. 필요 시 리팩토링 또는 수정 사항을 일반 워크플로우로 진행
 
 ---
 
-## 10. Quick checklist
+## 9. 실패 모드와 디버깅
 
-Before starting a task:
-- [ ] Identified where in the §3 routing matrix the task belongs?
-- [ ] Does the context to pass to sub-agents follow the §5 rules?
-- [ ] Has the output schema (§6) been specified?
+### 9.1 흔한 실패 모드
 
-Before finishing a task:
-- [ ] Have tests actually been run and passed? (not model's self-report)
-- [ ] Has the additional validation in §3 been applied to security/performance-sensitive areas?
-- [ ] If operating in Opus absence mode, has a decision log been recorded?
+- **서브에이전트가 가짜 성공을 보고함**: 출력 스키마를 강제하고, 테스트 통과를 항상 실제 실행으로 검증.
+- **모델 간 스타일 충돌**: 프로젝트 컨벤션을 모든 호출에 명시적으로 전달.
+- **컨텍스트 오염**: 한 서브에이전트의 답을 다른 서브에이전트에 그대로 넘기지 말 것. 반드시 Opus가 통합한 형태로만 전달.
+- **무한 에스컬레이션 루프**: 에스컬레이션은 최대 3단계로 제한.
+
+### 9.2 모니터링 항목
+
+운영 중 다음을 로깅하면 라우팅을 점진적으로 개선할 수 있습니다.
+
+- 모델별 작업 성공률 (작업 유형별 분리)
+- 에스컬레이션 빈도와 최종 처리 모델
+- 토큰 사용량 분포
+- Sonnet 오케스트레이터 모드 사용 시간과 결정 로그 크기
+
+시간이 지나면 "이 영역은 Codex가 더 잘하더라", "저 영역은 Sonnet으로 충분하더라" 같은 데이터가 쌓입니다. 그 데이터로 §3 라우팅 매트릭스를 주기적으로 업데이트하세요.
+
+---
+
+## 10. 빠른 체크리스트
+
+작업을 시작하기 전:
+- [ ] 작업이 §3 라우팅 매트릭스의 어디에 속하는지 식별했는가?
+- [ ] 서브에이전트에게 전달할 컨텍스트가 §5 규칙을 따르는가?
+- [ ] 출력 스키마(§6)를 명시했는가?
+
+작업을 마무리하기 전:
+- [ ] 테스트가 실제로 실행되어 통과하는가? (모델의 자체 보고 X)
+- [ ] 보안·성능 민감 영역에 §3의 추가 검증이 적용되었는가?
+- [ ] Opus 부재 모드였다면 결정 로그가 남았는가?

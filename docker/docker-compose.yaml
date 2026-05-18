@@ -54,6 +54,11 @@ x-runtime-volumes: &runtime-volumes
     source: ${PROJECTS_HOST_PATH:-/home/user/mou/nas_192tb/datasets/projects}
     target: /nas/datasets/projects
     read_only: true
+  # vlm-dataset NFS migration (B-narrow). 별도 target — nas_192tb/datasets와 분리.
+  - type: bind
+    source: ${VLM_DATASETS_HOST_PATH:-/home/user/mou/nas_200tb/datasets}
+    target: /nas/vlm_datasets
+    read_only: false
   - type: bind
     source: ${ARCHIVE_HOST_PATH:-/home/user/mou/archive}
     target: /nas/archive
