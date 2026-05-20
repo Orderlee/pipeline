@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
-from vlm_pipeline.resources.duckdb import DuckDBResource
+from vlm_pipeline.resources.postgres import PostgresResource
 from vlm_pipeline.resources.minio import MinIOResource
 
 from .helpers_key_utils import _coerce_float, _delete_minio_keys
@@ -70,7 +70,7 @@ def _build_initial_clip_row(cf: _CandidateFields, clip_id: str, clip_key: str) -
 
 
 def _cleanup_failed_clip(
-    db: DuckDBResource,
+    db: PostgresResource,
     minio: MinIOResource,
     *,
     clip_id: str | None,

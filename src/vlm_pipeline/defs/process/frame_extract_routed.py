@@ -24,7 +24,7 @@ from vlm_pipeline.lib.spec_config import (
     parse_requested_outputs,
 )
 from vlm_pipeline.lib.video_frames import resolve_frame_sampling_policy
-from vlm_pipeline.resources.duckdb import DuckDBResource
+from vlm_pipeline.resources.postgres import PostgresResource
 from vlm_pipeline.resources.minio import MinIOResource
 
 from .clip_windows import (
@@ -55,7 +55,7 @@ from .helpers_metadata import _load_gemini_label_event
 
 def clip_to_frame_routed_impl(
     context,
-    db: DuckDBResource,
+    db: PostgresResource,
     minio: MinIOResource,
 ) -> dict:
     """spec/dispatch: frame_status·선택적 프레임 이미지 캡션."""

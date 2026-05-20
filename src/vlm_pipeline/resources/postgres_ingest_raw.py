@@ -438,6 +438,43 @@ class PostgresIngestRawMixin:
                 result_columns = [desc[0] for desc in cur.description]
             return [dict(zip(result_columns, row)) for row in rows]
 
+    def list_archived_raw_files_for_folder(self, folder_name: str) -> list[dict[str, Any]]:
+        """Phase 2b: archive 에 이미 옮겨진 raw_files 조회.
+
+        ``from_archived=True`` dispatch JSON 처리 시 folder_name 으로 raw_files 의
+        archived 행들을 lookup 해서 archive_path/raw_key/asset_id/media_type 반환.
+        동일 folder 가 다중 source_unit_name (예: ``<folder>`` + ``<folder>/<sub>``) 으로
+        저장된 경우 둘 다 매칭한다.
+        """
+        normalized = str(folder_name or "").strip()
+        if not normalized:
+            return []
+        with self.connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT asset_id, archive_path, raw_key, media_type, file_size, source_unit_name
+                    FROM raw_files
+                    WHERE (source_unit_name = %s OR source_unit_name LIKE %s)
+                      AND ingest_status = 'archived'
+                      AND archive_path IS NOT NULL
+                    ORDER BY raw_key
+                    """,
+                    (normalized, f"{normalized}/%"),
+                )
+                rows = cur.fetchall()
+        return [
+            {
+                "asset_id": r[0],
+                "archive_path": r[1],
+                "raw_key": r[2],
+                "media_type": r[3],
+                "file_size": r[4],
+                "source_unit_name": r[5],
+            }
+            for r in rows
+        ]
+
     def delete_failed_rows_by_error_filters(
         self,
         *,

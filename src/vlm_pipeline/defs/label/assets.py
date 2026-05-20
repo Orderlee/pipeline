@@ -24,7 +24,7 @@ from vlm_pipeline.lib.spec_config import (
     is_unscoped_mvp_autolabel_run,
     parse_requested_outputs,
 )
-from vlm_pipeline.resources.duckdb import DuckDBResource
+from vlm_pipeline.resources.postgres import PostgresResource
 from vlm_pipeline.resources.minio import MinIOResource
 
 from vlm_pipeline.lib.file_loader import cleanup_temp_path
@@ -47,11 +47,11 @@ from .timestamp import clip_timestamp_mvp, clip_timestamp_routed_impl
     deps=["raw_ingest"],
     description="Gemini 이벤트 구간(timestamp) → vlm-labels; MVP는 auto_label_*, spec/dispatch는 timestamp_*·ready_for_labeling",
     group_name="auto_labeling",
-    config_schema={"limit": Field(int, default_value=50)},
+    config_schema={"limit": Field(int, default_value=100000)},
 )
 def clip_timestamp(
     context,
-    db: DuckDBResource,
+    db: PostgresResource,
     minio: MinIOResource,
 ) -> dict:
     tags = context.run.tags if context.run else {}
@@ -65,11 +65,11 @@ def clip_timestamp(
     deps=["raw_ingest"],
     description="Dispatch 전용 Gemini 비디오 단일분류 → vlm-labels + labels",
     group_name="auto_labeling",
-    config_schema={"limit": Field(int, default_value=50)},
+    config_schema={"limit": Field(int, default_value=100000)},
 )
 def classification_video(
     context,
-    db: DuckDBResource,
+    db: PostgresResource,
     minio: MinIOResource,
 ) -> dict:
     tags = context.run.tags if context.run else {}
@@ -92,7 +92,7 @@ def classification_video(
         raise RuntimeError("classification_video_requires_categories_or_classes")
 
     db.ensure_runtime_schema()
-    limit = int(context.op_config.get("limit", 50))
+    limit = int(context.op_config.get("limit", 100000))
     candidates = find_dispatch_video_classification_candidates(
         db,
         folder_name=folder_name,

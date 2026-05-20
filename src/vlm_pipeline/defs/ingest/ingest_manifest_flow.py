@@ -15,7 +15,7 @@ from .ingest_state import RawIngestState
 
 if TYPE_CHECKING:
     from vlm_pipeline.resources.config import PipelineConfig
-    from vlm_pipeline.resources.duckdb import DuckDBResource
+    from vlm_pipeline.resources.postgres import PostgresResource
 
 
 def _persist_manifest(manifest_path: str | None, manifest: dict | None) -> None:
@@ -29,7 +29,7 @@ def _persist_manifest(manifest_path: str | None, manifest: dict | None) -> None:
 
 def _load_manifest_or_summary(
     context,
-    db: "DuckDBResource",
+    db: "PostgresResource",
     *,
     manifest_path: str | None,
     request_id: str | None,
@@ -43,10 +43,11 @@ def _load_manifest_or_summary(
 
     context.log.warning(f"{message} 상태 요약만 반환합니다.")
     with db.connect() as conn:
-        total = conn.execute("SELECT COUNT(*) FROM raw_files").fetchone()[0]
-        completed = conn.execute(
-            "SELECT COUNT(*) FROM raw_files WHERE ingest_status = 'completed'"
-        ).fetchone()[0]
+        with conn.cursor() as cur:
+            cur.execute("SELECT COUNT(*) FROM raw_files")
+            total = cur.fetchone()[0]
+            cur.execute("SELECT COUNT(*) FROM raw_files WHERE ingest_status = 'completed'")
+            completed = cur.fetchone()[0]
     return None, {"total": int(total), "success": int(completed), "failed": 0, "skipped": 0}
 
 

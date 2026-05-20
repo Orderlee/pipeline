@@ -28,10 +28,14 @@ pytest tests/unit -q
 pytest tests/integration -q
 
 # Docker (production — main 브랜치)
-cd /home/user/work_p/Datapipeline-Data-data_pipeline/docker && docker compose up -d
+./scripts/compose-prod.sh up -d
+# Docker (staging — dev 브랜치, staging clone 에서 실행)
+./scripts/compose-staging.sh up -d
 
-# Docker (staging — dev 브랜치)
-cd /home/user/work_p/Datapipeline-Data-data_pipeline_test/docker && docker compose up -d
+# ⚠️ 주의: 수동으로 `docker compose ...` 직접 호출 금지. 두 wrapper 가 다음을 보장:
+#   - prod: `--env-file .env` 명시 → INCOMING/ARCHIVE_HOST_PATH 가 nas_200tb 로 정상 resolve (없으면 legacy /home/user/mou/incoming 로 silently revert)
+#   - staging: `-p pipeline-test --env-file .env.test` 명시 → 프로젝트 이름 + 포트(:3031)+경로(/staging/) 모두 정상 (없으면 PROD 컨테이너 건드림)
+# 두 케이스 다 2026-05-19 QA 중 실제 발생. CI deploy-stack.sh 는 이미 --env-file 사용 중 — 수동 ops 만 wrapper 필수.
 
 # Dagster UI
 #   production : http://10.0.0.10:3030  (main)
@@ -57,8 +61,8 @@ python3 scripts/query_local_duckdb.py --sql "SELECT COUNT(*) FROM raw_files;"
 | DuckDB (컨테이너) | `/data/pipeline.duckdb` | `/data/staging.duckdb` |
 | MinIO endpoint | `http://10.0.0.36:9000` | `http://10.0.0.36:9002` |
 | MinIO Console | `:9001` | `:9003` |
-| Incoming (호스트) | `/home/user/mou/incoming` | `/home/user/mou/staging/incoming` |
-| Archive (호스트) | `/home/user/mou/archive` | `/home/user/mou/staging/archive` |
+| Incoming (호스트) | `/home/user/mou/nas_200tb/incoming` | `/home/user/mou/nas_200tb/staging/incoming` |
+| Archive (호스트) | `/home/user/mou/nas_200tb/archive` | `/home/user/mou/nas_200tb/staging/archive` |
 | DAGSTER_HOME (컨테이너) | `/app/dagster_home` | `/app/dagster_home` (동일, 호스트 경로만 다름) |
 | env file | `docker/.env` | `docker/.env.test` |
 | dispatch-agent 연동 | `host.docker.internal:8080` | `host.docker.internal:8081` |
@@ -196,6 +200,16 @@ git -C /home/user/work_p/Datapipeline-Data-data_pipeline_test status       # dev
 - 이벤트 JSON source of truth = `vlm-labels`만. `vlm-processed`에 중복 저장 금지
 - classification 결과: `vlm-classification/<folder_prefix>/{video|image}/<class>/<file>` 형태의 **원본 복사** (JSON/DB 미적재)
 
+### `labels` 테이블 의미 (E2E 검증시 흔히 혼동)
+- `labels` 는 **per-event** 레코드: `event_index`/`event_count`/`timestamp_start_sec`/`timestamp_end_sec`/`caption_text` 한 행 = Gemini 가 비디오 안에서 검출한 이벤트 1개. 한 비디오가 N events → N rows, **0 events → 0 rows**.
+- 따라서 `SELECT COUNT(*) FROM labels WHERE asset_id IN (...) = 0` 은 **라벨링 실패 아님** — Gemini 가 해당 source 비디오들에서 카테고리 조건에 맞는 이벤트를 찾지 못한 정상 결과일 수 있음.
+- **라벨링 stage 완료 지표**는 `labels` 행 수가 아니라 다음 셋:
+  - `video_metadata.timestamp_status='completed'`
+  - `video_metadata.timestamp_label_key` 세팅됨 (예: `<source>/events/<file>.json`)
+  - MinIO `vlm-labels/<source>/events/*.json` 객체 존재 (이벤트 0개여도 빈 events array JSON 업로드됨)
+- 동일 패턴: `bbox_status='completed'` + `image_labels` 행 존재로 bbox 단계 완료를 판단. `image_labels` 행이 0이면 bbox detect 가 검출 못한 상태 (정상 가능).
+- 운영 디버깅시: Gemini 호출이 실제로 일어났는지 확인하려면 Dagster run 의 `clip_timestamp` step 실행 시간을 보자. 20 videos → 90~120s 이면 정상 (≈5s/video). 0s 면 skip 된 것.
+
 ### Staging 초기화 (깨끗한 재테스트)
 1. 스테이징 컨테이너 중지:
    `docker stop pipeline-test-dagster-1 pipeline-test-dagster-daemon-1 pipeline-test-dagster-code-server-1`
@@ -203,17 +217,18 @@ git -C /home/user/work_p/Datapipeline-Data-data_pipeline_test status       # dev
 3. `Datapipeline-Data-data_pipeline_test/docker/data/staging.duckdb` 삭제 (root 소유라 `docker run --rm -v ... alpine rm -f` 권장)
 4. `Datapipeline-Data-data_pipeline_test/docker/app/dagster_home/storage/` 내용 삭제 (run·sensor·schedule 상태 초기화)
 5. 재기동: `cd .../data_pipeline_test/docker && docker compose up -d`
-- ⚠️ staging incoming/archive 원본 폴더(`/home/user/mou/staging/incoming`, `/home/user/mou/staging/archive`)는 명시 요청 없으면 **절대 삭제 금지**
+- ⚠️ staging incoming/archive 원본 폴더(`/home/user/mou/nas_200tb/staging/incoming`, `/home/user/mou/nas_200tb/staging/archive`)는 명시 요청 없으면 **절대 삭제 금지**
 
 ---
 
 ## 서비스 네트워크 & 볼륨 (코드에서 놓치기 쉬운 것)
 
 - Docker network: `pipeline-network`
-- **호스트 ↔ 컨테이너 경로 매핑** (compose의 bind mount):
-  - `/home/user/mou/incoming` → `/nas/incoming`
-  - `/home/user/mou/archive` → `/nas/archive`
-  - `/home/user/mou/staging` → `/nas/staging` (staging only)
+- **호스트 ↔ 컨테이너 경로 매핑** (compose의 bind mount) — **현재는 NAS_200tb(10.0.0.51, NFS) 로 cutover된 상태** (이전 `/home/user/mou/incoming`·`archive` 직결 경로는 폐기):
+  - **PROD**: `/home/user/mou/nas_200tb/incoming` → `/nas/incoming`, `/home/user/mou/nas_200tb/archive` → `/nas/archive`
+  - **STAGING**: `/home/user/mou/nas_200tb/staging/incoming` → `/nas/incoming`, `/home/user/mou/nas_200tb/staging/archive` → `/nas/archive`
+  - 컨테이너 환경변수 `INCOMING_HOST_PATH` / `ARCHIVE_HOST_PATH` 가 진실 — 의심되면 `docker exec <ctr> env | grep _HOST_PATH` 로 확인.
+  - **운영자 주의**: `user` 유저는 NAS_200tb 상에서 quota 가 걸려있어 호스트에서 직접 `cp`/`mkdir` 시 "디스크 할당량 초과" 발생. 큰 파일을 incoming 에 넣을 땐 컨테이너(root) 경유 (`docker run --rm -v /home/user/mou/nas_200tb/...:/dst alpine cp ...`) 또는 quota 정리 필요.
   - 코드→실행 경로: **mount 없음**. 컨테이너는 이미지 빌드 시 Dockerfile `COPY src/ /src/vlm/`로 들어간 src만 사용 (`/src/vlm`, `/src/python`). 호스트 src 변경은 다음 `docker compose build` 전까지 컨테이너에 반영되지 않음.
 - DuckDB **호스트 실제 경로**: `./docker/data/pipeline.duckdb`
 - YOLO 서버: GPU 1번 전용 (`cuda:1`, `NVIDIA_VISIBLE_DEVICES=1`)

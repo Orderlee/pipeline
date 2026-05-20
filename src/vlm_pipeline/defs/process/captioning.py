@@ -20,7 +20,7 @@ from vlm_pipeline.lib.spec_config import (
     parse_requested_outputs,
 )
 from vlm_pipeline.lib.vertex_chunking import normalize_gemini_events
-from vlm_pipeline.resources.duckdb import DuckDBResource
+from vlm_pipeline.resources.postgres import PostgresResource
 from vlm_pipeline.resources.minio import MinIOResource
 
 from .helpers import (
@@ -32,7 +32,7 @@ from .helpers import (
 
 def clip_captioning_mvp(
     context,
-    db: DuckDBResource,
+    db: PostgresResource,
     minio: MinIOResource,
 ) -> dict:
     """auto_label_status='generated'인 video의 Gemini JSON을 labels에 upsert (MVP)."""
@@ -42,7 +42,7 @@ def clip_captioning_mvp(
 
     db.ensure_runtime_schema()
     folder_name = dispatch_raw_key_prefix_folder(context.run.tags if context.run else None)
-    limit = int(context.op_config.get("limit", 200))
+    limit = int(context.op_config.get("limit", 100000))
     candidates = db.find_captioning_pending_videos(limit=limit, folder_name=folder_name)
     if not candidates:
         context.log.info("CAPTIONING 대상 없음")
@@ -151,7 +151,7 @@ def clip_captioning_mvp(
 
 def clip_captioning_routed_impl(
     context,
-    db: DuckDBResource,
+    db: PostgresResource,
     minio: MinIOResource,
 ) -> dict:
     """spec/dispatch: requested_outputs·spec_id 기준 captioning 단계."""
@@ -179,7 +179,7 @@ def clip_captioning_routed_impl(
             sorted(captioning_config.keys()),
         )
 
-    limit = int(context.op_config.get("limit", 200))
+    limit = int(context.op_config.get("limit", 100000))
     folder_name = dispatch_folder_for_source_unit(tags)
     if spec_id:
         candidates = db.find_ready_for_labeling_caption_backlog(spec_id, limit=limit)

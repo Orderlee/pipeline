@@ -20,7 +20,7 @@ from vlm_pipeline.lib.key_builders import (
     build_gemini_label_key,
     build_sam3_detection_key,
 )
-from vlm_pipeline.resources.duckdb import DuckDBResource
+from vlm_pipeline.resources.postgres import PostgresResource
 from vlm_pipeline.resources.minio import MinIOResource
 
 DATASET_BUCKET = "vlm-dataset"
@@ -364,7 +364,7 @@ def _build_project_genai(context, db, minio: MinIOResource,
     return summary
 
 
-def _build_project(context, db: DuckDBResource, minio: MinIOResource,
+def _build_project(context, db: PostgresResource, minio: MinIOResource,
                    folder: str) -> dict:
     """단일 프로젝트 빌드. 요약 dict 반환.
 
@@ -594,7 +594,7 @@ def _build_project(context, db: DuckDBResource, minio: MinIOResource,
 )
 def build_dataset(
     context,
-    db: DuckDBResource,
+    db: PostgresResource,
     minio: MinIOResource,
 ) -> dict:
     folder_filter = context.op_config.get("folder") if context.op_config else None

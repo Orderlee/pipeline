@@ -31,7 +31,6 @@ from vlm_pipeline.defs.dispatch.service import (
     resolve_archive_paths_from_folder,
     write_archive_dispatch_manifest,
 )
-from vlm_pipeline.lib.env_utils import is_duckdb_lock_conflict
 from vlm_pipeline.resources.config import PipelineConfig
 
 
@@ -64,13 +63,7 @@ def _archive_dispatch_sensor_fn(context: SensorEvaluationContext):
     if db_resource is None:
         return
 
-    try:
-        db_resource.ensure_runtime_schema()
-    except Exception as exc:
-        if is_duckdb_lock_conflict(exc):
-            context.log.warning(f"DuckDB lock 충돌 — 다음 tick 재시도: {exc}")
-            return
-        raise
+    db_resource.ensure_runtime_schema()
 
     requests = sorted(fpath for fpath in pending_dir.glob("*.json") if fpath.is_file())
 
@@ -97,13 +90,6 @@ def _archive_dispatch_sensor_fn(context: SensorEvaluationContext):
         try:
             archive_rows = resolve_archive_paths_from_folder(db_resource, prepared.folder_name)
         except Exception as exc:
-            if is_duckdb_lock_conflict(exc):
-                context.log.warning(
-                    f"archive_dispatch: DB lock 충돌 — 다음 tick 에서 재시도 "
-                    f"(request_id={prepared.request_id}, folder={prepared.folder_name}): {exc}"
-                )
-                # JSON 그대로 두고 다음 tick 에 재시도. failed 로 옮기지 않음.
-                return
             context.log.error(
                 f"archive_dispatch: DB lookup 실패 (request_id={prepared.request_id}, "
                 f"folder={prepared.folder_name}): {exc}"

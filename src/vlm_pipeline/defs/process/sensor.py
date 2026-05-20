@@ -10,13 +10,7 @@ from pathlib import Path
 from dagster import DefaultSensorStatus, RunRequest, SkipReason, sensor
 from dagster._core.storage.dagster_run import DagsterRunStatus, RunsFilter
 
-from vlm_pipeline.lib.env_utils import (
-    bool_env,
-    default_duckdb_path,
-    default_postgres_dsn,
-    int_env,
-    is_duckdb_lock_conflict,
-)
+from vlm_pipeline.lib.env_utils import bool_env, int_env
 from vlm_pipeline.lib.sensor_db import open_sensor_read_connection
 
 VIDEO_FRAME_SENSOR_TARGET_JOBS = {
@@ -54,23 +48,12 @@ def _parse_cursor_state(raw_cursor: str | None) -> tuple[int | None, str | None,
 
 
 def _read_video_frame_backlog_snapshot() -> dict[str, int | str | None]:
-    # PG primary 모드면 in-memory DuckDB + ATTACH PG (read_only). DuckDB single
-    # 모드면 legacy DuckDB file 직접 read. open_sensor_read_connection() 가 분기.
-    # DuckDB legacy 경로 보호용 file 존재성 체크는 helper 안에서 안 하므로 호출자가 확인.
-    if not default_postgres_dsn():
-        db_path = Path(default_duckdb_path())
-        if not db_path.exists():
-            raise FileNotFoundError(str(db_path))
-
-    retry_count = int_env("DUCKDB_SENSOR_LOCK_RETRY_COUNT", 5, 0)
-    retry_delay_ms = int_env("DUCKDB_SENSOR_LOCK_RETRY_DELAY_MS", 200, 10)
-    max_retry_delay_ms = int_env("DUCKDB_SENSOR_LOCK_RETRY_MAX_DELAY_MS", 2000, retry_delay_ms)
-
-    for attempt in range(retry_count + 1):
-        conn = None
-        try:
-            conn = open_sensor_read_connection()
-            row = conn.execute(
+    """Sensor backlog snapshot — PG direct via open_sensor_read_connection()."""
+    conn = None
+    try:
+        conn = open_sensor_read_connection()
+        with conn.cursor() as cur:
+            cur.execute(
                 """
                 WITH existing_frames AS (
                     SELECT
@@ -102,34 +85,27 @@ def _read_video_frame_backlog_snapshot() -> dict[str, int | str | None]:
                 SELECT
                     COUNT(DISTINCT asset_id) AS backlog_asset_count,
                     COUNT(*) AS backlog_label_count,
-                    CAST(MAX(created_at) AS VARCHAR) AS latest_label_created_at
+                    CAST(MAX(created_at) AS TEXT) AS latest_label_created_at
                 FROM missing_label_events
                 """
-            ).fetchone()
-            backlog_asset_count = int(row[0]) if row and row[0] is not None else 0
-            backlog_label_count = int(row[1]) if row and row[1] is not None else 0
-            latest_created_at = str(row[2]) if row and row[2] is not None else None
-            state_token = (
-                f"assets={backlog_asset_count}|labels={backlog_label_count}|created_at={latest_created_at or ''}"
             )
-            return {
-                "backlog_count": backlog_asset_count,
-                "pending_count": backlog_label_count,
-                "processing_count": 0,
-                "latest_raw_updated_at": latest_created_at,
-                "state_token": state_token,
-            }
-        except Exception as exc:  # noqa: BLE001
-            if is_duckdb_lock_conflict(exc) and attempt < retry_count:
-                delay_ms = min(max_retry_delay_ms, retry_delay_ms * (2**attempt))
-                time.sleep(delay_ms / 1000.0)
-                continue
-            raise
-        finally:
-            if conn is not None:
-                conn.close()
-
-    raise RuntimeError("video frame sensor snapshot retry exhausted unexpectedly")
+            row = cur.fetchone()
+        backlog_asset_count = int(row[0]) if row and row[0] is not None else 0
+        backlog_label_count = int(row[1]) if row and row[1] is not None else 0
+        latest_created_at = str(row[2]) if row and row[2] is not None else None
+        state_token = (
+            f"assets={backlog_asset_count}|labels={backlog_label_count}|created_at={latest_created_at or ''}"
+        )
+        return {
+            "backlog_count": backlog_asset_count,
+            "pending_count": backlog_label_count,
+            "processing_count": 0,
+            "latest_raw_updated_at": latest_created_at,
+            "state_token": state_token,
+        }
+    finally:
+        if conn is not None:
+            conn.close()
 
 
 # Future activation checklist for processed clip based auto extraction:
@@ -324,9 +300,6 @@ def video_frame_extract_sensor(context):
 
     try:
         snapshot = _read_video_frame_backlog_snapshot()
-    except FileNotFoundError as exc:
-        yield SkipReason(f"DuckDB not found: {exc}")
-        return
     except Exception as exc:  # noqa: BLE001
         yield SkipReason(f"video frame backlog read failed: {exc}")
         return

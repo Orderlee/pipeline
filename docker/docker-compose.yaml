@@ -256,6 +256,8 @@ services:
       YOLO_PORT: "8001"
       YOLO_MAX_BATCH: "8"
       YOLO_DEFAULT_CLASSES: ${YOLO_DEFAULT_CLASSES:-person,car,truck,bus,motorcycle,bicycle,fire,smoke,flame,cigarette,smoking,knife,gun,bat,baseball bat,sword,dagger,bag,backpack,suitcase,helmet,safety vest,hard hat,traffic cone,barricade,dog,cat}
+      YOLO_IDLE_UNLOAD_SECONDS: "${YOLO_IDLE_UNLOAD_SECONDS:-600}"
+      YOLO_IDLE_CHECK_INTERVAL_SECONDS: "${YOLO_IDLE_CHECK_INTERVAL_SECONDS:-60}"
       CUDA_VISIBLE_DEVICES: "1"
       NVIDIA_VISIBLE_DEVICES: "1"
     volumes:
@@ -294,9 +296,11 @@ services:
       SAM3_SCORE_THRESHOLD: "0.0"
       SAM3_MAX_MASKS_PER_PROMPT: "50"
       SAM3_CHECKPOINT_PATH: "/models/sam3.1_multiplex.pt"
+      SAM3_IDLE_UNLOAD_SECONDS: "${SAM3_IDLE_UNLOAD_SECONDS:-600}"
+      SAM3_IDLE_CHECK_INTERVAL_SECONDS: "${SAM3_IDLE_CHECK_INTERVAL_SECONDS:-60}"
       HF_TOKEN: ${HF_TOKEN:-}
-      CUDA_VISIBLE_DEVICES: "0"
-      NVIDIA_VISIBLE_DEVICES: "0"
+      CUDA_VISIBLE_DEVICES: "1"
+      NVIDIA_VISIBLE_DEVICES: "1"
     networks:
       - default
       - pipeline-network

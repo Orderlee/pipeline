@@ -103,21 +103,8 @@ result/*.txt
 # 1회성 복구 스크립트 (날짜 suffix)
 scripts/recover_*_[0-9]*.py
 
-.env
-
-.env.*
-
-*.env
-
-*.env.*
-
-*.bak
-
-*.bak.*
-
+# Local env backups / secrets
+.env*
 docker/.env*
-
-docker/**/*.env*
-
-docker/**/*.bak*
-
+*.env
+*.env.*

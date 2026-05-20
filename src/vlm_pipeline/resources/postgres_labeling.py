@@ -630,6 +630,49 @@ class PostgresLabelingMixin:
             spec_id=spec_id,
         )
 
+    def find_dispatch_video_classification_candidates(
+        self, *, folder_name: str, limit: int
+    ) -> list[dict[str, Any]]:
+        """dispatch `classification_video` 대상 후보 조회 — source_unit_name 매칭.
+
+        labels 테이블에 이미 `video_classification_json` 레이블이 있는 raw_files 는 제외.
+        """
+        with self.connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT
+                        r.asset_id,
+                        r.raw_bucket,
+                        r.raw_key,
+                        r.archive_path,
+                        r.source_path,
+                        vm.duration_sec,
+                        vm.fps,
+                        vm.frame_count
+                    FROM raw_files r
+                    JOIN video_metadata vm ON vm.asset_id = r.asset_id
+                    WHERE r.media_type = 'video'
+                      AND r.ingest_status = 'completed'
+                      AND r.source_unit_name = %s
+                      AND NOT EXISTS (
+                          SELECT 1
+                          FROM labels l
+                          WHERE l.asset_id = r.asset_id
+                            AND l.label_format = 'video_classification_json'
+                      )
+                    ORDER BY r.created_at
+                    LIMIT %s
+                    """,
+                    [folder_name, max(1, int(limit))],
+                )
+                rows = cur.fetchall()
+        columns = [
+            "asset_id", "raw_bucket", "raw_key", "archive_path",
+            "source_path", "duration_sec", "fps", "frame_count",
+        ]
+        return [dict(zip(columns, row)) for row in rows]
+
     def find_sam3_shadow_candidates(
         self,
         *,

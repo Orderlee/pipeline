@@ -27,13 +27,6 @@ class StuckRunGuardSettings:
 
 
 @dataclass(frozen=True)
-class MotherDuckSensorSettings:
-    interval_sec: int
-    skip_during_duckdb_writer: bool
-    watched_tables: tuple[str, ...]
-
-
-@dataclass(frozen=True)
 class ProductionAgentPollingSettings:
     enabled: bool
     base_url: str
@@ -41,10 +34,6 @@ class ProductionAgentPollingSettings:
     connect_timeout_sec: int
     read_timeout_sec: int
     interval_sec: int
-
-
-def _split_csv(raw_value: str) -> tuple[str, ...]:
-    return tuple(item.strip() for item in raw_value.split(",") if item.strip())
 
 
 def load_ingest_feature_settings() -> IngestFeatureSettings:
@@ -57,7 +46,7 @@ def load_ingest_feature_settings() -> IngestFeatureSettings:
 def load_stuck_run_guard_settings() -> StuckRunGuardSettings:
     target_jobs_raw = os.getenv(
         "STUCK_RUN_GUARD_TARGET_JOBS",
-        "mvp_stage_job,ingest_job,dispatch_stage_job,motherduck_sync_job",
+        "mvp_stage_job,ingest_job,dispatch_stage_job",
     )
     orphan_only_jobs_raw = os.getenv(
         "STUCK_RUN_GUARD_ORPHAN_ONLY_JOBS",
@@ -80,21 +69,6 @@ def load_stuck_run_guard_settings() -> StuckRunGuardSettings:
             for item in orphan_only_jobs_raw.split(",")
             if item.strip()
         },
-    )
-
-
-def load_motherduck_sensor_settings() -> MotherDuckSensorSettings:
-    watched_tables_raw = os.getenv(
-        "MOTHERDUCK_SENSOR_WATCHED_TABLES",
-        "raw_files,video_metadata,labels,processed_clips",
-    )
-    watched_tables = _split_csv(watched_tables_raw)
-    if not watched_tables:
-        watched_tables = ("raw_files", "video_metadata", "labels", "processed_clips")
-    return MotherDuckSensorSettings(
-        interval_sec=int_env("MOTHERDUCK_SENSOR_INTERVAL_SEC", 300, 30),
-        skip_during_duckdb_writer=bool_env("MOTHERDUCK_SENSOR_SKIP_DURING_DUCKDB_WRITER", True),
-        watched_tables=watched_tables,
     )
 
 

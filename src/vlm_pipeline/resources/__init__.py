@@ -1,15 +1,18 @@
-"""Dagster resources — DuckDB, MinIO, runtime settings.
+"""Dagster resources — PostgreSQL, MinIO, runtime settings.
 
-DuckDB resource uses mixin composition:
-    duckdb.py           DuckDBResource (combining class)
-    duckdb_base.py      DuckDBBaseMixin (connect, lock, schema DDL)
-    duckdb_phash.py     DuckDBPhashMixin (perceptual hash prefix candidates)
-    duckdb_migration.py DuckDBMigrationMixin (schema ensure/migration)
-    duckdb_dedup.py     DuckDBDedupMixin (deduplication queries)
-    duckdb_ingest.py    DuckDBIngestMixin (combining ingest sub-mixins)
-    duckdb_ingest_dispatch.py  Dispatch tracking tables/queries
-    duckdb_ingest_raw.py       Raw files CRUD
-    duckdb_ingest_metadata.py  Image/video metadata CRUD
-    duckdb_labeling.py  DuckDBLabelingMixin (label/caption queries)
-    duckdb_spec.py      DuckDBSpecMixin (labeling spec queries)
+PostgresResource uses mixin composition (file-based DuckDB was removed
+2026-05-19; analytical queries now use the ``pg_duckdb`` extension):
+
+    postgres.py                 PostgresResource (combining class)
+    postgres_base.py            PostgresBaseMixin (connect / pool / introspection)
+    postgres_migration.py       PostgresMigrationMixin (schema ensure / migration)
+    postgres_phash.py           PostgresPhashMixin (perceptual hash prefix lookup)
+    postgres_dedup.py           PostgresDedupMixin (deduplication queries)
+    postgres_ingest.py          PostgresIngestMixin (dispatch + raw + metadata)
+    postgres_ingest_dispatch.py Dispatch tracking CRUD
+    postgres_ingest_raw.py      Raw files CRUD
+    postgres_ingest_metadata.py Image/video metadata CRUD
+    postgres_labeling.py        PostgresLabelingMixin (label / caption queries)
+    postgres_spec.py            PostgresSpecMixin (labeling spec queries)
+    postgres_genai.py           PostgresGenAIMixin (genai batch / job CRUD)
 """

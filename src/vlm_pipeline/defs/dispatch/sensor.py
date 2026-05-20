@@ -16,7 +16,6 @@ from vlm_pipeline.defs.dispatch.service import (
     process_dispatch_ingress_request,
     record_failed_dispatch_request,
 )
-from vlm_pipeline.lib.env_utils import is_duckdb_lock_conflict
 from vlm_pipeline.resources.config import PipelineConfig
 
 
@@ -64,13 +63,7 @@ def _dispatch_sensor_fn(context: SensorEvaluationContext):
     if db_resource is None:
         return
 
-    try:
-        db_resource.ensure_runtime_schema()
-    except Exception as exc:
-        if is_duckdb_lock_conflict(exc):
-            context.log.warning(f"DuckDB lock 충돌 — 다음 tick에서 재시도: {exc}")
-            return
-        raise
+    db_resource.ensure_runtime_schema()
 
     requests = sorted(fpath for fpath in pending_dir.glob("*.json") if fpath.is_file())
 

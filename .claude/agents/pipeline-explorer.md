@@ -44,11 +44,13 @@ Top-level layout:
 Key paths inside the running container (different from host):
 - `/src/vlm` — `src/vlm_pipeline` copied at image build time
 - `/src/python` — `src/python`
-- `/nas/incoming`, `/nas/archive`, `/nas/staging` — host NAS bind mounts
-- `/data/pipeline.duckdb` (prod) or `/data/staging.duckdb` (staging) — DuckDB file
+- `/nas/incoming`, `/nas/archive` — host NAS bind mounts (currently NAS_200tb at 10.0.0.51; check `docker exec <ctr> env | grep _HOST_PATH` for actual host source)
 - `/app/dagster_home` — DAGSTER_HOME
 
-Host DuckDB actual file: `./docker/data/pipeline.duckdb` (prod repo) or `./docker/data/staging.duckdb` (staging repo).
+**DB backend**: project is on **Postgres primary** (`DATAOPS_DB_BACKEND=postgres`). DuckDB legacy reference only.
+- PROD Postgres container: `docker-postgres-1` (host port 15433), DSN db `vlm_pipeline`, user `airflow`.
+- STAGING Postgres container: `pipeline-test-postgres-1` (host port 15432), DSN db `vlm_pipeline_staging`, user `airflow`.
+- Legacy DuckDB files (`./docker/data/pipeline.duckdb`, `./docker/data/staging.duckdb`) still exist but are NOT the primary store after PG cutover. Query Postgres unless the parent specifically asks about DuckDB.
 
 ## Common search recipes
 
@@ -56,25 +58,28 @@ When the parent asks one of these, use the corresponding shortcut first:
 
 | Question | First-pass command |
 |---|---|
-| "Which assets write to DuckDB?" | `grep -rln 'duckdb_writer' src/vlm_pipeline/defs/` |
+| "Which assets write to the DB?" | `grep -rln 'duckdb_writer' src/vlm_pipeline/defs/` (tag name is legacy "duckdb_writer" but it routes through whichever backend `DATAOPS_DB_BACKEND` selects) |
 | "Where is the sensor that watches incoming?" | `grep -rln '@sensor' src/vlm_pipeline/defs/ingest/` |
-| "What's the schema of `raw_files`?" | `grep -A30 'CREATE TABLE.*raw_files' src/vlm_pipeline/sql/` |
-| "Which migrations exist?" | `ls src/vlm_pipeline/sql/migrations/` |
+| "What's the schema of `raw_files`?" | `docker exec docker-postgres-1 psql -U airflow -d vlm_pipeline -c '\d raw_files'` (or grep migrations under `sql/migrations/postgres/`) |
+| "Which migrations exist?" | `ls src/vlm_pipeline/sql/migrations/` (DuckDB) + `ls src/vlm_pipeline/sql/migrations/postgres/` |
 | "Where is MinIO key X built?" | `grep -n 'def.*_key' src/vlm_pipeline/lib/key_builders.py` |
 | "Trace asset → MinIO bucket" | Read the asset, then grep its key builder, then grep the bucket constant |
 | "What does CI rebuild trigger on?" | Read `.github/workflows/deploy-*.yml` `detect_image_rebuild` paths |
 | "Where do failures get logged?" | `grep -rln 'failed/.*\\.jsonl' src/vlm_pipeline/` |
-| "Live DuckDB row count" | `python3 scripts/query_local_duckdb.py --sql "SELECT COUNT(*) FROM <table>"` |
+| "Live row count for source X" | `docker exec docker-postgres-1 psql -U airflow -d vlm_pipeline -c "SELECT COUNT(*) FROM raw_files WHERE source_unit_name='X'"` |
+| "Did Gemini find events for source X?" | Check `video_metadata.timestamp_status` + `timestamp_label_key` first. Empty `labels` table for that source is NOT failure — it means 0 events detected (see CLAUDE.md §labels table 의미). |
 
-## How to query DuckDB safely
+## How to query the database safely
 
-The DuckDB file holds a write lock when Dagster is running. From the host:
+After PG cutover, prefer Postgres reads. The legacy DuckDB queries below remain valid only when the parent specifically asks about pre-cutover state.
 
 ```bash
-# Safe read (uses readonly fallback, won't fight the writer):
-python3 scripts/query_local_duckdb.py --sql "SELECT * FROM raw_files LIMIT 5"
+# Postgres (current — both prod and staging):
+docker exec docker-postgres-1 psql -U airflow -d vlm_pipeline -c "SELECT COUNT(*) FROM raw_files;"
+docker exec pipeline-test-postgres-1 psql -U airflow -d vlm_pipeline_staging -c "SELECT COUNT(*) FROM raw_files;"
 
-# Or via the running container (no lock collision):
+# Legacy DuckDB (only when parent asks):
+python3 scripts/query_local_duckdb.py --sql "SELECT COUNT(*) FROM raw_files"
 docker exec docker-dagster-code-server-1 python3 -c "
 import duckdb
 con = duckdb.connect('/data/pipeline.duckdb', read_only=True)
@@ -82,7 +87,7 @@ print(con.execute('SELECT COUNT(*) FROM raw_files').fetchone())
 "
 ```
 
-Never open the DuckDB file with `duckdb` CLI in write mode while Dagster is up — that fights the lock.
+Never open a DuckDB file with `duckdb` CLI in write mode while Dagster is up — that fights the lock (mostly historical now that Postgres is primary).
 
 ## Output format
 
@@ -123,8 +128,8 @@ Keep both shapes tight. The parent has a 1M context but you should never assume 
 
 - **You never call Edit, Write, or NotebookEdit.** If you find a bug, describe it; let the parent fix.
 - **You never run `docker compose up/down/restart`, `mc rm`, or any destructive command.** Read-only ops only.
-- **You never query `pipeline.duckdb` in write mode.** Always `read_only=True` or use the script.
-- **You never `cd` into the staging repo to read its DuckDB** — the staging repo's host path is different (`..._test/docker/data/staging.duckdb`). If the parent asked about staging state and you're in prod working dir, surface this and ask which the parent wants.
+- **You never write to either Postgres or DuckDB.** All DB reads (Postgres preferred since PG cutover, DuckDB only on explicit request) must be SELECT-only via `psql -c "SELECT ..."` or `read_only=True`.
+- **You never confuse prod vs staging databases.** PROD = `docker-postgres-1` / db `vlm_pipeline`. STAGING = `pipeline-test-postgres-1` / db `vlm_pipeline_staging`. If the parent asks about a source_unit and isn't clear which env, query both and report which has the data.
 - **You never load `.env` / `.env.test` contents into your response.** Reference the variable names only.
 - If a file is >500 LoC, use Read with line offsets — don't dump the whole thing.
 - If a question really needs `mcp__codex__codex` (independent second opinion), say so in your output — don't call it yourself.

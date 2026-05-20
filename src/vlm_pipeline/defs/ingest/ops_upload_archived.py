@@ -20,9 +20,9 @@ from typing import Any
 from vlm_pipeline.lib.video_reencode import (
     STANDARD_PRESET_NAME,
     needs_reencode,
-    reencode_to_tmp,
+    reencode_with_fallback,
 )
-from vlm_pipeline.resources.duckdb import DuckDBResource
+from vlm_pipeline.resources.postgres import PostgresResource
 from vlm_pipeline.resources.minio import MinIOResource
 
 from .ops_common import (
@@ -37,7 +37,7 @@ from .ops_common import (
 
 def upload_archived_files(
     context,
-    db: DuckDBResource,
+    db: PostgresResource,
     minio: MinIOResource,
     manifest: dict,
 ) -> dict[str, Any]:
@@ -102,8 +102,21 @@ def upload_archived_files(
                     except Exception:
                         reencode_needed = False
                 if reencode_needed:
-                    tmp_path = reencode_to_tmp(Path(archive_path), threads=reencode_threads)
-                    upload_src = str(tmp_path)
+                    tmp_path, fallback_reason = reencode_with_fallback(
+                        Path(archive_path), threads=reencode_threads
+                    )
+                    if tmp_path is not None:
+                        upload_src = str(tmp_path)
+                    else:
+                        context.log.warning(
+                            f"reencode fallback to original after 3 retries: "
+                            f"asset_id={asset_id} reason={fallback_reason}"
+                        )
+                        try:
+                            if hasattr(db, "update_video_reencode_reason"):
+                                db.update_video_reencode_reason(asset_id, fallback_reason)
+                        except Exception:  # noqa: BLE001
+                            pass
 
             content_type = (
                 DEFAULT_VIDEO_CONTENT_TYPE if media_type == "video" else "image/jpeg"

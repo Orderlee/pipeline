@@ -31,6 +31,7 @@ from vlm_pipeline.defs.ingest.sensor import (
 )
 from vlm_pipeline.defs.label.assets import classification_video, clip_timestamp
 from vlm_pipeline.defs.label.manual_import import manual_label_import
+from vlm_pipeline.defs.label.sensor import auto_labeling_sensor
 from vlm_pipeline.defs.ls.sensor import (
     ls_task_create_sensor,
 )
@@ -40,17 +41,9 @@ from vlm_pipeline.defs.sam.detection_assets import (
     dispatch_sam3_image_detection,
     sam3_image_detection,
 )
-from vlm_pipeline.defs.sync.assets import motherduck_sync
-from vlm_pipeline.lib.env_utils import (
-    DB_BACKEND_DUAL_DUCKDB_PRIMARY,
-    DB_BACKEND_DUAL_PG_PRIMARY,
-    DB_BACKEND_POSTGRES,
-    build_duckdb_writer_tags,
-    db_backend_mode,
-    default_postgres_dsn,
-)
-from vlm_pipeline.resources.data_db import DualDBResource
-from vlm_pipeline.resources.duckdb import DuckDBResource
+# DISABLED 2026-05-19: motherduck sync 일시 비활성화 (사용자 요청). build_motherduck_daily_schedule 함수도 dead code 상태이나 시그니처 유지.
+# from vlm_pipeline.defs.sync.assets import motherduck_sync
+from vlm_pipeline.lib.env_utils import default_postgres_dsn
 from vlm_pipeline.resources.minio import MinIOResource
 from vlm_pipeline.resources.postgres import PostgresResource
 
@@ -100,46 +93,19 @@ COMMON_DISPATCH_STATUS_SENSORS = (
 )
 
 
-def _build_db_resource() -> object:
-    """DATAOPS_DB_BACKEND 기반 db 리소스 인스턴스 생성.
+def _build_db_resource() -> PostgresResource:
+    """PostgresResource 인스턴스 생성 — PG-only (2026-05-19 cutover 이후).
 
-    4 모드:
-      - duckdb               : DuckDBResource 단일 (legacy default)
-      - postgres             : PostgresResource 단일 (PG cutover 후)
-      - dual_duckdb_primary  : DualDBResource(primary=DuckDB, mirror=PG, read=primary)
-      - dual_pg_primary      : DualDBResource(primary=PG, mirror=DuckDB, read=primary)
-
-    DSN/path 미설정 시 dual_* 모드는 단일 백엔드로 자동 fallback (안전 default).
+    file-based DuckDB / DualDBResource 모드는 모두 제거. DuckDB 는 ``pg_duckdb``
+    extension 경유로만 사용된다 (analytics 쿼리 한정, write path 무관).
     """
-    mode = db_backend_mode()
-
-    postgres_dsn = default_postgres_dsn()
-
-    duckdb_resource = DuckDBResource(db_path=EnvVar("DATAOPS_DUCKDB_PATH"))
-    pg_resource: PostgresResource | None = None
-    if postgres_dsn:
-        pg_resource = PostgresResource(dsn=postgres_dsn)
-
-    if mode == DB_BACKEND_POSTGRES:
-        if pg_resource is None:
-            raise RuntimeError(
-                "DATAOPS_DB_BACKEND=postgres requires DATAOPS_POSTGRES_DSN to be set"
-            )
-        return pg_resource
-
-    if mode == DB_BACKEND_DUAL_PG_PRIMARY:
-        if pg_resource is None:
-            # safety fallback: PG mirror 없이는 dual 모드 의미 없음 → DuckDB single 로 retreat.
-            return duckdb_resource
-        return DualDBResource(primary=pg_resource, mirror=duckdb_resource, read_from="primary")
-
-    if mode == DB_BACKEND_DUAL_DUCKDB_PRIMARY:
-        if pg_resource is None:
-            return duckdb_resource
-        return DualDBResource(primary=duckdb_resource, mirror=pg_resource, read_from="primary")
-
-    # default: DB_BACKEND_DUCKDB
-    return duckdb_resource
+    dsn = default_postgres_dsn()
+    if not dsn:
+        raise RuntimeError(
+            "DATAOPS_POSTGRES_DSN required — file-based DuckDB is deprecated. "
+            "Set DATAOPS_POSTGRES_DSN to a Postgres connection string."
+        )
+    return PostgresResource(dsn=dsn)
 
 
 def build_common_resources() -> dict[str, object]:
@@ -158,20 +124,14 @@ def build_asset_job(
     name: str,
     selection: list[object],
     description: str,
-    writer_tag: str | None = None,
+    writer_tag: str | None = None,  # noqa: ARG001 - signature kept for backward compat
     tags: dict[str, str] | None = None,
 ):
-    """Asset job builder — DuckDB writer 태그를 일관 적용."""
-    if writer_tag is not None:
-        merged_tags = build_duckdb_writer_tags(writer_tag)
-        if tags:
-            merged_tags = {**merged_tags, **tags}
-    else:
-        merged_tags = tags
+    """Asset job builder. `writer_tag` 는 deprecated (DuckDB single-file lock 제거됨)."""
     return define_asset_job(
         name,
         selection=selection,
-        tags=merged_tags,
+        tags=tags,
         description=description,
     )
 
@@ -233,7 +193,8 @@ def build_production_assets(
         raw_video_to_frame,
         build_dataset,
         build_classification,
-        motherduck_sync,
+        # DISABLED 2026-05-19: motherduck sync asset 일시 비활성화 (사용자 요청)
+        # motherduck_sync,
         classification_video,
         dispatch_sam3_image_detection,
         sam3_shadow_compare,
@@ -264,6 +225,8 @@ def build_production_sensors(
         ls_task_create_sensor,
         build_dataset_on_finalize_sensor,
         genai_poll_sensor,
+        # 2026-05-20: dispatch_stage_job 종료 후 limit 초과분/누락분을 picking up.
+        auto_labeling_sensor,
     ]
     if archive_dispatch_jobs:
         # Phase 2b: from_archived=True dispatch JSON 만 처리
