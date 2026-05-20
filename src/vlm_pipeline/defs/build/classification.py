@@ -34,7 +34,7 @@ from vlm_pipeline.lib.sam3 import get_sam3_client
 from vlm_pipeline.lib.sam3_labeling import run_sam3_and_build_label_row
 from vlm_pipeline.lib.sanitizer import sanitize_path_component
 from vlm_pipeline.lib.vertex_chunking import normalize_gemini_events
-from vlm_pipeline.resources.duckdb import DuckDBResource
+from vlm_pipeline.resources.postgres import PostgresResource
 from vlm_pipeline.resources.minio import MinIOResource
 
 CLASSIFICATION_BUCKET = "vlm-classification"
@@ -172,7 +172,7 @@ def _copy_image_per_category(
 
 def _fallback_classify_video(
     context,
-    db: DuckDBResource,
+    db: PostgresResource,
     minio: MinIOResource,
     video: dict,
     dispatch_row: dict | None,
@@ -293,7 +293,7 @@ def _fallback_classify_video(
 
 def _build_classification_for_project(
     context,
-    db: DuckDBResource,
+    db: PostgresResource,
     minio: MinIOResource,
     folder: str,
     dispatch_row: dict | None,
@@ -489,7 +489,7 @@ def _build_classification_for_project(
 )
 def build_classification(
     context,
-    db: DuckDBResource,
+    db: PostgresResource,
     minio: MinIOResource,
 ) -> dict:
     projects = db.find_projects_for_classification_build()

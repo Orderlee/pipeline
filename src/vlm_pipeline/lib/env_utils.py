@@ -1,8 +1,4 @@
-"""공통 환경변수·타입 변환 유틸리티.
-
-여러 모듈에서 중복 정의되던 as_int, int_env, bool_env, is_duckdb_lock_conflict를
-한 곳에서 관리한다.
-"""
+"""공통 환경변수·타입 변환 유틸리티 + dispatch outputs 정규화."""
 
 from __future__ import annotations
 
@@ -50,32 +46,6 @@ def bool_env(name: str, default: bool = False) -> bool:
     return raw.strip().lower() in {"1", "true", "t", "yes", "y", "on"}
 
 
-def is_duckdb_lock_conflict(exc: BaseException) -> bool:
-    """DuckDB 파일 lock 충돌 여부를 판별."""
-    message = str(exc).lower()
-    return (
-        "could not set lock on file" in message
-        and "conflicting lock is held" in message
-    )
-
-
-def extract_lock_owner_pid(text: str) -> str | None:
-    """DuckDB lock 메시지에서 PID를 추출."""
-    match = re.search(r"\(PID\s+(\d+)\)", str(text or ""), flags=re.IGNORECASE)
-    if not match:
-        return None
-    return match.group(1)
-
-
-def default_duckdb_path() -> str:
-    """DuckDB 파일 경로 기본값 (환경변수 우선)."""
-    return (
-        os.getenv("DATAOPS_DUCKDB_PATH")
-        or os.getenv("DUCKDB_PATH")
-        or "/data/pipeline.duckdb"
-    )
-
-
 def default_postgres_dsn() -> str | None:
     """PostgreSQL DSN 기본값 (환경변수 우선).
 
@@ -84,65 +54,6 @@ def default_postgres_dsn() -> str | None:
     """
     raw = os.getenv("DATAOPS_POSTGRES_DSN", "").strip()
     return raw or None
-
-
-# DB 백엔드 모드. ``definitions_production.build_common_resources`` 가 분기.
-DB_BACKEND_DUCKDB = "duckdb"
-DB_BACKEND_POSTGRES = "postgres"
-DB_BACKEND_DUAL_DUCKDB_PRIMARY = "dual_duckdb_primary"
-DB_BACKEND_DUAL_PG_PRIMARY = "dual_pg_primary"
-DB_BACKEND_MODES = (
-    DB_BACKEND_DUCKDB,
-    DB_BACKEND_POSTGRES,
-    DB_BACKEND_DUAL_DUCKDB_PRIMARY,
-    DB_BACKEND_DUAL_PG_PRIMARY,
-)
-
-
-def db_backend_mode() -> str:
-    """``DATAOPS_DB_BACKEND`` env. 미설정/오타 시 안전한 ``duckdb`` (legacy default)."""
-    raw = os.getenv("DATAOPS_DB_BACKEND", "").strip().lower()
-    return raw if raw in DB_BACKEND_MODES else DB_BACKEND_DUCKDB
-
-
-DUCKDB_LEGACY_WRITER_TAG = "duckdb_writer"
-DUCKDB_RAW_WRITER_TAG = "duckdb_raw_writer"
-DUCKDB_LABEL_WRITER_TAG = "duckdb_label_writer"
-DUCKDB_YOLO_WRITER_TAG = "duckdb_yolo_writer"
-DUCKDB_SAM3_WRITER_TAG = "duckdb_sam3_writer"
-DUCKDB_WRITER_TAG_KEYS = (
-    DUCKDB_LEGACY_WRITER_TAG,
-    DUCKDB_RAW_WRITER_TAG,
-    DUCKDB_LABEL_WRITER_TAG,
-    DUCKDB_YOLO_WRITER_TAG,
-    DUCKDB_SAM3_WRITER_TAG,
-)
-
-
-def build_duckdb_writer_tags(*tag_keys: str) -> dict[str, str]:
-    """Dagster run/job tag dict 를 생성.
-
-    PG primary 모드 (``DATAOPS_DB_BACKEND=postgres``) 에서는 DuckDB write 가 0이라
-    concurrency lock 이 무의미. tag 자체를 안 붙여 동시 run 을 막지 않게 한다.
-    dual_pg_primary / dual_duckdb_primary / duckdb 모드에서는 mirror 또는 primary
-    로 DuckDB write 가 발생하므로 단일 file write lock 보호용 tag 그대로 적용.
-    """
-    if db_backend_mode() == DB_BACKEND_POSTGRES:
-        return {}
-    normalized = [str(tag or "").strip() for tag in tag_keys if str(tag or "").strip()]
-    return {tag_key: "true" for tag_key in normalized}
-
-
-def is_enabled_run_tag(tags: Mapping[str, object] | None, key: str) -> bool:
-    """run tags에서 truthy writer flag 여부를 판별한다."""
-    if not tags:
-        return False
-    return str(tags.get(key, "")).strip().lower() == "true"
-
-
-def has_any_duckdb_writer_tag(tags: Mapping[str, object] | None) -> bool:
-    """legacy + lane 기반 DuckDB writer tag 중 하나라도 활성인지 확인한다."""
-    return any(is_enabled_run_tag(tags, key) for key in DUCKDB_WRITER_TAG_KEYS)
 
 
 IS_STAGING = bool_env("IS_STAGING", False)
@@ -214,6 +125,7 @@ _OUTPUT_NAME_ALIASES: dict[str, str] = {
     "captioning": "captioning_video",
     "captioning_video": "captioning_video",
     "captioning_image": "captioning_image",
+    "classification": "classification_video",  # 기본은 video — image classification은 명시적으로 지정
     "image_classification": "classification_image",
     "classification_image": "classification_image",
     "video_classification": "classification_video",

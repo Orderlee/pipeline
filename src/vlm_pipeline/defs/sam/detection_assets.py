@@ -31,12 +31,12 @@ from vlm_pipeline.lib.env_utils import (
 from vlm_pipeline.lib.sam3 import get_sam3_client
 from vlm_pipeline.lib.sam3_labeling import run_sam3_and_build_label_row
 from vlm_pipeline.lib.yolo_thresholds import resolve_active_class_confidence_thresholds
-from vlm_pipeline.resources.duckdb import DuckDBResource
+from vlm_pipeline.resources.postgres import PostgresResource
 from vlm_pipeline.resources.minio import MinIOResource
 
 
 _SAM3_CONFIG_SCHEMA = {
-    "limit": Field(int, default_value=200),
+    "limit": Field(int, default_value=100000),
     "score_threshold": Field(float, default_value=0.0),
     "max_masks_per_prompt": Field(int, default_value=50),
 }
@@ -52,7 +52,7 @@ def _make_sam3_detection_asset(*, name: str, deps: list[str], description: str):
     )
     def _sam3_detection_asset(
         context,
-        db: DuckDBResource,
+        db: PostgresResource,
         minio: MinIOResource,
     ) -> dict:
         return _run_sam3_image_detection(context, db, minio)
@@ -74,7 +74,7 @@ dispatch_sam3_image_detection = _make_sam3_detection_asset(
 
 def _run_sam3_image_detection(
     context,
-    db: DuckDBResource,
+    db: PostgresResource,
     minio: MinIOResource,
     *,
     folder_name_override: str | None = None,
@@ -94,7 +94,7 @@ def _run_sam3_image_detection(
             context.log.info("sam3_image_detection 스킵: outputs에 SAM3 계열 요청이 없습니다.")
             return {"processed": 0, "failed": 0, "total_detections": 0, "skipped": True, "label_tool": "sam3"}
 
-    limit = int(context.op_config.get("limit", 200))
+    limit = int(context.op_config.get("limit", 100000))
     score_threshold = float(context.op_config.get("score_threshold", 0.0))
     max_masks_per_prompt = int(context.op_config.get("max_masks_per_prompt", 50))
     tags = context.run.tags if context.run else {}
@@ -149,10 +149,16 @@ def _run_sam3_image_detection(
         )
 
     health = client.health()
+    gpu_mem = health.get("gpu_memory") or {}
+    free_gb = gpu_mem.get("free_gb")
+    total_gb = gpu_mem.get("total_gb")
+    gpu_mem_str = (
+        f"{free_gb}/{total_gb}GB free" if free_gb is not None and total_gb is not None else "n/a"
+    )
     context.log.info(
         f"SAM3 서버 연결: url={client.api_url} "
         f"device={health.get('device')} "
-        f"gpu_mem={health.get('gpu_memory_peak_gb', '?')}GB"
+        f"gpu_mem={gpu_mem_str}"
     )
     context.log.info(
         "SAM3 target classes resolved: "

@@ -9,10 +9,14 @@ import time
 REPO = "/home/user/work_p/Datapipeline-Data-data_pipeline"
 
 
-def run_sql(query: str) -> int:
+def run_sql(query: str, params: list[object] | None = None) -> int:
+    """Run a SELECT and return its first integer column. Use ``params`` (DuckDB ?)
+    to bind values — f-string SQL injection guarded (codex audit 2026-05-19).
+    """
+    sql_params = params or []
     code = f"""import duckdb
 c = duckdb.connect("/data/staging.duckdb", read_only=True)
-r = c.execute({json.dumps(query)}).fetchone()
+r = c.execute({json.dumps(query)}, {json.dumps(sql_params)}).fetchone()
 print(int(r[0]) if r and r[0] is not None else 0)
 c.close()
 """
@@ -67,12 +71,14 @@ def main() -> None:
     while time.time() - start < args.max_wait:
         if args.mode == "timestamp":
             vids = run_sql(
-                f"SELECT COUNT(*) FROM raw_files WHERE raw_key LIKE '{like}' AND media_type='video'"
+                "SELECT COUNT(*) FROM raw_files WHERE raw_key LIKE ? AND media_type='video'",
+                [like],
             )
             done = run_sql(
                 "SELECT COUNT(*) FROM raw_files rf JOIN video_metadata vm ON vm.asset_id=rf.asset_id "
-                f"WHERE rf.raw_key LIKE '{like}' AND rf.ingest_status='completed' "
-                "AND vm.auto_label_status='generated'"
+                "WHERE rf.raw_key LIKE ? AND rf.ingest_status='completed' "
+                "AND vm.auto_label_status='generated'",
+                [like],
             )
             if vids > 0 and done >= vids:
                 print(json.dumps({"ok": True, "videos": vids, "generated": done}))
@@ -80,20 +86,26 @@ def main() -> None:
         elif args.mode == "ts_cap":
             clips = run_sql(
                 "SELECT COUNT(*) FROM processed_clips pc JOIN raw_files rf ON rf.asset_id=pc.source_asset_id "
-                f"WHERE rf.raw_key LIKE '{like}'"
+                "WHERE rf.raw_key LIKE ?",
+                [like],
             )
             if clips > 0:
                 print(json.dumps({"ok": True, "processed_clips": clips}))
                 return
         elif args.mode == "bbox":
-            vids = run_sql(f"SELECT COUNT(*) FROM raw_files WHERE raw_key LIKE '{like}' AND media_type='video'")
+            vids = run_sql(
+                "SELECT COUNT(*) FROM raw_files WHERE raw_key LIKE ? AND media_type='video'",
+                [like],
+            )
             fe = run_sql(
                 "SELECT COUNT(*) FROM raw_files rf JOIN video_metadata vm ON vm.asset_id=rf.asset_id "
-                f"WHERE rf.raw_key LIKE '{like}' AND vm.frame_extract_status='completed'"
+                "WHERE rf.raw_key LIKE ? AND vm.frame_extract_status='completed'",
+                [like],
             )
             frames = run_sql(
                 "SELECT COUNT(*) FROM image_metadata im JOIN raw_files rf ON rf.asset_id=im.source_asset_id "
-                f"WHERE rf.raw_key LIKE '{like}' AND im.image_role='raw_video_frame'"
+                "WHERE rf.raw_key LIKE ? AND im.image_role='raw_video_frame'",
+                [like],
             )
             if vids > 0 and fe >= vids and frames > 0:
                 print(json.dumps({"ok": True, "videos": vids, "frames": frames}))
@@ -102,11 +114,13 @@ def main() -> None:
             y = run_sql(
                 "SELECT COUNT(*) FROM image_labels il JOIN image_metadata im ON im.image_id=il.image_id "
                 "JOIN raw_files rf ON rf.asset_id=im.source_asset_id "
-                f"WHERE rf.raw_key LIKE '{like}'"
+                "WHERE rf.raw_key LIKE ?",
+                [like],
             )
             clips = run_sql(
                 "SELECT COUNT(*) FROM processed_clips pc JOIN raw_files rf ON rf.asset_id=pc.source_asset_id "
-                f"WHERE rf.raw_key LIKE '{like}'"
+                "WHERE rf.raw_key LIKE ?",
+                [like],
             )
             if y > 0 and clips > 0:
                 print(json.dumps({"ok": True, "image_labels": y, "clips": clips}))

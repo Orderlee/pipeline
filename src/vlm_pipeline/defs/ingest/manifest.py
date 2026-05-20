@@ -12,7 +12,7 @@ from pathlib import Path
 
 from vlm_pipeline.lib.env_utils import as_int
 from vlm_pipeline.resources.config import PipelineConfig
-from vlm_pipeline.resources.duckdb import DuckDBResource
+from vlm_pipeline.resources.postgres import PostgresResource
 from vlm_pipeline.defs.ingest.archive import resolve_archive_source_unit_name
 
 DONE_MARKER_FILENAME = "_DONE"
@@ -294,7 +294,7 @@ def build_retry_manifest(
 
 def maybe_write_archive_done_marker(
     context,
-    db: DuckDBResource,
+    db: PostgresResource,
     manifest: dict,
     *,
     manifest_dir: str,

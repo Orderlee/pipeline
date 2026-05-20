@@ -23,7 +23,7 @@ from vlm_pipeline.lib.sam3_compare import (
 from vlm_pipeline.lib.detection_coco import build_coco_detection_payload, convert_sam3_detections_for_coco
 from vlm_pipeline.lib.key_builders import build_sam3_detection_key
 from vlm_pipeline.lib.yolo_thresholds import resolve_active_class_confidence_thresholds
-from vlm_pipeline.resources.duckdb import DuckDBResource
+from vlm_pipeline.resources.postgres import PostgresResource
 from vlm_pipeline.resources.minio import MinIOResource
 
 
@@ -42,13 +42,13 @@ from vlm_pipeline.resources.minio import MinIOResource
 )
 def sam3_shadow_compare(
     context,
-    db: DuckDBResource,
+    db: PostgresResource,
     minio: MinIOResource,
 ) -> dict[str, Any]:
     return _run_sam3_shadow_compare(context, db, minio)
 
 
-def _run_sam3_shadow_compare(context, db: DuckDBResource, minio: MinIOResource) -> dict[str, Any]:
+def _run_sam3_shadow_compare(context, db: PostgresResource, minio: MinIOResource) -> dict[str, Any]:
     processed_clip_frame_limit = int(context.op_config.get("processed_clip_frame_limit", 200))
     raw_video_frame_limit = int(context.op_config.get("raw_video_frame_limit", 100))
     max_per_source_unit = int(context.op_config.get("max_per_source_unit", 50))

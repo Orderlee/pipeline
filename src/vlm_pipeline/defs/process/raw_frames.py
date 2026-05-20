@@ -19,7 +19,7 @@ from vlm_pipeline.lib.video_frames import (
     plan_frame_timestamps,
     resolve_frame_sampling_policy,
 )
-from vlm_pipeline.resources.duckdb import DuckDBResource
+from vlm_pipeline.resources.postgres import PostgresResource
 from vlm_pipeline.resources.minio import MinIOResource
 
 from vlm_pipeline.lib.file_loader import cleanup_temp_path
@@ -33,7 +33,7 @@ from .helpers import (
 
 def raw_video_to_frame_impl(
     context,
-    db: DuckDBResource,
+    db: PostgresResource,
     minio: MinIOResource,
 ) -> dict:
     """[Dispatch YOLO 전용] raw video에서 직접 이미지 추출 — @asset 래퍼에서 호출."""
@@ -46,7 +46,7 @@ def raw_video_to_frame_impl(
     folder_name = dispatch_raw_key_prefix_folder(tags)
     image_profile = tags.get("image_profile", "current")
     requested_outputs = requested_outputs or ["bbox"]
-    limit = int(context.op_config.get("limit", 1000))
+    limit = int(context.op_config.get("limit", 100000))
 
     jpeg_quality_tag = context.run.tags.get("jpeg_quality")
     jpeg_quality = int(jpeg_quality_tag) if jpeg_quality_tag else int(context.op_config.get("jpeg_quality", 90))

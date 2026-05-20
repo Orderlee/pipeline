@@ -51,8 +51,20 @@ class YOLOWorldClient:
         except Exception:
             return False
 
+    def warmup(self, timeout_sec: int = 120) -> dict[str, Any]:
+        """idle-unload 후 lazy reload 를 동기 트리거. timeout 동안 reload 완료 대기."""
+        resp = self.session.post(f"{self.api_url}/warmup", timeout=timeout_sec)
+        resp.raise_for_status()
+        return resp.json()
+
     def wait_until_ready(self, max_wait_sec: int = 120, poll_interval: float = 3.0) -> bool:
-        """모델 로드 완료까지 대기."""
+        """모델 로드 완료까지 대기. idle-unload 상태면 먼저 /warmup 으로 reload 트리거."""
+        try:
+            info = self.warmup(timeout_sec=max_wait_sec)
+            if info.get("model_loaded"):
+                return True
+        except Exception:
+            pass  # /warmup 실패시 /health polling fallback (구버전 서버 호환)
         deadline = time.time() + max_wait_sec
         while time.time() < deadline:
             if self.is_ready():

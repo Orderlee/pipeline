@@ -9,7 +9,7 @@ from uuid import uuid4
 from vlm_pipeline.lib.env_utils import storage_raw_key_prefix_from_source_unit
 from vlm_pipeline.lib.sanitizer import make_unique_key, sanitize_filename, sanitize_path_component
 from vlm_pipeline.lib.validator import detect_media_type, validate_incoming
-from vlm_pipeline.resources.duckdb import DuckDBResource
+from vlm_pipeline.resources.postgres import PostgresResource
 
 from .ops_common import _append_ingest_rejection
 
@@ -21,7 +21,7 @@ _VALID_LABEL_POLICIES = frozenset({"required", "none"})
 
 def register_incoming(
     context,
-    db: DuckDBResource,
+    db: PostgresResource,
     manifest: dict,
     ingest_rejections: list[dict] | None = None,
 ) -> list[dict]:

@@ -63,6 +63,89 @@ class PostgresDedupMixin:
             columns = ["asset_id", "raw_bucket", "raw_key", "archive_path", "source_path"]
             return [dict(zip(columns, row)) for row in rows]
 
+    def find_inline_dedup_targets(
+        self,
+        *,
+        prioritized_asset_ids: list[str],
+        limit: int,
+    ) -> list[dict]:
+        """Inline DEDUP 대상 조회 — 현재 manifest 자산 우선, 남는 슬롯은 backlog.
+
+        prioritized_asset_ids 가 raw_files 에 존재(media_type=image, ingest=completed, phash NULL)하면
+        그 자산들을 먼저 반환. 그 외 슬롯은 동일 조건의 backlog 로 채움(prioritized 는 제외).
+        """
+        normalized_limit = max(1, int(limit))
+        prioritized_set = {
+            str(asset_id).strip()
+            for asset_id in (prioritized_asset_ids or [])
+            if str(asset_id).strip()
+        }
+        columns = ["asset_id", "raw_bucket", "raw_key", "archive_path", "source_path"]
+        with self.connect() as conn:
+            with conn.cursor() as cur:
+                prioritized_targets: list[dict] = []
+                if prioritized_set:
+                    placeholders = ", ".join(["%s"] * len(prioritized_set))
+                    cur.execute(
+                        f"""
+                        SELECT asset_id, raw_bucket, raw_key, archive_path, source_path
+                        FROM raw_files
+                        WHERE asset_id IN ({placeholders})
+                          AND media_type = 'image'
+                          AND ingest_status = 'completed'
+                          AND phash IS NULL
+                        ORDER BY created_at
+                        """,
+                        tuple(prioritized_set),
+                    )
+                    prioritized_targets = [
+                        dict(zip(columns, row)) for row in cur.fetchall()
+                    ]
+
+                remaining_limit = max(0, normalized_limit - len(prioritized_targets))
+                if remaining_limit <= 0:
+                    return prioritized_targets
+
+                params: list[Any] = []
+                exclude_sql = ""
+                if prioritized_set:
+                    placeholders = ", ".join(["%s"] * len(prioritized_set))
+                    exclude_sql = f"AND asset_id NOT IN ({placeholders})"
+                    params.extend(prioritized_set)
+                params.append(remaining_limit)
+
+                cur.execute(
+                    f"""
+                    SELECT asset_id, raw_bucket, raw_key, archive_path, source_path
+                    FROM raw_files
+                    WHERE media_type = 'image'
+                      AND ingest_status = 'completed'
+                      AND phash IS NULL
+                      {exclude_sql}
+                    ORDER BY created_at
+                    LIMIT %s
+                    """,
+                    tuple(params),
+                )
+                backlog_targets = [
+                    dict(zip(columns, row)) for row in cur.fetchall()
+                ]
+
+        return prioritized_targets + backlog_targets
+
+    def mark_inline_dedup_failure(self, asset_id: str, error_message: str) -> None:
+        """Inline DEDUP 실패시 raw_files.error_message 에 phash_failed:<msg> 기록."""
+        with self.connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE raw_files
+                    SET error_message = %s, updated_at = %s
+                    WHERE asset_id = %s
+                    """,
+                    (f"phash_failed:{error_message}", datetime.now(), asset_id),
+                )
+
     def update_phash(self, asset_id: str, phash: str) -> None:
         with self.connect() as conn:
             with conn.cursor() as cur:

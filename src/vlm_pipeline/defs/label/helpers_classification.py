@@ -88,42 +88,14 @@ def find_dispatch_video_classification_candidates(
     folder_name: str,
     limit: int,
 ) -> list[dict[str, object]]:
-    with db.connect() as conn:
-        rows = conn.execute(
-            """
-            SELECT
-                r.asset_id,
-                r.raw_bucket,
-                r.raw_key,
-                r.archive_path,
-                r.source_path,
-                vm.duration_sec,
-                vm.fps,
-                vm.frame_count
-            FROM raw_files r
-            JOIN video_metadata vm ON vm.asset_id = r.asset_id
-            WHERE r.media_type = 'video'
-              AND r.ingest_status = 'completed'
-              AND r.source_unit_name = ?
-              AND NOT EXISTS (
-                    SELECT 1
-                    FROM labels l
-                    WHERE l.asset_id = r.asset_id
-                      AND l.label_format = 'video_classification_json'
-                )
-            ORDER BY r.created_at
-            LIMIT ?
-            """,
-            [folder_name, max(1, int(limit))],
-        ).fetchall()
-    columns = [
-        "asset_id",
-        "raw_bucket",
-        "raw_key",
-        "archive_path",
-        "source_path",
-        "duration_sec",
-        "fps",
-        "frame_count",
-    ]
-    return [dict(zip(columns, row)) for row in rows]
+    """dispatch ``classification_video`` 대상 후보 조회 — backend 도메인 메서드 위임.
+
+    PG 와 DuckDB 양쪽 backend 호환. 기존엔 raw ``conn.execute(...)`` 로 직접 호출했으나
+    psycopg2 connection 에는 ``execute()`` 메서드가 없어 PG 환경에서 실패함.
+    backend 별 placeholder/cursor 차이는 resources/{postgres,duckdb}_labeling.py 에서
+    각각 처리한다.
+    """
+    return db.find_dispatch_video_classification_candidates(
+        folder_name=folder_name,
+        limit=limit,
+    )

@@ -12,7 +12,7 @@ from vlm_pipeline.defs.label.import_support import (
     summarize_event_label_import,
 )
 from vlm_pipeline.resources.config import PipelineConfig
-from vlm_pipeline.resources.duckdb import DuckDBResource
+from vlm_pipeline.resources.postgres import PostgresResource
 from vlm_pipeline.resources.minio import MinIOResource
 
 
@@ -24,7 +24,7 @@ from vlm_pipeline.resources.minio import MinIOResource
 )
 def manual_label_import(
     context,
-    db: DuckDBResource,
+    db: PostgresResource,
     minio: MinIOResource,
 ) -> dict:
     """로컬 JSON 파일을 vlm-labels + labels 테이블에 등록."""

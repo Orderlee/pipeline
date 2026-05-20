@@ -8,8 +8,11 @@ completed 상태만 확정한다. NAS hang / partial success 복구 로직이 �
 from __future__ import annotations
 
 import shutil
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import TYPE_CHECKING
+
+from vlm_pipeline.lib.env_utils import int_env
 
 from .archive_cleanup import (
     cleanup_empty_parent_chain,
@@ -27,12 +30,12 @@ from .archive_move import (
 )
 
 if TYPE_CHECKING:
-    from vlm_pipeline.resources.duckdb import DuckDBResource
+    from vlm_pipeline.resources.postgres import PostgresResource
 
 
 def complete_uploaded_assets_without_archive(
     context,
-    db: "DuckDBResource",
+    db: "PostgresResource",
     manifest: dict,
     uploaded: list[dict],
 ) -> list[dict]:
@@ -63,7 +66,7 @@ def complete_uploaded_assets_without_archive(
 
 def complete_uploaded_assets_in_archive(
     context,
-    db: "DuckDBResource",
+    db: "PostgresResource",
     manifest: dict,
     uploaded: list[dict],
 ) -> list[dict]:
@@ -95,19 +98,24 @@ def complete_uploaded_assets_in_archive(
 
 def archive_uploaded_assets(
     context,
-    db: "DuckDBResource",
+    db: "PostgresResource",
     manifest: dict,
     uploaded: list[dict],
     archive_dir: str,
     ingest_rejections: list[dict] | None = None,
     completion_status: str = "completed",
     raw_bucket: str | None = "vlm-raw",
+    duplicate_skip_count: int = 0,
 ) -> tuple[list[dict], Path | None]:
     """업로드 완료 파일을 source unit 기반으로 archive 이동.
 
     completion_status/raw_bucket 파라미터로 upload 없이 archive 만 수행하는 경로도 지원:
     - 기본 (upload_enabled=True): completion_status='completed', raw_bucket='vlm-raw'
     - upload_enabled=False 경로: completion_status='archived', raw_bucket=None
+
+    duplicate_skip_count: intra-run dedup 으로 skip 된 파일 수. fast-path threshold 에 포함되어,
+    dedup 만으로 uploaded < total 이 된 경우에도 folder rename 을 허용한다 (archive 에 dedup
+    파일 orphan 으로 남지만 DB 무결성 영향 없음).
     """
     from .duplicate import error_code_from_message
 
@@ -187,11 +195,21 @@ def archive_uploaded_assets(
 
         existing_archive = find_existing_archive_directory(base_unit_archive_dir)
 
+        # fast-path 은 모든 파일이 처리(uploaded 또는 dedup-skip)된 경우에만 안전.
+        # partial 일 때 폴더 rename 하면 미업로드(retryable failed) 파일이 archive 로 같이
+        # 옮겨지는데, DB source_path 는 stale 한 incoming 경로라 retry 시 file_missing 영구 실패.
+        # 그래서 retry-candidate 가 있으면 ratio 미달로 per-file path 로 처리해야 안전.
+        # 단 intra-run dedup-skip 은 retryable 이 아니라 deliberate skip 이므로 (DB row 자체가 없음)
+        # archive 에 dedup 원본이 orphan 으로 남더라도 무해 — count 에 포함시켜 fast-path 활성화.
+        # 2026-05-20 appdata 2500 dispatch (uploaded=2496/2500, dedup_skip=4) 케이스에서 fast-path
+        # 가 비활성되어 per-file ThreadPool 8 worker 가 같은 NFS dir 에 rename 경합 → 3h 56m 소요 +
+        # archive_move_timeout 다발. fast-path 활성화 시 폴더 rename 1 회 (~1s) 로 끝.
+        # partial 일 때는 여전히 per-file ThreadPool path (max_workers=INGEST_ARCHIVE_WORKERS) 사용.
         if (
             not is_chunked_manifest
             and source_unit_path
             and source_unit_path.exists()
-            and len(uploaded) >= source_unit_total_file_count
+            and (len(uploaded) + max(0, duplicate_skip_count)) >= source_unit_total_file_count
             and existing_archive is None
         ):
             archive_unit_dir_hint = base_unit_archive_dir
@@ -226,21 +244,40 @@ def archive_uploaded_assets(
             return archived_items, archive_unit_dir_hint
 
         total = len(uploaded)
-        for idx, item in enumerate(uploaded, 1):
-            _move_single_file(context, item, unit_archive_dir, rel_path_by_source,
-                              archive_root_dir, archive_unit_name, _mark_archive_result)
-            if idx == 1 or idx == total or idx % 10 == 0:
-                context.log.info(f"archive progress={idx}/{total} success={len(archived_items)}")
+        archive_workers = int_env("INGEST_ARCHIVE_WORKERS", 8, 1)
+        futures_map = {}
+        with ThreadPoolExecutor(max_workers=archive_workers) as executor:
+            for item in uploaded:
+                fut = executor.submit(
+                    _move_single_file,
+                    context, item, unit_archive_dir, rel_path_by_source,
+                    archive_root_dir, archive_unit_name, _mark_archive_result,
+                )
+                futures_map[fut] = item
+            for idx, fut in enumerate(as_completed(futures_map), 1):
+                exc = fut.exception()
+                if exc is not None:
+                    _mark_archive_result(futures_map[fut], None, f"archive_move_failed:{exc}")
+                if idx == 1 or idx == total or idx % 50 == 0:
+                    context.log.info(f"archive progress={idx}/{total} success={len(archived_items)}")
 
         if source_unit_path:
             cleanup_empty_tree(source_unit_path)
         return archived_items, archive_unit_dir_hint
 
     total = len(uploaded)
-    for idx, item in enumerate(uploaded, 1):
-        _move_single_file_fallback(context, item, archive_root_dir, _mark_archive_result)
-        if idx == 1 or idx == total or idx % 10 == 0:
-            context.log.info(f"archive progress={idx}/{total} success={len(archived_items)}")
+    archive_workers = int_env("INGEST_ARCHIVE_WORKERS", 8, 1)
+    futures_map = {}
+    with ThreadPoolExecutor(max_workers=archive_workers) as executor:
+        for item in uploaded:
+            fut = executor.submit(_move_single_file_fallback, context, item, archive_root_dir, _mark_archive_result)
+            futures_map[fut] = item
+        for idx, fut in enumerate(as_completed(futures_map), 1):
+            exc = fut.exception()
+            if exc is not None:
+                _mark_archive_result(futures_map[fut], None, f"archive_move_failed:{exc}")
+            if idx == 1 or idx == total or idx % 50 == 0:
+                context.log.info(f"archive progress={idx}/{total} success={len(archived_items)}")
 
     return archived_items, archive_unit_dir_hint
 
