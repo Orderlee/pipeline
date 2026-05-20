@@ -49,7 +49,7 @@ from .runtime_policy import resolve_ingest_runtime_policy
 
 if TYPE_CHECKING:
     from vlm_pipeline.resources.config import PipelineConfig
-    from vlm_pipeline.resources.duckdb import DuckDBResource
+    from vlm_pipeline.resources.postgres import PostgresResource
     from vlm_pipeline.resources.minio import MinIOResource
 
 
@@ -128,10 +128,15 @@ def _step_register_and_upload(context, db, minio, *, config, state, runtime_poli
     state.stage = "archive_finalize"
     completion_status = "completed" if upload_enabled else "archived"
     completion_bucket = "vlm-raw" if upload_enabled else None
+    # intra-run dedup-skip 카운트 — archive fast-path 가 (uploaded + dedup) >= total 조건에서 활성화되도록 전달.
+    duplicate_skip_count = sum(
+        1 for rec in state.records
+        if str((rec.get("record") or {}).get("error_message") or "").startswith("duplicate_of:")
+    )
     context.log.info(
         f"archive_finalize:start archive_requested={state.archive_requested} "
         f"prepared={state.archive_prepared_for_upload} uploaded={len(state.uploaded)} "
-        f"completion_status={completion_status}"
+        f"dedup_skip={duplicate_skip_count} completion_status={completion_status}"
     )
     if state.archive_requested:
         try:
@@ -141,6 +146,7 @@ def _step_register_and_upload(context, db, minio, *, config, state, runtime_poli
                 ingest_rejections=state.ingest_rejections,
                 completion_status=completion_status,
                 raw_bucket=completion_bucket,
+                duplicate_skip_count=duplicate_skip_count,
             )
         except OSError as exc:
             if "archive_move_timeout" in str(exc):
@@ -209,7 +215,7 @@ def _step_post_ingest(context, db, minio, *, config, state, runtime_policy, targ
 
 def _run_raw_ingest_pipeline(
     context,
-    db: "DuckDBResource",
+    db: "PostgresResource",
     minio: "MinIOResource",
     *,
     config: "PipelineConfig",

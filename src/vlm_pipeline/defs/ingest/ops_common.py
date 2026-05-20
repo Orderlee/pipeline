@@ -21,9 +21,6 @@ DEFAULT_IMAGE_CODEC: str = "jpeg"
 DEFAULT_RAW_BUCKET: str = "vlm-raw"
 
 TRANSIENT_ERROR_MARKERS = (
-    "could not set lock on file",
-    "conflicting lock is held",
-    "duckdb lock",
     "ffprobe_timeout",
     "timed out",
     "timeout",

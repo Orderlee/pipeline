@@ -143,11 +143,10 @@ ss -tln | grep 3030
 ### image_metadata 마이그레이션 오류
 - **대표 에러:** `image_metadata__migrated does not exist`
 - **원인:** `ensure_schema()` 런타임 위험 동작, 스키마 카탈로그 상태 불일치
-- **조치:**
-  ```bash
-  python3 scripts/repair_image_metadata_schema.py
-  # 이후 운영 Dagster 재기동, stale run 정리, 재실행
-  ```
+- **조치 (Postgres-primary 이후):**
+  - 과거에 `scripts/repair_image_metadata_schema.py` (DuckDB schema repair) 가 있었으나 2026-05-19 PG cutover 후 제거됨.
+  - PG 환경에서 schema mismatch 시 `psql -d vlm_pipeline` 으로 `\d image_metadata` 확인 + 누락 컬럼만 `ALTER TABLE ... ADD COLUMN` 수동 적용. 또는 dagster_home init schema 재실행.
+  - 이후 운영 Dagster 재기동, stale run 정리, 재실행.
 
 ### test DuckDB not found
 - **대표 에러:** `DuckDB not found: /data/staging.duckdb`

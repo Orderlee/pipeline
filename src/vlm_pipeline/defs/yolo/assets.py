@@ -36,12 +36,16 @@ from vlm_pipeline.lib.yolo_thresholds import (
 )
 from vlm_pipeline.lib.detection_coco import build_coco_detection_payload
 from vlm_pipeline.lib.yolo_world import get_yolo_client
-from vlm_pipeline.resources.duckdb import DuckDBResource
+from vlm_pipeline.resources.postgres import PostgresResource
 from vlm_pipeline.resources.minio import MinIOResource
 
 
 _YOLO_CONFIG_SCHEMA = {
-    "limit": Field(int, default_value=500),
+    # 2026-05-19 Phase 1 (PR #75) 에서 dispatch 자산의 limit 을 100000 으로 상향
+    # (sensor-backlog tick 가정 200 → dispatch one-shot 가정 100000). YOLO 만 누락되어
+    # 2026-05-20 Phase 3 에서 보강. sensor 경로는 yolo_detection_sensor 가
+    # YOLO_SENSOR_LIMIT (default 200) 로 op_config override.
+    "limit": Field(int, default_value=100000),
     "confidence_threshold": Field(float, default_value=0.25),
     "iou_threshold": Field(float, default_value=0.45),
     "batch_size": Field(int, default_value=8),
@@ -58,7 +62,7 @@ def _make_yolo_detection_asset(*, name: str, deps: list[str], description: str):
     )
     def _yolo_detection_asset(
         context,
-        db: DuckDBResource,
+        db: PostgresResource,
         minio: MinIOResource,
     ) -> dict:
         return _run_yolo_image_detection(context, db, minio)
@@ -80,7 +84,7 @@ dispatch_yolo_image_detection = _make_yolo_detection_asset(
 
 def _run_yolo_image_detection(
     context,
-    db: DuckDBResource,
+    db: PostgresResource,
     minio: MinIOResource,
     *,
     folder_name_override: str | None = None,

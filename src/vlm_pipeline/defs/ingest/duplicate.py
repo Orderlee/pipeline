@@ -12,9 +12,6 @@ def error_code_from_message(error_message: str, default_code: str = "unknown_err
     message = str(error_message or "").strip()
     if not message:
         return default_code
-    lowered = message.lower()
-    if "could not set lock on file" in lowered or "conflicting lock is held" in lowered:
-        return "duckdb_lock_conflict"
     prefix = message.split(":", 1)[0].strip().lower()
     if not prefix:
         return default_code

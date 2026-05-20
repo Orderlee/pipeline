@@ -15,7 +15,7 @@ from pathlib import Path
 
 from dagster import asset
 
-from vlm_pipeline.resources.duckdb import DuckDBResource
+from vlm_pipeline.resources.postgres import PostgresResource
 from vlm_pipeline.resources.minio import MinIOResource
 
 from .ops_upload_archived import upload_archived_files
@@ -31,7 +31,7 @@ from .ops_upload_archived import upload_archived_files
 )
 def upload_archived(
     context,
-    db: DuckDBResource,
+    db: PostgresResource,
     minio: MinIOResource,
 ) -> dict:
     """archive_dispatch manifest 기반 MinIO 업로드.

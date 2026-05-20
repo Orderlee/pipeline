@@ -17,9 +17,9 @@ from vlm_pipeline.lib.video_loader import load_video_once
 from vlm_pipeline.lib.video_reencode import (
     STANDARD_PRESET_NAME,
     needs_reencode,
-    reencode_to_tmp,
+    reencode_with_fallback,
 )
-from vlm_pipeline.resources.duckdb import DuckDBResource
+from vlm_pipeline.resources.postgres import PostgresResource
 from vlm_pipeline.resources.minio import MinIOResource
 
 from .ops_common import (
@@ -78,7 +78,7 @@ def _link_genai_asset_if_any(db, entry: dict, context) -> None:
 
 def normalize_and_archive(
     context,
-    db: DuckDBResource,
+    db: PostgresResource,
     minio: MinIOResource,
     records: list[dict],
     archive_dir: str,
@@ -521,19 +521,32 @@ def normalize_and_archive(
         """단일 업로드 실행 후 결과 dict 반환.
 
         video + reencode_required=True 인 경우:
-          1) 임시 파일로 표준 스펙 재인코딩
-          2) 재인코딩본으로 MinIO 업로드
+          1) 임시 파일로 표준 스펙 재인코딩 (retry 3회, fallback to original)
+          2) 재인코딩본(또는 원본 fallback)으로 MinIO 업로드
           3) 임시 파일 정리 (finally)
         """
         tmp_path = None
+        asset_id = task["asset_id"]
         try:
             if task["media_type"] == "video" and task.get("reencode_required"):
-                tmp_path = reencode_to_tmp(
+                tmp_path, fallback_reason = reencode_with_fallback(
                     Path(task["filepath"]),
                     threads=task.get("reencode_threads", 4),
                 )
-                task["filepath"] = str(tmp_path)
-                task["reencode_info"] = {"reencode_preset": STANDARD_PRESET_NAME}
+                if tmp_path is not None:
+                    task["filepath"] = str(tmp_path)
+                    task["reencode_info"] = {"reencode_preset": STANDARD_PRESET_NAME}
+                else:
+                    context.log.warning(
+                        f"reencode fallback to original after 3 retries: "
+                        f"asset_id={asset_id} reason={fallback_reason}"
+                    )
+                    try:
+                        db.update_video_reencode_reason(asset_id, fallback_reason)
+                    except Exception as upd_exc:  # noqa: BLE001
+                        context.log.warning(
+                            f"reencode_reason 갱신 실패: asset_id={asset_id}: {upd_exc}"
+                        )
             _upload_single(task)
             return {"success": True, "task": task}
         except Exception as exc:

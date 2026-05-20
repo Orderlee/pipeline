@@ -16,35 +16,30 @@ from dagster import (
 )
 
 from vlm_pipeline.defs.dispatch.service import resolve_dispatch_request_id_from_tags
-from vlm_pipeline.lib.env_utils import (
-    DB_BACKEND_DUCKDB,
-    db_backend_mode,
-    default_postgres_dsn,
-)
-from vlm_pipeline.resources.duckdb import DuckDBResource
+from vlm_pipeline.lib.env_utils import default_postgres_dsn
 
 
 _TARGET_JOBS = {"dispatch_stage_job", "ingest_job"}
 
 
 def _build_runtime_db_resource():
-    """run_status sensor 안에서 사용할 db resource 인스턴스.
+    """run_status sensor 안에서 사용할 PostgresResource 인스턴스.
 
-    PG primary 모드(``postgres`` / ``dual_pg_primary``) + DSN 설정 → PostgresResource.
-    그 외 → 기존 DuckDBResource (legacy).
+    PG-only cutover (2026-05-19) 이후: DSN 미설정시 즉시 raise — silent DuckDB
+    fallback 제거. 환경 misconfig 면 dispatch 처리가 silent 실패하지 않고 명시적 fail.
 
     Note: ``definitions_production._build_db_resource()`` 와 달리 EnvVar 미사용
-    (sensor context 외부 호출이라 EnvVar resolve 안 됨). 대신 환경변수 직접 read.
+    (sensor context 외부 호출이라 EnvVar resolve 안 됨). 환경변수 직접 read.
     """
-    mode = db_backend_mode()
-    dsn = default_postgres_dsn()
-    if mode != DB_BACKEND_DUCKDB and dsn:
-        from vlm_pipeline.resources.postgres import PostgresResource  # noqa: PLC0415
+    from vlm_pipeline.resources.postgres import PostgresResource  # noqa: PLC0415
 
-        return PostgresResource(dsn=dsn)
-    return DuckDBResource(
-        db_path=os.getenv("DATAOPS_DUCKDB_PATH", "/data/pipeline.duckdb")
-    )
+    dsn = default_postgres_dsn()
+    if not dsn:
+        raise RuntimeError(
+            "DATAOPS_POSTGRES_DSN 미설정 — sensor_run_status 가 PG 에 write 불가. "
+            "DuckDB single 모드는 deprecated (PG-only cutover)."
+        )
+    return PostgresResource(dsn=dsn)
 
 
 def _resolve_dispatch_request_id(context: RunStatusSensorContext) -> str | None:

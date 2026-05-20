@@ -17,7 +17,6 @@ from vlm_pipeline.defs.dispatch.service import (
     process_dispatch_ingress_request,
     record_failed_dispatch_request,
 )
-from vlm_pipeline.lib.env_utils import is_duckdb_lock_conflict
 from vlm_pipeline.lib.sanitizer import sanitize_path_component
 from vlm_pipeline.resources.config import PipelineConfig
 from vlm_pipeline.resources.runtime_settings import load_production_agent_polling_settings
@@ -218,13 +217,7 @@ def _production_agent_dispatch_sensor_fn(context: SensorEvaluationContext):
         yield SkipReason("db resource unavailable")
         return
 
-    try:
-        db_resource.ensure_runtime_schema()
-    except Exception as exc:
-        if is_duckdb_lock_conflict(exc):
-            yield SkipReason(f"DuckDB lock 충돌 — 다음 tick에서 재시도: {exc}")
-            return
-        raise
+    db_resource.ensure_runtime_schema()
 
     config = PipelineConfig()
     timeout = (settings.connect_timeout_sec, settings.read_timeout_sec)

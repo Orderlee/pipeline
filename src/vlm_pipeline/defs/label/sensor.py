@@ -3,19 +3,12 @@
 from __future__ import annotations
 
 import json
-import time
 from hashlib import sha1
-from pathlib import Path
 
 from dagster import DefaultSensorStatus, RunRequest, SkipReason, sensor
 from dagster._core.storage.dagster_run import DagsterRunStatus, RunsFilter
 
-from vlm_pipeline.lib.env_utils import (
-    default_duckdb_path,
-    default_postgres_dsn,
-    int_env,
-    is_duckdb_lock_conflict,
-)
+from vlm_pipeline.lib.env_utils import int_env
 from vlm_pipeline.lib.sensor_db import open_sensor_read_connection
 
 AUTO_LABELING_TARGET_JOBS = {
@@ -25,25 +18,16 @@ AUTO_LABELING_TARGET_JOBS = {
 
 
 def _read_auto_label_backlog_snapshot() -> dict[str, int | str | None]:
-    if not default_postgres_dsn():
-        db_path = Path(default_duckdb_path())
-        if not db_path.exists():
-            raise FileNotFoundError(str(db_path))
-
-    retry_count = int_env("DUCKDB_SENSOR_LOCK_RETRY_COUNT", 5, 0)
-    retry_delay_ms = int_env("DUCKDB_SENSOR_LOCK_RETRY_DELAY_MS", 200, 10)
-    max_retry_delay_ms = int_env("DUCKDB_SENSOR_LOCK_RETRY_MAX_DELAY_MS", 2000, retry_delay_ms)
-
-    for attempt in range(retry_count + 1):
-        conn = None
-        try:
-            conn = open_sensor_read_connection()
-            row = conn.execute(
+    conn = None
+    try:
+        conn = open_sensor_read_connection()
+        with conn.cursor() as cur:
+            cur.execute(
                 """
                 WITH gemini_pending AS (
                     SELECT
                         r.asset_id,
-                        CAST(r.updated_at AS VARCHAR) AS updated_token
+                        CAST(r.updated_at AS TEXT) AS updated_token
                     FROM raw_files r
                     JOIN video_metadata vm ON vm.asset_id = r.asset_id
                     WHERE r.media_type = 'video'
@@ -53,7 +37,7 @@ def _read_auto_label_backlog_snapshot() -> dict[str, int | str | None]:
                 caption_pending AS (
                     SELECT
                         r.asset_id,
-                        CAST(COALESCE(vm.auto_labeled_at, vm.extracted_at) AS VARCHAR) AS updated_token
+                        CAST(COALESCE(vm.auto_labeled_at, vm.extracted_at) AS TEXT) AS updated_token
                     FROM raw_files r
                     JOIN video_metadata vm ON vm.asset_id = r.asset_id
                     WHERE r.media_type = 'video'
@@ -63,7 +47,7 @@ def _read_auto_label_backlog_snapshot() -> dict[str, int | str | None]:
                 clip_pending AS (
                     SELECT
                         l.label_id,
-                        CAST(l.created_at AS VARCHAR) AS updated_token
+                        CAST(l.created_at AS TEXT) AS updated_token
                     FROM raw_files r
                     JOIN labels l ON l.asset_id = r.asset_id
                     WHERE r.media_type = 'video'
@@ -82,49 +66,42 @@ def _read_auto_label_backlog_snapshot() -> dict[str, int | str | None]:
                     (SELECT COUNT(*) FROM gemini_pending)
                     + (SELECT COUNT(*) FROM caption_pending)
                     + (SELECT COUNT(*) FROM clip_pending) AS backlog_count,
-                    CAST((SELECT MAX(updated_token) FROM gemini_pending) AS VARCHAR) AS gemini_updated_at,
-                    CAST((SELECT MAX(updated_token) FROM caption_pending) AS VARCHAR) AS caption_updated_at,
-                    CAST((SELECT MAX(updated_token) FROM clip_pending) AS VARCHAR) AS clip_updated_at,
+                    (SELECT MAX(updated_token) FROM gemini_pending) AS gemini_updated_at,
+                    (SELECT MAX(updated_token) FROM caption_pending) AS caption_updated_at,
+                    (SELECT MAX(updated_token) FROM clip_pending) AS clip_updated_at,
                     (SELECT COUNT(*) FROM gemini_pending) AS gemini_pending_count,
                     (SELECT COUNT(*) FROM caption_pending) AS caption_pending_count,
                     (SELECT COUNT(*) FROM clip_pending) AS clip_pending_count
                 """
-            ).fetchone()
-            backlog_count = int(row[0]) if row and row[0] is not None else 0
-            gemini_updated = str(row[1]) if row and row[1] is not None else None
-            caption_updated = str(row[2]) if row and row[2] is not None else None
-            clip_updated = str(row[3]) if row and row[3] is not None else None
-            gemini_pending_count = int(row[4]) if row and row[4] is not None else 0
-            caption_pending_count = int(row[5]) if row and row[5] is not None else 0
-            clip_pending_count = int(row[6]) if row and row[6] is not None else 0
-            state_token = (
-                f"total={backlog_count}|gemini={gemini_pending_count}|caption={caption_pending_count}"
-                f"|clip={clip_pending_count}|"
-                f"g={gemini_updated or ''}|c={caption_updated or ''}|p={clip_updated or ''}"
             )
-            return {
-                "backlog_count": backlog_count,
-                "latest_updated_at": max(
-                    gemini_updated or "",
-                    caption_updated or "",
-                    clip_updated or "",
-                ) or None,
-                "gemini_pending_count": gemini_pending_count,
-                "caption_pending_count": caption_pending_count,
-                "clip_pending_count": clip_pending_count,
-                "state_token": state_token,
-            }
-        except Exception as exc:
-            if is_duckdb_lock_conflict(exc) and attempt < retry_count:
-                delay_ms = min(max_retry_delay_ms, retry_delay_ms * (2 ** attempt))
-                time.sleep(delay_ms / 1000.0)
-                continue
-            raise
-        finally:
-            if conn is not None:
-                conn.close()
-
-    raise RuntimeError("auto_labeling sensor snapshot retry exhausted")
+            row = cur.fetchone()
+        backlog_count = int(row[0]) if row and row[0] is not None else 0
+        gemini_updated = str(row[1]) if row and row[1] is not None else None
+        caption_updated = str(row[2]) if row and row[2] is not None else None
+        clip_updated = str(row[3]) if row and row[3] is not None else None
+        gemini_pending_count = int(row[4]) if row and row[4] is not None else 0
+        caption_pending_count = int(row[5]) if row and row[5] is not None else 0
+        clip_pending_count = int(row[6]) if row and row[6] is not None else 0
+        state_token = (
+            f"total={backlog_count}|gemini={gemini_pending_count}|caption={caption_pending_count}"
+            f"|clip={clip_pending_count}|"
+            f"g={gemini_updated or ''}|c={caption_updated or ''}|p={clip_updated or ''}"
+        )
+        return {
+            "backlog_count": backlog_count,
+            "latest_updated_at": max(
+                gemini_updated or "",
+                caption_updated or "",
+                clip_updated or "",
+            ) or None,
+            "gemini_pending_count": gemini_pending_count,
+            "caption_pending_count": caption_pending_count,
+            "clip_pending_count": clip_pending_count,
+            "state_token": state_token,
+        }
+    finally:
+        if conn is not None:
+            conn.close()
 
 
 @sensor(
@@ -154,9 +131,6 @@ def auto_labeling_sensor(context):
 
     try:
         snapshot = _read_auto_label_backlog_snapshot()
-    except FileNotFoundError as exc:
-        yield SkipReason(f"DuckDB not found: {exc}")
-        return
     except Exception as exc:
         yield SkipReason(f"auto_labeling backlog read failed: {exc}")
         return

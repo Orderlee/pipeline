@@ -15,12 +15,16 @@ Layer 1: 순수 Python, Dagster 의존 없음.
 
 from __future__ import annotations
 
+import functools
+import logging
 import os
 import subprocess
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 
 from vlm_pipeline.lib.env_utils import int_env
+
+logger = logging.getLogger(__name__)
 
 
 # ── 표준 인코딩 프리셋 ─────────────────────────────────────────────────────────
@@ -41,8 +45,57 @@ STANDARD_PRESET_FFMPEG_ARGS: list[str] = [
     "-b:a", "128k",
 ]
 
+STANDARD_PRESET_FFMPEG_ARGS_NVENC: list[str] = [
+    "-c:v", "h264_nvenc",
+    "-profile:v", "baseline",
+    "-level", "4.2",
+    "-pix_fmt", "yuv420p",
+    "-g", "30",
+    "-keyint_min", "30",
+    "-bf", "0",                # no B-frames (libx264 의 bframes=0 동치)
+    "-no-scenecut", "1",       # 고정 GOP 30 유지 (libx264 의 sc_threshold=0 동치).
+                               # 없으면 scene cut 시 GOP 끊겨 KlingAI 패턴 재현 위험.
+    "-preset", "p4",           # NVENC 프리셋 (p1=fastest, p7=best quality)
+    "-movflags", "+faststart",
+    "-c:a", "aac",
+    "-b:a", "128k",
+]
+# 주의: libx264 의 `-x264-params repeat-headers=1` 는 RTSP 스트리밍 시 SPS/PPS 를 매 IDR
+# 앞에 inline 하는 옵션이지만, 재인코딩 산출물은 archive→MinIO→ML 처리 경로라
+# 중간 join 이 없어 NVENC 에서는 일부러 생략. 필요해지면 `-bsf:v dump_extra` 추가.
+
 # keyframe 비율이 이 값 미만이면 재인코딩 필요 (KlingAI 패턴 감지)
 KEYFRAME_RATIO_THRESHOLD = 0.02
+
+
+@functools.lru_cache(maxsize=1)
+def _nvenc_available() -> bool:
+    """ffmpeg 가 h264_nvenc 인코더를 지원하는지 1회 확인 (caching)."""
+    try:
+        proc = subprocess.run(
+            ["ffmpeg", "-hide_banner", "-encoders"],
+            capture_output=True, text=True, timeout=10,
+        )
+        return proc.returncode == 0 and "h264_nvenc" in proc.stdout
+    except (subprocess.TimeoutExpired, OSError):
+        return False
+
+
+def _resolve_ffmpeg_preset_args() -> list[str]:
+    """env REENCODE_USE_NVENC=true 이고 NVENC 가용시 GPU 인코딩, 아니면 libx264.
+
+    Returns:
+        ffmpeg arg list (preset 전체)
+    """
+    use_nvenc = os.getenv("REENCODE_USE_NVENC", "false").strip().lower() in {"1", "true", "t", "yes", "y", "on"}
+    if use_nvenc and _nvenc_available():
+        logger.info("reencode_encoder=h264_nvenc (REENCODE_USE_NVENC=true, NVENC available)")
+        return list(STANDARD_PRESET_FFMPEG_ARGS_NVENC)
+    if use_nvenc:
+        logger.info("reencode_encoder=libx264 (REENCODE_USE_NVENC=true but NVENC not available, fallback)")
+    else:
+        logger.info("reencode_encoder=libx264 (REENCODE_USE_NVENC not set)")
+    return list(STANDARD_PRESET_FFMPEG_ARGS)
 
 
 def _force_reencode_all() -> bool:
@@ -177,6 +230,36 @@ def _compute_reencode_timeout(src_path: Path) -> int:
     return min(timeout, int_env("VIDEO_REENCODE_TIMEOUT_MAX_SEC", _REENCODE_TIMEOUT_MAX_SEC, 600))
 
 
+def reencode_with_fallback(
+    src_path: Path,
+    *,
+    threads: int = 4,
+    max_retries: int = 3,
+    backoff_base_sec: float = 0.5,
+) -> tuple[Path | None, str | None]:
+    """reencode_to_tmp 를 retry 와 fallback 으로 감싼다.
+
+    Returns:
+        (tmp_path, None) on success
+        (None, error_reason) on fallback (모든 retry 실패)
+    """
+    import time
+
+    # 방어: 0 이하 또는 비정상 값 cap (Codex 권장)
+    max_retries = max(1, min(10, int(max_retries)))
+
+    last_exc: Exception | None = None
+    for attempt in range(max_retries):
+        try:
+            return reencode_to_tmp(src_path, threads=threads), None
+        except Exception as exc:
+            last_exc = exc
+            if attempt < max_retries - 1:
+                time.sleep(backoff_base_sec * (2**attempt))
+    reason = f"fallback:{type(last_exc).__name__}:{str(last_exc)[:180]}"
+    return None, reason
+
+
 def reencode_to_tmp(src_path: Path, threads: int = 4) -> Path:
     """표준 스펙으로 재인코딩 → 로컬 임시 파일 경로 반환.
 
@@ -202,7 +285,7 @@ def reencode_to_tmp(src_path: Path, threads: int = 4) -> Path:
     cmd = [
         "ffmpeg", "-y",
         "-i", str(src_path),
-        *STANDARD_PRESET_FFMPEG_ARGS,
+        *_resolve_ffmpeg_preset_args(),
         "-threads", str(max(1, int(threads))),
         str(tmp_path),
     ]

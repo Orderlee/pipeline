@@ -35,6 +35,8 @@ MODEL_PATH = os.environ.get("YOLO_MODEL_PATH", "/data/models/yolo/yolov8l-worldv
 DEVICE = os.environ.get("YOLO_DEVICE", "cuda:1")
 IMGSZ = int(os.environ.get("YOLO_IMGSZ", "640"))
 MAX_BATCH = int(os.environ.get("YOLO_MAX_BATCH", "8"))
+IDLE_UNLOAD_SECONDS = int(os.environ.get("YOLO_IDLE_UNLOAD_SECONDS", "300"))
+IDLE_CHECK_INTERVAL_SECONDS = int(os.environ.get("YOLO_IDLE_CHECK_INTERVAL_SECONDS", "60"))
 
 DEFAULT_SAFETY_CLASSES: list[str] = [
     "person", "car", "truck", "bus", "motorcycle", "bicycle",
@@ -100,6 +102,9 @@ _classes: list[str] = _normalize_classes(_load_default_classes())
 _model_loaded_at: float | None = None
 _model_lock = threading.Lock()
 _applied_classes_signature: tuple[str, ...] | None = None
+_last_request_at: float = time.time()
+_idle_thread: threading.Thread | None = None
+_idle_stop_event = threading.Event()
 
 
 def _apply_model_classes(classes: list[str]) -> list[str]:
@@ -129,17 +134,60 @@ def _load_model() -> None:
     logger.info(f"YOLO-World 모델 로드 완료: classes={len(_classes)} device={DEVICE}")
 
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    _load_model()
-    yield
-    global _model
-    if _model is not None:
+def _unload_model() -> None:
+    """idle 시 VRAM 해제. 다음 inference 호출시 lazy reload."""
+    global _model, _model_loaded_at, _applied_classes_signature
+    with _model_lock:
+        if _model is None:
+            return
         del _model
         _model = None
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-        logger.info("YOLO-World 모델 해제 완료")
+        _model_loaded_at = None
+        _applied_classes_signature = None
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    logger.info("YOLO-World 모델 idle unload 완료 (VRAM 해제)")
+
+
+def _ensure_model_loaded() -> None:
+    """idle unload 이후 첫 request 가 도착하면 lazy reload."""
+    if _model is not None:
+        return
+    with _model_lock:
+        if _model is None:
+            logger.info("YOLO-World lazy reload (idle 후 첫 request)")
+            _load_model()
+
+
+def _touch_request() -> None:
+    global _last_request_at
+    _last_request_at = time.time()
+
+
+def _idle_watcher() -> None:
+    while not _idle_stop_event.is_set():
+        try:
+            if _model is not None and (time.time() - _last_request_at) >= IDLE_UNLOAD_SECONDS:
+                _unload_model()
+        except Exception:
+            logger.exception("YOLO idle watcher tick failed")
+        _idle_stop_event.wait(IDLE_CHECK_INTERVAL_SECONDS)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    global _idle_thread
+    _load_model()
+    _idle_stop_event.clear()
+    _idle_thread = threading.Thread(target=_idle_watcher, name="yolo-idle-watcher", daemon=True)
+    _idle_thread.start()
+    logger.info(f"YOLO idle watcher started: idle_unload={IDLE_UNLOAD_SECONDS}s check_every={IDLE_CHECK_INTERVAL_SECONDS}s")
+    yield
+    _idle_stop_event.set()
+    if _idle_thread is not None and _idle_thread.is_alive():
+        _idle_thread.join(timeout=5)
+    _unload_model()
+    logger.info("YOLO-World 모델 해제 완료 (lifespan teardown)")
 
 
 app = FastAPI(
@@ -157,6 +205,8 @@ def _run_detection(
     *,
     requested_classes: list[str] | None = None,
 ) -> tuple[list[dict[str, Any]], list[str]]:
+    _touch_request()
+    _ensure_model_loaded()
     if _model is None:
         raise RuntimeError("모델이 로드되지 않았습니다")
 
@@ -255,6 +305,8 @@ async def detect_batch(
         except Exception as exc:
             raise HTTPException(status_code=400, detail=f"이미지 읽기 실패: {f.filename}: {exc}")
 
+    _touch_request()
+    _ensure_model_loaded()
     if _model is None:
         raise HTTPException(status_code=503, detail="모델이 로드되지 않았습니다")
 
@@ -351,6 +403,31 @@ async def health():
         "gpu_memory": gpu_mem,
         "classes_count": len(_classes),
         "imgsz": IMGSZ,
+    }
+
+
+@app.post("/warmup")
+async def warmup():
+    """idle-unload 후 lazy reload 동기 트리거. 클라이언트가 /health polling 전에 한 번 호출."""
+    _touch_request()
+    _ensure_model_loaded()
+    return {
+        "model_loaded": _model is not None,
+        "model_path": MODEL_PATH,
+        "device": DEVICE,
+        "loaded_at": _model_loaded_at,
+        "classes_count": len(_classes),
+    }
+
+
+@app.post("/unload")
+async def unload():
+    """수동 GPU 메모리 즉시 해제 (operator 트리거). 다음 /warmup 또는 /detect 호출시 lazy reload."""
+    _unload_model()
+    return {
+        "model_loaded": _model is not None,
+        "device": DEVICE,
+        "loaded_at": _model_loaded_at,
     }
 
 

@@ -252,41 +252,12 @@ def resolve_archive_paths_from_folder(
     db_resource,
     folder_name: str,
 ) -> list[dict[str, Any]]:
-    """Phase 2b: archive 에 이미 옮겨진 raw_files 조회.
-
-    `from_archived=True` dispatch JSON 처리 시 folder_name 으로 raw_files 의
-    archived 행들을 lookup 해서 archive_path/raw_key/asset_id/media_type 반환.
-    동일 folder 가 다중 source_unit_name (예: `<folder>` + `<folder>/<sub>`) 으로
-    저장된 경우 둘 다 매칭한다.
+    """Phase 2b: archive 에 이미 옮겨진 raw_files 조회 — backend 도메인 메서드 위임.
 
     DB 오류는 raise — sensor 가 lock 충돌 등 transient error 와 "데이터 없음"을
     구분해서 재시도 또는 fail-fast 결정하도록 한다.
     """
-    if not folder_name:
-        return []
-    with db_resource.connect() as conn:
-        rows = conn.execute(
-            """
-            SELECT asset_id, archive_path, raw_key, media_type, file_size, source_unit_name
-            FROM raw_files
-            WHERE (source_unit_name = ? OR source_unit_name LIKE ?)
-              AND ingest_status = 'archived'
-              AND archive_path IS NOT NULL
-            ORDER BY raw_key
-            """,
-            [folder_name, f"{folder_name}/%"],
-        ).fetchall()
-    return [
-        {
-            "asset_id": r[0],
-            "archive_path": r[1],
-            "raw_key": r[2],
-            "media_type": r[3],
-            "file_size": r[4],
-            "source_unit_name": r[5],
-        }
-        for r in rows
-    ]
+    return db_resource.list_archived_raw_files_for_folder(folder_name)
 
 
 def write_archive_dispatch_manifest(

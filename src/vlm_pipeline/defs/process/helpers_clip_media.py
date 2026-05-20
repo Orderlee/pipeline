@@ -8,7 +8,7 @@ from typing import Any
 
 from vlm_pipeline.lib.checksum import sha256_bytes
 from vlm_pipeline.lib.file_loader import build_nonexistent_temp_path, cleanup_temp_path
-from vlm_pipeline.resources.duckdb import DuckDBResource
+from vlm_pipeline.resources.postgres import PostgresResource
 from vlm_pipeline.resources.minio import MinIOResource
 
 from .clip_windows import (
@@ -82,7 +82,7 @@ def _extract_video_clip_path(
 
 def _extract_video_clip_media(
     context,
-    db: DuckDBResource,
+    db: PostgresResource,
     minio: MinIOResource,
     *,
     asset_id: str,
