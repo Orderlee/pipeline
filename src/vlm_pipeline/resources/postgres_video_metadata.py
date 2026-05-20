@@ -121,6 +121,18 @@ class PostgresVideoMetadataMixin:
                         (codec, normalized_id),
                     )
 
+    def update_video_reencode_reason(self, asset_id: str, reason: str) -> None:
+        """reencode_reason 컬럼만 갱신 (fallback 기록용)."""
+        normalized_id = str(asset_id or "").strip()
+        if not normalized_id:
+            return
+        with self.connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE video_metadata SET reencode_reason = %s WHERE asset_id = %s",
+                    (str(reason)[:200], normalized_id),
+                )
+
     def update_video_frame_extract_status(
         self,
         asset_id: str,

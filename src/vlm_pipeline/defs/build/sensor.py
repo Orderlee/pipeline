@@ -10,7 +10,6 @@ Layer 4: Dagster sensor + job.
 from __future__ import annotations
 
 import json
-from pathlib import Path
 
 from dagster import (
     AssetSelection,
@@ -24,13 +23,7 @@ from dagster import (
 )
 
 from vlm_pipeline.defs.build.assets import build_dataset
-from vlm_pipeline.lib.env_utils import (
-    DUCKDB_LEGACY_WRITER_TAG,
-    build_duckdb_writer_tags,
-    default_duckdb_path,
-    default_postgres_dsn,
-    int_env,
-)
+from vlm_pipeline.lib.env_utils import int_env
 from vlm_pipeline.lib.sensor_db import open_sensor_read_connection
 
 
@@ -41,7 +34,6 @@ from vlm_pipeline.lib.sensor_db import open_sensor_read_connection
 build_dataset_single_job = define_asset_job(
     name="build_dataset_single_job",
     selection=AssetSelection.assets(build_dataset),
-    tags=build_duckdb_writer_tags(DUCKDB_LEGACY_WRITER_TAG),
     description=(
         "build_dataset asset을 config.folder 단일 프로젝트로 실행. "
         "build_dataset_on_finalize_sensor 가 트리거."
@@ -73,48 +65,43 @@ def _fetch_projects_ready_to_build(db_path: str | None = None) -> list[str]:  # 
       - classification-only 케이스(outputs 에 timestamp_video/bbox 없음)는
         본 sensor 처리 대상 아님 (build_classification 이 별도 처리하고 종료)
 
-    `DuckDBResource.find_projects_ready_to_build()` 와 동일 SQL 이지만,
+    `PostgresResource.find_projects_ready_to_build()` 와 동일 SQL 이지만,
     sensor에서는 resource 주입 없이 read-only 연결을 직접 열어 수행.
     """
     with open_sensor_read_connection() as conn:
-        rows = conn.execute(
-            """
-            SELECT DISTINCT r.source_unit_name AS folder
-            FROM raw_files r
-            JOIN dispatch_requests dr
-              ON dr.folder_name = r.source_unit_name
-             AND dr.status = 'completed'
-            WHERE r.source_unit_name IS NOT NULL
-              AND r.source_unit_name <> ''
-              -- timestamp_video 또는 bbox 가 outputs 에 있어야 sensor 후보
-              -- (classification-only 케이스는 build_classification 이 처리하므로 제외)
-              AND (dr.outputs LIKE '%timestamp_video%' OR dr.outputs LIKE '%bbox%')
-              -- video 가 요구되면 모두 finalize
-              AND (dr.outputs NOT LIKE '%timestamp_video%' OR EXISTS (
-                    SELECT 1 FROM labels l
-                    WHERE l.asset_id = r.asset_id
-                      AND l.review_status = 'finalized'))
-              -- bbox 가 요구되면 모두 finalize
-              AND (dr.outputs NOT LIKE '%bbox%' OR EXISTS (
-                    SELECT 1 FROM image_labels il
-                    JOIN image_metadata im ON im.image_id = il.image_id
-                    WHERE im.source_asset_id = r.asset_id
-                      AND il.review_status = 'finalized'))
-              -- bbox 가 요구되면 post_review_clip_job 결과(processed_clips)가
-              -- 채워졌어야 함. 그렇지 않으면 부분 빌드 후 잠금 위험.
-              AND (dr.outputs NOT LIKE '%bbox%' OR EXISTS (
-                    SELECT 1 FROM processed_clips pc
-                    JOIN raw_files r2 ON r2.asset_id = pc.source_asset_id
-                    WHERE r2.source_unit_name = r.source_unit_name
-                      AND pc.process_status = 'completed'))
-              -- 이미 빌드된 폴더 제외
-              AND NOT EXISTS (
-                    SELECT 1 FROM datasets d
-                    WHERE d.name = r.source_unit_name
-                      AND d.build_status = 'completed')
-            ORDER BY folder
-            """
-        ).fetchall()
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT DISTINCT r.source_unit_name AS folder
+                FROM raw_files r
+                JOIN dispatch_requests dr
+                  ON dr.folder_name = r.source_unit_name
+                 AND dr.status = 'completed'
+                WHERE r.source_unit_name IS NOT NULL
+                  AND r.source_unit_name <> ''
+                  AND (dr.outputs LIKE '%timestamp_video%' OR dr.outputs LIKE '%bbox%')
+                  AND (dr.outputs NOT LIKE '%timestamp_video%' OR EXISTS (
+                        SELECT 1 FROM labels l
+                        WHERE l.asset_id = r.asset_id
+                          AND l.review_status = 'finalized'))
+                  AND (dr.outputs NOT LIKE '%bbox%' OR EXISTS (
+                        SELECT 1 FROM image_labels il
+                        JOIN image_metadata im ON im.image_id = il.image_id
+                        WHERE im.source_asset_id = r.asset_id
+                          AND il.review_status = 'finalized'))
+                  AND (dr.outputs NOT LIKE '%bbox%' OR EXISTS (
+                        SELECT 1 FROM processed_clips pc
+                        JOIN raw_files r2 ON r2.asset_id = pc.source_asset_id
+                        WHERE r2.source_unit_name = r.source_unit_name
+                          AND pc.process_status = 'completed'))
+                  AND NOT EXISTS (
+                        SELECT 1 FROM datasets d
+                        WHERE d.name = r.source_unit_name
+                          AND d.build_status = 'completed')
+                ORDER BY folder
+                """
+            )
+            rows = cur.fetchall()
         return [row[0] for row in rows]
 
 
@@ -153,14 +140,6 @@ def _last_run_failed(context, folder: str) -> bool:
     ),
 )
 def build_dataset_on_finalize_sensor(context):
-    # PG primary 모드면 DuckDB file 존재성 무관 (in-memory + ATTACH PG).
-    # DuckDB single 모드면 file 필요.
-    if not default_postgres_dsn():
-        db_path = default_duckdb_path()
-        if not Path(db_path).exists():
-            yield SkipReason(f"DuckDB not found: {db_path}")
-            return
-
     try:
         folders = _fetch_projects_ready_to_build()
     except Exception as exc:

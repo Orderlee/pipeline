@@ -22,6 +22,8 @@ PORT = int(os.environ.get("SAM3_PORT", "8002"))
 PREFERRED_DEVICE = str(os.environ.get("SAM3_DEVICE", "cuda:0") or "cuda:0").strip()
 DEFAULT_SCORE_THRESHOLD = float(os.environ.get("SAM3_SCORE_THRESHOLD", "0.0"))
 DEFAULT_MAX_MASKS_PER_PROMPT = int(os.environ.get("SAM3_MAX_MASKS_PER_PROMPT", "50"))
+IDLE_UNLOAD_SECONDS = int(os.environ.get("SAM3_IDLE_UNLOAD_SECONDS", "300"))
+IDLE_CHECK_INTERVAL_SECONDS = int(os.environ.get("SAM3_IDLE_CHECK_INTERVAL_SECONDS", "60"))
 
 _model = None
 _processor = None
@@ -29,6 +31,9 @@ _device = PREFERRED_DEVICE
 _model_loaded_at: float | None = None
 _load_error: str | None = None
 _predict_lock = threading.Lock()
+_last_request_at: float = time.time()
+_idle_thread: threading.Thread | None = None
+_idle_stop_event = threading.Event()
 
 
 def _load_torch():
@@ -81,6 +86,51 @@ def _load_model() -> None:
         _model_loaded_at = None
         _load_error = str(exc)
         logger.exception("SAM3 model load failed: %s", exc)
+
+
+def _unload_model() -> None:
+    """idle 시 VRAM 해제. 다음 inference 호출시 lazy reload."""
+    global _model, _processor, _model_loaded_at
+    with _predict_lock:
+        if _model is None and _processor is None:
+            return
+        _processor = None
+        if _model is not None:
+            del _model
+            _model = None
+        _model_loaded_at = None
+    try:
+        torch = _load_torch()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    except Exception:
+        logger.exception("SAM3 empty_cache failed")
+    logger.info("SAM3 idle unload 완료 (VRAM 해제)")
+
+
+def _ensure_model_loaded() -> None:
+    """idle unload 이후 첫 request 가 도착하면 lazy reload."""
+    if _processor is not None:
+        return
+    with _predict_lock:
+        if _processor is None:
+            logger.info("SAM3 lazy reload (idle 후 첫 request)")
+            _load_model()
+
+
+def _touch_request() -> None:
+    global _last_request_at
+    _last_request_at = time.time()
+
+
+def _idle_watcher() -> None:
+    while not _idle_stop_event.is_set():
+        try:
+            if _processor is not None and (time.time() - _last_request_at) >= IDLE_UNLOAD_SECONDS:
+                _unload_model()
+        except Exception:
+            logger.exception("SAM3 idle watcher tick failed")
+        _idle_stop_event.wait(IDLE_CHECK_INTERVAL_SECONDS)
 
 
 def _to_numpy(value: Any) -> np.ndarray:
@@ -233,6 +283,23 @@ def _gpu_peak_memory_gb() -> float | None:
         return None
 
 
+def _gpu_memory_info() -> dict[str, float | None]:
+    """현재 GPU 의 total/free/used GB 를 반환. CPU 모드면 모든 값 None."""
+    torch = _load_torch()
+    device_idx = _resolve_cuda_device_index()
+    if device_idx is None or not torch.cuda.is_available():
+        return {"total_gb": None, "free_gb": None, "used_gb": None}
+    try:
+        free_bytes, total_bytes = torch.cuda.mem_get_info(device_idx)
+        total_gb = round(float(total_bytes) / 1e9, 2)
+        free_gb = round(float(free_bytes) / 1e9, 2)
+        used_gb = round(total_gb - free_gb, 2)
+        return {"total_gb": total_gb, "free_gb": free_gb, "used_gb": used_gb}
+    except Exception:
+        logger.debug("SAM3 gpu memory info read skipped", exc_info=True)
+        return {"total_gb": None, "free_gb": None, "used_gb": None}
+
+
 def _run_segmentation(
     image: Image.Image,
     prompts: list[str],
@@ -300,8 +367,21 @@ def _run_segmentation(
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    global _idle_thread
     _load_model()
+    _idle_stop_event.clear()
+    _idle_thread = threading.Thread(target=_idle_watcher, name="sam3-idle-watcher", daemon=True)
+    _idle_thread.start()
+    logger.info(
+        "SAM3 idle watcher started: idle_unload=%ds check_every=%ds",
+        IDLE_UNLOAD_SECONDS, IDLE_CHECK_INTERVAL_SECONDS,
+    )
     yield
+    _idle_stop_event.set()
+    if _idle_thread is not None and _idle_thread.is_alive():
+        _idle_thread.join(timeout=5)
+    _unload_model()
+    logger.info("SAM3 모델 해제 완료 (lifespan teardown)")
 
 
 app = FastAPI(title="SAM3 Segmentation Server", version="1.0.0", lifespan=lifespan)
@@ -314,6 +394,40 @@ async def health() -> dict[str, Any]:
         "device": _device,
         "loaded_at": _model_loaded_at,
         "error": _load_error,
+        "gpu_memory": _gpu_memory_info(),
+    }
+
+
+@app.post("/warmup")
+async def warmup() -> dict[str, Any]:
+    """Force synchronous lazy reload if model was idle-unloaded.
+
+    Returns when the model is ready (or the load fails). Clients should call
+    this BEFORE polling ``/health`` to ensure they don't see a stale "not loaded"
+    state caused by the idle-unload watcher.
+    """
+    _touch_request()
+    _ensure_model_loaded()
+    return {
+        "model_loaded": _processor is not None,
+        "device": _device,
+        "loaded_at": _model_loaded_at,
+        "error": _load_error,
+    }
+
+
+@app.post("/unload")
+async def unload() -> dict[str, Any]:
+    """Manually free GPU memory NOW (operator-triggered).
+
+    Useful when work is known to be done and waiting for the idle timer is too
+    long. Next ``/warmup`` or ``/segment`` call lazy-reloads the model.
+    """
+    _unload_model()
+    return {
+        "model_loaded": _processor is not None,
+        "device": _device,
+        "loaded_at": _model_loaded_at,
     }
 
 
@@ -336,6 +450,8 @@ async def segment(
     max_masks_per_prompt: int = DEFAULT_MAX_MASKS_PER_PROMPT,
     per_prompt_score_thresholds_json: str | None = Form(None),
 ):
+    _touch_request()
+    _ensure_model_loaded()
     if _processor is None:
         raise HTTPException(status_code=503, detail=_load_error or "sam3_model_not_loaded")
 

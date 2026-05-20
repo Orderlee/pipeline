@@ -15,7 +15,7 @@ from vlm_pipeline.lib.env_utils import (
 )
 from vlm_pipeline.lib.file_loader import cleanup_temp_path
 from vlm_pipeline.lib.video_frames import resolve_frame_sampling_policy
-from vlm_pipeline.resources.duckdb import DuckDBResource
+from vlm_pipeline.resources.postgres import PostgresResource
 from vlm_pipeline.resources.minio import MinIOResource
 
 from .frame_extract_common import (
@@ -39,7 +39,7 @@ from .clip_windows import (
 
 def clip_to_frame_mvp(
     context,
-    db: DuckDBResource,
+    db: PostgresResource,
     minio: MinIOResource,
 ) -> dict:
     """INGEST+LABEL 완료 → clip + 프레임 추출 (MVP, frame_status 미사용)."""

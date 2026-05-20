@@ -7,84 +7,59 @@ YOLO/SAM3 등 detection 모델별로 거의 동일한 backlog 센서를
 from __future__ import annotations
 
 import json
-import time
 from hashlib import sha1
-from pathlib import Path
 
 from dagster import DefaultSensorStatus, RunRequest, SensorDefinition, SkipReason, sensor
 from dagster._core.storage.dagster_run import DagsterRunStatus, RunsFilter
 
-from vlm_pipeline.lib.env_utils import (
-    bool_env,
-    default_duckdb_path,
-    default_postgres_dsn,
-    int_env,
-    is_duckdb_lock_conflict,
-)
+from vlm_pipeline.lib.env_utils import bool_env, int_env
 from vlm_pipeline.lib.sensor_db import open_sensor_read_connection
 
 
 # ---------------------------------------------------------------------------
-# Backlog snapshot (DuckDB read-only)
+# Backlog snapshot (Postgres read-only)
 # ---------------------------------------------------------------------------
 
 def read_backlog_snapshot(label_tool: str) -> dict[str, int | str | None]:
     """processed_clip_frame 중 *label_tool* 결과가 없는 이미지 수를 읽는다."""
-    if not default_postgres_dsn():
-        db_path = Path(default_duckdb_path())
-        if not db_path.exists():
-            raise FileNotFoundError(str(db_path))
-
-    retry_count = int_env("DUCKDB_SENSOR_LOCK_RETRY_COUNT", 5, 0)
-    retry_delay_ms = int_env("DUCKDB_SENSOR_LOCK_RETRY_DELAY_MS", 200, 10)
-    max_retry_delay_ms = int_env("DUCKDB_SENSOR_LOCK_RETRY_MAX_DELAY_MS", 2000, retry_delay_ms)
-
-    for attempt in range(retry_count + 1):
-        conn = None
-        try:
-            conn = open_sensor_read_connection()
-
-            # 테이블 존재성 — DuckDB main schema vs PG public schema 모두 처리.
-            # `try-except` 가 information_schema 분기보다 robust 하고 mode-agnostic.
+    conn = None
+    try:
+        conn = open_sensor_read_connection()
+        with conn.cursor() as cur:
+            # 테이블 존재성 — try-except 로 mode-agnostic.
             try:
-                conn.execute("SELECT 1 FROM image_labels LIMIT 0")
+                cur.execute("SELECT 1 FROM image_labels LIMIT 0")
             except Exception:
                 return {"backlog_count": 0, "state_token": "no_table"}
 
-            row = conn.execute(
-                f"""
+            cur.execute(
+                """
                 SELECT
                     COUNT(*) AS backlog_count,
-                    CAST(MAX(im.extracted_at) AS VARCHAR) AS latest_extracted_at
+                    CAST(MAX(im.extracted_at) AS TEXT) AS latest_extracted_at
                 FROM image_metadata im
                 WHERE im.image_role IN ('processed_clip_frame', 'raw_video_frame')
                   AND NOT EXISTS (
                       SELECT 1
                       FROM image_labels il
                       WHERE il.image_id = im.image_id
-                        AND il.label_tool = '{label_tool}'
+                        AND il.label_tool = %s
                   )
-                """
-            ).fetchone()
-            backlog_count = int(row[0]) if row and row[0] is not None else 0
-            latest = str(row[1]) if row and row[1] is not None else None
-            state_token = f"count={backlog_count}|latest={latest or ''}"
-            return {
-                "backlog_count": backlog_count,
-                "latest_extracted_at": latest,
-                "state_token": state_token,
-            }
-        except Exception as exc:
-            if is_duckdb_lock_conflict(exc) and attempt < retry_count:
-                delay_ms = min(max_retry_delay_ms, retry_delay_ms * (2 ** attempt))
-                time.sleep(delay_ms / 1000.0)
-                continue
-            raise
-        finally:
-            if conn is not None:
-                conn.close()
-
-    raise RuntimeError(f"{label_tool} sensor snapshot retry exhausted")
+                """,
+                (label_tool,),
+            )
+            row = cur.fetchone()
+        backlog_count = int(row[0]) if row and row[0] is not None else 0
+        latest = str(row[1]) if row and row[1] is not None else None
+        state_token = f"count={backlog_count}|latest={latest or ''}"
+        return {
+            "backlog_count": backlog_count,
+            "latest_extracted_at": latest,
+            "state_token": state_token,
+        }
+    finally:
+        if conn is not None:
+            conn.close()
 
 
 # ---------------------------------------------------------------------------
@@ -129,6 +104,9 @@ def build_detection_backlog_sensor(
     default_running: bool = True,
     description: str = "",
     run_key_prefix: str = "detect",
+    asset_name: str,
+    sensor_limit_env: str = "DETECTION_SENSOR_LIMIT",
+    default_sensor_limit: int = 200,
 ) -> SensorDefinition:
     """Detection backlog 센서를 파라미터화해서 생성한다.
 
@@ -172,9 +150,6 @@ def build_detection_backlog_sensor(
 
         try:
             snapshot = read_backlog_snapshot(label_tool)
-        except FileNotFoundError as exc:
-            yield SkipReason(f"DuckDB not found: {exc}")
-            return
         except Exception as exc:
             yield SkipReason(f"{label_tool} backlog read failed: {exc}")
             return
@@ -214,6 +189,15 @@ def build_detection_backlog_sensor(
                 "trigger": name,
                 "backlog_count": str(current_count),
                 "event_seq": str(event_seq),
+            },
+            run_config={
+                "ops": {
+                    asset_name: {
+                        "config": {
+                            "limit": int_env(sensor_limit_env, default_sensor_limit, 1),
+                        }
+                    }
+                }
             },
         )
 

@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
-from datetime import datetime
 from pathlib import Path
 
 from vlm_pipeline.lib.phash import compute_phash
-from vlm_pipeline.resources.duckdb import DuckDBResource
+from vlm_pipeline.resources.postgres import PostgresResource
 from vlm_pipeline.resources.minio import MinIOResource
 
 INLINE_DEDUP_BACKLOG_MIN: int = 200
@@ -33,79 +32,26 @@ def resolve_dedup_image_bytes(target: dict, minio: MinIOResource) -> tuple[bytes
 
 
 def load_inline_dedup_targets(
-    db: DuckDBResource,
+    db: PostgresResource,
     *,
     prioritized_asset_ids: list[str],
     limit: int,
 ) -> list[dict]:
-    """현재 manifest 자산을 우선 처리하고, 남는 슬롯은 기존 backlog로 채운다."""
-    normalized_limit = max(1, int(limit))
-    prioritized_targets: list[dict] = []
-    prioritized_set = {str(asset_id).strip() for asset_id in prioritized_asset_ids if str(asset_id).strip()}
-
-    with db.connect() as conn:
-        columns = ["asset_id", "raw_bucket", "raw_key", "archive_path", "source_path"]
-
-        if prioritized_set:
-            placeholders = ", ".join("?" * len(prioritized_set))
-            rows = conn.execute(
-                f"""
-                SELECT asset_id, raw_bucket, raw_key, archive_path, source_path
-                FROM raw_files
-                WHERE asset_id IN ({placeholders})
-                  AND media_type = 'image'
-                  AND ingest_status = 'completed'
-                  AND phash IS NULL
-                ORDER BY created_at
-                """,
-                list(prioritized_set),
-            ).fetchall()
-            prioritized_targets = [dict(zip(columns, row)) for row in rows]
-
-        remaining_limit = max(0, normalized_limit - len(prioritized_targets))
-        if remaining_limit <= 0:
-            return prioritized_targets
-
-        params: list[object] = []
-        exclude_sql = ""
-        if prioritized_set:
-            placeholders = ", ".join("?" * len(prioritized_set))
-            exclude_sql = f"AND asset_id NOT IN ({placeholders})"
-            params.extend(list(prioritized_set))
-
-        rows = conn.execute(
-            f"""
-            SELECT asset_id, raw_bucket, raw_key, archive_path, source_path
-            FROM raw_files
-            WHERE media_type = 'image'
-              AND ingest_status = 'completed'
-              AND phash IS NULL
-              {exclude_sql}
-            ORDER BY created_at
-            LIMIT ?
-            """,
-            [*params, remaining_limit],
-        ).fetchall()
-        backlog_targets = [dict(zip(columns, row)) for row in rows]
-
-    return prioritized_targets + backlog_targets
+    """현재 manifest 자산을 우선 처리하고, 남는 슬롯은 기존 backlog로 채운다 — backend 도메인 메서드 위임."""
+    return db.find_inline_dedup_targets(
+        prioritized_asset_ids=prioritized_asset_ids,
+        limit=limit,
+    )
 
 
-def mark_inline_dedup_failure(db: DuckDBResource, asset_id: str, error_message: str) -> None:
-    with db.connect() as conn:
-        conn.execute(
-            """
-            UPDATE raw_files
-            SET error_message = ?, updated_at = ?
-            WHERE asset_id = ?
-            """,
-            [f"phash_failed:{error_message}", datetime.now(), asset_id],
-        )
+def mark_inline_dedup_failure(db: PostgresResource, asset_id: str, error_message: str) -> None:
+    """phash 실패 기록 — backend 도메인 메서드 위임."""
+    db.mark_inline_dedup_failure(asset_id, error_message)
 
 
 def run_inline_dedup(
     context,
-    db: DuckDBResource,
+    db: PostgresResource,
     minio: MinIOResource,
     uploaded: list[dict],
 ) -> dict:

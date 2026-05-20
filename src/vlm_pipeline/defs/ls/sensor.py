@@ -38,9 +38,6 @@ from dagster import (
 
 from vlm_pipeline.lib.detection_common import parse_tag_list
 from vlm_pipeline.lib.env_utils import (
-    DB_BACKEND_DUCKDB,
-    db_backend_mode,
-    default_duckdb_path,
     default_postgres_dsn,
     int_env,
 )
@@ -65,7 +62,7 @@ LS_TASKS_SCRIPT = Path(
 # DuckDB helpers
 # ---------------------------------------------------------------------------
 
-def _fetch_pending_dispatch_requests(db_path: str | None = None) -> list[dict]:  # noqa: ARG001 - signature 호환 유지
+def _fetch_pending_dispatch_requests() -> list[dict]:
     """ls_task_status='pending'이고 dispatch가 완료된 요청 목록.
 
     labeling_method / categories / requested_at (fallback: completed_at, created_at) 도 함께 읽는다.
@@ -73,16 +70,18 @@ def _fetch_pending_dispatch_requests(db_path: str | None = None) -> list[dict]: 
     """
     conn = open_sensor_read_connection()
     try:
-        rows = conn.execute(
-            """
-            SELECT request_id, folder_name, labeling_method, categories,
-                   COALESCE(requested_at, completed_at, created_at) AS batch_ts
-            FROM dispatch_requests
-            WHERE status = 'completed'
-              AND COALESCE(ls_task_status, 'pending') = 'pending'
-            ORDER BY completed_at
-            """
-        ).fetchall()
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT request_id, folder_name, labeling_method, categories,
+                       COALESCE(requested_at, completed_at, created_at) AS batch_ts
+                FROM dispatch_requests
+                WHERE status = 'completed'
+                  AND COALESCE(ls_task_status, 'pending') = 'pending'
+                ORDER BY completed_at
+                """
+            )
+            rows = cur.fetchall()
         return [
             {
                 "request_id": r[0],
@@ -107,47 +106,13 @@ def _format_batch_suffix(ts) -> str:
         return ""
 
 
-def _update_ls_task_status(db_path: str, request_id: str, status: str) -> None:
-    """dispatch_requests.ls_task_status update — backend 모드에 따라 PG 또는 DuckDB.
-
-    - DuckDB single mode (legacy): 기존 db_path 의 DuckDB 파일에 직접 write
-    - PG/dual modes (DATAOPS_POSTGRES_DSN 설정): PG 에 직접 psycopg2 write
-      (ATTACH READ_ONLY 라 DuckDB 경유 write 불가능)
-
-    db_path 인자는 legacy 호환용 — PG 모드에서는 무시.
-    """
-    if db_backend_mode() == DB_BACKEND_DUCKDB:
-        # legacy: DuckDB direct write
-        import duckdb  # noqa: PLC0415 - lazy import (PG mode 에서는 불필요)
-
-        conn = duckdb.connect(db_path)
-        try:
-            conn.execute(
-                "UPDATE dispatch_requests SET ls_task_status = ? WHERE request_id = ?",
-                [status, request_id],
-            )
-        finally:
-            conn.close()
-        return
-
-    # PG/dual modes — PG 에 직접 write
-    dsn = default_postgres_dsn()
-    if not dsn:
-        # safety: DSN 미설정이면 fallback to DuckDB legacy path
-        import duckdb  # noqa: PLC0415
-
-        conn = duckdb.connect(db_path)
-        try:
-            conn.execute(
-                "UPDATE dispatch_requests SET ls_task_status = ? WHERE request_id = ?",
-                [status, request_id],
-            )
-        finally:
-            conn.close()
-        return
-
+def _update_ls_task_status(request_id: str, status: str) -> None:
+    """dispatch_requests.ls_task_status update — Postgres direct."""
     import psycopg2  # noqa: PLC0415 - lazy import
 
+    dsn = default_postgres_dsn()
+    if not dsn:
+        raise RuntimeError("DATAOPS_POSTGRES_DSN 미설정 — ls_task_status update 불가")
     with psycopg2.connect(dsn) as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -163,8 +128,7 @@ def _update_ls_task_status(db_path: str, request_id: str, status: str) -> None:
 @op
 def create_ls_tasks(context) -> None:
     """dispatch request 별로 ls_tasks.py create 실행."""
-    db_path = default_duckdb_path()
-    requests = _fetch_pending_dispatch_requests(db_path)
+    requests = _fetch_pending_dispatch_requests()
 
     if not requests:
         context.log.info("ls task 생성 대상 없음")
@@ -252,12 +216,12 @@ def create_ls_tasks(context) -> None:
             if failed_modes:
                 raise RuntimeError(f"ls_tasks.py create 실패: modes={failed_modes}")
 
-            _update_ls_task_status(db_path, request_id, "created")
+            _update_ls_task_status(request_id, "created")
             context.log.info(f"ls_task_status='created' 업데이트: request_id={request_id}")
 
         except Exception as exc:
             context.log.error(f"ls task 생성 실패: request_id={request_id} — {exc}")
-            _update_ls_task_status(db_path, request_id, "failed")
+            _update_ls_task_status(request_id, "failed")
 
 
 # ---------------------------------------------------------------------------
@@ -281,13 +245,8 @@ def ls_task_create_job():
     description="dispatch 완료 후 LS task 미생성 요청 감지 → ls_task_create_job 트리거",
 )
 def ls_task_create_sensor(context):
-    db_path = default_duckdb_path()
-    if not Path(db_path).exists():
-        yield SkipReason(f"DuckDB not found: {db_path}")
-        return
-
     try:
-        pending = _fetch_pending_dispatch_requests(db_path)
+        pending = _fetch_pending_dispatch_requests()
     except Exception as exc:
         yield SkipReason(f"DB 조회 실패: {exc}")
         return

@@ -15,7 +15,7 @@ from __future__ import annotations
 from dagster import AssetKey, asset
 
 from vlm_pipeline.resources.config import PipelineConfig
-from vlm_pipeline.resources.duckdb import DuckDBResource
+from vlm_pipeline.resources.postgres import PostgresResource
 from vlm_pipeline.resources.minio import MinIOResource
 
 from .ingest_post import _build_raw_ingest_state
@@ -33,7 +33,7 @@ __all__ = ["RawIngestState", "raw_ingest"]
 )
 def raw_ingest(
     context,
-    db: DuckDBResource,
+    db: PostgresResource,
     minio: MinIOResource,
 ) -> dict:
     """INGEST asset — manifest 기반 미디어 파일 수집.

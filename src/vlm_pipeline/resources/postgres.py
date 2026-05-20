@@ -1,19 +1,14 @@
 """PostgresResource — Dagster ConfigurableResource, mixin 합성 클래스.
 
-DuckDBResource 와 동일한 인터페이스(``connect()``, ``ensure_schema()``, 도메인 CRUD)를 제공한다.
-
-Mixin 구조 (DuckDB era 1:1 미러):
-    PostgresPhashMixin    \\
-                          ├─ PostgresBaseMixin (connect/pool/introspection + migration runner)
-    PostgresMigrationMixin /
-
-    PostgresIngestMixin   = Dispatch + Raw + Metadata (+ VideoMetadata via inheritance)
+Mixin 구조:
+    PostgresBaseMixin (connect / pool / introspection + migration runner)
+    PostgresIngestMixin   (Dispatch + Raw + Metadata via inheritance)
     PostgresDedupMixin
     PostgresLabelingMixin
     PostgresSpecMixin
     PostgresGenAIMixin    (genai_batches / genai_jobs CRUD + status rollup)
 
-Import 호환:
+Import:
     from vlm_pipeline.resources.postgres import PostgresResource
 """
 

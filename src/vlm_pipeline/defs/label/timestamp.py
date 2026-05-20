@@ -25,7 +25,7 @@ from vlm_pipeline.lib.spec_config import (
     is_standard_spec_run,
     parse_requested_outputs,
 )
-from vlm_pipeline.resources.duckdb import DuckDBResource
+from vlm_pipeline.resources.postgres import PostgresResource
 from vlm_pipeline.resources.minio import MinIOResource
 
 from vlm_pipeline.lib.file_loader import cleanup_temp_path
@@ -169,7 +169,7 @@ def _process_routed_candidate(
 
 def clip_timestamp_mvp(
     context,
-    db: DuckDBResource,
+    db: PostgresResource,
     minio: MinIOResource,
 ) -> dict:
     """completed video 중 auto_label_status='pending'인 건에 Gemini 호출 (MVP job)."""
@@ -179,7 +179,7 @@ def clip_timestamp_mvp(
 
     db.ensure_runtime_schema()
     folder_name = dispatch_raw_key_prefix_folder(context.run.tags if context.run else None)
-    limit = int(context.op_config.get("limit", 50))
+    limit = int(context.op_config.get("limit", 100000))
     candidates = db.find_auto_label_pending_videos(limit=limit, folder_name=folder_name)
     if not candidates:
         context.log.info("AUTO LABEL 대상 없음")
@@ -267,7 +267,7 @@ def clip_timestamp_mvp(
 
 def clip_timestamp_routed_impl(
     context,
-    db: DuckDBResource,
+    db: PostgresResource,
     minio: MinIOResource,
 ) -> dict:
     """spec/dispatch: requested_outputs·spec_id 기준 timestamp 단계."""
@@ -295,7 +295,7 @@ def clip_timestamp_routed_impl(
             config_bundle["resolved_config_scope"],
         )
 
-    limit = int(context.op_config.get("limit", 50))
+    limit = int(context.op_config.get("limit", 100000))
     folder_name = dispatch_folder_for_source_unit(tags)
     if spec_id:
         candidates = db.find_ready_for_labeling_timestamp_backlog(spec_id, limit=limit)

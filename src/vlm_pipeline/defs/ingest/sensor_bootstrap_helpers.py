@@ -15,18 +15,36 @@ def _iter_sorted_dir_entries(path: Path) -> list[Path]:
 
 
 def _load_dispatch_requested_folders(dispatch_pending_dir: Path) -> set[str]:
+    """auto_bootstrap 에서 제외할 dispatch-soup 폴더 이름 집합.
+
+    pending/ JSON: 아직 dispatch_sensor 가 처리 안 한 요청 → dispatch_sensor 가 처리할 것.
+    processed/ JSON: dispatch_sensor 가 manifest 생성한 요청 → ingest_job 이 처리 중 (또는 archive 완료).
+      ingest_job 이 archive_finalize 까지 진행되는 동안 incoming/<folder>/ 는 그대로 존재하므로,
+      이 윈도우 동안 auto_bootstrap_sensor 가 같은 folder 를 picking 하면 race condition.
+      2026-05-20 appdata NVENC 검증에서 실측: dispatch upload→archive 사이 ~40s 윈도우에서 발생.
+      checksum dedup 이 데이터 손상은 막지만 CPU/GPU 낭비 + raw_key suffix `_2` 부여 등 부작용.
+    archive 완료 후엔 incoming/ 에서 folder 가 사라져 auto_bootstrap 의 discovery 가 자연 제외.
+    즉 processed/ 의 누적 JSON 은 archive 가 끝난 folder 라 auto_bootstrap 노출 없음 — 무한 누적 무해.
+    """
     requested_folders: set[str] = set()
     if not dispatch_pending_dir.exists():
         return requested_folders
 
-    for request_path in sorted(dispatch_pending_dir.glob("*.json")):
-        try:
-            payload = json.loads(request_path.read_text(encoding="utf-8"))
-        except Exception:
-            continue
-        folder_name = str(payload.get("folder_name", "")).strip()
-        if folder_name:
-            requested_folders.add(folder_name)
+    # pending + processed 둘 다 읽음. processed/ 는 형제 디렉토리.
+    json_dirs = [dispatch_pending_dir]
+    processed_dir = dispatch_pending_dir.parent / "processed"
+    if processed_dir.exists():
+        json_dirs.append(processed_dir)
+
+    for json_dir in json_dirs:
+        for request_path in sorted(json_dir.glob("*.json")):
+            try:
+                payload = json.loads(request_path.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            folder_name = str(payload.get("folder_name", "")).strip()
+            if folder_name:
+                requested_folders.add(folder_name)
     return requested_folders
 
 

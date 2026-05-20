@@ -4,9 +4,8 @@ run_storage:
   config:
     base_dir: /app/dagster_home/storage
 
-# DuckDB single-writer lock 정책 제거 (PG primary 전환 후 multi-process 활용).
-# 코드의 build_duckdb_writer_tags() 는 그대로 두되 dagster.yaml의 limit 정책만 풀어서
-# 자동 직렬화 해제. max_concurrent_runs 4 → 20.
+# PG-only since 2026-05-19 — DuckDB single-writer lock 정책은 불필요 (multi-process 가능).
+# 신규 run 은 max_concurrent_runs 한도 안에서 병렬 실행된다.
 run_coordinator:
   module: dagster._core.run_coordinator
   class: QueuedRunCoordinator
@@ -30,3 +29,10 @@ local_artifact_storage:
   class: LocalArtifactStorage
   config:
     base_dir: /app/dagster_home/storage
+
+# Code server heartbeat — ffmpeg 등으로 daemon CPU 가 점유될 때
+# default 20s 면 매 60-70s 마다 grpc 서브프로세스 재시작 (2026-05-19 appdata QA 에서 298회 관측).
+# 60s 로 상향하여 grpc 회복 시간 확보.
+code_servers:
+  local_startup_timeout: 120
+  reload_timeout: 120

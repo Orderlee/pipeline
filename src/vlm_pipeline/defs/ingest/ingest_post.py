@@ -22,7 +22,7 @@ from .runtime_policy import archive_only_artifact_import_allowed
 
 if TYPE_CHECKING:
     from vlm_pipeline.resources.config import PipelineConfig
-    from vlm_pipeline.resources.duckdb import DuckDBResource
+    from vlm_pipeline.resources.postgres import PostgresResource
     from vlm_pipeline.resources.minio import MinIOResource
 
 NAS_HEALTH_TIMEOUT_SEC: int = 5
@@ -54,7 +54,7 @@ def _check_nas_health(context, incoming_dir: str) -> bool:
 
 
 def _mark_dispatch_archive_step_started(
-    db: "DuckDBResource",
+    db: "PostgresResource",
     request_id: str | None,
 ) -> None:
     if not request_id:
@@ -72,7 +72,7 @@ def _mark_dispatch_archive_step_started(
 
 def _run_staging_archive_only_artifact_import(
     context,
-    db: "DuckDBResource",
+    db: "PostgresResource",
     minio: "MinIOResource",
     *,
     config: "PipelineConfig",
@@ -124,7 +124,7 @@ def _run_staging_archive_only_artifact_import(
         return None
 
 
-def _finalize_dispatch_success(db: "DuckDBResource", state: RawIngestState) -> None:
+def _finalize_dispatch_success(db: "PostgresResource", state: RawIngestState) -> None:
     if not state.request_id:
         return
     completed_at = datetime.now()
@@ -149,7 +149,7 @@ def _finalize_dispatch_success(db: "DuckDBResource", state: RawIngestState) -> N
 
 def _mark_failed_records(
     context,
-    db: "DuckDBResource",
+    db: "PostgresResource",
     *,
     state: RawIngestState,
     failure_message: str,
@@ -179,7 +179,7 @@ def _mark_failed_records(
 
 def _finalize_dispatch_failure(
     context,
-    db: "DuckDBResource",
+    db: "PostgresResource",
     *,
     state: RawIngestState,
     failure_message: str,
