@@ -503,16 +503,29 @@ cleanup 후 위 함수 호출 → 모두 ✅ 이어야 안전.
 | Stage | folder | method | wall time | raw_files | frames | image_labels | gemini_events | failures | heartbeat |
 |---|---|---|---|---|---|---|---|---|---|
 | 1 | test | bbox | **11m 15s** (archive_move 7m07s — fast-path skip) | 20/20 | 200 | 200 | 0 | 0 | 19 |
-| 2 | test2 | ts+cap | | / 20 | | | / 0 | | |
-| 3 | test3 | mix | | / 20 | | | / | | |
-| 4 part1 | appdata_part1_scenario2 | bbox | | / 1250 | | | / 0 | | |
-| 4 part2 | appdata_part2_scenario2 | ts+cap | | / 1250 | | | / | | |
+| 2 | test2 | ts+cap | **2m 31s** (fast-path 활성, archive 51s) | 20/20 | 0 | 0 | 23 | 0 | 0 |
+| 3 | test3 | mix | **2m 47s** (fast-path, archive 53s) | 20/20 | 0 (mix→no raw_video_to_frame) | 0 | 23 | 0 | 0 |
+| 4 part1 | appdata_part1_scenario2 | bbox | **9h 00m 26s** (archive 4h36m, 병렬 경합) | 1249/1250 (1 dedup) | **12,532** | **12,532** | 0 | 0 | 67 (공유) |
+| 4 part2 | appdata_part2_scenario2 | ts+cap | **5h 09m 20s** (archive 3h55m, 병렬 경합) | 1247/1250 (3 dedup) | 0 | 0 | 1600 (ts 1238 / cap 1238) | 0 | (공유) |
 
 #### Stage 1 메모 (시나리오 2)
 - archive/test/ 에 이전 잔여 4 파일 → fast-path 비활성 → archive_move 7m07s (vs 시나리오 1 Stage 1: 5m37s)
 - raw_video_to_frame 완료: 200 frames, 0 failed
 - SAM3 detections: **56** (fire/flame/smoke/knife/gun/bat/baseball bat/sword/dagger/violence/fight/person_fallen 카테고리)
 - cleanup 후 LS task NoSuchKey 에러 발생 (race) — LS project 89 빈 채로 남음, 운영 영향 없음
+
+#### Stage 4 메모 (시나리오 2) — 2026-05-20 16:04 KST 동시 dispatch
+- **🚨 NFS RPC slot 부족 root cause 발견**: `tcp_slot_table_entries=2` (기본값) → 두 run 병렬 시 거의 직렬화 → part1 단독 추정 4-5h → 병렬 9h (약 **2× 느림**)
+- **heartbeat 67회** (Stage 1 의 3.5× 이상) — NFS wait 로 인한 grpc 응답 지연 다발
+- part1 archive_move 16576s (4h 36m) — fast-path 활성됐어도 NFS slot 경합으로 매우 느림
+- part2 archive_move 14102s (3h 55m)
+- **mix vs bbox 차이 발견**: 시나리오 1/2 Stage 3 (mix) 는 frames=0 인데 Stage 4 part1 (bbox only) 는 frames=12,532 — dispatch routing 또는 method 조합 처리 차이 (코드 확인 필요한 별개 finding)
+- part1 `ls_task_status=failed` (error_message 비어있음, 원인 미상)
+- **fix 필요 (다음 QA 전)**:
+  1. `sudo sysctl -w sunrpc.tcp_slot_table_entries=128` + `/etc/sysctl.d/99-nfs-rpc.conf` 영구 적용
+  2. NFS mount remount (umount→mount)
+  3. 효과: 두 run 병렬 시 throughput 2x+ 회복 기대
+- **dedup-aware fast-path 는 정상 동작**: part1 1249 raw_files + dedup 2개 = archive 에 1251 files (orphan 2). part2 1247 + 4 dedup = archive 1251 (orphan 4). 무해.
 
 ### Phase 0 baseline (비교용, 2026-05-19 측정)
 - appdata bbox 1247: archive_finalize 시작까지 1h 53m, 총 4h 36m

@@ -104,7 +104,14 @@ result/*.txt
 scripts/recover_*_[0-9]*.py
 
 # Local env backups / secrets
-.env*
-docker/.env*
+
+.env
+
+.env.*
+
 *.env
+
 *.env.*
+
+docker/.env*
+

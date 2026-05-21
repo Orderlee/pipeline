@@ -85,6 +85,14 @@ x-runtime-dagster-env: &runtime-dagster-env
   GENAI_INTERNAL_TOKEN: ${GENAI_INTERNAL_TOKEN:-}
   GENAI_POLL_INTERVAL_SECONDS: ${GENAI_POLL_INTERVAL_SECONDS:-30}
   GENAI_POLL_BATCH: ${GENAI_POLL_BATCH:-20}
+  # GPU 할당 정책 (2026-05-21):
+  #   - dagster 계열 (app/dagster/daemon/code-server): 호스트 GPU 0 만 사용 — Places365 PyTorch
+  #     + ffmpeg NVENC.
+  #   - SAM3 (별도 컨테이너): 호스트 GPU 1 (docker-compose sam3 service 에서 CUDA_VISIBLE_DEVICES=1).
+  #   - 이전엔 dagster 가 empty 였어서 두 GPU 다 보이고, 코드에서 cuda 명시 안 하면 default 0
+  #     이지만 실수로 GPU 1 접근하면 SAM3 침범 가능. 명시적으로 0 으로 격리.
+  CUDA_VISIBLE_DEVICES: "0"
+  NVIDIA_VISIBLE_DEVICES: "0"
 
 x-runtime-dagster-common: &runtime-dagster-common
   image: ${IMAGE_NAME:-datapipeline:gpu-cu124}
