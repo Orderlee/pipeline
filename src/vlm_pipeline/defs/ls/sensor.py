@@ -106,8 +106,18 @@ def _format_batch_suffix(ts) -> str:
         return ""
 
 
-def _update_ls_task_status(request_id: str, status: str) -> None:
-    """dispatch_requests.ls_task_status update — Postgres direct."""
+def _update_ls_task_status(
+    request_id: str,
+    status: str,
+    *,
+    error_message: str | None = None,
+) -> None:
+    """dispatch_requests.ls_task_status update — Postgres direct.
+
+    error_message 도 함께 적재 (실패 시 운영자 디버깅 용). status=failed 인데
+    error_message 비어있으면 운영자가 root cause 추적 불가 — 2026-05-20 part1
+    `Command timed out after 600s` 케이스 발견.
+    """
     import psycopg2  # noqa: PLC0415 - lazy import
 
     dsn = default_postgres_dsn()
@@ -115,10 +125,17 @@ def _update_ls_task_status(request_id: str, status: str) -> None:
         raise RuntimeError("DATAOPS_POSTGRES_DSN 미설정 — ls_task_status update 불가")
     with psycopg2.connect(dsn) as conn:
         with conn.cursor() as cur:
-            cur.execute(
-                "UPDATE dispatch_requests SET ls_task_status = %s WHERE request_id = %s",
-                (status, request_id),
-            )
+            if error_message is not None:
+                cur.execute(
+                    "UPDATE dispatch_requests SET ls_task_status = %s, error_message = %s "
+                    "WHERE request_id = %s",
+                    (status, error_message[:500], request_id),
+                )
+            else:
+                cur.execute(
+                    "UPDATE dispatch_requests SET ls_task_status = %s WHERE request_id = %s",
+                    (status, request_id),
+                )
 
 
 # ---------------------------------------------------------------------------
@@ -193,9 +210,20 @@ def create_ls_tasks(context) -> None:
                     argv += ["--categories", cat_csv]
                 if batch_suffix:
                     argv += ["--project-suffix", batch_suffix]
-                result = subprocess.run(
-                    argv, capture_output=True, text=True, timeout=600
-                )
+                # 2026-05-20 finding: part1 bbox 1249 → 12,532 image LS 등록 시 600s 부족 → 5번 retry 모두 timeout.
+                # image mode 일 때 timeout 충분히 크게 (default 1800s = 30분). env var 로 override 가능.
+                timeout_sec = int(os.environ.get("LS_TASKS_CREATE_TIMEOUT_SEC", "1800"))
+                try:
+                    result = subprocess.run(
+                        argv, capture_output=True, text=True, timeout=timeout_sec
+                    )
+                except subprocess.TimeoutExpired as exc:
+                    # subprocess.TimeoutExpired 의 default __str__ 가 argv 전체 (API key 포함) 노출 →
+                    # 마스킹된 메시지로 재발생.
+                    raise RuntimeError(
+                        f"ls_tasks.py create --mode {mode} timed out after {timeout_sec}s "
+                        f"(prefix={raw_prefix})"
+                    ) from exc
                 tail = (result.stderr or result.stdout or "").strip().splitlines()[-20:]
                 context.log.info(f"[ls_tasks create --mode {mode}] stdout:\n{result.stdout}")
                 if result.returncode != 0:
@@ -221,7 +249,7 @@ def create_ls_tasks(context) -> None:
 
         except Exception as exc:
             context.log.error(f"ls task 생성 실패: request_id={request_id} — {exc}")
-            _update_ls_task_status(request_id, "failed")
+            _update_ls_task_status(request_id, "failed", error_message=str(exc))
 
 
 # ---------------------------------------------------------------------------

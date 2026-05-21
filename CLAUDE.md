@@ -231,7 +231,10 @@ git -C /home/user/work_p/Datapipeline-Data-data_pipeline_test status       # dev
   - **운영자 주의**: `user` 유저는 NAS_200tb 상에서 quota 가 걸려있어 호스트에서 직접 `cp`/`mkdir` 시 "디스크 할당량 초과" 발생. 큰 파일을 incoming 에 넣을 땐 컨테이너(root) 경유 (`docker run --rm -v /home/user/mou/nas_200tb/...:/dst alpine cp ...`) 또는 quota 정리 필요.
   - 코드→실행 경로: **mount 없음**. 컨테이너는 이미지 빌드 시 Dockerfile `COPY src/ /src/vlm/`로 들어간 src만 사용 (`/src/vlm`, `/src/python`). 호스트 src 변경은 다음 `docker compose build` 전까지 컨테이너에 반영되지 않음.
 - DuckDB **호스트 실제 경로**: `./docker/data/pipeline.duckdb`
-- YOLO 서버: GPU 1번 전용 (`cuda:1`, `NVIDIA_VISIBLE_DEVICES=1`)
+- **GPU 할당 정책 (2026-05-21 명시)**:
+  - **호스트 GPU 0** (`cuda:0`): dagster app 계열 — Places365 PyTorch + ffmpeg NVENC. `CUDA_VISIBLE_DEVICES=0` + `NVIDIA_VISIBLE_DEVICES=0` (docker-compose `x-runtime-dagster-env`). ffmpeg 는 `-gpu 0` 명시.
+  - **호스트 GPU 1** (`cuda:1`): SAM3 + YOLO (별도 컨테이너) — `CUDA_VISIBLE_DEVICES=1` + `NVIDIA_VISIBLE_DEVICES=1`. 컨테이너 view 에서는 `cuda:0` 로 보이지만 호스트는 GPU 1.
+  - **격리 목적**: dagster 의 video_meta_extract / NVENC reencode 가 SAM3 inference 와 GPU 자원 경합 안 하도록.
 - Places365 모델 캐시: `/data/models/places365` (auto_download=false, 고정 캐시만 사용)
 - `PYTHONPATH` (컨테이너): `/:/src/python:/src/vlm`
 
