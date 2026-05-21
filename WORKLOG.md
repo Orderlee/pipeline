@@ -31,6 +31,41 @@
 
 
 
+
+## 2026-05-20
+
+### 1. 운영 ingest / process 공통 구조 정리
+- **문제**: ingest와 process 공통 책임이 여러 모듈로 흩어져 있어, 운영 로직을 수정할 때 영향 범위와 설정 반영 지점을 한 번에 보기 어려웠음.
+- **원인**: raw ingest 실행 흐름, runtime env 해석, DuckDB schema 보정과 조회 helper가 각각 다른 레이어에 퍼져 있어 공통 동작을 건드릴 때 수정 포인트가 많아졌음.
+- **조치**:
+    - raw ingest에서 상태 생성과 실제 실행 파이프라인을 분리해 진입 구조를 명확히 정리함.
+    - runtime 설정 로더를 추가하고 ingest runtime policy, stuck guard가 같은 설정 해석 경로를 재사용하도록 맞춤.
+    - DuckDB resource에 dispatch/model/raw/image 조회 및 insert helper를 보강하고 schema ensure 흐름을 운영 기준으로 정돈함.
+    - 관련 파일:
+      - `src/vlm_pipeline/defs/process/assets.py`
+
+### 2. 프레임 추출 안정화 및 이미지 캡션 메타 확장
+- **문제**: 영상 말단 구간에서 프레임 추출이 비거나 불안정할 수 있었고, 이미지 캡션 결과도 텍스트만 남아 후속 추적에 필요한 저장 메타가 부족했음.
+- **원인**: ffmpeg 프레임 추출은 요청 시점이 영상 끝에 가까우면 empty output이 날 수 있었고, image caption 저장은 bucket/key/generated_at 같은 정본 추적 필드가 충분하지 않았음.
+- **조치**:
+    - ffmpeg frame extract에 fallback seek 후보와 retry 흐름을 넣어 말단 구간 empty output 상황을 완화함.
+    - image caption JSON을 별도 key로 저장하고 bucket, key, 생성 시각 메타를 image/process 경로에 함께 기록하도록 확장함.
+    - process 중 실패 시 업로드한 frame/image caption JSON을 함께 정리하도록 rollback 경로도 보강함.
+    - 관련 파일:
+      - `src/vlm_pipeline/defs/process/assets.py`
+
+### 3. 당일 정리
+- **변경 통계**:
+    - 변경 파일 **23개**, +2876/-129줄.
+- **관련 커밋**:
+    - `d7ac4371`: docs(playbook): 시나리오 8-12 (A-E) + 보너스 F-I 추가 — 2026-05-20 QA 발견 기반
+    - `ea672d9e`: docs(playbook): archive 잔여 사전 점검 추가 + Stage 1 archive_move 7분 원인 기록
+    - `a55c357b`: docs(playbook): pg_sample 헬퍼 추가 — 8 테이블 top-20 행 출력 (DB 검증용)
+    - `ded62f4f`: docs(playbook): cleanup_stage에 incoming 폴더 청소 추가 — dedup 잔여 + auto_bootstrap 회귀 방지
+    - `7630f23b`: Merge pull request #81 from Orderlee/dev
+- **서비스 상태**: 파이프라인 서비스 10개 컨테이너 중 10개 정상 가동.
+- **작업 환경**: Cursor, VSCode
+
 ## 2026-05-19
 
 ### 1. 운영 ingest / process 공통 구조 정리

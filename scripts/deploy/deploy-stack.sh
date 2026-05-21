@@ -116,7 +116,10 @@ compose() {
 }
 
 if [[ "${BUILD_REQUIRED}" == "true" ]]; then
-    compose build --progress plain app
+    # 2026-05-21: sam3 도 build target 에 포함 — docker/sam3/ 변경 시 자동 rebuild.
+    # 이전에는 app 만 빌드해서 docker/sam3/app.py 변경이 컨테이너에 반영 안 됐음.
+    # layer cache 로 sam3 변경 없으면 빠름.
+    compose build --progress plain app sam3
 else
     echo "Skipping image build for ${DEPLOY_LABEL}"
 fi
@@ -152,6 +155,14 @@ sleep 15
 compose up -d --no-deps dagster-daemon
 compose up -d --no-deps dagster
 echo "Dagster services restarted"
+
+# 2026-05-21: sam3 도 image 변경 시 명시 force-recreate.
+# `docker compose up -d` 가 image SHA 변경을 항상 감지하진 않음 (같은 tag 라 unchanged 로 판단).
+# BUILD_REQUIRED=true 면 image 갱신됐을 가능성 → sam3 재기동.
+if [[ "${BUILD_REQUIRED}" == "true" ]]; then
+    compose up -d --no-deps --force-recreate sam3
+    echo "sam3 force-recreated to pick up new image"
+fi
 
 for i in $(seq 1 30); do
     if curl -sf "${HEALTHCHECK_URL}" > /dev/null 2>&1; then

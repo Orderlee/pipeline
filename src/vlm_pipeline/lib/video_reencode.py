@@ -47,6 +47,10 @@ STANDARD_PRESET_FFMPEG_ARGS: list[str] = [
 
 STANDARD_PRESET_FFMPEG_ARGS_NVENC: list[str] = [
     "-c:v", "h264_nvenc",
+    "-gpu", "0",               # 명시적 GPU 0 (호스트 GPU 0). docker-compose 의 dagster
+                               # CUDA_VISIBLE_DEVICES=0 와 일치. SAM3 (호스트 GPU 1) 와 격리.
+                               # 명시 안 하면 ffmpeg NVENC default first GPU 사용 — 운영 변경
+                               # (예: CUDA_VISIBLE_DEVICES 순서 변경) 시 회귀 위험.
     "-profile:v", "baseline",
     "-level", "4.2",
     "-pix_fmt", "yuv420p",
