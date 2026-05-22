@@ -16,15 +16,48 @@ Layer 1: 순수 Python, Dagster 의존 없음.
 from __future__ import annotations
 
 import functools
+import itertools
 import logging
 import os
 import subprocess
+import threading
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 
 from vlm_pipeline.lib.env_utils import int_env
 
 logger = logging.getLogger(__name__)
+
+# 2026-05-22: NVENC dual-GPU round-robin counter (thread-safe).
+# `REENCODE_NVENC_GPU_INDICES` env 로 사용할 GPU index 리스트 지정 (default "0,1").
+# 각 reencode 호출마다 다음 GPU 선택 → GPU 0/1 의 NVENC unit 둘 다 활용 → throughput 2× 기대.
+_NVENC_GPU_COUNTER = itertools.count(0)
+_NVENC_GPU_LOCK = threading.Lock()
+
+
+def _nvenc_gpu_indices() -> list[int]:
+    """env `REENCODE_NVENC_GPU_INDICES` ('0,1' 형태) 파싱. 빈 값이면 [0,1] (dual-GPU default)."""
+    raw = (os.getenv("REENCODE_NVENC_GPU_INDICES") or "0,1").strip()
+    out: list[int] = []
+    for tok in raw.split(","):
+        tok = tok.strip()
+        if not tok:
+            continue
+        try:
+            out.append(int(tok))
+        except ValueError:
+            continue
+    return out or [0]
+
+
+def _next_nvenc_gpu_index() -> int:
+    """thread-safe round-robin 으로 다음 NVENC GPU index 반환."""
+    indices = _nvenc_gpu_indices()
+    if len(indices) == 1:
+        return indices[0]
+    with _NVENC_GPU_LOCK:
+        n = next(_NVENC_GPU_COUNTER)
+    return indices[n % len(indices)]
 
 
 # ── 표준 인코딩 프리셋 ─────────────────────────────────────────────────────────
@@ -45,12 +78,9 @@ STANDARD_PRESET_FFMPEG_ARGS: list[str] = [
     "-b:a", "128k",
 ]
 
-STANDARD_PRESET_FFMPEG_ARGS_NVENC: list[str] = [
+STANDARD_PRESET_FFMPEG_ARGS_NVENC_BASE: list[str] = [
     "-c:v", "h264_nvenc",
-    "-gpu", "0",               # 명시적 GPU 0 (호스트 GPU 0). docker-compose 의 dagster
-                               # CUDA_VISIBLE_DEVICES=0 와 일치. SAM3 (호스트 GPU 1) 와 격리.
-                               # 명시 안 하면 ffmpeg NVENC default first GPU 사용 — 운영 변경
-                               # (예: CUDA_VISIBLE_DEVICES 순서 변경) 시 회귀 위험.
+    # 2026-05-22: `-gpu N` 은 _resolve_ffmpeg_preset_args() 에서 round-robin 동적 삽입.
     "-profile:v", "baseline",
     "-level", "4.2",
     "-pix_fmt", "yuv420p",
@@ -64,6 +94,14 @@ STANDARD_PRESET_FFMPEG_ARGS_NVENC: list[str] = [
     "-c:a", "aac",
     "-b:a", "128k",
 ]
+
+# 하위 호환: 기존 import 가 STANDARD_PRESET_FFMPEG_ARGS_NVENC 를 직접 참조하는 경우.
+# 정적 리스트로는 round-robin 못 하니 GPU 0 fallback (테스트/import-time 용).
+STANDARD_PRESET_FFMPEG_ARGS_NVENC: list[str] = (
+    STANDARD_PRESET_FFMPEG_ARGS_NVENC_BASE[:1]
+    + ["-gpu", "0"]
+    + STANDARD_PRESET_FFMPEG_ARGS_NVENC_BASE[1:]
+)
 # 주의: libx264 의 `-x264-params repeat-headers=1` 는 RTSP 스트리밍 시 SPS/PPS 를 매 IDR
 # 앞에 inline 하는 옵션이지만, 재인코딩 산출물은 archive→MinIO→ML 처리 경로라
 # 중간 join 이 없어 NVENC 에서는 일부러 생략. 필요해지면 `-bsf:v dump_extra` 추가.
@@ -88,13 +126,22 @@ def _nvenc_available() -> bool:
 def _resolve_ffmpeg_preset_args() -> list[str]:
     """env REENCODE_USE_NVENC=true 이고 NVENC 가용시 GPU 인코딩, 아니면 libx264.
 
+    NVENC: REENCODE_NVENC_GPU_INDICES (default '0,1') 에서 round-robin 으로 GPU 선택
+    → GPU 당 NVENC unit 1개씩 (RTX A4000) 라 2개 GPU 활용 시 throughput 2× 기대.
+
     Returns:
         ffmpeg arg list (preset 전체)
     """
     use_nvenc = os.getenv("REENCODE_USE_NVENC", "false").strip().lower() in {"1", "true", "t", "yes", "y", "on"}
     if use_nvenc and _nvenc_available():
-        logger.info("reencode_encoder=h264_nvenc (REENCODE_USE_NVENC=true, NVENC available)")
-        return list(STANDARD_PRESET_FFMPEG_ARGS_NVENC)
+        gpu_idx = _next_nvenc_gpu_index()
+        logger.info(f"reencode_encoder=h264_nvenc gpu={gpu_idx} (REENCODE_USE_NVENC=true)")
+        # h264_nvenc 직후에 `-gpu N` 삽입 (NVENC 옵션은 codec 다음 위치 권장).
+        return (
+            STANDARD_PRESET_FFMPEG_ARGS_NVENC_BASE[:1]
+            + ["-gpu", str(gpu_idx)]
+            + STANDARD_PRESET_FFMPEG_ARGS_NVENC_BASE[1:]
+        )
     if use_nvenc:
         logger.info("reencode_encoder=libx264 (REENCODE_USE_NVENC=true but NVENC not available, fallback)")
     else:

@@ -108,6 +108,7 @@ jobs:
               || [[ "${path}" =~ ^src/python/ ]] \
               || [[ "${path}" =~ ^src/vlm_pipeline/ ]] \
               || [[ "${path}" =~ ^docker/sam3/ ]] \
+              || [[ "${path}" == "docker/docker-compose.yaml" ]] \
               || [[ "${path}" == ".github/workflows/deploy-production.yml" ]] \
               || [[ "${path}" == ".github/workflows/deploy-test.yml" ]]; then
               build_required=true
