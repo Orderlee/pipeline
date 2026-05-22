@@ -35,6 +35,7 @@ from dagster import (
     op,
     sensor,
 )
+from dagster._core.storage.dagster_run import DagsterRunStatus, RunsFilter
 
 from vlm_pipeline.lib.detection_common import parse_tag_list
 from vlm_pipeline.lib.env_utils import (
@@ -273,6 +274,26 @@ def ls_task_create_job():
     description="dispatch 완료 후 LS task 미생성 요청 감지 → ls_task_create_job 트리거",
 )
 def ls_task_create_sensor(context):
+    # 2026-05-22 fix: in-flight check 추가. 이전엔 60s 간격 fire 시 첫 job 이 status='created'
+    # 로 update 하기 전까지 같은 pending request 를 다시 picking up → 누적 job (2026-05-21 QA
+    # 에서 4 job 동시 진행). LS API 가 idempotent 라 결과는 안전했지만 운영 noise + 자원 낭비.
+    try:
+        in_flight_runs = context.instance.get_runs(
+            filters=RunsFilter(statuses=[DagsterRunStatus.QUEUED, DagsterRunStatus.STARTED]),
+            limit=200,
+        )
+    except Exception as exc:
+        yield SkipReason(f"ls_task in-flight run 조회 실패: {exc}")
+        return
+
+    active_jobs = sorted({
+        str(run.job_name) for run in in_flight_runs
+        if str(getattr(run, "job_name", "") or "") == "ls_task_create_job"
+    })
+    if active_jobs:
+        yield SkipReason(f"ls_task_create_job already running: {', '.join(active_jobs)}")
+        return
+
     try:
         pending = _fetch_pending_dispatch_requests()
     except Exception as exc:
