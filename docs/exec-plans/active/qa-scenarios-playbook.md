@@ -12,9 +12,101 @@
 | 날짜 | 변경 | 담당 |
 |---|---|---|
 | 2026-05-20 | 초안 — 시나리오 1, 2 | claude |
-| | | |
+| 2026-05-22 | §0.5 시나리오 인덱스 표 추가 + §7 카테고리별 재정렬 (총 23 시나리오) + classification/post_review_clip 중복 통합 | claude |
+| 2026-05-22 | §0.7 측정 결과 종합 표 추가 (실행된 모든 row 한눈에) — §6 상세 메모는 유지 | claude |
+| 2026-05-22 | NVENC dual-GPU round-robin (`REENCODE_NVENC_GPU_INDICES`) + SAM3 workers=3→4 prod 적용 — 시나리오 24 신규 추가 | claude |
 
 > 시나리오 추가/변경 시 위 표 + 본문 "## 시나리오 N" 섹션 + "## 측정 결과" 표에 row 추가.
+
+---
+
+## 📌 0.5 시나리오 인덱스 (전체 한눈에)
+
+> 시나리오 추가 시 여기에도 row 추가. 상태: ✅ 완료 / 🔄 진행 중 / ⏳ 대기
+
+### 정의된 시나리오 (Stage 단위 큰 흐름)
+
+| # | 이름 | 카테고리 | 상태 | 본문 |
+|---|---|---|---|---|
+| 1 | 소형 순차 + appdata 전체 1 dispatch | 운영 흐름 | ✅ 완료 (2026-05-20+21) | §4 |
+| 2 | 소형 순차 + appdata 분할 1250+1250 병렬 | 운영 흐름 / 부하 | 🔄 진행 중 (2026-05-22) | §5 |
+| 3 | GPU 동시 부하 (bbox × 3 동시) | 부하 | ⏳ 대기 | §7 |
+| 4 | fail-forward (손상 mp4 + 정상 혼합) | 장애 대응 | ⏳ 대기 | §7 |
+| 5 | NVENC on/off A/B 비교 | 성능 | ⏳ 대기 | §7 |
+| 6 | race 회귀 (B6 fix) | 회귀 보호 | ⏳ 대기 | §7 |
+| 7 | 연속 dispatch (queue 동작) | 운영 흐름 | ⏳ 대기 | §7 |
+| 8 | archive 잔여물 회귀 보호 | 회귀 보호 | ⏳ 대기 | §7 |
+| 9 | auto_labeling_sensor backlog 자연소진 | 분기 커버리지 | ⏳ 대기 | §7 |
+| 10 | auto_bootstrap chunked 자동 dispatch | 운영 정상 흐름 | ⏳ 대기 | §7 |
+| 11 | cleanup race 회피 (LS task NoSuchKey) | 회귀 보호 | ⏳ 대기 | §7 |
+| 12 | classification_video + vlm-classification 두 분기 | 분기 커버리지 | ⏳ 대기 | §7 |
+| 13 | SAM3 workers=1/3/5 throughput 비교 | 성능 | ⏳ 대기 | §7 |
+| 14 | dual SAM3 (GPU 0 + GPU 1) | 성능 | ⏳ 대기 | §7 |
+| 15 | NFS EXDEV 회피 (NAS dataset 통합 후) | 운영 인프라 | ⏳ 대기 | §7 |
+| 16 | post_review_clip_job 전체 흐름 (LS 검수 → clip 분할) | 분기 커버리지 / LS | ⏳ 대기 | §7 |
+| 17 | GCS download schedule | 외부 시스템 | ⏳ 대기 | §7 |
+| 18 | ingest retry manifest (ffmpeg empty_output 4 retry) | 장애 대응 | ⏳ 대기 | §7 |
+| 19 | NVENC fallback (Phase 3 Option C) | 회귀 보호 | ⏳ 대기 | §7 |
+| 20 | ls_task_create_sensor in-flight 회귀 (PR #87) | 회귀 보호 | ⏳ 대기 | §7 |
+| 21 | archive _DONE marker 보류 회복 (failed jsonl) | 장애 대응 | ⏳ 대기 | §7 |
+| 22 | NFS slot exhaustion 부하 테스트 (slot=2 vs 32 vs 128) | 부하 | ⏳ 대기 | §7 |
+| 23 | dedup orphan 정리 (fast-path archive 잔여) | 운영 정리 | ⏳ 대기 | §7 |
+| 24 | NVENC dual-GPU round-robin throughput 측정 (PR 2026-05-22) | 성능 / 회귀 보호 | ⏳ 대기 | §7 |
+
+**카테고리 요약**: 운영 흐름 4, 부하 3, 회귀 보호 6, 분기 커버리지 4, 성능 4, 장애 대응 3, LS/외부 시스템 2, 운영 인프라/정리 2.
+
+---
+
+## 📌 0.7 측정 결과 종합 (모든 실행 한눈에)
+
+> 실행된 모든 측정의 핵심 row 만. **상세 메모/finding 은 § 6 참조**. 새 실행 후 여기 row 추가 + §6 상세 갱신.
+
+### 시나리오 1 — 소형 순차 + appdata 전체 1 dispatch
+
+| 실행일 | Stage | wall time | raw_files | frames | img_labels | gemini_events | heartbeat | 핵심 |
+|---|---|---|---|---|---|---|---|---|
+| 2026-05-20 | 1 test bbox | 5m 37s | 20/20 | - | - | - | 0 | ✅ baseline |
+| 2026-05-20 | 2 test2 ts+cap | 3m 13s | 20/20 | - | - | - | 0 | ✅ |
+| 2026-05-20 | 3 test3 mix | 3m 1s | 20/20 | 0 | 0 | - | 0 | mix→frame_extract skip |
+| 2026-05-20 | 4 appdata 2500 mix | **4h 00m** | 2496/2500 (4 dedup) | 0 | 0 | **50 vids only** | 0 | 🚨 limit=50 발견 |
+| 2026-05-21 재측정 (post-fix) | 4 appdata 2500 mix | **7h 14m 57s** | 2496/2500 | 0 | 0 | **2779 (2493 vids 전체)** | 415 | ✅ limit=100000 + archive_move fix 검증 |
+
+### 시나리오 2 — 소형 순차 + appdata 분할 1250+1250 병렬
+
+| 실행일 | Stage | wall time | raw_files | frames | img_labels | gemini_events | heartbeat | 핵심 |
+|---|---|---|---|---|---|---|---|---|
+| 2026-05-20 | 1 test bbox | 11m 15s | 20/20 | 200 | 200 | 0 | 19 | archive 잔여물 → fast-path skip 7m07s |
+| 2026-05-20 | 2 test2 ts+cap | 2m 31s | 20/20 | 0 | 0 | 23 | 0 | fast-path 활성 |
+| 2026-05-20 | 3 test3 mix | 2m 47s | 20/20 | 0 | 0 | 23 | 0 | mix→frame_extract skip |
+| 2026-05-20 | 4 part1 bbox | **9h 00m 26s** | 1249/1250 | **12,532** | **12,532** | 0 | 67 (공유) | 🚨 NFS slot=2 병렬경합 |
+| 2026-05-20 | 4 part2 ts+cap | **5h 09m 20s** | 1247/1250 | 0 | 0 | 1600 | (공유) | 🚨 NFS slot=2 병렬경합 |
+| 2026-05-22 재측정 (slot=128 + 모든 fix) | 1 test bbox | 5m 0s | 20/20 | 200 | 200 | 0 | (공유) | ✅ fast-path 회복 |
+| 2026-05-22 | 2 test2 ts+cap | 2m 30s | 20/20 | 0 | 0 | 26 | (공유) | ✅ |
+| 2026-05-22 | 3 test3 mix | 2m 35s | 20/20 | 0 | 0 | 18 | (공유) | ✅ |
+| 2026-05-22 | 4 part1 bbox | **7h 44m 47s** | 1249/1250 | **12,532** | **12,532** | 0 | 454 (공유) | ✅ SAM3 1976 detections (prior 56→1976), workers=3 |
+| 2026-05-22 | 4 part2 ts+cap | **4h 09m 32s** | 1247/1250 | 0 | 0 | **1650 (1247 vids 전체)** | (공유) | ✅ slot=128, Gemini 25×↑ vs prior 50 |
+
+### 핵심 비교 — 시나리오 1 Stage 4 (prior vs post-fix)
+- Gemini 처리: 50 vids → **2493 vids (50×)** ✅ limit=100000 효과
+- wall: 4h → 7h 15m (전체 처리는 더 오래지만 valid 측정)
+- archive_move: 3h 56m → 4h 9m (NFS EXDEV 로 per-file path, 비슷)
+
+### 핵심 비교 — 시나리오 2 (prior slot=2 vs post-fix slot=128 + 모든 fix)
+- part1 wall: 9h 00m → **7h 44m (14% ↓)**
+- part2 wall: 5h 09m → **4h 09m (24% ↓)** ✅ NFS slot 효과
+- 병렬 max wall (Stage 4 종료까지): 9h → **7h 44m (14% ↓)**
+- part2 Gemini: 50 vids → **1247 vids (25×)** ✅ limit=100000 효과
+- SAM3 detections: 56 → **1976 (35×)** ✅ SAM3 workers=3 + classification 정확도
+- 병렬 stuck 회피 ✅ (prior 에서 part2 가 13m 만에 stuck 됐던 패턴 사라짐)
+- LS task: 5× 600s timeout 실패 → **1번 성공 (12,532 frame 7m 안에)** ✅ timeout 1800 + in-flight fix
+- heartbeat 454 (per-file NFS 경합 — 폴더 fast-path 무효한 한계)
+
+### 베이스라인 (Phase 0, 2026-05-19)
+- appdata bbox 1247: archive_finalize 시작까지 1h 53m, 총 4h 36m
+- appdata ts 1249: 총 4h 10m
+- 동시 두 run 시 upload 0.05 obj/sec/run
+- heartbeat 298회 (6h)
+- SAM3 200/9648 frames (B5 cap)
 
 ---
 
@@ -348,9 +440,18 @@ minio_count() {
 
 ### 3.6 Cleanup (각 stage 후)
 
-`/tmp/cleanup_qa.sql` 작성:
-```sql
--- :keyword 변수 (psql -v keyword='%test%' 형식으로 전달)
+> ⚠️ **2026-05-22 fix**: 이전엔 `/tmp/cleanup_qa.sql` 파일 호스트에 미리 생성해야 했음. 파일
+> 없으면 stdin 빈 채로 redirect → psql 아무것도 안 실행 → silent fail (잔여물 남음).
+> 회피: cleanup_stage 가 heredoc 으로 SQL 인라인 — 별도 파일 의존 제거.
+
+```bash
+cleanup_stage() {
+  local keyword_pattern="$1"     # 예: 'test' 또는 '%appdata_%scenario1%'
+  local folder_pattern="$2"      # rm 용 glob 예: 'test' 또는 'appdata_*scenario1*'
+
+  # 1) PG cascade — heredoc inline (파일 의존 없음)
+  docker exec -i docker-postgres-1 psql -U airflow -d vlm_pipeline \
+    -v keyword="${keyword_pattern}" <<'SQL'
 BEGIN;
 DELETE FROM image_labels WHERE image_id IN (SELECT im.image_id FROM image_metadata im JOIN raw_files r ON r.asset_id=im.source_asset_id WHERE r.source_unit_name LIKE :'keyword');
 DELETE FROM labels WHERE asset_id IN (SELECT asset_id FROM raw_files WHERE source_unit_name LIKE :'keyword');
@@ -361,16 +462,7 @@ DELETE FROM dispatch_pipeline_runs WHERE request_id IN (SELECT request_id FROM d
 DELETE FROM dispatch_requests WHERE folder_name LIKE :'keyword' OR request_id LIKE :'keyword';
 DELETE FROM raw_files WHERE source_unit_name LIKE :'keyword';
 COMMIT;
-```
-
-```bash
-cleanup_stage() {
-  local keyword_pattern="$1"     # 예: 'test' 또는 '%appdata_%scenario1%'
-  local folder_pattern="$2"      # rm 용 glob 예: 'test' 또는 'appdata_*scenario1*'
-
-  # 1) PG cascade
-  docker exec docker-postgres-1 psql -U airflow -d vlm_pipeline \
-    -v keyword="${keyword_pattern}" < /tmp/cleanup_qa.sql
+SQL
 
   # 2) MinIO 5 버킷
   for b in vlm-raw vlm-labels vlm-processed vlm-dataset vlm-classification; do
@@ -498,6 +590,31 @@ cleanup 후 위 함수 호출 → 모두 ✅ 이어야 안전.
 - upload throughput: 0.05 obj/sec/run (1 run) → 2.7s/file ≈ 0.37 obj/sec (Phase 2 MultipartUpload 효과)
 - heartbeat: 298회/6h → **0회/4h** (Phase 1 DAGSTER_GRPC_HEARTBEAT_TIMEOUT=60 효과)
 
+#### Stage 4 재측정 (2026-05-21, post-fix) — qa_v3_s1_stage4_20260521_122702
+
+| 항목 | prior (2026-05-20) | post-fix (2026-05-21) | 비교 |
+|---|---|---|---|
+| wall time | 4h 00m | **7h 14m 57s** | 길어졌지만 valid 측정 (전체 Gemini 처리) |
+| raw_files | 2496/2500 | 2496/2500 | 동일 (4 intra-run dedup) |
+| ts_done / cap_done | **50** / 50 | **2493** / **2493** | **×50 개선** ✓ (limit=100000 fix 효과 확정) |
+| gemini_events | 50 | **2779** | 전체 처리 |
+| frames / image_labels | 0 / 0 | 0 / 0 | mix → frame_extract skip (design) |
+| archive_move elapsed | 3h 56m | 4h 9m (per-file path, NFS EXDEV) | 큰 차이 없음 |
+| heartbeat | 0 | **415 (지난 8h)** | per-file path NFS 경합 ↑ |
+| LS task | created | created (4× 누적 발화 후 정상화) | sensor race finding |
+
+**Fix 효과 검증**:
+- ✅ **PR #80 limit=50→100000**: 50→2493 vids 전체 Gemini 처리 (50× 개선)
+- ✅ **PR #85 archive_move.py fix**: 폴더 fast-path NFS EXDEV 즉시 fallback (이전 stuck 회피, src=`'Invalid cross-device link'` 로그 확인됨)
+- ✅ **PR #86 GPU 격리**: dagster=GPU 0 / SAM3=GPU 1 명시. ffmpeg `-gpu 0`. 안정성 강화.
+- ✅ **PR #82 LS task error_message + timeout**: timeout 1800s 안에 정상 처리. API key 마스킹.
+
+**남은 finding (다음 QA 이연)**:
+- ⚠️ **NFS 서버 측 EXDEV**: incoming/archive 가 같은 device id 인데도 server 가 cross-device 응답 → 폴더 fast-path 불가 → 운영 측 NAS dataset 통합 또는 NFS server 측 native move API 검토.
+- ⚠️ **ls_task_create_sensor race**: in-flight check 없어서 첫 job status='created' 될 때까지 60s 간격으로 새 job 누적 발화 (이번 케이스 4 job 누적). 코드 fix 필요.
+- ⚠️ **heartbeat 415**: per-file path NFS 경합으로 grpc 응답 지연 다발. NFS 폴더 fast-path 가 동작 안 하는 이상 회피 어려움.
+- ⚠️ **archive _DONE marker 보류**: prior 실패 로그 jsonl 잔존 시 marker 안 만들어짐 — manifest dir 의 failed/ jsonl 정리 정책 필요.
+
 ### 시나리오 2
 
 | Stage | folder | method | wall time | raw_files | frames | image_labels | gemini_events | failures | heartbeat |
@@ -548,28 +665,57 @@ cleanup 후 위 함수 호출 → 모두 ✅ 이어야 안전.
 3. **"측정 결과 표" 에 빈 row 추가** (시나리오 N table)
 4. 새 헬퍼 필요하면 "공통 헬퍼" 섹션에 추가 (모든 시나리오 공유)
 
-### 시나리오 아이디어 (TODO)
+### 시나리오 정의 (대기 중, 카테고리별)
 
-- [ ] 시나리오 3: **GPU 동시 부하** — 동일 시각에 bbox dispatch × 3 (SAM3 GPU 경합)
-- [ ] 시나리오 4: **fail-forward 검증** — 일부 손상 mp4 + 정상 mp4 혼합
-- [ ] 시나리오 5: **NVENC on/off A/B** — 같은 50 file 을 NVENC on / off 비교 (REENCODE_USE_NVENC env toggle)
-- [ ] 시나리오 6: **race 회귀 검증** — dispatch drop 직후 같은 폴더에 추가 파일 — B6 fix 후 동작 확인
-- [ ] 시나리오 7: **연속 dispatch** — 1번 끝나기 전에 다음 1번 시작 (queue 동작 확인)
+> 위 §0.5 인덱스의 시나리오 3~23 정의. 새 시나리오 추가 시 인덱스 + 아래 적절 카테고리 둘 다 갱신.
 
-#### 2026-05-20 QA 발견 기반 추가 (A-E)
+#### 운영 정상 흐름 (4)
+- [ ] **시나리오 7 — 연속 dispatch (queue 동작)**: 1번 끝나기 전에 다음 1번 시작 → run_coordinator queue 동작 + duckdb_writer tag concurrency 검증.
+- [ ] **시나리오 10 — auto_bootstrap chunked 자동 dispatch**: `_DONE` 마커와 함께 incoming 에 폴더 던지고 (manual dispatch JSON 없이) `auto_bootstrap_manifest_sensor` 의 chunked manifest 생성 → 여러 작은 dispatch 자동 트리거 검증. `AUTO_BOOTSTRAP_MAX_UNITS_PER_TICK`, `AUTO_BOOTSTRAP_DISCOVERY_MAX_TOP_ENTRIES`, manifest 분할 단위, 동시 in-flight 제한 측정.
 
-- [ ] 시나리오 8 (A): **archive 잔여물 회귀 보호** — 의도적으로 `archive/test/` 에 N 파일 남긴 채 test dispatch → fast-path 비활성(existing_archive!=None) → per-file path 진입 동작 + wall time 측정 + 사전점검 § 2 단계 F 가 catch 하는지 검증. 회귀 보호.
-- [ ] 시나리오 9 (B): **auto_labeling_sensor backlog 자연소진** — 시나리오 1 Stage 4 처럼 limit 초과 backlog 100 정도 의도적으로 만들고 sensor ON 상태에서 측정. 60s 간격 picking, cursor (event_seq) 정확 증가, in-flight 중복 트리거 없는지, 처리 throughput, 종료 시점(backlog=0) cursor 안정성. limit=100000 + sensor wiring 회귀 보호.
-- [ ] 시나리오 10 (C): **auto_bootstrap chunked 자동 dispatch** — `_DONE` 마커와 함께 incoming 에 폴더 던지고 (manual dispatch JSON 없이) `auto_bootstrap_manifest_sensor` 의 chunked manifest 생성 → 여러 작은 dispatch 자동 트리거 검증. `AUTO_BOOTSTRAP_MAX_UNITS_PER_TICK`, `AUTO_BOOTSTRAP_DISCOVERY_MAX_TOP_ENTRIES`, manifest 분할 단위, 동시 in-flight 제한 측정. 운영 정상 패턴 검증.
-- [ ] 시나리오 11 (D): **cleanup race (LS task NoSuchKey 회피)** — Stage 1-3 에서 매번 발견: cleanup_stage 가 ls_task_create_job RUN_SUCCESS 보다 빨라서 NoSuchKey + LS project orphan. 헬퍼 추가: `cleanup_stage` 가 dispatch_requests.ls_task_status='created' 확인 후 (또는 ls_task_create_job 종료 확인 후) 진행하도록 sleep/poll. 회귀 검증.
-- [ ] 시나리오 12 (E): **classification_video flow** — 지금까지 어느 시나리오에서도 안 돌린 분기. dispatch JSON 의 `outputs` 에 `classification_video` 추가 (현재 spec 미상 — `labeling_method` 와 별도일 가능성) → `vlm-labels/<folder>/classification/<file>.json` 객체 생성 + `labels` 테이블에 `label_format='video_classification_json'`, `caption_text=<predicted_class>` 행 적재 확인. 미검증 분기 커버리지.
+#### 부하 / 동시성 (3)
+- [ ] **시나리오 3 — GPU 동시 부하**: 동일 시각에 bbox dispatch × 3 (SAM3 GPU 경합).
+- [ ] **시나리오 22 — NFS slot exhaustion 부하 테스트**: slot=2 vs 32 vs 128 환경에서 동시 100+ NFS rename — heartbeat / rpc_wait 빈도 비교.
 
-#### 보너스 (우선순위 ↓)
+#### 회귀 보호 (6)
+- [ ] **시나리오 6 — race 회귀 (B6 fix)**: dispatch drop 직후 같은 폴더에 추가 파일 — auto_bootstrap 가 dispatch 중인 폴더 다시 picking up 안 하는지.
+- [ ] **시나리오 8 — archive 잔여물 회귀 보호**: 의도적으로 `archive/test/` 에 N 파일 남긴 채 test dispatch → fast-path 비활성(existing_archive!=None) → per-file path 진입 동작 + wall time 측정 + 사전점검 § 2 단계 F 가 catch 하는지 검증.
+- [ ] **시나리오 11 — cleanup race (LS task NoSuchKey)**: Stage 1-3 에서 매번 발견된 race. cleanup_stage 가 dispatch_requests.ls_task_status='created' 확인 후 진행하도록 sleep/poll 추가 + 회귀 검증.
+- [ ] **시나리오 19 — NVENC fallback (Phase 3 Option C)**: NVENC re-encode 가 실패하는 input → `reencode_with_fallback` 의 in-place fallback 동작 + `video_metadata.reencode_reason` 에 `fallback:<Error>:<msg>` 적재 확인.
+- [ ] **시나리오 20 — ls_task_create_sensor in-flight 회귀 (PR #87)**: 동시 dispatch 다수 (예: 5개) 동시 완료 시 sensor 가 1번만 fire 하는지 확인.
 
-- [ ] F. **Label Studio webhook → post_review_clip_job** — LS UI 에서 사람 검수 후 `/sync-approve` 호출 → `post_review_clip_job` 트리거 → labels 의 timestamp 기반 clip 분할 + 이미지 추출 검증. LS 워크플로 완성도.
-- [ ] G. **GCS download schedule** — 매일 04:00 KST `gcs_download_schedule` 실제 fire 시 동작 검증 (3개 버킷: source-c/source-b/source-a-rtsp). `GCS_ZERO_BYTE_RETRIES` 동작.
-- [ ] H. **ingest retry manifest** — ffmpeg empty_output 4회 retry 후 영구실패 → retry manifest 자동 생성 + jsonl failed log 확인. 재처리 path 검증.
-- [ ] I. **NVENC fallback (Phase 3 Option C)** — NVENC re-encode 가 실패하는 input (예: 특정 codec) → `reencode_with_fallback` 의 in-place fallback 동작 검증. `video_metadata.reencode_reason` 컬럼에 `fallback:<Error>:<msg>` 적재 확인.
+#### 분기 커버리지 (4)
+- [ ] **시나리오 9 — auto_labeling_sensor backlog 자연소진**: 시나리오 1 Stage 4 처럼 limit 초과 backlog 100 정도 의도적 생성 + sensor ON 측정. 60s 간격 picking, cursor(event_seq) 정확 증가, in-flight 중복 트리거 없는지, throughput, 종료 시점(backlog=0) cursor 안정성. limit=100000 + sensor wiring 회귀 보호.
+- [ ] **시나리오 12 — classification_video + vlm-classification 두 분기**:
+  - **목적**: 미검증 분기. `classification_video` (Gemini 단일 클래스 분류) + `build_classification` (vlm-classification 카테고리별 원본 복사) 두 단계 모두 검증.
+  - **dispatch JSON**: `labeling_method=["classification_video"]` 또는 `outputs=["classification_video"]` (spec 확인 필요)
+  - **검증 산출물**:
+    - PG `labels`: `label_format='video_classification_json'`, `caption_text=<predicted_class>` 행
+    - MinIO `vlm-labels/<folder>/classification/<file>.json` 객체
+    - (build 단계 후) MinIO `vlm-classification/<folder>/{video|image}/<category>/<file>` 원본 복사 (DB 미적재)
+  - **단계 체크**:
+    - [ ] `copy_to_incoming test` (20 mp4)
+    - [ ] dispatch JSON outputs=`classification_video` + categories 5개
+    - [ ] RUN_SUCCESS 후 `pg_sample test` 로 labels.label_format='video_classification_json' 확인
+    - [ ] `mc ls prodR/vlm-labels/test/classification/` JSON 객체 + sample cat 으로 schema 검증
+    - [ ] build_dataset 트리거 후 `mc ls --recursive prodR/vlm-classification/test/` 카테고리 폴더 구조 확인
+- [ ] **시나리오 16 — post_review_clip_job 전체 흐름 (LS 검수 → clip 분할)**: LS UI 에서 timestamp 라벨 → `/sync-approve` 호출 → `post_review_clip_job` 트리거 → `clip_to_frame` 실행 → MinIO `vlm-processed/<folder>/clips/<file>_<start>_<end>.mp4` + frames 생성 검증.
+
+#### 성능 측정 (3)
+- [ ] **시나리오 5 — NVENC on/off A/B**: 같은 50 file 을 `REENCODE_USE_NVENC` env toggle 로 비교 (wall time, GPU 부하).
+- [ ] **시나리오 13 — SAM3 workers=1/3/5 throughput 비교**: test 폴더 SAM3 step wall time + GPU memory 사용 시계열(nvidia-smi). workers 늘릴수록 throughput vs memory 증가율 plot.
+- [ ] **시나리오 14 — dual SAM3 (GPU 0 + GPU 1)**: sam3-gpu0 + sam3-gpu1 두 컨테이너 띄우고 nginx upstream 또는 dagster client round-robin → throughput 2× 검증.
+- [ ] **시나리오 24 — NVENC dual-GPU round-robin throughput**: 2026-05-22 PR 적용. dagster ffmpeg NVENC 가 GPU 0/1 round-robin (`REENCODE_NVENC_GPU_INDICES=0,1`). appdata 1247+ reencode 케이스 wall time 측정 vs prior (GPU 0 only) 비교. 기대: reencode bottleneck 부분 ~2× 빨라짐 (전체 wall 15-25% ↓ 추정). 검증: `docker logs docker-dagster-1 | grep 'reencode_encoder=h264_nvenc gpu='` 에서 gpu=0/1 양쪽 나오는지.
+
+#### 장애 대응 / 외부 시스템 (5)
+- [ ] **시나리오 4 — fail-forward**: 일부 손상 mp4 + 정상 mp4 혼합 → DB 미삽입 + archive 미이동 + jsonl 실패 로그만 기록 확인.
+- [ ] **시나리오 17 — GCS download schedule**: 매일 04:00 KST `gcs_download_schedule` 실제 fire 시 동작 검증 (3개 버킷: source-c/source-b/source-a-rtsp) + `GCS_ZERO_BYTE_RETRIES` 동작.
+- [ ] **시나리오 18 — ingest retry manifest**: ffmpeg empty_output 4회 retry 후 영구실패 → retry manifest 자동 생성 + jsonl failed log 확인.
+- [ ] **시나리오 21 — archive _DONE marker 보류 회복**: 의도적으로 failed jsonl 만들고 dispatch → marker 안 만들어지는지, jsonl 정리 후 marker 다시 만들어지는지.
+
+#### 운영 인프라 / 정리 (2)
+- [ ] **시나리오 15 — NFS EXDEV 회피 (NAS dataset 통합 후)**: NAS server 측 incoming/archive 같은 dataset 으로 통합 후 폴더 fast-path (os.rename) 활성 확인. archive_finalize wall ~1s 기대.
+- [ ] **시나리오 23 — dedup orphan 정리**: fast-path 활성 시 archive 에 남는 dedup orphan 파일을 별도 cleanup job 으로 정리. orphan 식별 쿼리 + 자동 삭제 dry-run + apply 검증.
 
 ---
 

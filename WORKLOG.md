@@ -32,6 +32,31 @@
 
 
 
+
+## 2026-05-21
+
+### 1. Staging 환경값 및 운영 보조 설정 정리
+- **문제**: staging 실행 시 DuckDB/MinIO/NAS 경로와 sensor guard 설정이 비어 있거나 분산되어 있어, 실제 테스트 환경을 재현할 때 수동 보정이 많이 필요했음.
+- **원인**: staging env 기본값, compose 공통 설정, stuck run guard / MotherDuck / GCS 관련 옵션이 파일마다 흩어져 있어 환경별 기준을 한 번에 맞추기 어려웠음.
+- **조치**:
+    - staging DuckDB, MinIO, incoming/archive/manifest 경로와 주요 timeout / in-flight / guard 옵션을 `.env.staging`에 구체값으로 정리함.
+    - docker compose에서 production dagster 공통 anchor를 분리해 prod/staging 공통점과 차이를 명확히 정리함.
+    - stuck run guard와 ingest feature flag가 runtime settings를 통해 같은 방식으로 로드되도록 맞춰 운영 보조 설정을 단일화함.
+    - 관련 파일:
+      - `docker/docker-compose.yaml`
+
+### 2. 당일 정리
+- **변경 통계**:
+    - 변경 파일 **11개**, +464/-53줄.
+- **관련 커밋**:
+    - `04165582`: Merge pull request #86 from Orderlee/dev
+    - `6df55b53`: fix(gpu): dagster CUDA_VISIBLE_DEVICES=0 명시 + ffmpeg NVENC -gpu 0 + CLAUDE.md GPU 매핑
+    - `24111d4f`: Merge pull request #85 from Orderlee/dev
+    - `1854a469`: fix(archive): 폴더 단위 fast-path os.rename 직접 사용 + ThreadPool timeout 즉시 raise
+    - `63f33337`: Merge pull request #84 from Orderlee/dev
+- **서비스 상태**: 파이프라인 서비스 10개 컨테이너 중 10개 정상 가동.
+- **작업 환경**: Cursor, VSCode
+
 ## 2026-05-20
 
 ### 1. 운영 ingest / process 공통 구조 정리
