@@ -85,14 +85,16 @@ x-runtime-dagster-env: &runtime-dagster-env
   GENAI_INTERNAL_TOKEN: ${GENAI_INTERNAL_TOKEN:-}
   GENAI_POLL_INTERVAL_SECONDS: ${GENAI_POLL_INTERVAL_SECONDS:-30}
   GENAI_POLL_BATCH: ${GENAI_POLL_BATCH:-20}
-  # GPU 할당 정책 (2026-05-21):
-  #   - dagster 계열 (app/dagster/daemon/code-server): 호스트 GPU 0 만 사용 — Places365 PyTorch
-  #     + ffmpeg NVENC.
-  #   - SAM3 (별도 컨테이너): 호스트 GPU 1 (docker-compose sam3 service 에서 CUDA_VISIBLE_DEVICES=1).
-  #   - 이전엔 dagster 가 empty 였어서 두 GPU 다 보이고, 코드에서 cuda 명시 안 하면 default 0
-  #     이지만 실수로 GPU 1 접근하면 SAM3 침범 가능. 명시적으로 0 으로 격리.
-  CUDA_VISIBLE_DEVICES: "0"
-  NVIDIA_VISIBLE_DEVICES: "0"
+  # GPU 할당 정책 (2026-05-22 업데이트, NVENC dual-GPU):
+  #   - dagster 계열 (app/dagster/daemon/code-server): 호스트 GPU 0+1 둘 다 노출.
+  #     Python torch (Places365) 는 default cuda:0 = 호스트 GPU 0 사용.
+  #     ffmpeg NVENC 는 worker thread index % 2 로 GPU 0/1 round-robin → NVENC unit 2개 활용.
+  #   - SAM3 (별도 컨테이너): 호스트 GPU 1 의 CUDA cores 만 사용 (CUDA_VISIBLE_DEVICES=1).
+  #     SAM3 inference (CUDA) ↔ dagster NVENC (별개 hardware unit) → 경합 없음.
+  #   - 이전 2026-05-21: dagster CUDA_VISIBLE_DEVICES="0" 만 → NVENC unit 1개만 활용
+  #     (RTX A4000 NVENC unit 은 GPU 당 1개라 GPU 0 의 NVENC 가 reencode bottleneck).
+  CUDA_VISIBLE_DEVICES: "0,1"
+  NVIDIA_VISIBLE_DEVICES: "0,1"
 
 x-runtime-dagster-common: &runtime-dagster-common
   image: ${IMAGE_NAME:-datapipeline:gpu-cu124}
@@ -294,6 +296,10 @@ services:
       dockerfile: Dockerfile
     image: datapipeline-sam3:gpu-cu128
     user: root
+    # 2026-05-22: uvicorn workers=N 으로 GPU memory 더 활용 + concurrent inference throughput ↑.
+    # 각 worker 가 독립 process 로 model 별도 로드 (memory N× ~3.7GB → ~11GB 사용).
+    # SAM3_WORKERS env 로 조절. host GPU 1 (16GB) 안에서 3 안전.
+    command: ["sh", "-c", "exec python -m uvicorn app:app --host 0.0.0.0 --port 8002 --workers ${SAM3_WORKERS:-4}"]
     ports:
       - "${SAM3_PORT:-8002}:8002"
     volumes:
@@ -306,6 +312,7 @@ services:
       SAM3_CHECKPOINT_PATH: "/models/sam3.1_multiplex.pt"
       SAM3_IDLE_UNLOAD_SECONDS: "${SAM3_IDLE_UNLOAD_SECONDS:-600}"
       SAM3_IDLE_CHECK_INTERVAL_SECONDS: "${SAM3_IDLE_CHECK_INTERVAL_SECONDS:-60}"
+      SAM3_WORKERS: "${SAM3_WORKERS:-4}"
       HF_TOKEN: ${HF_TOKEN:-}
       CUDA_VISIBLE_DEVICES: "1"
       NVIDIA_VISIBLE_DEVICES: "1"
@@ -323,7 +330,7 @@ services:
       test: ["CMD", "curl", "-f", "http://localhost:8002/health"]
       interval: 30s
       timeout: 10s
-      start_period: 60s
+      start_period: 120s   # workers=3 모델 로드 시간 ~90s → start_period 60→120s
       retries: 3
     restart: unless-stopped
 
