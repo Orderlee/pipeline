@@ -33,6 +33,83 @@
 
 
 
+
+
+
+
+## 2026-05-27
+
+### 1. Staging 환경값 및 운영 보조 설정 정리
+- **문제**: staging 실행 시 DuckDB/MinIO/NAS 경로와 sensor guard 설정이 비어 있거나 분산되어 있어, 실제 테스트 환경을 재현할 때 수동 보정이 많이 필요했음.
+- **원인**: staging env 기본값, compose 공통 설정, stuck run guard / MotherDuck / GCS 관련 옵션이 파일마다 흩어져 있어 환경별 기준을 한 번에 맞추기 어려웠음.
+- **조치**:
+    - staging DuckDB, MinIO, incoming/archive/manifest 경로와 주요 timeout / in-flight / guard 옵션을 `.env.staging`에 구체값으로 정리함.
+    - docker compose에서 production dagster 공통 anchor를 분리해 prod/staging 공통점과 차이를 명확히 정리함.
+    - stuck run guard와 ingest feature flag가 runtime settings를 통해 같은 방식으로 로드되도록 맞춰 운영 보조 설정을 단일화함.
+    - 관련 파일:
+      - `docker/docker-compose.yaml`
+
+### 2. 당일 정리
+- **변경 통계**:
+    - 변경 파일 **18개**, +2556/-305줄.
+- **관련 커밋**:
+    - `2eefa8a9`: Merge pull request #102 from Orderlee/dev
+    - `ccb11102`: Merge pull request #101 from Orderlee/fix/genai-nas-isolation-prod-ready
+    - `63d24f6a`: fix(genai): NAS mount 정합 + 출력 격리 (prod 적용 준비, Codex 협업)
+    - `c7a7ff0f`: docs(playbook): 시나리오 24 3차 결과 + NAS outage 인시던트 + 코드수정 도출
+    - `a4a715d7`: Merge pull request #100 from Orderlee/docs/genai-guide
+- **서비스 상태**: 파이프라인 서비스 10개 컨테이너 중 10개 정상 가동.
+- **작업 환경**: VSCode
+
+## 2026-05-26
+
+### 1. 당일 코드 및 설정 정리
+- **문제**: 당일 변경이 여러 영역에 걸쳐 있어, 커밋 목록만 보면 실제 수정 범위와 운영 영향 지점을 파악하기 어려웠음.
+- **원인**: 자동 기록이 파일/커밋 나열 중심으로 작성되면 코드, 설정, 문서 변경이 어떤 의도로 묶였는지 드러나지 않음.
+- **조치**:
+    - 파이프라인 코드 변경을 정리함: `src/vlm_pipeline/lib/video_reencode.py`
+    - 문서 변경을 정리함: `docs/exec-plans/active/qa-scenarios-playbook.md`
+    - 관련 커밋: `9ddbd392` docs(playbook): 시나리오 24 2차 측정 결과 + NFS bottleneck finding, `049abab8` Merge pull request #91 from Orderlee/dev
+    - 관련 파일:
+      - `docs/exec-plans/active/qa-scenarios-playbook.md`
+      - `src/vlm_pipeline/lib/video_reencode.py`
+
+### 2. 당일 정리
+- **변경 통계**:
+    - 변경 파일 **2개**, +95/-15줄.
+- **관련 커밋**:
+    - `9ddbd392`: docs(playbook): 시나리오 24 2차 측정 결과 + NFS bottleneck finding
+    - `049abab8`: Merge pull request #91 from Orderlee/dev
+- **서비스 상태**: 파이프라인 서비스 10개 컨테이너 중 10개 정상 가동.
+- **작업 환경**: Cursor, VSCode
+
+## 2026-05-25
+
+- (당일 커밋/파일 변경 없음)
+## 2026-05-22
+
+### 1. Staging 환경값 및 운영 보조 설정 정리
+- **문제**: staging 실행 시 DuckDB/MinIO/NAS 경로와 sensor guard 설정이 비어 있거나 분산되어 있어, 실제 테스트 환경을 재현할 때 수동 보정이 많이 필요했음.
+- **원인**: staging env 기본값, compose 공통 설정, stuck run guard / MotherDuck / GCS 관련 옵션이 파일마다 흩어져 있어 환경별 기준을 한 번에 맞추기 어려웠음.
+- **조치**:
+    - staging DuckDB, MinIO, incoming/archive/manifest 경로와 주요 timeout / in-flight / guard 옵션을 `.env.staging`에 구체값으로 정리함.
+    - docker compose에서 production dagster 공통 anchor를 분리해 prod/staging 공통점과 차이를 명확히 정리함.
+    - stuck run guard와 ingest feature flag가 runtime settings를 통해 같은 방식으로 로드되도록 맞춰 운영 보조 설정을 단일화함.
+    - 관련 파일:
+      - `docker/docker-compose.yaml`
+
+### 2. 당일 정리
+- **변경 통계**:
+    - 변경 파일 **7개**, +570/-141줄.
+- **관련 커밋**:
+    - `f9364d8c`: Merge pull request #90 from Orderlee/dev
+    - `e5ebdbf7`: fix(reencode): REENCODE_NVENC_GPU_INDICES default '0' → '0,1' (dual-GPU 활성)
+    - `a5babdf0`: Merge pull request #89 from Orderlee/dev
+    - `3a89bac2`: feat(perf): NVENC dual-GPU round-robin + SAM3 workers 3→4 + 시나리오 24
+    - `17fa3388`: docs(playbook): S2 Stage 4 part1 RUN_SUCCESS 결과 + S2 비교 요약 갱신
+- **서비스 상태**: 파이프라인 서비스 10개 컨테이너 중 10개 정상 가동.
+- **작업 환경**: Cursor, VSCode
+
 ## 2026-05-21
 
 ### 1. Staging 환경값 및 운영 보조 설정 정리

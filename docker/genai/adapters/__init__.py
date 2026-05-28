@@ -6,7 +6,7 @@ Phase 3: Kling.  Phase 4: Higgsfield (fal.ai) / Nanobanana (Vertex) / GPT Image 
 from .base import BaseGenAIAdapter, PollResult, SubmitResult
 from .gpt_image import GPTImageAdapter
 from .higgsfield import HiggsfieldAdapter
-from .kling import KlingAdapter
+from .kling import KlingAdapter, KlingError, KlingTransientError
 from .nanobanana import NanobananaAdapter
 from .veo import VeoAdapter
 
@@ -28,6 +28,28 @@ ENGINE_TAB: dict[str, str] = {
     "nanobanana": "image2image",
     "gpt_image": "image2image",
 }
+
+
+def engine_max_concurrent(engine: str) -> int:
+    """engine 별 동시 in-flight 작업 상한. 0 = 무제한.
+
+    Kling 은 resource pack 에 동시 작업(parallel) 한도가 있어 초과 시 1303 거부.
+    플랜별로 다름 (현재 사용자 플랜 = 5). KLING_MAX_CONCURRENT env 로 조정.
+    타 엔진은 별도 env 미설정 시 0(무제한).
+
+    ⚠️ 동기 엔진(nanobanana/gpt_image)은 submit 시점에 결과까지 받아 deferred 가
+    drain 되지 않으므로, env 가 설정돼 있어도 무조건 0 (게이트 안 함) — pending stuck 방지.
+    """
+    import os
+    cls = _ADAPTERS.get(engine)
+    if cls is not None and getattr(cls, "is_synchronous", False):
+        return 0
+    env_key = f"{engine.upper()}_MAX_CONCURRENT"
+    raw = (os.getenv(env_key, "") or "").strip()
+    if raw.isdigit():
+        return int(raw)
+    # env 미설정 기본값: kling 만 게이트 (플랜 동시 한도). compose 가 보통 명시.
+    return 5 if engine == "kling" else 0
 
 
 def get_adapter(engine: str) -> BaseGenAIAdapter:

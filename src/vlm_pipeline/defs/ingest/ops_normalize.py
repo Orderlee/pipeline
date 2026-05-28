@@ -273,6 +273,18 @@ def normalize_and_archive(
                     include_file_stream=False,
                     include_env_metadata=not defer_video_env_classification,
                 )
+                # inline DQ #1: duration_sec 가 None/0/<1.0s 면 fail 처리.
+                # silent 통과시 다운스트림(Gemini 청크 분할, frame_extract) 에서
+                # ZeroDivisionError / 빈 events 로 표출 — 여기서 일찍 잡는다.
+                # 이미지/짧은 GIF 처럼 합법적인 0.x sec 비디오는 매우 드물고, 그런 케이스
+                # 는 Gemini 청크 분할이 어차피 실패하므로 reject 가 옳다.
+                duration_raw = meta["video_metadata"].get("duration_sec")
+                if duration_raw is None or (
+                    isinstance(duration_raw, (int, float)) and duration_raw < 1.0
+                ):
+                    raise ValueError(
+                        f"invalid duration_sec={duration_raw!r} (must be >= 1.0s)"
+                    )
                 reencode_req, reencode_rsn = needs_reencode(
                     meta["video_metadata"], Path(filepath)
                 )

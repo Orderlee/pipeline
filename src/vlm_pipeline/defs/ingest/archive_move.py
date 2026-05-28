@@ -24,7 +24,10 @@ from typing import Callable
 
 from vlm_pipeline.lib.env_utils import int_env
 
-DEFAULT_ARCHIVE_MOVE_TIMEOUT_SEC: int = 300
+# 2026-05-27: 300→600s. per-file 이동(chunked/dedup orphan/잔여물 등 폴더 fast-path 가
+# 안 되는 잔여 경로)에서 NFS 가 마지막 200-300s 안에 응답하는 케이스가 많아 timeout 자체를
+# 줄임. EXDEV 해소(시나리오 15) 후 대부분 폴더 fast-path 라 이 경로 진입 자체가 드물다.
+DEFAULT_ARCHIVE_MOVE_TIMEOUT_SEC: int = 600
 
 # ── archive 경로 충돌 해결 상수 ──────────────────────────────────
 ARCHIVE_MAX_SUFFIX_ATTEMPTS: int = 100

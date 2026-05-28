@@ -16,7 +16,9 @@ from dagster import AssetKey, Field, asset
 from vlm_pipeline.lib.env_utils import as_int
 
 DEFAULT_GCP_SCRIPT_PATH = "/gcp/download_from_gcs_rclone.py"
-DEFAULT_GCP_DOWNLOAD_DIR = "/nas/incoming/gcp"
+# incoming 마운트 경로를 INCOMING_DIR env 기준으로 따라간다 — compose 가 incoming 을
+# /nas/data/incoming 으로 옮겨도(EXDEV fast-path fix) gcp 다운로드가 자동으로 같은 mount 안에 떨어진다.
+DEFAULT_GCP_DOWNLOAD_DIR = (os.getenv("INCOMING_DIR", "/nas/incoming").rstrip("/") + "/gcp")
 DEFAULT_GCP_BUCKETS = ["source-b-event-bucket", "source-c-event-bucket"]
 
 _TERMINATE_GRACE_SEC = 5
