@@ -16,10 +16,12 @@ class PipelineConfig(BaseSettings):
     minio_access_key: str = "minioadmin"
     minio_secret_key: str = "minioadmin"
 
-    # NAS 마운트 (컨테이너 내부 경로)
-    incoming_dir: str = "/nas/incoming"
-    archive_dir: str = "/nas/archive"
-    manifest_dir: str = "/nas/incoming/.manifests"
+    # NAS 마운트 (컨테이너 내부 경로). incoming/archive 는 같은 단일 bind mount(/nas/data)
+    # 하위에 둬야 폴더 fast-path(os.rename) 가 활성 — 별도 mount 면 cross-device(EXDEV) 로
+    # per-file 이동 fallback. 실제 값은 docker-compose / .env 의 env 로 주입됨.
+    incoming_dir: str = "/nas/data/incoming"
+    archive_dir: str = "/nas/data/archive"
+    manifest_dir: str = "/nas/data/incoming/.manifests"
     scratch_dir: Optional[str] = None
 
     # Canonical Path 정책

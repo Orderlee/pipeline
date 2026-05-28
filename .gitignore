@@ -33,6 +33,12 @@ tests/*
 !tests/unit/
 tests/unit/*
 !tests/unit/test_manual_yolo_sam3_threshold_profiles.py
+# Phase 3-A inline DQ — vlm_pipeline.lib.vertex_chunking 만 의존, dagster import 없음
+# → CI host pydantic skew 영향 없음, allowlist 안전.
+!tests/unit/test_inline_dq_duration_events.py
+# Phase 3-B cross-table consistency — db_resource fixture(PG) 만 사용. dagster 없음.
+# CI deploy-test.yml 가 DATAOPS_TEST_POSTGRES_DSN 셋업 → 실제 PG 로 검증.
+!tests/unit/test_cross_table_consistency.py
 
 # IDE
 .vscode/

@@ -1,0 +1,3 @@
+# pg-backup crontab (Asia/Seoul, set by Dockerfile tzdata)
+# 매일 02:00 KST — 운영 off-hours
+0 2 * * * /usr/local/bin/backup.sh >> /var/log/backup.log 2>&1

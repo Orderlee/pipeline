@@ -21,6 +21,7 @@ from vlm_pipeline.lib.env_utils import (
 from vlm_pipeline.lib.gemini import extract_clean_json_text
 from vlm_pipeline.defs.spec.config_resolver import resolve_and_persist_spec_config
 from vlm_pipeline.lib.gemini_prompts import VIDEO_EVENT_PROMPT
+from vlm_pipeline.lib.vertex_chunking import filter_events_over_duration
 from vlm_pipeline.lib.spec_config import (
     is_standard_spec_run,
     parse_requested_outputs,
@@ -146,7 +147,28 @@ def _process_routed_candidate(
             video_prompt=video_prompt,
         )
         gemini_elapsed = time.monotonic() - t0
+
+        # inline DQ #2: 영상 길이 초과 timestamp 이벤트 필터 (lib helper 위임).
+        # Gemini 가 가끔 청크 경계 over-shoot/hallucination 으로 duration 초과 end_sec
+        # 을 뱉음. LS task 로 넘어가면 검수자 재생 불가 → 여기서 제거.
+        duration_for_filter = cand.get("duration_sec")
+        events, dropped = filter_events_over_duration(events, duration_for_filter)
+        if dropped > 0 and isinstance(duration_for_filter, (int, float)):
+            context.log.warning(
+                "clip_timestamp DQ#2: asset=%s duration=%.3fs dropped=%d "
+                "(end_sec > duration)",
+                asset_id, float(duration_for_filter), dropped,
+            )
+
         event_count = len(events) if isinstance(events, (list, tuple)) else 0
+        # inline DQ #3: event_count 가 비정상적으로 크면 Gemini 프롬프트 오작동 의심.
+        # 통상 1-20개. 50+ 면 카테고리 매칭 폭주 또는 hallucination — warning 만 (drop 안 함).
+        if event_count > 50:
+            context.log.warning(
+                "clip_timestamp DQ#3: asset=%s anomalous event_count=%d (>50) — "
+                "Gemini 프롬프트/카테고리 매칭 검토 권장",
+                asset_id, event_count,
+            )
         context.log.info(
             "clip_timestamp Gemini 응답 수신: asset=%s events=%d (%.1fs)",
             asset_id, event_count, gemini_elapsed,

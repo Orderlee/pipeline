@@ -98,10 +98,11 @@ def cleanup_residual_source_file(context, source_path: str) -> None:
     try:
         if src.is_file() or src.is_symlink():
             src.unlink()
-            context.log.warning(f"archive 완료 후 incoming 잔존 파일 정리: {src}")
+            # per-file 회복 후 routine cleanup — 에러 아님 → INFO (실패 시 아래 error).
+            context.log.info(f"archive 완료 후 incoming 잔존 파일 정리: {src}")
         elif src.is_dir():
             shutil.rmtree(src)
-            context.log.warning(f"archive 완료 후 incoming 잔존 디렉토리 정리: {src}")
+            context.log.info(f"archive 완료 후 incoming 잔존 디렉토리 정리: {src}")
     except OSError as exc:
         context.log.error(
             "incoming 잔존 정리 실패(수동 확인 필요, 다음 auto_bootstrap에서 재감지 가능): "

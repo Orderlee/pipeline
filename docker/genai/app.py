@@ -94,6 +94,35 @@ def _wants_json(request: Request) -> bool:
     return False
 
 
+def _load_nas_original_blob(batch_id: str, seq: int) -> tuple[bytes | None, str]:
+    """genai originals/ 에서 seq 이미지 bytes + filename 읽기.
+    경로 후보 (최신 → 구버전 순으로 fallback):
+      1. <NAS>/<YYYY-MM-DD>/<batch>/originals/  (현재 단순 구조)
+      2. <NAS>/incoming/genai/<YYYY-MM-DD>/<batch>/originals/  (이전: /incoming/genai/ 포함)
+      3. <NAS>/genai/<batch>/originals/  (그 이전: 날짜폴더 없던 시절)
+    없으면 (None, 탐색경로). retry / drain 양쪽이 공유."""
+    from pathlib import Path
+    from datetime import datetime
+    nas_root = Path(os.getenv("GENAI_NAS_INCOMING", "/nas/data/genai_studio"))
+    batch = pg.get_batch_with_jobs(batch_id) or {}
+    ts = batch.get("submitted_at")
+    if not isinstance(ts, datetime):
+        ts = datetime.now()
+    date_dir = ts.strftime("%Y-%m-%d")
+    candidate_parents = [
+        nas_root / date_dir / batch_id / "originals",                    # new
+        nas_root / "incoming" / "genai" / date_dir / batch_id / "originals",  # legacy A
+        nas_root / "genai" / batch_id / "originals",                      # legacy B
+    ]
+    for parent in candidate_parents:
+        hits = [p for p in parent.glob(f"{int(seq):03d}.*")
+                if not p.name.endswith(".partial")]
+        if hits:
+            orig = hits[0]
+            return orig.read_bytes(), orig.name
+    return None, str(candidate_parents[0] / f"{int(seq):03d}.*")
+
+
 def create_app() -> FastAPI:
     app = FastAPI(title="GenAI Studio", version="0.1.0")
     app.mount("/static", StaticFiles(directory=str(_ROOT / "static")), name="static")
@@ -277,10 +306,111 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=404, detail="batch not found")
         if _wants_json(request):
             return JSONResponse(jsonable_encoder(batch))
+        # template 에서 promote 버튼 표시 여부 결정용 — options_json 안 flag 확인.
+        promoted = False
+        opt_text = batch.get("options_json") or ""
+        if opt_text:
+            try:
+                import json as _json
+                promoted = bool(_json.loads(opt_text).get("promoted_to_labeling"))
+            except Exception:
+                promoted = False
         return templates.TemplateResponse(
             request=request,
             name="batch_detail.html",
-            context={"batch": batch, "user": user},
+            context={"batch": batch, "user": user, "promoted": promoted},
+        )
+
+    @app.get("/genai/batches/{batch_id}/promote", response_class=HTMLResponse)
+    def promote_form(batch_id: str, request: Request, user: str = Depends(_check_auth)):
+        """promote-to-labeling 의 입력 폼. labeling_method/label_policy/categories/classes
+        를 묶어서 POST /promote-to-labeling 으로 보낸다."""
+        batch = pg.get_batch_with_jobs(batch_id)
+        if batch is None:
+            raise HTTPException(status_code=404, detail="batch not found")
+        from jobs.promote import PROMOTABLE_STATUSES
+        status = (batch.get("status") or "").strip().lower()
+        if status not in PROMOTABLE_STATUSES:
+            raise HTTPException(
+                status_code=400,
+                detail=f"batch.status={status!r} not promotable",
+            )
+        # 이미 promote 됐는지 표기
+        promoted = False
+        opt_text = batch.get("options_json") or ""
+        if opt_text:
+            try:
+                import json as _json
+                promoted = bool(_json.loads(opt_text).get("promoted_to_labeling"))
+            except Exception:
+                promoted = False
+        return templates.TemplateResponse(
+            request=request,
+            name="promote.html",
+            context={"batch": batch, "user": user, "promoted": promoted},
+        )
+
+    @app.post("/genai/batches/{batch_id}/promote-to-labeling")
+    def promote_to_labeling(
+        batch_id: str,
+        request: Request,
+        labeling_method: Annotated[list[str], Form()],
+        label_policy: Annotated[str, Form()] = "required",
+        categories_text: Annotated[str, Form()] = "",
+        classes_text: Annotated[str, Form()] = "",
+        image_profile: Annotated[str, Form()] = "current",
+        user: str = Depends(_check_auth),
+    ):
+        """form-encoded multi-select 폼을 받아 promote 실행.
+        - labeling_method: 다중 체크박스 (timestamp_video, bbox 등)
+        - label_policy: required|none
+        - categories_text/classes_text: comma 또는 newline 구분 텍스트 → list
+        """
+        from jobs.promote import (
+            PromoteConflictError,
+            PromoteValidationError,
+            promote_batch_to_labeling,
+        )
+
+        def _split_list(s: str) -> list[str]:
+            # 콤마/줄바꿈 둘 다 허용. 빈 항목 제거.
+            raw = (s or "").replace(",", "\n")
+            return [x.strip() for x in raw.split("\n") if x.strip()]
+
+        labeling_clean = [m.strip() for m in (labeling_method or []) if m.strip()]
+        categories = _split_list(categories_text)
+        classes = _split_list(classes_text)
+
+        try:
+            result = promote_batch_to_labeling(
+                batch_id,
+                labeling_method=labeling_clean,
+                label_policy=label_policy.strip(),
+                categories=categories,
+                classes=classes,
+                image_profile=(image_profile or "current").strip(),
+                requested_by=user,
+            )
+        except PromoteValidationError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        except PromoteConflictError as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
+        except Exception as exc:
+            # Codex MEDIUM-3: options_json corruption / NAS 일시 장애 등은 명확한 500.
+            # FastAPI default 500 보다 detail 명시하면 운영자 디버깅이 빠르다.
+            # PG DataError (invalid jsonb cast) / psycopg2 lock timeout / NAS PermissionError
+            # 모두 여기로 떨어진다.
+            raise HTTPException(
+                status_code=500,
+                detail=f"promote 실행 실패 ({type(exc).__name__}): {exc}",
+            )
+
+        # API 클라이언트는 JSON, 브라우저는 batch 상세로 redirect (toast 는 template 측).
+        if _wants_json(request):
+            return JSONResponse(result)
+        return RedirectResponse(
+            url=f"/genai/batches/{batch_id}?promoted=1",
+            status_code=303,
         )
 
     @app.get("/genai/batches/{batch_id}/outputs/{filename}")
@@ -293,7 +423,10 @@ def create_app() -> FastAPI:
     ):
         """완료된 batch 의 결과 파일(.mp4 / .png) 를 NAS 에서 스트리밍.
 
-        ingest sensor 가 incoming → archive 로 이동시키므로 두 경로 모두 확인.
+        경로 후보 (최신 → 구버전 fallback):
+          1. <NAS>/<YYYY-MM-DD>/<batch>/outputs/<file>  (현재 단순 구조)
+          2. <NAS>/incoming/genai/<YYYY-MM-DD>/<batch>/outputs/<file>  (legacy A)
+          3. <NAS>/genai/<batch>/outputs/<file>  (legacy B, 날짜폴더 이전)
         path traversal 방지: filename 에 / 또는 .. 포함 시 거부.
         """
         if "/" in filename or ".." in filename or filename.startswith("."):
@@ -306,12 +439,11 @@ def create_app() -> FastAPI:
         if not isinstance(ts, _dt):
             ts = _dt.now()
         date_dir = ts.strftime("%Y-%m-%d")
-        nas_root = os.getenv("GENAI_NAS_INCOMING", "/nas/staging/incoming").rstrip("/")
-        archive_root = nas_root.replace("/incoming", "/archive")
-        # archive 우선 → incoming (이미 옮겨졌을 확률 큼)
+        nas_root = os.getenv("GENAI_NAS_INCOMING", "/nas/data/genai_studio").rstrip("/")
         candidates = [
-            f"{archive_root}/genai/{date_dir}/{batch_id}/outputs/{filename}",
-            f"{nas_root}/genai/{date_dir}/{batch_id}/outputs/{filename}",
+            f"{nas_root}/{date_dir}/{batch_id}/outputs/{filename}",
+            f"{nas_root}/incoming/genai/{date_dir}/{batch_id}/outputs/{filename}",
+            f"{nas_root}/genai/{batch_id}/outputs/{filename}",
         ]
         for path in candidates:
             if os.path.exists(path) and os.path.isfile(path):
@@ -631,34 +763,16 @@ def create_app() -> FastAPI:
             opts_retry = {}
         is_text_only_retry = (opts_retry.get("mode") or "").strip().lower() == "txt2video"
 
-        from pathlib import Path
-        from datetime import datetime
-        from adapters import get_adapter
+        from adapters import KlingTransientError, get_adapter
         adapter = get_adapter(engine)
 
         if is_text_only_retry:
             blob = b""
             orig_name = ""
         else:
-            # 원본 input image 를 NAS 에서 다시 읽어 어댑터 submit
-            # 날짜 폴더 안의 batch 경로 (batch.submitted_at 기준)
-            nas_root = os.getenv("GENAI_NAS_INCOMING", "/nas/staging/incoming")
-            submitted = pg.get_batch_with_jobs(batch_id) or {}
-            ts = submitted.get("submitted_at")
-            if not isinstance(ts, datetime):
-                ts = datetime.now()
-            orig_parent = Path(nas_root) / "genai" / ts.strftime("%Y-%m-%d") / batch_id / "originals"
-            # 확장자 자동 탐색 (png/jpg/webp)
-            candidates = [
-                p for p in orig_parent.glob(f"{int(seq):03d}.*")
-                if not p.name.endswith(".partial")
-            ]
-            # 구버전(날짜 폴더 없는) 경로 fallback
-            if not candidates:
-                legacy = Path(nas_root) / "genai" / batch_id / "originals"
-                candidates = [p for p in legacy.glob(f"{int(seq):03d}.*") if not p.name.endswith(".partial")]
-            orig_path = orig_parent / f"{int(seq):03d}.png"  # 변수 그대로 유지 (error msg 용)
-            if not candidates:
+            # 원본 input image 를 NAS 에서 다시 읽어 어댑터 submit (공유 헬퍼)
+            blob, orig_name = _load_nas_original_blob(batch_id, int(seq))
+            if blob is None:
                 # CAS 한 status 를 'failed' 로 되돌림 (원본 없으면 retry 자체 불가)
                 with pg.connect() as conn:
                     with conn.cursor() as cur:
@@ -668,13 +782,17 @@ def create_app() -> FastAPI:
                             "WHERE job_id=%s",
                             (job_id,),
                         )
-                raise HTTPException(status_code=410, detail=f"original file gone: {orig_path}")
-            orig = candidates[0]
-            blob = orig.read_bytes()
-            orig_name = orig.name
+                raise HTTPException(status_code=410, detail=f"original file gone: {orig_name}")
 
         try:
             sub = adapter.submit(blob, orig_name, prompt, options=opts_retry or None)
+        except KlingTransientError as exc:
+            # 1303 등 동시 한도 — failed 아님. deferred(pending) 로 두고 sensor drain
+            # 이 슬롯 빌 때 재제출. batch 는 running 유지.
+            pg.mark_job_deferred(job_id, str(exc))
+            pg.recompute_batch_status(batch_id)
+            return {"job_id": job_id, "status": "pending", "action": "deferred",
+                    "detail": str(exc)}
         except Exception as exc:
             # 외부 API 실패 시 status='failed' 로 되돌림
             pg.update_job_status(job_id, status="failed",
@@ -836,6 +954,95 @@ def create_app() -> FastAPI:
         cols = ["job_id", "batch_id", "seq_in_batch", "provider_job_id",
                 "status", "engine", "output_media"]
         return {"pending": [dict(zip(cols, r)) for r in rows]}
+
+    @app.post("/internal/jobs/submit-pending")
+    def internal_submit_pending(request: Request, limit: int = 50):
+        """deferred(pending) 비동기 job 을 동시성 한도 안에서 제출 (drain).
+
+        Kling 1303 회피의 핵심: submit_batch 가 한도 초과분을 'pending' 으로 남기면
+        sensor 가 매 tick 이 endpoint 호출 → 슬롯 빈 만큼만 제출. 1303 재발 시 다시
+        deferred 로 두고 다음 tick 재시도.
+        """
+        _check_internal(request)
+        from adapters import KlingTransientError, engine_max_concurrent, get_adapter
+        import json as _json
+
+        result = {"submitted": 0, "deferred": 0, "failed": 0}
+        affected_batches: set[str] = set()
+        for engine in _async_engines():
+            pend = pg.list_pending_async_jobs(engine, limit=limit)
+            if not pend:
+                continue
+            max_conc = engine_max_concurrent(engine)
+            budget = None
+            if max_conc > 0:
+                budget = max(0, max_conc - pg.count_inflight_jobs(engine))
+            adapter = get_adapter(engine)
+            for job in pend:
+                if budget is not None and budget <= 0:
+                    result["deferred"] += 1
+                    continue
+                job_id = job["job_id"]
+                batch_id = job["batch_id"]
+                seq = int(job["seq_in_batch"])
+                affected_batches.add(batch_id)
+                try:
+                    opts = _json.loads(job["options_json"]) if job["options_json"] else {}
+                except Exception:
+                    opts = {}
+                is_text_only = (opts.get("mode") or "").strip().lower() == "txt2video"
+                if is_text_only:
+                    blob, name = b"", ""
+                else:
+                    blob, name = _load_nas_original_blob(batch_id, seq)
+                    if blob is None:
+                        pg.update_job_status(job_id, status="failed",
+                                             error_message="original file gone (drain)")
+                        result["failed"] += 1
+                        continue
+                try:
+                    sub = adapter.submit(blob, name, job["prompt"], options=opts or None)
+                    pg.update_job_submitted(job_id, sub.provider_job_id)
+                    if budget is not None:
+                        budget -= 1
+                    result["submitted"] += 1
+                    if sub.is_synchronous and sub.immediate_result is not None:
+                        from jobs.finalize import finalize_sync_results
+                        finalize_sync_results(
+                            batch_id=batch_id, engine=engine,
+                            output_media=adapter.output_media,
+                            results=[{
+                                "job_id": job_id, "seq": seq,
+                                "bytes": sub.immediate_result,
+                                "ext": sub.immediate_ext or adapter.output_ext,
+                                "cost_units": sub.cost_units,
+                            }],
+                        )
+                except KlingTransientError as exc:
+                    # 슬롯 아직 참 — deferred 유지, 같은 engine pass 중단 (Codex Q1)
+                    pg.mark_job_deferred(job_id, str(exc))
+                    result["deferred"] += 1
+                    if budget is not None:
+                        budget = 0
+                except Exception as exc:
+                    pg.update_job_status(job_id, status="failed",
+                                         error_message=f"drain submit failed: {exc}")
+                    result["failed"] += 1
+        # batch status 재계산 (finalize_sync_results 가 한 것 외 — submitted/failed 반영)
+        for bid in affected_batches:
+            pg.recompute_batch_status(bid)
+        return result
+
+    @app.post("/internal/batches/reconcile-stale")
+    def internal_reconcile_stale(request: Request, limit: int = 200):
+        """모든 job 이 terminal 인데 batch.status 가 running/pending 으로 남은 stale
+        batch 를 보정. sensor 가 매 tick 호출하는 안전망 (submit 부분실패 crash 등)."""
+        _check_internal(request)
+        reconciled = pg.reconcile_stale_batches(limit=int(limit))
+        return {
+            "reconciled": len(reconciled),
+            "batches": [{"batch_id": b, "status": s} for b, s in reconciled],
+        }
 
     return app
 

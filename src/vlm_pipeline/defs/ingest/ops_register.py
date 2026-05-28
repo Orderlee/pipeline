@@ -15,7 +15,7 @@ from .ops_common import _append_ingest_rejection
 
 # GenAI provenance — manifest 가 명시한 경우만 통과. CHECK constraint 와 일치.
 _VALID_SOURCE_TYPES = frozenset({"camera", "nas_upload", "genai_source", "genai_output"})
-_VALID_GENAI_ENGINES = frozenset({"kling", "higgsfield", "nanobanana", "gpt_image"})
+_VALID_GENAI_ENGINES = frozenset({"kling", "higgsfield", "veo", "nanobanana", "gpt_image"})
 _VALID_LABEL_POLICIES = frozenset({"required", "none"})
 
 

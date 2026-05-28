@@ -35,10 +35,14 @@ def _internal_token() -> str | None:
 @sensor(
     name="genai_poll_sensor",
     minimum_interval_seconds=_POLL_INTERVAL,
-    default_status=DefaultSensorStatus.STOPPED,   # 운영자가 Dagster UI 에서 켜야 함
+    # RUNNING 기본 — 과거 STOPPED 기본이라 Dagster storage 초기화/신규 배포마다 꺼져
+    # 비동기 batch(Kling/Veo/Higgsfield)가 'running' 에 영구 stuck 되는 사고가 반복됨.
+    # GENAI_INTERNAL_TOKEN 미설정 / genai 컨테이너 다운 시엔 아래에서 SkipReason 으로
+    # graceful skip 하므로 RUNNING 기본이어도 무해. 운영자가 명시적으로 끄면 유지됨.
+    default_status=DefaultSensorStatus.RUNNING,
     description=(
-        "비동기 GenAI jobs (Kling/Higgsfield) 의 외부 API 상태 확인. "
-        "docker/genai 컨테이너의 /internal/jobs/* 를 HTTP 경유로 호출."
+        "비동기 GenAI jobs (Kling/Veo/Higgsfield) 의 외부 API 상태 확인 + stale batch "
+        "status reconcile. docker/genai 컨테이너의 /internal/* 를 HTTP 경유로 호출."
     ),
 )
 def genai_poll_sensor(context):
@@ -48,6 +52,34 @@ def genai_poll_sensor(context):
         return
 
     headers = {"X-Internal-Token": token}
+
+    # 0a) deferred(pending) job drain — Kling 동시성 한도로 미뤄둔 job 을 슬롯 빈
+    # 만큼 제출 (1303 회피). pending 유무와 무관하게 매 tick 시도.
+    drained = {}
+    try:
+        dr = requests.post(
+            f"{_GENAI_INTERNAL_BASE}/internal/jobs/submit-pending",
+            headers=headers,
+            timeout=_GENAI_INTERNAL_TIMEOUT,
+        )
+        dr.raise_for_status()
+        drained = dr.json()
+    except Exception as exc:
+        context.log.warning(f"submit-pending drain 실패: {exc}")
+
+    # 0b) stale batch reconcile (안전망) — 모든 job 이 끝났는데 batch.status 가
+    # running/pending 으로 남은 케이스 보정. 비용 거의 0 (단일 SQL recompute).
+    reconciled = 0
+    try:
+        rr = requests.post(
+            f"{_GENAI_INTERNAL_BASE}/internal/batches/reconcile-stale",
+            headers=headers,
+            timeout=_GENAI_INTERNAL_TIMEOUT,
+        )
+        rr.raise_for_status()
+        reconciled = int(rr.json().get("reconciled", 0))
+    except Exception as exc:
+        context.log.warning(f"reconcile-stale 실패: {exc}")
 
     # 1) pending list 조회
     try:
@@ -64,7 +96,10 @@ def genai_poll_sensor(context):
         return
 
     if not pending:
-        yield SkipReason("폴링 대상 GenAI jobs 없음")
+        d = ""
+        if drained and (drained.get("submitted") or drained.get("deferred")):
+            d = f" drained(submitted={drained.get('submitted',0)} deferred={drained.get('deferred',0)})"
+        yield SkipReason(f"폴링 대상 GenAI jobs 없음 (reconciled={reconciled}{d})")
         return
 
     # 2) 각 job poll → finalize
@@ -96,5 +131,7 @@ def genai_poll_sensor(context):
 
     yield SkipReason(
         f"polled={len(pending)} done={counts['done']} failed={counts['failed']} "
-        f"running={counts['running']} noop={counts['noop']} error={counts['error']}"
+        f"running={counts['running']} noop={counts['noop']} error={counts['error']} "
+        f"reconciled={reconciled} "
+        f"drained(submitted={drained.get('submitted',0)} deferred={drained.get('deferred',0)})"
     )
