@@ -92,6 +92,8 @@ ANTIGRAVITY.md
 
 # Agent & AI Temporary Caches
 .agent/skill/tmp/
+# Sanitizer rule map — lists real internal values, must never be published
+.agent/skill/sanitize_repo/rules.local.txt
 .codex_cache/
 .mcp_logs/
 .windsurf/
