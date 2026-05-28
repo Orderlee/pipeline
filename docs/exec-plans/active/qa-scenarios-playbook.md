@@ -15,6 +15,13 @@
 | 2026-05-22 | §0.5 시나리오 인덱스 표 추가 + §7 카테고리별 재정렬 (총 23 시나리오) + classification/post_review_clip 중복 통합 | claude |
 | 2026-05-22 | §0.7 측정 결과 종합 표 추가 (실행된 모든 row 한눈에) — §6 상세 메모는 유지 | claude |
 | 2026-05-22 | NVENC dual-GPU round-robin (`REENCODE_NVENC_GPU_INDICES`) + SAM3 workers=3→4 prod 적용 — 시나리오 24 신규 추가 | claude |
+| 2026-05-22 | 🚨 시나리오 24 1차 실행 중 NVENC ffmpeg arg 순서 bug 발견 (`-c:v -gpu 1 h264_nvenc`) → fix dev push eb9d2e9. 1차 측정 무효, 2차는 main 머지 후 재실행 | claude |
+| 2026-05-26 | 시나리오 24 2차 완료 (qa_s24v2): NVENC dual-GPU 정상 동작 (peak ENC 80%/GPU, fallback 0). 단 wall time은 S2 대비 +18-19%. archive_finalize가 새 bottleneck | claude |
+| 2026-05-27 | 시나리오 24 3차 (qa_s24v3): EXDEV fix(폴더 fast-path <1s) 효과 입증 — part2 ts+cap **3h01m47s (S24v2 −39%)**. part1 은 NAS 10.0.0.51 일시 outage→load 393→SAM3 GPU1 OOM→orphan 자동취소(무효). 코드수정 필요항목 도출: SAM3 retry 부재, GPU OOM(workers=4), sensor NFS 가드 | claude |
+| 2026-05-28 | 시나리오 24 4차 (qa_s24v4 part1 재측정): SAM3_WORKERS 4→2 적용 후 part1 bbox **5h29m13s** clean 완주 — SAM3 12542/12542 **fail=0**, GPU1 여유 10.6GB, NAS 안정. S2 −29%, S24v2 −40%. EXDEV fast-path + NVENC + workers=2 종합 입증. retry(#1) + expandable_segments(#2b) dev 준비 완료(741439b) → 후속 main 머지로 prod 적용 | claude |
+| 2026-05-27 | 🔍 시나리오 15 EXDEV root cause 정정: NAS dataset 은 이미 통합됐고 진짜 원인은 **docker-compose 의 incoming/archive 별도 bind-mount** (컨테이너 안 별개 mount point). 검증 run(qa_s15)으로 확정. fix 는 compose 단일 부모 mount. 시나리오 15 미완료 상태 유지 | claude |
+| 2026-05-27 | ✅ 시나리오 15 완료: incoming/archive 공통 부모 단일 bind(/nas/data) → 컨테이너 EXDEV 해소. PR #92 머지 → prod 배포(251b9fb). staging+prod 둘 다 컨테이너 내부 os.rename 성공, archive_finalize 폴더 fast-path <1s 확인 | claude |
+| 2026-05-27 | ✅ sam3 단일 공유 컨테이너화: profiles:["sam3"] + prod COMPOSE_PROFILES=sam3, staging 은 SAM3_API_URL=http://docker-sam3-1:8002 공유 참조. PR #93 머지 → prod 배포(6e68830). 기존 staging sam3 포트 8002 충돌(배포 실패) 해소. staging+prod deploy GREEN, 양쪽 dagster→sam3 200 | claude |
 
 > 시나리오 추가/변경 시 위 표 + 본문 "## 시나리오 N" 섹션 + "## 측정 결과" 표에 row 추가.
 
@@ -42,7 +49,7 @@
 | 12 | classification_video + vlm-classification 두 분기 | 분기 커버리지 | ⏳ 대기 | §7 |
 | 13 | SAM3 workers=1/3/5 throughput 비교 | 성능 | ⏳ 대기 | §7 |
 | 14 | dual SAM3 (GPU 0 + GPU 1) | 성능 | ⏳ 대기 | §7 |
-| 15 | NFS EXDEV 회피 (NAS dataset 통합 후) | 운영 인프라 | ⏳ 대기 | §7 |
+| 15 | 컨테이너 EXDEV 회피 (incoming/archive 단일 bind mount) | 운영 인프라 | ✅ 완료 (2026-05-27, PR #92, staging+prod 검증) | §7 |
 | 16 | post_review_clip_job 전체 흐름 (LS 검수 → clip 분할) | 분기 커버리지 / LS | ⏳ 대기 | §7 |
 | 17 | GCS download schedule | 외부 시스템 | ⏳ 대기 | §7 |
 | 18 | ingest retry manifest (ffmpeg empty_output 4 retry) | 장애 대응 | ⏳ 대기 | §7 |
@@ -107,6 +114,22 @@
 - 동시 두 run 시 upload 0.05 obj/sec/run
 - heartbeat 298회 (6h)
 - SAM3 200/9648 frames (B5 cap)
+
+### 시나리오 24 — NVENC dual-GPU round-robin (1차 05-22 / 2차 05-26 / 3차 05-27 / 4차 05-28)
+
+| 실행일 | Stage | wall time | raw_files | NVENC util | 핵심 |
+|---|---|---|---|---|---|
+| 2026-05-22 1차 | part1 bbox | 8h 30m 07s | 1249/1249 | 0% (bug) | 🚨 ffmpeg arg 순서 bug — 측정 무효 |
+| 2026-05-22 1차 | part2 ts+cap | 4h 59m 16s | 1247/1247 | 0% (bug) | 같은 bug |
+| 2026-05-26 2차 | part1 bbox | 9h 07m 04s | 1249/1249 | peak ~80%/GPU | NVENC fix. fallback=0. archive per-file ~3-4h (EXDEV) 가 bottleneck |
+| 2026-05-26 2차 | part2 ts+cap | 4h 57m 32s | 1247/1247 | peak ~80%/GPU | 〃 |
+| 2026-05-27 3차 | part2 ts+cap | **3h 01m 47s** | 1247/1247 | peak ~80%/GPU | ✅ **EXDEV fix(폴더 fast-path <1s) 후. S24v2 −1h56m(−39%), S2 −1h08m(−27%)** |
+| 2026-05-27 3차 | part1 bbox | (무효, CANCELED 7h29m) | 1249/1249 ingest | — | 🚨 NAS 10.0.0.51 일시 outage→load 244~393→SAM3 GPU1 OOM(503)→orphan 자동취소. SAM3 11240/12532(fail 238) |
+| 2026-05-28 4차 | part1 bbox | **5h 29m 13s** | 1250/1250 | peak ~80%/GPU | ✅ **EXDEV+NVENC+SAM3 workers=4→2(OOM fix) 후. SAM3 12542/12542 fail=0, 손실 0. S2 −2h15m(−29%), S24v2 −3h38m(−40%)** |
+
+**핵심 결론 (3-4차)**: EXDEV fix가 archive_finalize를 **시간→<1초**로 줄여 part2 −39%, part1 −29~40% 단축. SAM3 workers=2 + #1 retry로 GPU1 OOM 차단(여유 10.6GB) → fail=0 손실 0 입증. NVENC arg fix(PR #91) + EXDEV fix(PR #92) + sam3 profile(PR #93) + B+C 노이즈 완화(PR #94) + 본 사이클 retry/expandable_segments(741439b dev 머지 대기)까지 모든 fix 검증 완료.
+
+→ 상세 메모 + 인시던트 분석 §6 시나리오 24 절 참조.
 
 ---
 
@@ -651,6 +674,90 @@ cleanup 후 위 함수 호출 → 모두 ✅ 이어야 안전.
 - heartbeat 298회 (6h 동안)
 - SAM3 200/9648 frames (B5 cap)
 
+### 시나리오 24 — NVENC dual-GPU round-robin throughput
+
+| Stage | folder | method | wall time | raw_files | NVENC 사용 | 핵심 |
+|---|---|---|---|---|---|---|
+| 1차 (2026-05-22, bug) | appdata_part1_scenario2 | bbox | **8h 30m 07s** | 1249/1250 | 0% (bug) | 🚨 fallback 자연 완료, 측정 무효 |
+| 1차 (2026-05-22, bug) | appdata_part2_scenario2 | ts+cap | **4h 59m 16s** | 1247/1250 | 0% (bug) | 🚨 fallback 자연 완료 |
+| 2차 (2026-05-26, fix) | appdata_part1_s24v2 | bbox | **9h 07m 04s** | 1249/1250 | peak ~80%/GPU | ✅ fallback=0, S2 대비 +1h 22m (+18%) |
+| 2차 (2026-05-26, fix) | appdata_part2_s24v2 | ts+cap | **4h 57m 32s** | 1247/1250 | peak ~80%/GPU | ✅ fallback=0, S2 대비 +48m (+19%) |
+
+#### 🚨 NVENC ffmpeg arg 순서 bug — 1차 측정 무효
+
+**증상**:
+- dispatch 시작 직후부터 dagster-daemon WARNING `reencode fallback to original after 3 retries: ... reencode_failed:returncode=1` 다발 (~28/min, 누적 1570+)
+- `nvidia-smi --query-gpu=utilization.encoder` 결과 GPU 0/1 모두 **0%** — NVENC silicon 미사용 확인
+- compute log 의 `reencode_encoder=h264_nvenc gpu=` INFO 도 사실상 미반영
+
+**원인** (PR #90 round-robin 도입 시 slicing 오류):
+```python
+# BUG (split [:1] / [1:])
+STANDARD_PRESET_FFMPEG_ARGS_NVENC_BASE[:1] + ["-gpu", str(gpu_idx)] + STANDARD_PRESET_FFMPEG_ARGS_NVENC_BASE[1:]
+# → ["-c:v", "-gpu", "1", "h264_nvenc", "-profile:v", ...]   ← codec 미선택
+```
+ffmpeg 가 `-c:v -gpu` 로 해석 → codec 미지정 → 실행 실패 → 3 retry → 원본 fallback.
+
+**수동 검증**:
+- `ffmpeg -y -i <src> -c:v -gpu 1 h264_nvenc ...` 직접 호출 시 동일 returncode=1 재현
+- `ffmpeg -y -i <src> -c:v h264_nvenc -gpu 1 ...` (올바른 순서) 는 정상 (rc=0, NVENC encoder util 점등)
+- 6 worker 동시 NVENC GPU 1 호출 시에도 모두 정상 (rc=0)
+
+**수정** ([dev branch eb9d2e9](../../src/vlm_pipeline/lib/video_reencode.py), `fix(reencode): NVENC ffmpeg arg 순서`):
+- `[:2]` 로 `-c:v h264_nvenc` 한 쌍 보존 후 `-gpu N` 삽입
+- `STANDARD_PRESET_FFMPEG_ARGS_NVENC` (정적 리스트, 하위 호환) 도 동일 패턴으로 수정
+
+**영향 평가**:
+- 현재 실행 중인 시나리오 24 1차는 사실상 "NVENC off 상태로 S2 재실행" 과 동치 → 완료까지 둘 다 fallback 으로 원본 업로드. 결과는 S2 수치와 거의 같을 것으로 기대 (NVENC 효과 없음).
+- 2차 측정은 `main` 머지 + prod 재배포 후 fresh Scenario 24 로 진행.
+
+**다음 단계 체크리스트**:
+- [x] 1차 runs (`2891e99b`, `30d3ace0`) 자연 완료 → cleanup 완료 (2026-05-25)
+- [x] `dev` → `main` PR #91 머지 → prod 자동 재배포 성공 (commit 049abab)
+- [x] Scenario 24 2차 dispatch (qa_s24v2_part1+part2) — 둘 다 SUCCESS
+- [x] 2차 측정 결과 §0.7 / 본 절 반영
+
+#### 2차 측정 결과 (2026-05-26, NVENC fix 검증)
+
+**NVENC dual-GPU 동작 검증** ✅
+- 12 concurrent ffmpeg (두 dispatch run × 6 worker), 모두 `-c:v h264_nvenc -gpu 0` / `-gpu 1` 올바른 순서로 호출
+- nvidia-smi NVENC encoder utilization: peak GPU 0 76% / GPU 1 81%, 합산 ~130% 단일 GPU 한계 초과
+- 누적 `reencode fallback` = **0건** (1차의 1570+ 대비 완전 해소)
+- 라운드로빈 분배 균등 (장기 평균 GPU 0 ≈ GPU 1)
+
+**throughput 분석** (예상과 다름)
+- part1 bbox: 9h 07m 04s — S2 baseline 7h 44m 대비 **+1h 22m (+18% 느림)**
+- part2 ts+cap: 4h 57m 32s — S2 baseline 4h 09m 대비 **+48m (+19% 느림)**
+- 가설: NVENC가 빨리 reencode 끝 → upload 빨리 끝 → 둘이 거의 동시에 archive_finalize 진입 → **NFS per-file rename 경합이 새 bottleneck**. 즉 NVENC가 만든 시간 절약이 NFS 부하로 전가됨.
+- 동시에 ENC 시간 단축은 측정되지만 archive_finalize 가 dominant cost. archive_finalize wall ≈ S2 와 동일 수준 (~3-4h)
+
+**결론**
+- NVENC dual-GPU **자체 효과는 검증됨** (ENC % 2× 활용, fallback 0).
+- 하지만 전체 wall 단축은 컨테이너 EXDEV 가 풀려야 가능. → **2026-05-27 검증: root cause 는 NAS dataset 이 아니라 docker-compose 의 incoming/archive 별도 bind-mount** (컨테이너 안 별도 mount point → cross-mount rename EXDEV). 시나리오 15 (compose 단일 부모 mount fix) 적용 후 archive_finalize 가 ~1s 로 단축되면 NVENC dual-GPU 의 wall 이득도 비로소 측정 가능. 상세는 시나리오 15 절 참조.
+
+#### 3차 측정 결과 (2026-05-27, EXDEV fix 후 + 인시던트)
+
+**EXDEV fix 효과 입증** ✅
+- archive_finalize 양쪽 **폴더 fast-path <1초** (part2 02:12:41 start=완료, part1 02:21:09 start=완료) — S24v2의 per-file ~1.5-3h 대비 결정적 단축
+- **part2 ts+cap: 3h 01m 47s** — S24v2 4h57m **−1h56m(−39%)**, S2 4h09m **−1h08m(−27%)**. archive에서 ~1.5h 절약이 wall에 직접 반영
+- NVENC dual-GPU 정상 (ENC GPU0/1 peak ~80%, reencode fallback 0)
+
+**🚨 인시던트 — part1 무효 (NAS outage 연쇄)**
+- part1 bbox: SAM3 detection 중 **NAS 10.0.0.51 일시 outage** 발생
+- 연쇄: NAS down → `/nas/data` NFS hard-mount hang(D-state) + MinIO retry 폭주 → **호스트 load 244~393 폭증**(16코어, 대부분 I/O-wait) → SAM3 uvicorn worker CPU 굶음 + GPU1 **CUDA OOM**(workers=4 ×3.7GB=14.8GB가 jsh ComfyUI 782MB와 GPU1 16GB 공유 → 부하 중 파편화로 OOM) → `503/500 segment` 다발 → SAM3 detection 238+ 프레임 fail-forward 영구 실패 → run **orphaned**(code-server gRPC >900s) → `stuck_run_guard`가 자동 취소(11240/12532에서 CANCELED)
+- NAS 복귀 후 자동 회복: SAM3 worker OOM 사망→uvicorn 재생성(clean 3.7GB×4), jsh ComfyUI 종료, load 393→1.0
+
+**도출된 코드 수정 필요 (우선순위)**
+1. 🔴 **SAM3 detection retry 부재** — [detection_assets.py:198-234](../../src/vlm_pipeline/defs/sam/detection_assets.py#L198-L234) MinIO download + `/segment` 호출이 모든 예외에 즉시 fail. transient(503/500/connection/timeout)에 bounded retry+backoff 추가 → 이번 ~250 프레임 손실 방지
+2. 🔴 **SAM3 GPU1 OOM 완화** — `SAM3_WORKERS` 4→2~3 + `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`(OOM 메시지가 직접 제안) + idle-unload(600s) burst 재로딩 fragility 개선
+3. 🟡 **sensor NFS 스캔 타임아웃 가드** — archive_dispatch_sensor/auto_bootstrap_manifest_sensor가 NAS flap 시 300s 초과→gRPC DEADLINE. 스캔 전 NETWORK_MOUNT_PROBE로 빠른 skip
+4. 🟡 **MinIO 클라이언트 timeout/retry 튜닝** (boto3 Config connect/read timeout + adaptive retries)
+- 인프라(코드 외): NAS 10.0.0.51 **1GbE** 링크에 MinIO+NFS 집중 → 대규모 QA 시 포화→flap. 10GbE 활성 또는 MinIO/NFS 트래픽 분리가 load 폭주 근본 해결
+
+#### 사후 운영 finding (다음 QA 보강)
+- ffmpeg subprocess stderr 가 [-300:] 로 잘려서 실제 에러 메시지 안 보임 (RuntimeError 도 reason 추가 [:180] 로 더 잘림). NVENC 같이 codec init 실패 케이스에서 진단이 어려웠음. 추후 stderr 캡처 ≥1500 chars 로 확대 검토.
+- archive_move_timeout 300s 다발 (auto-recovery 동작하지만 WARNING 노이즈) — Option B (timeout 600s) + C (회복 케이스 INFO 강등) 적용 완료(PR #94).
+
 ---
 
 ## 📌 7. 시나리오 추가 가이드
@@ -714,7 +821,7 @@ cleanup 후 위 함수 호출 → 모두 ✅ 이어야 안전.
 - [ ] **시나리오 21 — archive _DONE marker 보류 회복**: 의도적으로 failed jsonl 만들고 dispatch → marker 안 만들어지는지, jsonl 정리 후 marker 다시 만들어지는지.
 
 #### 운영 인프라 / 정리 (2)
-- [ ] **시나리오 15 — NFS EXDEV 회피 (NAS dataset 통합 후)**: NAS server 측 incoming/archive 같은 dataset 으로 통합 후 폴더 fast-path (os.rename) 활성 확인. archive_finalize wall ~1s 기대.
+- [x] **시나리오 15 — 컨테이너 EXDEV 회피 (incoming/archive 단일 bind mount)** ✅ **완료 (2026-05-27, PR #92)**. root cause: NAS dataset 은 이미 통합됐으나 docker-compose 가 `INCOMING_HOST_PATH`/`ARCHIVE_HOST_PATH` 를 각각 따로 bind-mount → 컨테이너 안 `/nas/incoming`·`/nas/archive` 별개 mount point → `os.rename` cross-mount = `[Errno 18]` EXDEV → archive_finalize per-file fallback(1250 file 3-4h). **fix**: 공통 부모 `${NAS_DATA_ROOT}` 단일 bind(`/nas/data`) + `INCOMING_DIR`/`ARCHIVE_DIR`/`MANIFEST_DIR`/`ARCHIVE_PENDING_DIR`/`DATAOPS_NAS_ROOTS` 를 `/nas/data/*` 로 재지정. GCS download dir 도 `INCOMING_DIR` 기준 derive. **검증**: staging qa_s15val + prod 둘 다 컨테이너 내부 `incoming→archive` os.rename 성공, 로그 `폴더 단위 아카이브 이동 완료`, archive_finalize start→done <1s (이전 per-file 20 file 27s). `/nas/datasets` CIFS 격리 유지(shadowing 없음).
 - [ ] **시나리오 23 — dedup orphan 정리**: fast-path 활성 시 archive 에 남는 dedup orphan 파일을 별도 cleanup job 으로 정리. orphan 식별 쿼리 + 자동 삭제 dry-run + apply 검증.
 
 ---

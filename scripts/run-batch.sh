@@ -36,8 +36,11 @@ PROMPT="A cinematic slow camera pan over a sun-drenched landscape"
 # 엔진별 세부 옵션 — ENGINE 이 kling/veo 일 때만 의미 있음
 
 # Kling 옵션
-KLING_MODEL="kling-video-o1"      # 모델 ID
-KLING_MODE="pro"                   # std | pro | master
+# ⚠️ model 은 반드시 API 식별자(kling-vN-...). "kling-video-o1" 같은 UI 이름은 1201 거부.
+#    유효: kling-v2-6 / kling-v3 / kling-v2-5-turbo / kling-v2-1 / kling-v2-1-master /
+#          kling-v2-master / kling-v1-6 / kling-v1-5 / kling-v1
+KLING_MODEL="kling-v2-6"           # 모델 ID (현재 권장 기본)
+KLING_MODE="pro"                   # std | pro
 KLING_DURATION="5"                 # 5 | 10 (초)
 KLING_ASPECT="16:9"                # 16:9 | 9:16 | 1:1
 

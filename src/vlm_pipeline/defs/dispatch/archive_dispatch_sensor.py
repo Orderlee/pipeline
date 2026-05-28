@@ -31,6 +31,7 @@ from vlm_pipeline.defs.dispatch.service import (
     resolve_archive_paths_from_folder,
     write_archive_dispatch_manifest,
 )
+from vlm_pipeline.lib.network_probe import probe_path_reachable
 from vlm_pipeline.resources.config import PipelineConfig
 
 
@@ -55,6 +56,15 @@ def _archive_dispatch_sensor_fn(context: SensorEvaluationContext):
     pending_dir = incoming_dir / ".dispatch" / "pending"
     processed_dir = incoming_dir / ".dispatch" / "processed"
     failed_dir = incoming_dir / ".dispatch" / "failed"
+
+    # NAS 도달성 가드 (#3, 2026-05-28): NFS hard-mount hang 시 .exists()/.glob() 이
+    # 300s 까지 매달려 gRPC DEADLINE_EXCEEDED 를 유발. 짧은 stat() probe 로 빠른 skip.
+    reachable, probe_reason = probe_path_reachable(incoming_dir)
+    if not reachable:
+        context.log.warning(
+            f"archive_dispatch_sensor skip: NAS incoming 도달 불가 ({probe_reason}). 다음 tick 재시도."
+        )
+        return
 
     if not pending_dir.exists():
         return

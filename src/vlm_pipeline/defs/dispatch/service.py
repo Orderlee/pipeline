@@ -90,6 +90,14 @@ class PreparedDispatchRequest:
     storage_labeling_method: str
     storage_categories: str
     storage_classes: str
+    # GenAI promote 경로용 provenance pass-through. None 이면 manifest 에 안 들어가고
+    # ops_register 는 DB DEFAULT(source_type='camera', label_policy='required') 적용.
+    # ops_register.py:17-19 의 _VALID_* enum 으로 fail-loud validate.
+    source_type: str | None = None
+    genai_engine: str | None = None
+    label_policy: str | None = None
+    genai_batch_id: str | None = None
+    items: list[dict] | None = None
 
 
 @dataclass(frozen=True)
@@ -179,6 +187,19 @@ def prepare_dispatch_request(req_data: Mapping[str, Any], *, incoming_dir: Path)
     labeling_method = payload["labeling_method"]
     categories = payload["categories"]
     classes = payload["classes"]
+
+    # GenAI promote 경로 pass-through — payload 에 있으면 manifest 까지 전파.
+    # 일반 dispatch 요청은 이 필드 비어있어 무해 (None 이면 manifest 에 키 안 들어감).
+    # validate 는 ops_register.py 의 fail-loud (CHECK constraint 와 동기화된 enum).
+    src_type = (str(req_data.get("source_type") or "").strip() or None)
+    g_engine = (str(req_data.get("genai_engine") or "").strip() or None)
+    lpolicy = (str(req_data.get("label_policy") or "").strip() or None)
+    g_batch = (str(req_data.get("batch_id") or "").strip() or None)
+    items_raw = req_data.get("items")
+    items_norm: list[dict] | None = None
+    if isinstance(items_raw, list):
+        items_norm = [it for it in items_raw if isinstance(it, dict)]
+
     return PreparedDispatchRequest(
         request_id=request_id,
         folder_name=folder_name,
@@ -196,6 +217,11 @@ def prepare_dispatch_request(req_data: Mapping[str, Any], *, incoming_dir: Path)
         storage_labeling_method=format_dispatch_storage_list(labeling_method),
         storage_categories=format_dispatch_storage_list(categories),
         storage_classes=format_dispatch_storage_list(classes),
+        source_type=src_type,
+        genai_engine=g_engine,
+        label_policy=lpolicy,
+        genai_batch_id=g_batch,
+        items=items_norm,
     )
 
 
@@ -241,6 +267,20 @@ def write_dispatch_manifest(
         "labeling_method": prepared.labeling_method,
         "files": [],
     }
+    # GenAI promote: provenance 필드를 manifest 에 통과. ops_register.py:191-211 이
+    # source_type/genai_engine/label_policy 를 raw_files 에 INSERT 하고, batch_id+items
+    # 매핑(ops_register.py:43-48) 으로 genai_jobs 와 연결한다. None 이면 키 자체 생략 →
+    # ops_register 는 DB DEFAULT 적용 (camera/required).
+    if prepared.source_type:
+        manifest["source_type"] = prepared.source_type
+    if prepared.genai_engine:
+        manifest["genai_engine"] = prepared.genai_engine
+    if prepared.label_policy:
+        manifest["label_policy"] = prepared.label_policy
+    if prepared.genai_batch_id:
+        manifest["batch_id"] = prepared.genai_batch_id
+    if prepared.items:
+        manifest["items"] = prepared.items
     manifest_dir = Path(config.manifest_dir) / "dispatch"
     manifest_dir.mkdir(parents=True, exist_ok=True)
     manifest_path = manifest_dir / f"{manifest_id}.json"

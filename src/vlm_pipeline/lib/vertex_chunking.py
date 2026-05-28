@@ -111,6 +111,39 @@ def normalize_gemini_events(payload: Any) -> list[dict[str, Any]]:
     return normalized
 
 
+def filter_events_over_duration(
+    events: list[dict[str, Any]],
+    duration_sec: float | int | None,
+) -> tuple[list[dict[str, Any]], int]:
+    """timestamp[1] > duration_sec 인 이벤트를 drop. (kept_events, dropped_count) 반환.
+
+    inline DQ #2 (stack-candidates §13 #2): Gemini 가 가끔 video duration 보다 큰
+    end_sec 을 뱉음(청크 경계 over-shoot 또는 hallucination). LS task 로 넘어가면
+    검수자가 재생 불가. 정상 chunking 시그니처 변경 없이 후처리만 적용.
+
+    duration_sec 이 모르거나(None) 0 이하면 필터 안 함 — 메타 결손 케이스에서
+    silent passthrough 가 안전 (정상 라벨 흐름 유지).
+    """
+    if not isinstance(events, list):
+        return events, 0
+    if not isinstance(duration_sec, (int, float)) or duration_sec <= 0:
+        return events, 0
+
+    duration_value = float(duration_sec)
+    kept: list[dict[str, Any]] = []
+    for ev in events:
+        if (
+            isinstance(ev, dict)
+            and isinstance(ev.get("timestamp"), list)
+            and len(ev["timestamp"]) >= 2
+            and isinstance(ev["timestamp"][1], (int, float))
+            and ev["timestamp"][1] > duration_value
+        ):
+            continue  # drop
+        kept.append(ev)
+    return kept, len(events) - len(kept)
+
+
 def offset_gemini_events(
     events: list[dict[str, Any]],
     *,

@@ -21,6 +21,29 @@ from typing import Any
 from .base import BaseGenAIAdapter, PollResult, SubmitResult
 
 
+class KlingError(RuntimeError):
+    """Kling API 비-2xx 응답 (영구 실패 계열). 구조화 필드 보존."""
+
+    def __init__(self, http_status: int, code, message: str, body: str):
+        self.http_status = http_status
+        self.provider_code = code
+        self.provider_message = message
+        self.body = body
+        super().__init__(
+            f"kling HTTP {http_status} code={code}: {message}" if message
+            else f"kling HTTP {http_status}: {body[:300]}"
+        )
+
+
+class KlingTransientError(KlingError):
+    """일시적/재시도 가능 에러 — 특히 1303 'parallel task over resource pack limit'.
+    동시 작업 슬롯이 차서 발생 → 슬롯이 비면 재시도하면 통과. 영구 실패 아님."""
+
+
+# Kling 에러 코드 → transient 여부 (admission control 계열)
+_KLING_TRANSIENT_CODES = {1303}  # parallel task over resource pack limit
+
+
 _FAKE_MP4_PLACEHOLDER = (
     # 최소 ftyp/mdat 박스를 가진 0-frame mp4. ffprobe 가 read 시도는 안 하니
     # archive/dataset 검증에는 충분한 placeholder.
@@ -36,23 +59,28 @@ class KlingAdapter(BaseGenAIAdapter):
     is_synchronous = False
     output_ext = ".mp4"
 
-    # Kling Pro 요금제 가용 모델 — 실 호출은 credit 자동 차감됨.
-    # env KLING_AVAILABLE_MODELS 로 override (CSV), 운영자가 본인 plan 기준으로 조정.
+    # Kling /v1/videos/image2video 의 공식 model_name enum (app.klingai.com 2026-05 확인).
+    # ⚠️ "kling-video-o1" / "kling-video-3" 같은 UI/마케팅 이름은 API 가 거부
+    #    (code 1201 "model is not supported"). API 식별자는 kling-vN-... 형식만 허용.
+    # mode/duration 지원은 model 버전별 상이 — 공식 Capability Map 참조.
+    # env KLING_AVAILABLE_MODELS 로 override (CSV).
     DEFAULT_MODELS: tuple[str, ...] = (
-        "kling-video-o1",      # VIDEO O1 (3.0 omni 전신)
-        "kling-video-3",       # VIDEO 3
-        "kling-v2-1-master",   # V2.1 Master (pro only)
+        "kling-v2-6",          # 최신 세대 — 공식 primary 예제 모델 (권장 기본)
+        "kling-v3",            # V3 — multi-shot 등 신기능 (단순 i2v 도 가능)
+        "kling-v2-5-turbo",    # V2.5 turbo
+        "kling-v2-1",          # V2.1
+        "kling-v2-1-master",   # V2.1 Master — pro 전용
         "kling-v2-master",     # V2 Master
         "kling-v1-6",          # V1.6
         "kling-v1-5",          # V1.5
-        "kling-v1",            # V1 legacy
+        "kling-v1",            # V1 (field 생략 시 API default)
     )
 
     def __init__(self) -> None:
         self.access_key = os.getenv("KLING_ACCESS_KEY", "").strip()
         self.secret_key = os.getenv("KLING_SECRET_KEY", "").strip()
         self.api_base = os.getenv("KLING_API_BASE", "https://api.klingai.com").rstrip("/")
-        self.model_name = os.getenv("KLING_MODEL_NAME", "kling-video-o1").strip()
+        self.model_name = os.getenv("KLING_MODEL_NAME", "kling-v2-6").strip()
         self.mode = os.getenv("KLING_MODE", "pro").strip()           # std | pro (Pro 요금제 → pro 권장)
         self.duration = os.getenv("KLING_DURATION", "5").strip()      # 5 or 10
         models_csv = os.getenv("KLING_AVAILABLE_MODELS", "").strip()
@@ -132,13 +160,31 @@ class KlingAdapter(BaseGenAIAdapter):
             timeout=self.submit_timeout,
         )
         if not r.ok:
-            # 4xx/5xx 의 body 까지 노출 — Kling 의 자세한 거부 사유 (model 미허용,
-            # mode mismatch, parameter invalid 등) 가 보통 body 에 들어 있음.
-            raise RuntimeError(
-                f"kling submit HTTP {r.status_code} (model={body['model_name']!r} "
-                f"mode={body.get('mode')!r} duration={body.get('duration')!r}): "
-                f"{r.text[:500]}"
+            # 4xx/5xx body 의 code/message 를 구조화. 1303(parallel limit) 등 admission
+            # control 은 KlingTransientError 로 분류 → 호출자가 재시도/deferred 처리.
+            raw = r.text[:600]
+            code = None
+            msg = ""
+            try:
+                jb = r.json()
+                code = jb.get("code")
+                msg = jb.get("message") or ""
+            except Exception:
+                pass
+            ctx = (f"(model={body['model_name']!r} mode={body.get('mode')!r} "
+                   f"duration={body.get('duration')!r}) ")
+            # code 는 API 버전에 따라 int 1303 또는 str "1303" 로 올 수 있어 str 비교.
+            code_norm = str(code) if code is not None else ""
+            is_transient = (
+                code_norm in {str(c) for c in _KLING_TRANSIENT_CODES}
+                or "parallel task" in msg.lower()
+                or "resource pack limit" in msg.lower()
             )
+            full_msg = f"{ctx}{msg}".strip()
+            if is_transient:
+                raise KlingTransientError(r.status_code, code,
+                                          f"Kling 동시 작업 한도 초과 — {full_msg}", raw)
+            raise KlingError(r.status_code, code, full_msg or raw, raw)
         data = r.json().get("data", {}) or {}
         task_id = data.get("task_id")
         if not task_id:

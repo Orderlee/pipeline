@@ -10,17 +10,23 @@ x-common-env: &common-env
   MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-minioadmin}
   DUCKDB_PATH: ${DATAOPS_DUCKDB_PATH:-/data/pipeline.duckdb}
   DATAOPS_DUCKDB_PATH: ${DATAOPS_DUCKDB_PATH:-/data/pipeline.duckdb}
-  INCOMING_DIR: ${INCOMING_DIR:-/nas/incoming}
-  ARCHIVE_DIR: ${ARCHIVE_DIR:-/nas/archive}
-  ARCHIVE_PENDING_DIR: ${ARCHIVE_PENDING_DIR:-/nas/archive_pending}
-  MANIFEST_DIR: ${MANIFEST_DIR:-/nas/incoming/.manifests}
+  # incoming/archive 는 단일 부모 bind mount(/nas/data) 하위 — 같은 mount point 라야
+  # archive_finalize 가 폴더 fast-path(os.rename, ~1s) 를 탄다. 이전엔 /nas/incoming,
+  # /nas/archive 를 각각 따로 bind 해서 컨테이너 안 별개 mount → cross-device(EXDEV) →
+  # per-file 이동 fallback(1250 file 동시 3-4h). (2026-05-27 시나리오 15)
+  INCOMING_DIR: ${INCOMING_DIR:-/nas/data/incoming}
+  ARCHIVE_DIR: ${ARCHIVE_DIR:-/nas/data/archive}
+  ARCHIVE_PENDING_DIR: ${ARCHIVE_PENDING_DIR:-/nas/data/archive_pending}
+  MANIFEST_DIR: ${MANIFEST_DIR:-/nas/data/incoming/.manifests}
   DATAOPS_PIPELINE_ROOT: /nas/datasets/projects
   DATAOPS_NAS_ROOT: /nas/datasets/projects
-  DATAOPS_NAS_ROOTS: /nas/datasets/projects;/nas/incoming
+  DATAOPS_NAS_ROOTS: ${DATAOPS_NAS_ROOTS:-/nas/datasets/projects;/nas/data/incoming}
   VIDEO_ENV_MODEL_DIR: /data/models/places365
   VIDEO_ENV_AUTO_DOWNLOAD: "false"
   YOLO_API_URL: http://yolo:8001
-  SAM3_API_URL: http://sam3:8002
+  # prod: 기본 http://sam3:8002 (= docker-sam3-1). staging: .env.test 에서
+  # http://docker-sam3-1:8002 로 override 해 공유 컨테이너를 가리킨다.
+  SAM3_API_URL: ${SAM3_API_URL:-http://sam3:8002}
   VIDEO_FFPROBE_TIMEOUT_SEC: "120"
   VIDEO_FFPROBE_RETRY_COUNT: "1"
   VIDEO_FFPROBE_RETRY_DELAY_MS: "250"
@@ -59,13 +65,15 @@ x-runtime-volumes: &runtime-volumes
     source: ${VLM_DATASETS_HOST_PATH:-/home/user/mou/nas_200tb/datasets}
     target: /nas/vlm_datasets
     read_only: false
+  # incoming/archive 를 각각 따로 bind 하면 컨테이너 안에서 별개 mount point 가 되어
+  # incoming→archive os.rename 이 cross-device(EXDEV)로 실패 → archive_finalize 가 per-file
+  # 이동 fallback(매우 느림). 공통 부모(${NAS_DATA_ROOT})를 단일 bind 로 mount 하면
+  # /nas/data/incoming 과 /nas/data/archive 가 같은 mount → 폴더 fast-path(os.rename ~1s) 활성.
+  #   prod    : NAS_DATA_ROOT=/home/user/mou/nas_200tb
+  #   staging : NAS_DATA_ROOT=/home/user/mou/nas_200tb/staging
   - type: bind
-    source: ${ARCHIVE_HOST_PATH:-/home/user/mou/archive}
-    target: /nas/archive
-    read_only: false
-  - type: bind
-    source: ${INCOMING_HOST_PATH:-/home/user/mou/incoming}
-    target: /nas/incoming
+    source: ${NAS_DATA_ROOT:-/home/user/mou/nas_200tb}
+    target: /nas/data
     read_only: false
   - /home/user/test_data:/test_data
   - ./app/credentials:/app/credentials:ro
@@ -291,15 +299,22 @@ services:
     restart: unless-stopped
 
   sam3:
+    # 단일 공유 컨테이너 정책: prod 프로젝트(docker)만 sam3 를 띄우고 docker-sam3-1 하나를
+    # prod·staging 둘 다 공유한다 (pipeline-network 로 staging 도달). staging 은 이 profile 을
+    # 활성화하지 않아 pipeline-test-sam3-1 을 만들지 않음 — host port 8002 충돌 회피.
+    #   prod    : .env 에 COMPOSE_PROFILES=sam3 → 생성
+    #   staging : 미설정 → 미생성, SAM3_API_URL=http://docker-sam3-1:8002 로 공유 참조
+    profiles: ["sam3"]
     build:
       context: ./sam3
       dockerfile: Dockerfile
     image: datapipeline-sam3:gpu-cu128
     user: root
     # 2026-05-22: uvicorn workers=N 으로 GPU memory 더 활용 + concurrent inference throughput ↑.
-    # 각 worker 가 독립 process 로 model 별도 로드 (memory N× ~3.7GB → ~11GB 사용).
-    # SAM3_WORKERS env 로 조절. host GPU 1 (16GB) 안에서 3 안전.
-    command: ["sh", "-c", "exec python -m uvicorn app:app --host 0.0.0.0 --port 8002 --workers ${SAM3_WORKERS:-4}"]
+    # 각 worker 가 독립 process 로 model 별도 로드 (memory N× ~3.7GB).
+    # SAM3_WORKERS env 로 조절. 2026-05-27 GPU1 OOM 인시던트로 prod .env 는 2 로 설정
+    # (4×3.7=14.8GB 가 GPU1 16GB 에서 jsh ComfyUI 등과 공유 시 파편화로 OOM). default 도 2 로 보수화.
+    command: ["sh", "-c", "exec python -m uvicorn app:app --host 0.0.0.0 --port 8002 --workers ${SAM3_WORKERS:-2}"]
     ports:
       - "${SAM3_PORT:-8002}:8002"
     volumes:
@@ -312,7 +327,10 @@ services:
       SAM3_CHECKPOINT_PATH: "/models/sam3.1_multiplex.pt"
       SAM3_IDLE_UNLOAD_SECONDS: "${SAM3_IDLE_UNLOAD_SECONDS:-600}"
       SAM3_IDLE_CHECK_INTERVAL_SECONDS: "${SAM3_IDLE_CHECK_INTERVAL_SECONDS:-60}"
-      SAM3_WORKERS: "${SAM3_WORKERS:-4}"
+      SAM3_WORKERS: "${SAM3_WORKERS:-2}"
+      # CUDA 메모리 파편화 완화 — OOM 인시던트(2026-05-27) 시 PyTorch 가 직접 제안.
+      # idle-unload 후 burst 재로딩 시 단편화로 인한 OOM 가능성 ↓.
+      PYTORCH_CUDA_ALLOC_CONF: "${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
       HF_TOKEN: ${HF_TOKEN:-}
       CUDA_VISIBLE_DEVICES: "1"
       NVIDIA_VISIBLE_DEVICES: "1"
@@ -345,14 +363,26 @@ services:
     env_file:
       - ${PIPELINE_ENV_FILE:-.env}
     environment:
-      GENAI_NAS_INCOMING: /nas/staging/incoming
+      # ⚠️ genai 출력은 auto-bootstrap ingest 가 스캔하는 /nas/data/incoming 이 아니라
+      # 격리된 sibling(/nas/data/genai_studio) 에 쓴다. 이유: genai provenance manifest
+      # (source_type=genai_output / label_policy=none) 가 ingest sensor 에 아직 wired
+      # 안 됐기에, /nas/data/incoming 에 쓰면 auto-bootstrap 이 일반 camera 미디어로
+      # 줍어 학습셋 오염. 결과는 Studio UI 다운로드로 받는다.
+      # 경로 구조: <GENAI_NAS_INCOMING>/<YYYY-MM-DD>/<batch>/outputs/<seq>.<ext>
+      GENAI_NAS_INCOMING: ${GENAI_NAS_INCOMING:-/nas/data/genai_studio}
+      # promote-to-labeling 경로 — dagster INCOMING_DIR 과 동일 anchor 가져온다.
+      # genai 컨테이너는 여기에 (a) <INCOMING_DIR>/.dispatch/pending/<request_id>.json,
+      # (b) <INCOMING_DIR>/genai_<batch_id>/<seq>.<ext> 두 가지를 쓴다.
+      INCOMING_DIR: ${INCOMING_DIR:-/nas/data/incoming}
       DATAOPS_POSTGRES_DSN: ${DATAOPS_POSTGRES_DSN}
       KLING_ACCESS_KEY: ${KLING_ACCESS_KEY:-}
       KLING_SECRET_KEY: ${KLING_SECRET_KEY:-}
-      KLING_MODEL_NAME: ${KLING_MODEL_NAME:-kling-video-o1}
+      KLING_MODEL_NAME: ${KLING_MODEL_NAME:-kling-v2-6}
       KLING_AVAILABLE_MODELS: ${KLING_AVAILABLE_MODELS:-}
       KLING_MODE: ${KLING_MODE:-pro}
       KLING_DURATION: ${KLING_DURATION:-5}
+      # 플랜별 동시 작업(parallel) 한도 — 초과 submit 시 Kling 1303. 현재 플랜 5.
+      KLING_MAX_CONCURRENT: ${KLING_MAX_CONCURRENT:-5}
       FAL_KEY: ${FAL_KEY:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       GEMINI_GOOGLE_APPLICATION_CREDENTIALS: ${GEMINI_GOOGLE_APPLICATION_CREDENTIALS:-}
@@ -375,7 +405,10 @@ services:
       GENAI_DAILY_BATCH_LIMIT: ${GENAI_DAILY_BATCH_LIMIT:-0}
       GENAI_DAILY_BYTES_LIMIT: ${GENAI_DAILY_BYTES_LIMIT:-0}
     volumes:
-      - /home/user/mou/staging:/nas/staging
+      - type: bind
+        source: ${NAS_DATA_ROOT:-/home/user/mou/nas_200tb}
+        target: /nas/data
+        read_only: false
       - ./app/credentials:/app/credentials:ro
     networks:
       - default
@@ -389,6 +422,45 @@ services:
     restart: unless-stopped
     depends_on:
       - postgres
+
+  # 2026-05-28 (#1): pg_dump + restic 일일 백업 sidecar.
+  # restic repo 는 별도 NAS(10.0.0.36)에 두어 10.0.0.51 단일 장애로부터 격리.
+  # profile=backup — prod .env COMPOSE_PROFILES 에 'backup' 추가 시 활성. staging 은 미활성.
+  # restore drill: scripts/restic-restore.sh + docs/runbook/pg-restore-drill.md 참조.
+  pg-backup:
+    profiles: ["backup"]
+    build:
+      context: ./pg-backup
+    image: datapipeline-pg-backup:latest
+    container_name: ${COMPOSE_PROJECT_NAME:-docker}-pg-backup-1
+    env_file:
+      - ${PIPELINE_ENV_FILE:-.env}
+    environment:
+      # PG 접속 (compose network 내부)
+      PGHOST: postgres
+      PGUSER: ${POSTGRES_USER:-airflow}
+      PGPASSWORD: ${POSTGRES_PASSWORD:-airflow}
+      PGDATABASE: ${PG_BACKUP_DATABASE:-vlm_pipeline}
+      # restic
+      RESTIC_REPOSITORY: /backup/restic
+      # compose 는 profile 비활성 서비스도 변수 interpolation 을 수행하므로 ${...:?...} 강제는
+      # staging deploy 전체를 깬다 (staging .env.test 엔 RESTIC_PASSWORD 없음, 의도된 분리).
+      # → compose 단계는 soft default(empty), runtime entrypoint.sh 가 :?...로 fail-fast 검증.
+      # backup profile 활성(prod)인데 password 누락 → 컨테이너 즉시 종료 + 명확한 에러.
+      RESTIC_PASSWORD: ${RESTIC_PASSWORD:-}
+      BACKUP_HOST_TAG: ${BACKUP_HOST_TAG:-docker-postgres-1}
+      BACKUP_RETENTION_DAILY: ${BACKUP_RETENTION_DAILY:-7}
+      BACKUP_RETENTION_WEEKLY: ${BACKUP_RETENTION_WEEKLY:-4}
+      BACKUP_RETENTION_MONTHLY: ${BACKUP_RETENTION_MONTHLY:-3}
+    volumes:
+      # 10.0.0.36 NAS(CIFS) 별도 인프라 — 10.0.0.51 단일 장애와 격리
+      - ${BACKUP_REPO_HOST_PATH:-/home/user/mou/nas_192tb/backup/postgres-restic}:/backup/restic
+    networks:
+      - default
+      - pipeline-network
+    depends_on:
+      - postgres
+    restart: unless-stopped
 
 volumes:
   minio_data:

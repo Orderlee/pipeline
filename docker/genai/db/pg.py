@@ -112,11 +112,65 @@ def update_job_submitted(job_id: str, provider_job_id: str | None) -> None:
                 UPDATE genai_jobs
                    SET provider_job_id = %s,
                        status = 'submitted',
+                       error_message = NULL,   -- deferred 등 이전 메시지 제거
                        submitted_at = COALESCE(submitted_at, %s)
                  WHERE job_id = %s
                 """,
                 (provider_job_id, now, job_id),
             )
+
+
+def mark_job_deferred(job_id: str, reason: str) -> None:
+    """Kling 동시성 한도로 즉시 submit 못 한 job 을 'pending' 유지 + 사유 기록.
+    실패(failed) 아님 — sensor drain 이 슬롯 빌 때 재시도."""
+    with connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE genai_jobs
+                   SET status = 'pending',
+                       error_message = %s
+                 WHERE job_id = %s
+                """,
+                (f"[deferred] {reason}"[:500], job_id),
+            )
+
+
+def count_inflight_jobs(engine: str) -> int:
+    """해당 engine 의 in-flight(submitted/running) job 수 (전체 batch 합산).
+    Kling 동시 작업 한도 게이트용 (account-level)."""
+    with connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT COUNT(*)
+                  FROM genai_jobs j JOIN genai_batches b ON b.batch_id=j.batch_id
+                 WHERE b.engine = %s AND j.status IN ('submitted','running')
+                """,
+                (engine,),
+            )
+            (n,) = cur.fetchone()
+    return int(n or 0)
+
+
+def list_pending_async_jobs(engine: str, limit: int = 50) -> list[dict]:
+    """engine 의 pending job (batch 가 아직 running/pending) FIFO. drain 대상."""
+    with connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT j.job_id, j.batch_id, j.seq_in_batch, b.prompt, b.options_json
+                  FROM genai_jobs j JOIN genai_batches b ON b.batch_id=j.batch_id
+                 WHERE b.engine = %s AND j.status = 'pending'
+                   AND b.status IN ('running','pending')
+                 ORDER BY j.batch_id, j.seq_in_batch
+                 LIMIT %s
+                """,
+                (engine, int(limit)),
+            )
+            rows = cur.fetchall()
+    cols = ["job_id", "batch_id", "seq_in_batch", "prompt", "options_json"]
+    return [dict(zip(cols, r)) for r in rows]
 
 
 def update_job_status(
@@ -190,6 +244,38 @@ def recompute_batch_status(batch_id: str) -> str:
                 (new_status, int(n_done), int(n_failed), completed_at, batch_id),
             )
             return new_status
+
+
+def reconcile_stale_batches(limit: int = 200) -> list[tuple[str, str]]:
+    """모든 job 이 terminal(done/failed) 인데 batch.status 가 running/pending 으로
+    남은 stale batch 를 찾아 recompute_batch_status 로 보정.
+
+    submit 부분실패 후 crash, finalize 중단, sensor 누락 등으로 발생 가능. sensor 가
+    매 tick 호출하는 안전망. 반환: [(batch_id, new_status), ...].
+    """
+    with connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT b.batch_id
+                  FROM genai_batches b
+                 WHERE b.status IN ('running','pending')
+                   AND EXISTS (SELECT 1 FROM genai_jobs j WHERE j.batch_id=b.batch_id)
+                   AND NOT EXISTS (
+                       SELECT 1 FROM genai_jobs j
+                        WHERE j.batch_id=b.batch_id
+                          AND j.status IN ('pending','submitted','running')
+                   )
+                 ORDER BY b.submitted_at
+                 LIMIT %s
+                """,
+                (int(limit),),
+            )
+            stale = [r[0] for r in cur.fetchall()]
+    out: list[tuple[str, str]] = []
+    for bid in stale:
+        out.append((bid, recompute_batch_status(bid)))
+    return out
 
 
 _LIST_BATCHES_MAX_SCAN = 10_000  # bulk_group filter 시 PG row 스캔 상한
@@ -294,6 +380,61 @@ def distinct_bulk_groups(limit_rows: int = 500) -> list[str]:
             seen.append(bgi)
             seen_set.add(bgi)
     return seen
+
+
+def release_batch_promote_claim(batch_id: str) -> bool:
+    """promote 실행 중 실패한 경우 claim 을 되돌린다 (보상 UPDATE).
+
+    options_json.promoted_to_labeling 키를 제거. claim 후 파일 복사/JSON write 가
+    실패했을 때 호출 — 같은 batch 가 재시도 가능해진다.
+
+    이 함수는 무조건 실행 (이미 false 거나 키 없어도 idempotent). 반환은 informational.
+    """
+    with connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE genai_batches
+                   SET options_json = (
+                         COALESCE(options_json::jsonb, '{}'::jsonb) - 'promoted_to_labeling'
+                       )::text
+                 WHERE batch_id = %s
+                """,
+                (batch_id,),
+            )
+            return cur.rowcount > 0
+
+
+def claim_batch_for_promote(batch_id: str) -> bool:
+    """Atomically mark batch.options_json.promoted_to_labeling=true if not already set.
+
+    promote-to-labeling 의 race-safe guard. options_json 안 boolean flag 로 두고
+    JSONB merge + WHERE not-exists 조건을 하나의 UPDATE 로 직렬화한다. 두 번째
+    요청은 0 rows affected → False 반환 → endpoint 가 409 Conflict 응답.
+
+    이 SQL 은 options_json 이 NULL 이거나 promoted_to_labeling 키가 없거나 false
+    인 경우에만 true 로 set. promoted_to_labeling=true 인 row 는 못 잡고 False.
+
+    Note: options_json 컬럼은 TEXT 타입(002_genai.sql:58). jsonb 연산 후 ::text 로
+    명시 캐스팅해 assignment 호환 보장.
+    """
+    with connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE genai_batches
+                   SET options_json = (
+                         COALESCE(options_json::jsonb, '{}'::jsonb)
+                         || jsonb_build_object('promoted_to_labeling', true)
+                       )::text
+                 WHERE batch_id = %s
+                   AND (options_json IS NULL
+                        OR NOT (COALESCE(options_json::jsonb -> 'promoted_to_labeling',
+                                          'false'::jsonb) = 'true'::jsonb))
+                """,
+                (batch_id,),
+            )
+            return cur.rowcount == 1
 
 
 def get_batch_with_jobs(batch_id: str) -> dict | None:

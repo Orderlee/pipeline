@@ -303,7 +303,8 @@ def _move_single_file(
         mark_fn(item, dest)
     except (OSError, shutil.Error) as exc:
         if dest is not None and dest.exists():
-            context.log.warning(
+            # timeout 났지만 NFS 서버 측에서 실제 이동은 완료된 정상 회복 케이스 → INFO.
+            context.log.info(
                 f"아카이브 이동 예외 이후 목적지 파일 존재 확인으로 completed 처리: {dest} ({exc})"
             )
             mark_fn(item, dest)
@@ -337,7 +338,8 @@ def _move_single_file_fallback(context, item: dict, archive_root_dir: Path, mark
         mark_fn(item, dest)
     except (OSError, shutil.Error) as exc:
         if dest is not None and dest.exists():
-            context.log.warning(
+            # timeout 났지만 NFS 서버 측에서 실제 이동은 완료된 정상 회복 케이스 → INFO.
+            context.log.info(
                 f"아카이브 이동 예외 이후 목적지 파일 존재 확인으로 completed 처리: {dest} ({exc})"
             )
             mark_fn(item, dest)

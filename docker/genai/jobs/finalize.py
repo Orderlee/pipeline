@@ -25,16 +25,17 @@ from storage.manifest import build_outputs_manifest
 from storage.nas_writer import atomic_write_bytes, atomic_write_json
 
 
-_NAS_INCOMING = os.getenv("GENAI_NAS_INCOMING", "/nas/staging/incoming")
+_NAS_INCOMING = os.getenv("GENAI_NAS_INCOMING", "/nas/data/genai_studio")
 
 
 def _batch_outputs_dir(batch_id: str) -> Path:
-    """batch.submitted_at 기준 날짜 폴더 안의 outputs 경로."""
+    """batch.submitted_at 기준 날짜 폴더 안의 outputs 경로.
+    구조: <GENAI_NAS_INCOMING>/<YYYY-MM-DD>/<batch_id>/outputs/"""
     batch = pg.get_batch_with_jobs(batch_id)
     ts = (batch or {}).get("submitted_at") if batch else None
     if not isinstance(ts, datetime):
         ts = datetime.now()
-    return Path(_NAS_INCOMING) / "genai" / ts.strftime("%Y-%m-%d") / batch_id / "outputs"
+    return Path(_NAS_INCOMING) / ts.strftime("%Y-%m-%d") / batch_id / "outputs"
 
 
 def finalize_job(

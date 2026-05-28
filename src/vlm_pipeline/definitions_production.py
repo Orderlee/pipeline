@@ -20,7 +20,7 @@ from vlm_pipeline.defs.dispatch.sensor_run_status import (
     dispatch_run_failure_sensor,
     dispatch_run_success_sensor,
 )
-from vlm_pipeline.defs.gcp.assets import DEFAULT_GCP_BUCKETS, gcs_download_to_incoming
+from vlm_pipeline.defs.gcp.assets import DEFAULT_GCP_BUCKETS, DEFAULT_GCP_DOWNLOAD_DIR, gcs_download_to_incoming
 from vlm_pipeline.defs.ingest.assets import raw_ingest
 from vlm_pipeline.defs.ingest.upload_archived_asset import upload_archived
 from vlm_pipeline.defs.ingest.sensor import (
@@ -147,7 +147,7 @@ def build_gcs_download_schedule(job) -> ScheduleDefinition:
                 "pipeline__incoming_nas": {
                     "config": {
                         "mode": "date-folders",
-                        "download_dir": "/nas/incoming/gcp",
+                        "download_dir": DEFAULT_GCP_DOWNLOAD_DIR,
                         "backend": "gcloud",
                         "skip_existing": True,
                         "dry_run": False,

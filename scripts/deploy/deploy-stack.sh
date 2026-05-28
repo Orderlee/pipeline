@@ -115,11 +115,31 @@ compose() {
     docker compose --env-file "${ENV_TARGET_NAME}" -f "${COMPOSE_FILE_NAME}" "$@"
 }
 
+# sam3 는 profiles:["sam3"] — prod(.env COMPOSE_PROFILES=sam3)만 활성. staging 은 공유
+# docker-sam3-1 을 쓰므로 자기 sam3 를 만들지 않는다. active profile 의 서비스 목록에
+# sam3 가 있을 때만 build/force-recreate (없으면 `compose build sam3` 가 에러).
+sam3_active() {
+    compose config --services 2>/dev/null | grep -qx sam3
+}
+
+# pg-backup 도 profile gating (profiles:["backup"]). prod 만 활성, staging 은 skip.
+# 2026-05-28: PG 자동 백업 sidecar 도입 — docs/runbook/pg-restore-drill.md.
+pg_backup_active() {
+    compose config --services 2>/dev/null | grep -qx pg-backup
+}
+
 if [[ "${BUILD_REQUIRED}" == "true" ]]; then
     # 2026-05-21: sam3 도 build target 에 포함 — docker/sam3/ 변경 시 자동 rebuild.
     # 이전에는 app 만 빌드해서 docker/sam3/app.py 변경이 컨테이너에 반영 안 됐음.
     # layer cache 로 sam3 변경 없으면 빠름.
-    compose build --progress plain app sam3
+    build_targets=(app)
+    if sam3_active; then
+        build_targets+=(sam3)
+    fi
+    if pg_backup_active; then
+        build_targets+=(pg-backup)
+    fi
+    compose build --progress plain "${build_targets[@]}"
 else
     echo "Skipping image build for ${DEPLOY_LABEL}"
 fi
@@ -159,9 +179,17 @@ echo "Dagster services restarted"
 # 2026-05-21: sam3 도 image 변경 시 명시 force-recreate.
 # `docker compose up -d` 가 image SHA 변경을 항상 감지하진 않음 (같은 tag 라 unchanged 로 판단).
 # BUILD_REQUIRED=true 면 image 갱신됐을 가능성 → sam3 재기동.
-if [[ "${BUILD_REQUIRED}" == "true" ]]; then
+# sam3 profile 미활성(staging)이면 공유 docker-sam3-1 을 쓰므로 건너뜀.
+if [[ "${BUILD_REQUIRED}" == "true" ]] && sam3_active; then
     compose up -d --no-deps --force-recreate sam3
     echo "sam3 force-recreated to pick up new image"
+fi
+
+# 2026-05-28: pg-backup sidecar — prod profile=backup 활성 시만. dagster 와 무관(독립 cron).
+# BUILD_REQUIRED 와 상관없이 idempotent `up -d` 로 확실히 살아있게.
+if pg_backup_active; then
+    compose up -d --no-deps pg-backup
+    echo "pg-backup ensured running (cron daily 02:00 KST)"
 fi
 
 for i in $(seq 1 30); do
