@@ -1,0 +1,1062 @@
+- generic [ref=e1]:
+  - generic [ref=e2]:
+    - generic [ref=e3]:
+      - generic [ref=e4]:
+        - link [ref=e5] [cursor=pointer]:
+          - /url: /dev
+          - img [ref=e6]
+        - img [ref=e10] [cursor=pointer]
+      - generic [ref=e12]:
+        - img [ref=e13]
+        - generic [ref=e15]: 🎉 Kling AI Native 4K + Stripe Payment Now Available 🎉
+        - generic [ref=e16] [cursor=pointer]: Learn More
+      - generic [ref=e17]:
+        - generic [ref=e19]:
+          - generic [ref=e22]:
+            - textbox "Search" [ref=e23]
+            - img [ref=e28]
+          - menubar [ref=e30]:
+            - listitem [ref=e31]:
+              - generic [ref=e32]: Get Started
+              - list [ref=e33]:
+                - menuitem "Overview" [ref=e34] [cursor=pointer]:
+                  - link "Overview" [ref=e35]:
+                    - /url: /document-api/quickStart%2FproductIntroduction%2Foverview
+                    - generic [ref=e36]: Overview
+                - menuitem "Quick Start" [ref=e37] [cursor=pointer]:
+                  - link "Quick Start" [ref=e38]:
+                    - /url: /document-api/quickStart%2FuserManual
+                    - generic [ref=e39]: Quick Start
+                - menuitem "Changelog" [ref=e40] [cursor=pointer]:
+                  - link "Changelog" [ref=e41]:
+                    - /url: /document-api/apiReference%2FupdateNotice
+                    - generic [ref=e42]: Changelog
+            - listitem [ref=e43]:
+              - generic [ref=e44]: API Reference
+              - list [ref=e45]:
+                - menuitem "General Info" [ref=e46] [cursor=pointer]:
+                  - link "General Info" [ref=e47]:
+                    - /url: /document-api/apiReference%2FcommonInfo
+                    - generic [ref=e48]: General Info
+                - menuitem "Rate Limits" [ref=e49] [cursor=pointer]:
+                  - link "Rate Limits" [ref=e50]:
+                    - /url: /document-api/apiReference%2FrateLimits
+                    - generic [ref=e51]: Rate Limits
+                - menuitem "Callback Schema" [ref=e52] [cursor=pointer]:
+                  - link "Callback Schema" [ref=e53]:
+                    - /url: /document-api/apiReference%2FcallbackProtocol
+                    - generic [ref=e54]: Callback Schema
+                - menuitem "Kling Skills Hot" [ref=e55] [cursor=pointer]:
+                  - link "Kling Skills Hot" [ref=e56]:
+                    - /url: /document-api/apiReference%2Fskill
+                    - generic [ref=e57]: Kling Skills
+                    - generic [ref=e58]: Hot
+                    - img
+                - menuitem "Video Generation" [expanded] [ref=e59]:
+                  - generic [ref=e60] [cursor=pointer]:
+                    - generic [ref=e61]: Video Generation
+                    - img [ref=e63]
+                  - menu [ref=e65]:
+                    - menuitem "Models" [ref=e66] [cursor=pointer]:
+                      - link "Models" [ref=e67]:
+                        - /url: /document-api/apiReference%2Fmodel%2FvideoModels
+                        - img [ref=e68]
+                        - generic [ref=e70]: Models
+                    - menuitem "Video Omni" [ref=e71] [cursor=pointer]:
+                      - link "Video Omni" [ref=e72]:
+                        - /url: /document-api/apiReference%2Fmodel%2FOmniVideo
+                        - img [ref=e73]
+                        - generic [ref=e75]: Video Omni
+                    - menuitem "Text to Video" [ref=e76] [cursor=pointer]:
+                      - link "Text to Video" [ref=e77]:
+                        - /url: /document-api/apiReference%2Fmodel%2FtextToVideo
+                        - img [ref=e78]
+                        - generic [ref=e80]: Text to Video
+                    - menuitem "Image to Video" [ref=e81] [cursor=pointer]:
+                      - link "Image to Video" [ref=e82]:
+                        - /url: /document-api/apiReference%2Fmodel%2FimageToVideo
+                        - img [ref=e83]
+                        - generic [ref=e85]: Image to Video
+                    - menuitem "Reference to Video" [ref=e86] [cursor=pointer]:
+                      - link "Reference to Video" [ref=e87]:
+                        - /url: /document-api/apiReference%2Fmodel%2FmultiImageToVideo
+                        - img [ref=e88]
+                        - generic [ref=e90]: Reference to Video
+                    - menuitem "Motion Control" [ref=e91] [cursor=pointer]:
+                      - link "Motion Control" [ref=e92]:
+                        - /url: /document-api/apiReference%2Fmodel%2FmotionControl
+                        - img [ref=e93]
+                        - generic [ref=e95]: Motion Control
+                    - menuitem "Multi-elements to video" [ref=e96] [cursor=pointer]:
+                      - link "Multi-elements to video" [ref=e97]:
+                        - /url: /document-api/apiReference%2Fmodel%2FmultiElements
+                        - img [ref=e98]
+                        - generic [ref=e100]: Multi-elements to video
+                    - menuitem "Extend Video" [ref=e101] [cursor=pointer]:
+                      - link "Extend Video" [ref=e102]:
+                        - /url: /document-api/apiReference%2Fmodel%2FvideoExtension
+                        - img [ref=e103]
+                        - generic [ref=e105]: Extend Video
+                    - menuitem "Lip Sync" [ref=e106] [cursor=pointer]:
+                      - link "Lip Sync" [ref=e107]:
+                        - /url: /document-api/apiReference%2Fmodel%2FlipSync
+                        - img [ref=e108]
+                        - generic [ref=e110]: Lip Sync
+                    - menuitem "Avatar" [ref=e111] [cursor=pointer]:
+                      - link "Avatar" [ref=e112]:
+                        - /url: /document-api/apiReference%2Fmodel%2Favatar
+                        - img [ref=e113]
+                        - generic [ref=e115]: Avatar
+                    - menuitem "Text to Audio" [ref=e116] [cursor=pointer]:
+                      - link "Text to Audio" [ref=e117]:
+                        - /url: /document-api/apiReference%2Fmodel%2FtextToAudio
+                        - img [ref=e118]
+                        - generic [ref=e120]: Text to Audio
+                    - menuitem "Video to Audio" [ref=e121] [cursor=pointer]:
+                      - link "Video to Audio" [ref=e122]:
+                        - /url: /document-api/apiReference%2Fmodel%2FvideoToAudio
+                        - img [ref=e123]
+                        - generic [ref=e125]: Video to Audio
+                    - menuitem "Text to Speech" [ref=e126] [cursor=pointer]:
+                      - link "Text to Speech" [ref=e127]:
+                        - /url: /document-api/apiReference%2Fmodel%2FTTS
+                        - img [ref=e128]
+                        - generic [ref=e130]: Text to Speech
+                    - menuitem "Voice Clone" [ref=e131] [cursor=pointer]:
+                      - link "Voice Clone" [ref=e132]:
+                        - /url: /document-api/apiReference%2Fmodel%2FcustomVoices
+                        - img [ref=e133]
+                        - generic [ref=e135]: Voice Clone
+                    - menuitem "Image Recognize" [ref=e136] [cursor=pointer]:
+                      - link "Image Recognize" [ref=e137]:
+                        - /url: /document-api/apiReference%2Fmodel%2FimageRecognize
+                        - img [ref=e138]
+                        - generic [ref=e140]: Image Recognize
+                    - menuitem "Element" [ref=e141] [cursor=pointer]:
+                      - link "Element" [ref=e142]:
+                        - /url: /document-api/apiReference%2Fmodel%2Felement
+                        - img [ref=e143]
+                        - generic [ref=e145]: Element
+                - menuitem "Effects" [expanded] [ref=e146]:
+                  - generic [ref=e147] [cursor=pointer]:
+                    - generic [ref=e148]: Effects
+                    - img [ref=e150]
+                  - menu [ref=e152]:
+                    - menuitem "Effect Templates NEW" [ref=e153] [cursor=pointer]:
+                      - link "Effect Templates NEW" [ref=e154]:
+                        - /url: /document-api/quickStart%2FproductIntroduction%2FeffectsCenter
+                        - img [ref=e155]
+                        - generic [ref=e157]: Effect Templates
+                        - generic [ref=e158]: NEW
+                    - menuitem "Video Effects" [ref=e159] [cursor=pointer]:
+                      - link "Video Effects" [ref=e160]:
+                        - /url: /document-api/apiReference%2Fmodel%2FvideoEffects
+                        - img [ref=e161]
+                        - generic [ref=e163]: Video Effects
+                - menuitem "Image Generation" [expanded] [ref=e164]:
+                  - generic [ref=e165] [cursor=pointer]:
+                    - generic [ref=e166]: Image Generation
+                    - img [ref=e168]
+                  - menu [ref=e170]:
+                    - menuitem "Models" [ref=e171] [cursor=pointer]:
+                      - link "Models" [ref=e172]:
+                        - /url: /document-api/apiReference%2Fmodel%2FimageModels
+                        - img [ref=e173]
+                        - generic [ref=e175]: Models
+                    - menuitem "Image Omni" [ref=e176] [cursor=pointer]:
+                      - link "Image Omni" [ref=e177]:
+                        - /url: /document-api/apiReference%2Fmodel%2FOmniImage
+                        - img [ref=e178]
+                        - generic [ref=e180]: Image Omni
+                    - menuitem "Image Generation" [ref=e181] [cursor=pointer]:
+                      - link "Image Generation" [ref=e182]:
+                        - /url: /document-api/apiReference%2Fmodel%2FimageGeneration
+                        - img [ref=e183]
+                        - generic [ref=e185]: Image Generation
+                    - menuitem "Reference to Image" [ref=e186] [cursor=pointer]:
+                      - link "Reference to Image" [ref=e187]:
+                        - /url: /document-api/apiReference%2Fmodel%2FmultiImageToImage
+                        - img [ref=e188]
+                        - generic [ref=e190]: Reference to Image
+                    - menuitem "Extend Image" [ref=e191] [cursor=pointer]:
+                      - link "Extend Image" [ref=e192]:
+                        - /url: /document-api/apiReference%2Fmodel%2FimageExpansion
+                        - img [ref=e193]
+                        - generic [ref=e195]: Extend Image
+                    - menuitem "AI Multi-Shot" [ref=e196] [cursor=pointer]:
+                      - link "AI Multi-Shot" [ref=e197]:
+                        - /url: /document-api/apiReference%2Fmodel%2FaiMultiShot
+                        - img [ref=e198]
+                        - generic [ref=e200]: AI Multi-Shot
+                    - menuitem "Virtual Try-On" [ref=e201] [cursor=pointer]:
+                      - link "Virtual Try-On" [ref=e202]:
+                        - /url: /document-api/apiReference%2Fmodel%2FvirtualTryOn
+                        - img [ref=e203]
+                        - generic [ref=e205]: Virtual Try-On
+                - menuitem "Others" [expanded] [ref=e206]:
+                  - generic [ref=e207] [cursor=pointer]:
+                    - generic [ref=e208]: Others
+                    - img [ref=e210]
+                  - menu [ref=e212]:
+                    - menuitem "Query user info" [ref=e213] [cursor=pointer]:
+                      - link "Query user info" [ref=e214]:
+                        - /url: /document-api/apiReference%2FaccountInfoInquiry
+                        - generic [ref=e215]: Query user info
+            - listitem [ref=e216]:
+              - generic [ref=e217]: Pricing
+              - list [ref=e218]:
+                - menuitem "Billing Info" [ref=e219] [cursor=pointer]:
+                  - link "Billing Info" [ref=e220]:
+                    - /url: /document-api/productBilling%2FbillingMethod
+                    - generic [ref=e221]: Billing Info
+                - menuitem "Prepaid Resource Packs" [ref=e222] [cursor=pointer]:
+                  - link "Prepaid Resource Packs" [ref=e223]:
+                    - /url: /document-api/productBilling%2FprePaidResourcePackage
+                    - generic [ref=e224]: Prepaid Resource Packs
+            - listitem [ref=e225]:
+              - generic [ref=e226]: Protocols
+              - list [ref=e227]:
+                - menuitem "Privacy Policy of API Service" [ref=e228] [cursor=pointer]:
+                  - link "Privacy Policy of API Service" [ref=e229]:
+                    - /url: /document-api/protocols%2FprivacyPolicy
+                    - generic [ref=e230]: Privacy Policy of API Service
+                - menuitem "Terms of API Service" [ref=e231] [cursor=pointer]:
+                  - link "Terms of API Service" [ref=e232]:
+                    - /url: /document-api/protocols%2FpaidServiceProtocol
+                    - generic [ref=e233]: Terms of API Service
+                - menuitem "API Service Level Agreement" [ref=e234] [cursor=pointer]:
+                  - link "API Service Level Agreement" [ref=e235]:
+                    - /url: /document-api/protocols%2FpaidLevelProtocol
+                    - generic [ref=e236]: API Service Level Agreement
+        - generic [ref=e237]:
+          - generic [ref=e238]:
+            - heading "Omni-Video" [level=1] [ref=e240]
+            - generic [ref=e242]:
+              - generic [ref=e243]:
+                - generic [ref=e245]:
+                  - generic [ref=e246]:
+                    - heading "Create Task" [level=2] [ref=e247]
+                    - generic [ref=e248]:
+                      - generic [ref=e249]: POST
+                      - code [ref=e250]: /v1/videos/omni-video
+                    - paragraph [ref=e253]: The Omni model can achieve various capabilities through Prompt with elements, images, videos, and other content.
+                    - generic [ref=e254]:
+                      - heading "Request Header" [level=3] [ref=e255]
+                      - generic [ref=e256]:
+                        - generic [ref=e257]:
+                          - generic [ref=e258]:
+                            - generic [ref=e259]: Content-Type
+                            - generic [ref=e260]: string
+                            - generic [ref=e261]: Required
+                            - generic [ref=e262]: Default to application/json
+                          - paragraph [ref=e264]: Data Exchange Format
+                        - generic [ref=e265]:
+                          - generic [ref=e266]:
+                            - generic [ref=e267]: Authorization
+                            - generic [ref=e268]: string
+                            - generic [ref=e269]: Required
+                          - paragraph [ref=e271]: Authentication information, refer to API authentication
+                    - generic [ref=e272]:
+                      - heading "Request Body" [level=3] [ref=e273]
+                      - generic [ref=e274]:
+                        - generic [ref=e275]:
+                          - generic [ref=e276]:
+                            - generic [ref=e277]: model_name
+                            - generic [ref=e278]: string
+                            - generic [ref=e279]: Optional
+                            - generic [ref=e280]: Default to kling-video-o1
+                          - generic [ref=e281]:
+                            - paragraph [ref=e282]: Model Name
+                            - generic [ref=e283]:
+                              - generic [ref=e284]: Enum values：
+                              - generic [ref=e285]: kling-video-o1
+                              - generic [ref=e286]: kling-v3-omni
+                        - generic [ref=e287]:
+                          - generic [ref=e288]:
+                            - generic [ref=e289]: multi_shot
+                            - generic [ref=e290]: boolean
+                            - generic [ref=e291]: Optional
+                            - generic [ref=e292]: Default to false
+                          - generic [ref=e293]:
+                            - paragraph [ref=e294]: Whether to generate multi-shot video.
+                            - generic [ref=e295]:
+                              - paragraph [ref=e298]: "When true: the prompt parameter is invalid."
+                              - paragraph [ref=e301]: "When false: the shot_type and multi_prompt parameters are invalid."
+                        - generic [ref=e302]:
+                          - generic [ref=e303]:
+                            - generic [ref=e304]: shot_type
+                            - generic [ref=e305]: string
+                            - generic [ref=e306]: Optional
+                          - generic [ref=e307]:
+                            - paragraph [ref=e308]: Storyboard method.
+                            - generic [ref=e309]:
+                              - generic [ref=e310]: Enum values：
+                              - generic [ref=e311]: customize
+                              - generic [ref=e312]: intelligence
+                            - paragraph [ref=e316]:
+                              - text: When multi_shot is
+                              - code [ref=e317]: "true"
+                              - text: ", this parameter is required."
+                        - generic [ref=e318]:
+                          - generic [ref=e319]:
+                            - generic [ref=e320]: prompt
+                            - generic [ref=e321]: string
+                            - generic [ref=e322]: Optional
+                          - generic [ref=e323]:
+                            - paragraph [ref=e324]: Text prompt words, which can include positive and negative descriptions.
+                            - generic [ref=e325]:
+                              - list [ref=e328]:
+                                - listitem [ref=e329]: The prompt words can be templated to meet different video generation needs
+                              - list [ref=e332]:
+                                - listitem [ref=e333]: Must not exceed 2,500 characters
+                              - paragraph [ref=e336]:
+                                - text: When the "multi_shot" parameter is set to
+                                - code [ref=e337]: "false"
+                                - text: or when the "multi_shot" parameter is set to
+                                - code [ref=e338]: "true"
+                                - text: and the "shot-type" parameter is set to
+                                - code [ref=e339]: intelligence
+                                - text: ", the current parameter must not be empty."
+                              - generic [ref=e342]:
+                                - generic [ref=e343]: 💡
+                                - generic [ref=e344]:
+                                  - paragraph [ref=e345]: "The Omni model can achieve various capabilities through Prompt with elements, images, videos, and other content:"
+                                  - list [ref=e346]:
+                                    - listitem [ref=e347]: "Specify elements/images/videos using <<<>>> format, e.g.: <<<element_1>>>, <<<image_1>>>, <<<video_1>>>"
+                                    - listitem [ref=e348]:
+                                      - text: "For detailed capabilities, see:"
+                                      - link "KLING Omni Model User Guide" [ref=e349] [cursor=pointer]:
+                                        - /url: /quickstart/klingai-video-o1-user-guide
+                                      - text: ","
+                                      - link "Kling VIDEO 3.0 Omni Model User Guide" [ref=e350] [cursor=pointer]:
+                                        - /url: /quickstart/klingai-video-3-omni-model-user-guide
+                              - paragraph [ref=e354]:
+                                - text: The support range for different model versions and video modes varies. For details, see
+                                - link "Capability Map" [ref=e355] [cursor=pointer]:
+                                  - /url: /document-api/apiReference/model/videoModels
+                        - generic [ref=e356]:
+                          - generic [ref=e357]:
+                            - generic [ref=e358]: multi_prompt
+                            - generic [ref=e359]: array
+                            - generic [ref=e360]: Optional
+                          - generic [ref=e361]:
+                            - paragraph [ref=e362]: Information about each storyboard, such as prompts and duration.
+                            - generic [ref=e363]:
+                              - paragraph [ref=e366]: Define shot sequence number, corresponding prompt and duration via index, prompt, and duration parameters.
+                              - list [ref=e369]:
+                                - listitem [ref=e370]: Supports up to 6 storyboards, minimum 1.
+                                - listitem [ref=e371]: "Max length per storyboard content: 512."
+                                - listitem [ref=e372]: Each storyboard duration must not exceed total task duration and must be ≥ 1.
+                                - listitem [ref=e373]: Sum of all storyboard durations must equal total task duration.
+                              - generic [ref=e374]:
+                                - paragraph [ref=e376]: "When multi_shot is true and shot_type is customize, this parameter is required. Format:"
+                                - code [ref=e386]: "\"multi_prompt\":[ { \"index\": int, \"prompt\": \"string\", \"duration\": \"5\" }, { \"index\": int, \"prompt\": \"string\", \"duration\": \"5\" } ]"
+                        - generic [ref=e387]:
+                          - generic [ref=e388]:
+                            - generic [ref=e389]: image_list
+                            - generic [ref=e390]: array
+                            - generic [ref=e391]: Optional
+                          - generic [ref=e392]:
+                            - paragraph [ref=e393]: Reference Image List, including element, scene, style reference images.
+                            - generic [ref=e394]:
+                              - list [ref=e397]:
+                                - listitem [ref=e398]:
+                                  - text: "Including reference images of the element, scene, style, etc., it can also be used as the start or end frame to generate videos; When generating a video as the start or end frame:"
+                                  - list [ref=e399]:
+                                    - listitem [ref=e400]:
+                                      - text: Define whether the image is in the first and last frames using the
+                                      - code [ref=e401]: type
+                                      - text: "parameter:"
+                                      - code [ref=e402]: first_frame
+                                      - text: is the start frame,
+                                      - code [ref=e403]: end_frame
+                                      - text: is the end frame.
+                                      - list [ref=e404]:
+                                        - listitem [ref=e405]: Currently does not support only the end frame, which means that when there is a end frame image, there must be a first frame image.
+                                        - listitem [ref=e406]:
+                                          - text: If the image is not the start & end frame, do not configure the
+                                          - code [ref=e407]: type
+                                          - text: parameter.
+                                    - listitem [ref=e408]: When generating a video using the first frame or the first and last frames, video editing functions cannot be used.
+                              - generic [ref=e409]:
+                                - paragraph [ref=e411]: "Load with key:value, details as follows:"
+                                - code [ref=e421]: "\"image_list\":[ { \"image_url\": \"image_url\"}, { \"image_url\": \"image_url\" } ]"
+                              - generic [ref=e423]:
+                                - paragraph [ref=e424]:
+                                  - strong [ref=e425]: "Image Requirements:"
+                                - list [ref=e426]:
+                                  - listitem [ref=e427]: Supports Base64 encoding or image URL (ensure accessibility)
+                                  - listitem [ref=e428]: "Formats: .jpg / .jpeg / .png"
+                                  - listitem [ref=e429]: "File size: ≤10MB"
+                                  - listitem [ref=e430]: "Dimensions: min 300px, aspect ratio 1:2.5 ~ 2.5:1"
+                              - generic [ref=e432]:
+                                - paragraph [ref=e433]:
+                                  - strong [ref=e434]: "Quantity Limits:"
+                                - list [ref=e435]:
+                                  - listitem [ref=e436]:
+                                    - text: "The number of reference images is related to the number and type of elements, where:"
+                                    - list [ref=e437]:
+                                      - listitem [ref=e438]: When there is no reference video and only multi-image elements, the sum of the number of reference images and multi-image elements must not exceed 7.
+                                      - listitem [ref=e439]: When there is no reference video but there is a video character element, the sum of the number of reference images and multi-image elements must not exceed 4.
+                                      - listitem [ref=e440]: When there is a reference video and only multi-image elements, the sum of the number of reference images and multi-image elements must not exceed 4.
+                                  - listitem [ref=e441]:
+                                    - text: When using the
+                                    - code [ref=e442]: kling-video-o1
+                                    - text: model, setting the start & end frame is not supported when there are more than two images in the array.
+                              - list [ref=e445]:
+                                - listitem [ref=e446]:
+                                  - code [ref=e447]: image_url
+                                  - text: parameter value must not be empty
+                            - generic [ref=e448] [cursor=pointer]:
+                              - generic [ref=e449]: ▾
+                              - generic [ref=e450]: Hide child attributes
+                          - generic [ref=e451]:
+                            - generic [ref=e452]:
+                              - generic [ref=e453]:
+                                - generic [ref=e454]: image_url
+                                - generic [ref=e455]: string
+                                - generic [ref=e456]: Required
+                              - paragraph [ref=e458]: Image URL or Base64
+                            - generic [ref=e459]:
+                              - generic [ref=e460]:
+                                - generic [ref=e461]: type
+                                - generic [ref=e462]: string
+                                - generic [ref=e463]: Optional
+                              - generic [ref=e464]:
+                                - paragraph [ref=e465]: "Frame type: first_frame or end_frame"
+                                - generic [ref=e466]:
+                                  - generic [ref=e467]: Enum values：
+                                  - generic [ref=e468]: first_frame
+                                  - generic [ref=e469]: end_frame
+                        - generic [ref=e470]:
+                          - generic [ref=e471]:
+                            - generic [ref=e472]: element_list
+                            - generic [ref=e473]: array
+                            - generic [ref=e474]: Optional
+                          - generic [ref=e475]:
+                            - paragraph [ref=e476]: Reference Element List, based on element ID from element library.
+                            - generic [ref=e477]:
+                              - generic [ref=e478]:
+                                - list [ref=e480]:
+                                  - listitem [ref=e481]: "Load with key:value format as follows:"
+                                - code [ref=e491]: "\"element_list\":[ { \"element_id\": long }, { \"element_id\": long } ]"
+                              - list [ref=e494]:
+                                - listitem [ref=e495]: The elements are categorized into video customization element (named as video character elements) and image customization elements (named as Multi-Image Elements), each with distinct scopes of application. Please exercise caution in distinguishing between them.
+                              - list [ref=e498]:
+                                - listitem [ref=e499]:
+                                  - text: "The number of reference elements is related to factors such as the type of elements, the presence or absence of reference videos, and the number of reference images, among which:"
+                                  - list [ref=e500]:
+                                    - listitem [ref=e501]:
+                                      - text: When generating videos using the start frame or the start & end frames, the
+                                      - code [ref=e502]: kling-v3-omni model
+                                      - text: supports up to 3 elements.
+                                    - listitem [ref=e503]:
+                                      - text: When generating videos using the start & end frames, the
+                                      - code [ref=e504]: kling-video-o1
+                                      - text: model does not support elements.
+                                    - listitem [ref=e505]: When there is no reference video and only multi-image element, the sum of the number of reference images and multi-image element must not exceed 7.
+                                    - listitem [ref=e506]: When there is no reference video and only the video character element is present, the number of video character elements should not exceed 3.
+                                    - listitem [ref=e507]: When there is no reference video and both video character elements and multi-image elements are present, the number of video character elements must not exceed 3, and the sum of the number of reference images and multi-image elements must not exceed 4.
+                                    - listitem [ref=e508]: When there is a reference video and only multi-image element, the sum of the number of reference images and multi-image element must not exceed 4.
+                                    - listitem [ref=e509]: When there is a reference video and only the video character element, the number of video character elements must not exceed 1.
+                                    - listitem [ref=e510]: When there is a reference video, the use of video character element is not supported.
+                              - paragraph [ref=e513]:
+                                - text: "For more detailed information on the subject, please refer to:"
+                                - link "Kling Element Library User Guide" [ref=e514] [cursor=pointer]:
+                                  - /url: /quickstart/klingai-element-library-3-user-guide
+                                - text: .
+                              - paragraph [ref=e518]:
+                                - text: The support range for different model versions and video modes varies. For details, see
+                                - link "Capability Map" [ref=e519] [cursor=pointer]:
+                                  - /url: /document-api/apiReference/model/videoModels
+                            - generic [ref=e520] [cursor=pointer]:
+                              - generic [ref=e521]: ▾
+                              - generic [ref=e522]: Hide child attributes
+                          - generic [ref=e524]:
+                            - generic [ref=e525]:
+                              - generic [ref=e526]: element_id
+                              - generic [ref=e527]: long
+                              - generic [ref=e528]: Required
+                            - paragraph [ref=e530]: Element ID from element library
+                        - generic [ref=e531]:
+                          - generic [ref=e532]:
+                            - generic [ref=e533]: video_list
+                            - generic [ref=e534]: array
+                            - generic [ref=e535]: Optional
+                          - generic [ref=e536]:
+                            - paragraph [ref=e537]: Reference Video, obtained via URL.
+                            - generic [ref=e538]:
+                              - generic [ref=e540]:
+                                - paragraph [ref=e541]:
+                                  - strong [ref=e542]: "Video Types:"
+                                - list [ref=e543]:
+                                  - listitem [ref=e544]: "Can be used as feature reference video OR base video for editing (default: base)"
+                                  - listitem [ref=e545]:
+                                    - text: Use
+                                    - code [ref=e546]: refer_type
+                                    - text: "parameter:"
+                                    - code [ref=e547]: feature
+                                    - text: for feature reference,
+                                    - code [ref=e548]: base
+                                    - text: for video to be edited
+                                  - listitem [ref=e549]: When reference video is base type, first/end frames cannot be defined
+                                  - listitem [ref=e550]:
+                                    - text: Use
+                                    - code [ref=e551]: keep_original_sound
+                                    - text: "to keep original sound:"
+                                    - code [ref=e552]: "yes"
+                                    - text: to keep,
+                                    - code [ref=e553]: "no"
+                                    - text: to discard (also applies to feature type)
+                              - paragraph [ref=e556]: When there is a reference video, the value of the sound parameter can only be off.
+                              - generic [ref=e557]:
+                                - list [ref=e559]:
+                                  - listitem [ref=e560]: "Load with key:value format as follows:"
+                                - code [ref=e570]: "\"video_list\":[ { \"video_url\": \"video_url\", \"refer_type\": \"base\", \"keep_original_sound\": \"yes\" } ]"
+                              - generic [ref=e572]:
+                                - paragraph [ref=e573]:
+                                  - strong [ref=e574]: "Video Requirements:"
+                                - list [ref=e575]:
+                                  - listitem [ref=e576]: "Format: MP4/MOV only"
+                                  - listitem [ref=e577]: "Duration: ≥3 seconds, upper limit depends on model version (see Capability Map)"
+                                  - listitem [ref=e578]: "Resolution: 720px-2160px (width and height)"
+                                  - listitem [ref=e579]: "Frame rate: 24-60fps (output will be 24fps)"
+                                  - listitem [ref=e580]: Max 1 video, size ≤200MB
+                              - list [ref=e583]:
+                                - listitem [ref=e584]:
+                                  - code [ref=e585]: video_url
+                                  - text: parameter value must not be empty
+                              - paragraph [ref=e589]:
+                                - text: The support range for different model versions and video modes varies. For details, see
+                                - link "Capability Map" [ref=e590] [cursor=pointer]:
+                                  - /url: /document-api/apiReference/model/videoModels
+                            - generic [ref=e591] [cursor=pointer]:
+                              - generic [ref=e592]: ▾
+                              - generic [ref=e593]: Hide child attributes
+                          - generic [ref=e594]:
+                            - generic [ref=e595]:
+                              - generic [ref=e596]:
+                                - generic [ref=e597]: video_url
+                                - generic [ref=e598]: string
+                                - generic [ref=e599]: Required
+                              - paragraph [ref=e601]: Video URL
+                            - generic [ref=e602]:
+                              - generic [ref=e603]:
+                                - generic [ref=e604]: refer_type
+                                - generic [ref=e605]: string
+                                - generic [ref=e606]: Optional
+                                - generic [ref=e607]: Default to base
+                              - generic [ref=e608]:
+                                - paragraph [ref=e609]: "Reference type: feature (feature reference) or base (video to be edited)"
+                                - generic [ref=e610]:
+                                  - generic [ref=e611]: Enum values：
+                                  - generic [ref=e612]: feature
+                                  - generic [ref=e613]: base
+                                - generic [ref=e614]:
+                                  - list [ref=e617]:
+                                    - listitem [ref=e618]:
+                                      - code [ref=e619]: base
+                                      - text: "- Transformation (Video Edit):"
+                                      - text: Edit video content - add/remove/modify elements, change shot composition, angles, styles, colors, weather, etc.
+                                  - list [ref=e622]:
+                                    - listitem [ref=e623]:
+                                      - code [ref=e624]: feature
+                                      - text: "- Video Reference:"
+                                      - text: Reference video content to generate next/previous shot, or reference video style/camera movement.
+                            - generic [ref=e625]:
+                              - generic [ref=e626]:
+                                - generic [ref=e627]: keep_original_sound
+                                - generic [ref=e628]: string
+                                - generic [ref=e629]: Optional
+                              - generic [ref=e630]:
+                                - paragraph [ref=e631]: "Keep original sound: yes to keep, no to discard"
+                                - generic [ref=e632]:
+                                  - generic [ref=e633]: Enum values：
+                                  - generic [ref=e634]: "yes"
+                                  - generic [ref=e635]: "no"
+                        - generic [ref=e636]:
+                          - generic [ref=e637]:
+                            - generic [ref=e638]: sound
+                            - generic [ref=e639]: string
+                            - generic [ref=e640]: Optional
+                            - generic [ref=e641]: Default to off
+                          - generic [ref=e642]:
+                            - paragraph [ref=e643]: Whether to generate sound simultaneously when generating videos.
+                            - generic [ref=e644]:
+                              - generic [ref=e645]: Enum values：
+                              - generic [ref=e646]: "on"
+                              - generic [ref=e647]: "off"
+                            - paragraph [ref=e652]:
+                              - text: The support range for different model versions and video modes varies. For details, see
+                              - link "Capability Map" [ref=e653] [cursor=pointer]:
+                                - /url: /document-api/apiReference/model/videoModels
+                        - generic [ref=e654]:
+                          - generic [ref=e655]:
+                            - generic [ref=e656]: mode
+                            - generic [ref=e657]: string
+                            - generic [ref=e658]: Optional
+                            - generic [ref=e659]: Default to pro
+                          - generic [ref=e660]:
+                            - paragraph [ref=e661]: Video generation mode
+                            - generic [ref=e662]:
+                              - generic [ref=e663]: Enum values：
+                              - generic [ref=e664]: std
+                              - generic [ref=e665]: pro
+                              - generic [ref=e666]: 4k
+                            - generic [ref=e667]:
+                              - list [ref=e670]:
+                                - listitem [ref=e671]:
+                                  - code [ref=e672]: std
+                                  - text: ": Standard Mode, basic mode, cost-effective. The output video resolution is 720P."
+                                - listitem [ref=e673]:
+                                  - code [ref=e674]: pro
+                                  - text: ": Professional Mode, generates videos use longer duration but higher quality video output. The output video resolution is 1080P."
+                                - listitem [ref=e675]:
+                                  - code [ref=e676]: 4k
+                                  - text: ": 4K Mode, generates videos use longer duration but higher quality video output. The output video resolution is 4K."
+                              - paragraph [ref=e680]:
+                                - text: The support range for different model versions and video modes varies. For details, see
+                                - link "Capability Map" [ref=e681] [cursor=pointer]:
+                                  - /url: /document-api/apiReference/model/videoModels
+                        - generic [ref=e682]:
+                          - generic [ref=e683]:
+                            - generic [ref=e684]: aspect_ratio
+                            - generic [ref=e685]: string
+                            - generic [ref=e686]: Optional
+                          - generic [ref=e687]:
+                            - paragraph [ref=e688]: Aspect ratio of generated video frame (width:height)
+                            - generic [ref=e689]:
+                              - generic [ref=e690]: Enum values：
+                              - generic [ref=e691]: 16:9
+                              - generic [ref=e692]: 9:16
+                              - generic [ref=e693]: 1:1
+                            - list [ref=e697]:
+                              - listitem [ref=e698]: This parameter is required when NOT using first-frame reference or video editing function.
+                        - generic [ref=e699]:
+                          - generic [ref=e700]:
+                            - generic [ref=e701]: duration
+                            - generic [ref=e702]: string
+                            - generic [ref=e703]: Optional
+                            - generic [ref=e704]: Default to 5
+                          - generic [ref=e705]:
+                            - paragraph [ref=e706]: Video duration in seconds
+                            - generic [ref=e707]:
+                              - generic [ref=e708]: Enum values：
+                              - generic [ref=e709]: "3"
+                              - generic [ref=e710]: "4"
+                              - generic [ref=e711]: "5"
+                              - generic [ref=e712]: "6"
+                              - generic [ref=e713]: "7"
+                              - generic [ref=e714]: "8"
+                              - generic [ref=e715]: "9"
+                              - generic [ref=e716]: "10"
+                              - generic [ref=e717]: "11"
+                              - generic [ref=e718]: "12"
+                              - generic [ref=e719]: "13"
+                              - generic [ref=e720]: "14"
+                              - generic [ref=e721]: "15"
+                            - generic [ref=e722]:
+                              - list [ref=e725]:
+                                - listitem [ref=e726]: "When using the video editing function (\"refer_type\": \"base\"), the output result is the same as the duration of the incoming video, and the current parameter is invalid. Calculate billing by rounding the input video duration to the nearest integer."
+                              - paragraph [ref=e730]:
+                                - text: The support range for different model versions and video modes varies. For details, see
+                                - link "Capability Map" [ref=e731] [cursor=pointer]:
+                                  - /url: /document-api/apiReference/model/videoModels
+                        - generic [ref=e732]:
+                          - generic [ref=e733]:
+                            - generic [ref=e734]: watermark_info
+                            - generic [ref=e735]: object
+                            - generic [ref=e736]: Optional
+                          - generic [ref=e737]:
+                            - paragraph [ref=e738]: Whether to generate watermarked results simultaneously
+                            - generic [ref=e739]:
+                              - generic [ref=e740]:
+                                - list [ref=e742]:
+                                  - listitem [ref=e743]: "Defined by the enabled parameter, format:"
+                                - code [ref=e753]: "\"watermark_info\": { \"enabled\": boolean }"
+                              - list [ref=e756]:
+                                - listitem [ref=e757]: "true: generate watermarked result, false: do not generate"
+                              - list [ref=e760]:
+                                - listitem [ref=e761]: Custom watermarks are not currently supported
+                        - generic [ref=e762]:
+                          - generic [ref=e763]:
+                            - generic [ref=e764]: callback_url
+                            - generic [ref=e765]: string
+                            - generic [ref=e766]: Optional
+                          - generic [ref=e767]:
+                            - paragraph [ref=e768]: Callback notification URL for task result. If configured, server will actively notify when task status changes.
+                            - list [ref=e772]:
+                              - listitem [ref=e773]:
+                                - text: For specific message schema, see
+                                - link "Callback Protocol" [ref=e774] [cursor=pointer]:
+                                  - /url: /document-api/apiReference/callbackProtocol
+                        - generic [ref=e775]:
+                          - generic [ref=e776]:
+                            - generic [ref=e777]: external_task_id
+                            - generic [ref=e778]: string
+                            - generic [ref=e779]: Optional
+                          - generic [ref=e780]:
+                            - paragraph [ref=e781]: Custom task ID defined by user.
+                            - generic [ref=e782]:
+                              - list [ref=e785]:
+                                - listitem [ref=e786]: Will not overwrite system-generated task ID, but supports querying task by this ID.
+                              - list [ref=e789]:
+                                - listitem [ref=e790]: Must be unique within a single user account.
+                  - generic [ref=e793]:
+                    - generic [ref=e794]:
+                      - generic [ref=e795]:
+                        - button "cURL" [ref=e797] [cursor=pointer]
+                        - generic [ref=e798]:
+                          - button "Copy" [ref=e799] [cursor=pointer]:
+                            - img [ref=e800]
+                            - generic [ref=e802]: Copy
+                          - button "Collapse" [ref=e803] [cursor=pointer]:
+                            - img [ref=e804]
+                            - generic [ref=e806]: Collapse
+                      - code [ref=e814]: "curl --request POST \\ --url https://api-singapore.klingai.com/v1/videos/omni-video \\ --header 'Authorization: Bearer <token>' \\ --header 'Content-Type: application/json' \\ --data '{ \"model_name\": \"kling-video-o1\", \"prompt\": \"Make the person in <<<image_1>>> wave to the camera\", \"image_list\": [ { \"image_url\": \"https://p2-kling.klingai.com/kcdn/cdn-kcdn112452/kling-qa-test/multi-1.png\" } ], \"duration\": \"5\", \"mode\": \"pro\", \"aspect_ratio\": \"16:9\", \"callback_url\": \"\", \"external_task_id\": \"\" }'"
+                    - generic [ref=e815]:
+                      - generic [ref=e816]:
+                        - generic [ref=e818]: "200"
+                        - generic [ref=e819]:
+                          - button "Copy" [ref=e820] [cursor=pointer]:
+                            - img [ref=e821]
+                            - generic [ref=e823]: Copy
+                          - button "Collapse" [ref=e824] [cursor=pointer]:
+                            - img [ref=e825]
+                            - generic [ref=e827]: Collapse
+                      - code [ref=e835]: "{ \"code\": 0, // Error codes; Specific definitions can be found in \"Error Code\" \"message\": \"string\", // Error information \"request_id\": \"string\", // Request ID, generated by the system, is used for tracking requests and troubleshooting \"data\": { \"task_id\": \"string\", // Task ID, generated by the system \"task_info\": { //Task creation parameters \"external_task_id\": \"string\" //User-defined task ID }, \"task_status\": \"string\", // Task status, Enum values: submitted, processing, succeed, failed \"created_at\": 1722769557708, // Task creation time, Unix timestamp, unit: ms \"updated_at\": 1722769557708 //Task update time, Unix timestamp, unit: ms } }"
+                - separator [ref=e836]
+                - heading "Scenario invocation examples" [level=2] [ref=e837]
+                - blockquote [ref=e838]:
+                  - paragraph [ref=e839]:
+                    - text: "The following is an example of scene code. For more effects and prompt words, please refer to:"
+                    - link "Kling Omni Model Example" [ref=e840] [cursor=pointer]:
+                      - /url: /document-api/external-link-confirm?url=https%3A%2F%2Fdocs.qingque.cn%2Fd%2Fhome%2FeZQDkhg4h2Qg8SEVSUTBdzYeY%3FidentityId%3D2E1MlYrrPk4%23section%3Dh.8dg2lmxa6c5
+                - heading "Image/Element Reference" [level=3] [ref=e841]
+                - list [ref=e842]:
+                  - listitem [ref=e843]:
+                    - strong [ref=e844]: Image/Element Reference
+                    - text: ：Supports reference images/elements, including characters, items, backgrounds, and more, to generate with more creativity and consistency.
+                - generic [ref=e846]:
+                  - generic [ref=e847]:
+                    - button "cURL" [ref=e849] [cursor=pointer]
+                    - generic [ref=e850]:
+                      - button "Copy" [ref=e851] [cursor=pointer]:
+                        - img [ref=e852]
+                        - generic [ref=e854]: Copy
+                      - button "Collapse" [ref=e855] [cursor=pointer]:
+                        - img [ref=e856]
+                        - generic [ref=e858]: Collapse
+                  - code [ref=e866]: "curl --location 'https://api-singapore.klingai.com/v1/videos/omni-video' \\ --header 'Authorization: Bearer <token>' \\ --header 'Content-Type: application/json' \\ --data '{ \"model_name\": \"kling-video-o1\", \"prompt\": \"<<<image_1>>> strolling through the streets of Tokyo, encountered <<<element_1>>> and <<<element_2>>>, and jumped into the arms of <<<element_2>>>. The video style matches that of <<<image_2>>>\", \"image_list\": [ { \"image_url\": \"xxxxx\" }, { \"image_url\": \"xxxxx\" } ], \"element_list\": [ { \"element_id\": long }, { \"element_id\": long } ], \"mode\": \"pro\", \"aspect_ratio\": \"1:1\", \"duration\": \"7\" }'"
+                - heading "Transformation" [level=3] [ref=e867]
+                - list [ref=e868]:
+                  - listitem [ref=e869]:
+                    - strong [ref=e870]: Input-based Modification
+                    - text: ": Supports Inpainting/outpainting, or changing shot compositions or angles. It also supports localized or full-scale adjustments, such as modifying/swapping subjects, backgrounds, partial areas, styles, colors, weather, and more."
+                - generic [ref=e872]:
+                  - generic [ref=e873]:
+                    - button "cURL" [ref=e875] [cursor=pointer]
+                    - generic [ref=e876]:
+                      - button "Copy" [ref=e877] [cursor=pointer]:
+                        - img [ref=e878]
+                        - generic [ref=e880]: Copy
+                      - button "Collapse" [ref=e881] [cursor=pointer]:
+                        - img [ref=e882]
+                        - generic [ref=e884]: Collapse
+                  - code [ref=e892]: "curl --location 'https://api-singapore.klingai.com/v1/videos/omni-video' \\ --header 'Authorization: Bearer <token>' \\ --header 'Content-Type: application/json' \\ --data '{ \"model_name\": \"kling-video-o1\", \"prompt\": \"Put the crown from <<<image_1>>> on the girl in blue from <<<video_1>>>.\", \"image_list\": [ { \"image_url\": \"xxx\" } ], \"video_list\": [ { \"video_url\":\"xxxxxxxx\", \"refer_type\":\"base\", \"keep_original_sound\":\"yes\" } ], \"mode\": \"pro\" }'"
+                - heading "Video Reference" [level=3] [ref=e893]
+                - list [ref=e894]:
+                  - listitem [ref=e895]:
+                    - strong [ref=e896]: Video Reference
+                    - text: ": Supports using reference video content to generate previous or next shots within the same context or set. It can also reference video actions or camera movements for generation."
+                - generic [ref=e898]:
+                  - generic [ref=e899]:
+                    - button "cURL" [ref=e901] [cursor=pointer]
+                    - generic [ref=e902]:
+                      - button "Copy" [ref=e903] [cursor=pointer]:
+                        - img [ref=e904]
+                        - generic [ref=e906]: Copy
+                      - button "Collapse" [ref=e907] [cursor=pointer]:
+                        - img [ref=e908]
+                        - generic [ref=e910]: Collapse
+                  - code [ref=e918]: "curl --location 'https://api-singapore.klingai.com/v1/videos/omni-video' \\ --header 'Authorization: Bearer <token>' \\ --header 'Content-Type: application/json' \\ --data '{ \"model_name\": \"kling-video-o1\", \"prompt\": \"Referring to the camera movement style in <<<video_1>>>, generate a video: <<<element_1>>> and <<<element_2>>> strolling through the streets of Tokyo, encountering <<<image_1>>> by chance.\", \"image_list\": [ { \"image_url\": \"xxx\" } ], \"element_list\": [ { \"element_id\": long }, { \"element_id\": long } ], \"video_list\": [ { \"video_url\":\"xxxxxxxx\", \"refer_type\":\"feature\", \"keep_original_sound\":\"yes\" } ], \"mode\": \"pro\", \"aspect_ratio\": \"1:1\", \"duration\": \"7\" }'"
+                - generic [ref=e920]:
+                  - generic [ref=e921]:
+                    - button "cURL" [ref=e923] [cursor=pointer]
+                    - generic [ref=e924]:
+                      - button "Copy" [ref=e925] [cursor=pointer]:
+                        - img [ref=e926]
+                        - generic [ref=e928]: Copy
+                      - button "Collapse" [ref=e929] [cursor=pointer]:
+                        - img [ref=e930]
+                        - generic [ref=e932]: Collapse
+                  - code [ref=e940]: "curl --location 'https://api-singapore.klingai.com/v1/videos/omni-video' \\ --header 'Authorization: Bearer <token>' \\ --header 'Content-Type: application/json' \\ --data '{ \"model_name\": \"kling-video-o1\", \"prompt\": \"Based on <<<video_1>>>, generate the next shot.\", \"video_list\": [ { \"video_url\":\"xxxxxxxx\", \"refer_type\":\"feature\", \"keep_original_sound\":\"yes\" } ], \"mode\": \"pro\" }'"
+                - heading "Start & End Frames" [level=3] [ref=e941]
+                - generic [ref=e943]:
+                  - generic [ref=e944]:
+                    - button "cURL" [ref=e946] [cursor=pointer]
+                    - generic [ref=e947]:
+                      - button "Copy" [ref=e948] [cursor=pointer]:
+                        - img [ref=e949]
+                        - generic [ref=e951]: Copy
+                      - button "Collapse" [ref=e952] [cursor=pointer]:
+                        - img [ref=e953]
+                        - generic [ref=e955]: Collapse
+                  - code [ref=e963]: "curl --location 'https://api-singapore.klingai.com/v1/videos/omni-video' \\ --header 'Authorization: Bearer <token>' \\ --header 'Content-Type: application/json' \\ --data '{ \"model_name\": \"kling-video-o1\", \"prompt\": \"The person in the video is dancing.\", \"image_list\": [ { \"image_url\": \"xxx\", \"type\": \"first_frame\" }, { \"image_url\": \"xxx\", \"type\": \"end_frame\" } ], \"mode\": \"pro\" }'"
+                - heading "Text To Video" [level=3] [ref=e964]
+                - generic [ref=e966]:
+                  - generic [ref=e967]:
+                    - button "cURL" [ref=e969] [cursor=pointer]
+                    - generic [ref=e970]:
+                      - button "Copy" [ref=e971] [cursor=pointer]:
+                        - img [ref=e972]
+                        - generic [ref=e974]: Copy
+                      - button "Collapse" [ref=e975] [cursor=pointer]:
+                        - img [ref=e976]
+                        - generic [ref=e978]: Collapse
+                  - code [ref=e986]: "curl --location 'https://api-singapore.klingai.com/v1/videos/omni-video' \\ --header 'Authorization: Bearer <token>' \\ --header 'Content-Type: application/json' \\ --data '{ \"model_name\": \"kling-video-o1\", \"prompt\": \"The person in the video is dancing.\", \"mode\": \"pro\", \"aspect_ratio\": \"1:1\", \"duration\": \"7\" }'"
+                - heading "Single shot and multiple shot" [level=3] [ref=e987]
+                - heading "Image To Video with Multiple Shot" [level=4] [ref=e988]
+                - code [ref=e998]: "curl --location 'https://xxx/v1/videos/omni-video/' \\ --header 'Authorization: Bearer xxx' \\ --header 'Content-Type: application/json' \\ --data '{ \"model_name\": \"kling-v3-omni\", \"multi_shot\": true, \"shot_type\": \"customize\", \"prompt\": \"\", \"multi_prompt\": [ { \"index\": 1, \"prompt\": \"In the early morning café, sunlight streams through the glass windows, casting its warmth on the wooden tabletop. Coffee cups exhale hot steam, while the background is filled with the indistinct chatter of customers. The camera gradually zooms in, focusing on a young couple <<<image_1>>> (male: 25 years old, with curly hair and wearing a light blue shirt; female: 23 years old, with a ponytail and wearing thin-framed glasses) seated across the table. Their fingers unconsciously touch the same poetry anthology.\", \"duration\": \"2\" }, { \"index\": 2, \"prompt\": \"The girl was flipping through the pages of a book with her head down, while the boy <<<image_2>>> suddenly looked up. Their gazes met, causing the girl's cheeks to blush slightly and the boy's mouth to curve upwards. The camera panned through the two of them, capturing the retro clock hanging on the wall behind them (with the hands pointing to 9:15).\", \"duration\": \"3\" } ], \"image_list\": [ { \"image_url\": \"xx\" } , { \"image_url\": \"xxx\" } ], \"video_list\": [], \"mode\": \"pro\", \"sound\": \"on\", \"aspect_ratio\": \"16:9\", \"duration\": \"5\", \"callback_url\": \"xx\", \"external_task_id\": \"\" }'"
+                - heading "Text To Video with Multiple Shot" [level=4] [ref=e999]
+                - code [ref=e1009]: "curl --location 'https://xxx/v1/videos/omni-video/' \\ --header 'Authorization: Bearer xxx' \\ --header 'Content-Type: application/json; charset=utf-8' \\ --data '{ \"model_name\": \"kling-v3-omni\", \"multi_shot\": true, \"shot_type\": \"customize\", \"prompt\": \"\", \"multi_prompt\": [ { \"index\": 1, \"prompt\": \"Two friends talking under a streetlight at night. Warm glow, casual poses, no dialogue.\", \"duration\": \"2\" }, { \"index\": 2, \"prompt\": \"A runner sprinting through a forest, leaves flying. Low-angle shot, focus on movement.\", \"duration\": \"3\" }, { \"index\": 3, \"prompt\": \"A woman hugging a cat, smiling. Soft sunlight, cozy home setting, emphasize warmth.\", \"duration\": \"3\" }, { \"index\": 4, \"prompt\": \"A door creaking open, shadowy hallway. Dark tones, minimal details, eerie mood.\", \"duration\": \"3\" }, { \"index\": 5, \"prompt\": \"A man slipping on a banana peel, shocked expression. Exaggerated pose, bright colors.\", \"duration\": \"3\" }, { \"index\": 6, \"prompt\": \"A sunset over mountains, small figure walking away. Wide angle, peaceful atmosphere.\", \"duration\": \"1\" } ], \"image_list\": [], \"sound\":\"on\", \"element_list\": [], \"video_list\": [], \"mode\": \"pro\", \"aspect_ratio\": \"16:9\", \"duration\": \"15\", \"callback_url\": \"xxx\", \"external_task_id\": \"\" }'"
+                - heading "Text To Video with Single Shot" [level=4] [ref=e1010]
+                - code [ref=e1020]: "curl --location 'https://api-singapore.klingai.com/v1/videos/omni-video' \\ --header 'Authorization: Bearer xxx' \\ --header 'Content-Type: application/json' \\ --data '{ \"model_name\": \"kling-video-o1\", \"prompt\": \"The person in the video is dancing.\", \"mode\": \"pro\", \"aspect_ratio\": \"1:1\", \"duration\": \"7\" }'"
+                - heading "FAQ" [level=2] [ref=e1021]
+                - paragraph [ref=e1022]:
+                  - strong [ref=e1023]: 1、 Video Duration Support
+                - list [ref=e1024]:
+                  - listitem [ref=e1025]:
+                    - strong [ref=e1026]: Text-to-video and image-to-video (NOT including first/last frame)
+                    - text: ": Optional duration of 3~10s."
+                  - listitem [ref=e1027]:
+                    - strong [ref=e1028]: When video input is provided (video_list is not empty) and video editing functionality (type = base) is used
+                    - text: ": Duration cannot be specified and will align with the input video."
+                  - listitem [ref=e1029]:
+                    - strong [ref=e1030]: Other cases (when no video is provided but an image + subject is used for video generation, or when a video is provided with video type = feature)
+                    - text: ": Optional duration of 3-10s."
+                - paragraph [ref=e1031]:
+                  - strong [ref=e1032]: 2、 How to Extend a Video?
+                - list [ref=e1033]:
+                  - listitem [ref=e1034]: This can be achieved via “video reference”.
+                  - listitem [ref=e1035]: By inputting a video and using a prompt to direct the model to “generate the next shot” or “generate the previous shot”.
+                - generic [ref=e1037]:
+                  - generic [ref=e1038]:
+                    - button "cURL" [ref=e1040] [cursor=pointer]
+                    - generic [ref=e1041]:
+                      - button "Copy" [ref=e1042] [cursor=pointer]:
+                        - img [ref=e1043]
+                        - generic [ref=e1045]: Copy
+                      - button "Collapse" [ref=e1046] [cursor=pointer]:
+                        - img [ref=e1047]
+                        - generic [ref=e1049]: Collapse
+                  - code [ref=e1057]: "curl --location 'https://api-singapore.klingai.com/v1/videos/omni-video' \\ --header 'Authorization: Bearer <token>' \\ --header 'Content-Type: application/json' \\ --data '{ \"model_name\": \"kling-video-o1\", \"prompt\": \"Based on <<<video_1>>>, generate the next shot.\", \"video_list\": [ { \"video_url\":\"xxxxxxxx\", \"refer_type\":\"feature\", \"keep_original_sound\":\"yes\" } ], \"mode\": \"pro\" }'"
+                - paragraph [ref=e1058]:
+                  - strong [ref=e1059]: 3、 Aspect Ratio Support
+                - list [ref=e1060]:
+                  - listitem [ref=e1061]:
+                    - strong [ref=e1062]: Not Supported
+                    - text: ": Instruction-based transformation (video editing), image-to-video (not including first/last frame)."
+                  - listitem [ref=e1063]:
+                    - strong [ref=e1064]: Supported
+                    - text: ": Text-to-video, image/subject reference, video reference (other scenarios), video reference (generating next/previous shot)."
+                - separator [ref=e1065]
+                - generic [ref=e1067]:
+                  - generic [ref=e1068]:
+                    - heading "Query Task (Single)" [level=2] [ref=e1069]
+                    - generic [ref=e1070]:
+                      - generic [ref=e1071]: GET
+                      - code [ref=e1072]: "/v1/videos/omni-video/{id}"
+                    - paragraph [ref=e1075]: Query the status and result of a single task by ID.
+                    - generic [ref=e1076]:
+                      - heading "Request Header" [level=3] [ref=e1077]
+                      - generic [ref=e1078]:
+                        - generic [ref=e1079]:
+                          - generic [ref=e1080]:
+                            - generic [ref=e1081]: Content-Type
+                            - generic [ref=e1082]: string
+                            - generic [ref=e1083]: Required
+                            - generic [ref=e1084]: Default to application/json
+                          - paragraph [ref=e1086]: Data Exchange Format
+                        - generic [ref=e1087]:
+                          - generic [ref=e1088]:
+                            - generic [ref=e1089]: Authorization
+                            - generic [ref=e1090]: string
+                            - generic [ref=e1091]: Required
+                          - paragraph [ref=e1093]: Authentication information, refer to API authentication
+                    - generic [ref=e1094]:
+                      - heading "Path Parameters" [level=3] [ref=e1095]
+                      - generic [ref=e1096]:
+                        - generic [ref=e1097]:
+                          - generic [ref=e1098]:
+                            - generic [ref=e1099]: task_id
+                            - generic [ref=e1100]: string
+                            - generic [ref=e1101]: Optional
+                          - generic [ref=e1102]:
+                            - paragraph [ref=e1103]: Task ID for video generation task.
+                            - paragraph [ref=e1107]: Request path parameter, fill the value directly in the request path. Choose either task_id OR external_task_id for querying.
+                        - generic [ref=e1108]:
+                          - generic [ref=e1109]:
+                            - generic [ref=e1110]: external_task_id
+                            - generic [ref=e1111]: string
+                            - generic [ref=e1112]: Optional
+                          - generic [ref=e1113]:
+                            - paragraph [ref=e1114]: Custom Task ID for video generation task.
+                            - paragraph [ref=e1118]: The external_task_id provided when creating the task. Choose either task_id OR external_task_id for querying.
+                  - generic [ref=e1121]:
+                    - generic [ref=e1122]:
+                      - generic [ref=e1123]:
+                        - button "cURL" [ref=e1125] [cursor=pointer]
+                        - generic [ref=e1126]:
+                          - button "Copy" [ref=e1127] [cursor=pointer]:
+                            - img [ref=e1128]
+                            - generic [ref=e1130]: Copy
+                          - button "Collapse" [ref=e1131] [cursor=pointer]:
+                            - img [ref=e1132]
+                            - generic [ref=e1134]: Collapse
+                      - code [ref=e1142]: "curl --request GET \\ --url https://api-singapore.klingai.com/v1/videos/omni-video/{task_id} \\ --header 'Authorization: Bearer <token>'"
+                    - generic [ref=e1143]:
+                      - generic [ref=e1144]:
+                        - generic [ref=e1146]: "200"
+                        - generic [ref=e1147]:
+                          - button "Copy" [ref=e1148] [cursor=pointer]:
+                            - img [ref=e1149]
+                            - generic [ref=e1151]: Copy
+                          - button "Collapse" [ref=e1152] [cursor=pointer]:
+                            - img [ref=e1153]
+                            - generic [ref=e1155]: Collapse
+                      - code [ref=e1163]: "{ \"code\": 0, // Error codes; Specific definitions can be found in \"Error Code\" \"message\": \"string\", // Error information \"request_id\": \"string\", // Request ID, generated by the system, is used for tracking requests and troubleshooting \"data\": { \"task_id\": \"string\", // Task ID, generated by the system \"task_status\": \"string\", // Task status, Enum values: submitted, processing, succeed, failed \"task_status_msg\": \"string\", // Task status message, displaying the failure reason when the task fails (such as triggering the content risk control of the platform, etc.) \"task_info\": { //Task creation parameters \"external_task_id\": \"string\" //User-defined task ID }, \"task_result\": { \"videos\": [ { \"id\": \"string\", // Generated video ID; globally unique \"url\": \"string\", // Generated video URL, anti-leech format (Please note that for security purposes, generated images/videos will be deleted after 30 days. Please save them promptly.) \"watermark_url\": \"string\", // Watermarked video download URL, anti-leech format \"duration\": \"string\" //Total video duration, unit: s (seconds) } ] }, \"watermark_info\": { \"enabled\": boolean }, \"final_unit_deduction\": \"string\", // Final unit deduction for the task \"created_at\": 1722769557708, // Task creation time, Unix timestamp, unit: ms \"updated_at\": 1722769557708 //Task update time, Unix timestamp, unit: ms } }"
+                - separator [ref=e1164]
+                - generic [ref=e1166]:
+                  - generic [ref=e1167]:
+                    - heading "Query Task (List)" [level=2] [ref=e1168]
+                    - generic [ref=e1169]:
+                      - generic [ref=e1170]: GET
+                      - code [ref=e1171]: /v1/videos/omni-video
+                    - paragraph [ref=e1174]: Query a list of tasks with pagination.
+                    - generic [ref=e1175]:
+                      - heading "Request Header" [level=3] [ref=e1176]
+                      - generic [ref=e1177]:
+                        - generic [ref=e1178]:
+                          - generic [ref=e1179]:
+                            - generic [ref=e1180]: Content-Type
+                            - generic [ref=e1181]: string
+                            - generic [ref=e1182]: Required
+                            - generic [ref=e1183]: Default to application/json
+                          - paragraph [ref=e1185]: Data Exchange Format
+                        - generic [ref=e1186]:
+                          - generic [ref=e1187]:
+                            - generic [ref=e1188]: Authorization
+                            - generic [ref=e1189]: string
+                            - generic [ref=e1190]: Required
+                          - paragraph [ref=e1192]: Authentication information, refer to API authentication
+                    - generic [ref=e1193]:
+                      - heading "Query Parameters" [level=3] [ref=e1194]
+                      - generic [ref=e1195]:
+                        - generic [ref=e1196]:
+                          - generic [ref=e1197]:
+                            - generic [ref=e1198]: pageNum
+                            - generic [ref=e1199]: int
+                            - generic [ref=e1200]: Optional
+                            - generic [ref=e1201]: Default to 1
+                          - generic [ref=e1202]:
+                            - paragraph [ref=e1203]: Page number
+                            - paragraph [ref=e1207]: "Value range: [1, 1000]"
+                        - generic [ref=e1208]:
+                          - generic [ref=e1209]:
+                            - generic [ref=e1210]: pageSize
+                            - generic [ref=e1211]: int
+                            - generic [ref=e1212]: Optional
+                            - generic [ref=e1213]: Default to 30
+                          - generic [ref=e1214]:
+                            - paragraph [ref=e1215]: Data volume per page
+                            - paragraph [ref=e1219]: "Value range: [1, 500]"
+                  - generic [ref=e1222]:
+                    - generic [ref=e1223]:
+                      - generic [ref=e1224]:
+                        - button "cURL" [ref=e1226] [cursor=pointer]
+                        - generic [ref=e1227]:
+                          - button "Copy" [ref=e1228] [cursor=pointer]:
+                            - img [ref=e1229]
+                            - generic [ref=e1231]: Copy
+                          - button "Collapse" [ref=e1232] [cursor=pointer]:
+                            - img [ref=e1233]
+                            - generic [ref=e1235]: Collapse
+                      - code [ref=e1243]: "curl --request GET \\ --url 'https://api-singapore.klingai.com/v1/videos/omni-video?pageNum=1&pageSize=30' \\ --header 'Authorization: Bearer <token>'"
+                    - generic [ref=e1244]:
+                      - generic [ref=e1245]:
+                        - generic [ref=e1247]: "200"
+                        - generic [ref=e1248]:
+                          - button "Copy" [ref=e1249] [cursor=pointer]:
+                            - img [ref=e1250]
+                            - generic [ref=e1252]: Copy
+                          - button "Collapse" [ref=e1253] [cursor=pointer]:
+                            - img [ref=e1254]
+                            - generic [ref=e1256]: Collapse
+                      - code [ref=e1264]: "{ \"code\": 0, // Error codes; Specific definitions can be found in \"Error Code\" \"message\": \"string\", // Error information \"request_id\": \"string\", // Request ID, generated by the system, is used for tracking requests and troubleshooting \"data\": [ { \"task_id\": \"string\", // Task ID, generated by the system \"task_status\": \"string\", // Task status, Enum values: submitted, processing, succeed, failed \"task_status_msg\": \"string\", // Task status message, displaying the failure reason when the task fails (such as triggering the content risk control of the platform, etc.) \"task_info\": { //Task creation parameters \"external_task_id\": \"string\" //User-defined task ID, choose either task_id or external_task_id for querying }, \"task_result\": { \"videos\": [ { \"id\": \"string\", // Generated video ID; globally unique \"url\": \"string\", // Generated video URL, anti-leech format (Please note that for security purposes, generated images/videos will be deleted after 30 days. Please save them promptly.) \"watermark_url\": \"string\", // Watermarked video download URL, anti-leech format \"duration\": \"string\" //Total video duration, unit: s (seconds) } ] }, \"watermark_info\": { \"enabled\": boolean }, \"final_unit_deduction\": \"string\", // Final unit deduction for the task \"created_at\": 1722769557708, // Task creation time, Unix timestamp, unit: ms \"updated_at\": 1722769557708 //Task update time, Unix timestamp, unit: ms } ] }"
+              - generic [ref=e1267]:
+                - generic [ref=e1268] [cursor=pointer]:
+                  - img [ref=e1269]
+                  - text: Previous chapter：Models
+                - generic [ref=e1271] [cursor=pointer]:
+                  - text: Next chapter：Text to Video
+                  - img [ref=e1272]
+          - generic [ref=e1275]:
+            - generic [ref=e1277] [cursor=pointer]: Create Task
+            - generic [ref=e1278] [cursor=pointer]: Scenario invocation examples
+            - generic [ref=e1279] [cursor=pointer]: FAQ
+            - generic [ref=e1280] [cursor=pointer]: Query Task (Single)
+            - generic [ref=e1281] [cursor=pointer]: Query Task (List)
+    - dialog [ref=e1283]:
+      - generic [active] [ref=e1284]:
+        - banner:
+          - heading [level=2]
+        - generic [ref=e1285]:
+          - generic [ref=e1286]:
+            - text: 🎉 Kling AI Native 4K + Stripe Payment Now Available 🎉
+            - img [ref=e1287] [cursor=pointer]
+          - generic [ref=e1290]:
+            - paragraph [ref=e1291]: "We’re excited to announce two major updates on the Kling API platform:"
+            - paragraph [ref=e1292]: 🚀 Kling Native 4K (Kling VIDEO 3.0)
+            - paragraph [ref=e1293]:
+              - text: Kling now supports
+              - strong [ref=e1294]: one-click native 4K video generation
+              - text: ", enabling high-quality outputs for"
+              - strong [ref=e1295]: advertising, film production, and commercial content
+              - text: .
+            - list [ref=e1296]:
+              - listitem [ref=e1297]:
+                - strong [ref=e1298]: "Industry-grade quality:"
+                - text: Native 4K with no upscaling loss, meeting commercial delivery standards
+              - listitem [ref=e1299]:
+                - strong [ref=e1300]: "Efficient workflow:"
+                - text: One-click generation with fast response, no technical expertise required
+              - listitem [ref=e1301]:
+                - strong [ref=e1302]: "Cost-effective:"
+                - text: High-quality 4K without expensive third-party tools
+            - paragraph [ref=e1303]:
+              - strong [ref=e1304]: Native 4K, One-Click Output
+              - text: "- built for professional commercial production."
+            - paragraph [ref=e1305]:
+              - text: 🔗
+              - strong [ref=e1306]: "Start now:"
+              - link "Specification Documentation" [ref=e1307] [cursor=pointer]:
+                - /url: /document-api/apiReference/updateNotice
+            - separator [ref=e1308]
+            - paragraph [ref=e1309]:
+              - text: 💳
+              - strong [ref=e1310]: "Payment Update: Now Supporting Stripe"
+            - paragraph [ref=e1311]: We’ve upgraded our payment method from Checkout to Stripe for a faster and more secure experience.
+            - paragraph [ref=e1312]:
+              - text: ⚠️ If you are making a business purchase and need an invoice, please select
+              - strong [ref=e1313]: “I’m purchasing as a business”
+              - text: and enter your tax ID during payment.
+            - paragraph [ref=e1314]: "Otherwise, the order will be treated as a personal purchase, and:"
+            - list [ref=e1315]:
+              - listitem [ref=e1316]: Additional taxes may apply
+              - listitem [ref=e1317]: Invoice details cannot be changed
+              - listitem [ref=e1318]: The order is non-refundable
+        - contentinfo [ref=e1319]:
+          - button "I Got It" [ref=e1320] [cursor=pointer]:
+            - generic [ref=e1322]: I Got It
+  - img

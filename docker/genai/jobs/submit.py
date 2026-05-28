@@ -2,8 +2,9 @@
 
 흐름:
   1) genai_batches + genai_jobs × N INSERT (Postgres TXN, status='pending')
-  2) /nas/staging/incoming/genai/<batch>/originals/<seq>.<ext> atomic write
-  3) originals/_manifest.json 마지막에 작성 → ingest sensor 픽업 트리거
+  2) <GENAI_NAS_INCOMING>/<YYYY-MM-DD>/<batch>/originals/<seq>.<ext> atomic write
+     (기본 /nas/data/genai_studio — auto-bootstrap ingest 격리 경로)
+  3) originals/_manifest.json 작성 (provenance bridge 완성 시 ingest 픽업용)
   4) 어댑터 submit() 비동기 호출 — provider_job_id 받아 update_job_submitted()
      동기 엔진(Phase 4: Nano/GPT) 은 submit 시점에 결과까지 받음 → finalize 도 즉시.
 
@@ -23,7 +24,7 @@ from storage.manifest import build_originals_manifest
 from storage.nas_writer import atomic_write_bytes, atomic_write_json
 
 
-_NAS_INCOMING = os.getenv("GENAI_NAS_INCOMING", "/nas/staging/incoming")
+_NAS_INCOMING = os.getenv("GENAI_NAS_INCOMING", "/nas/data/genai_studio")
 
 
 def submit_batch(
@@ -71,7 +72,7 @@ def submit_batch(
     # 2) NAS originals/ atomic write — 날짜별 폴더 안에 batch
     # text-only(txt2video) 는 입력 이미지 없음 → originals 디렉토리·manifest 둘 다 skip.
     date_dir = submitted_now.strftime("%Y-%m-%d")
-    batch_root = Path(_NAS_INCOMING) / "genai" / date_dir / batch_id
+    batch_root = Path(_NAS_INCOMING) / date_dir / batch_id
     originals_dir = batch_root / "originals"
     item_meta: list[dict] = []
     if files:
@@ -98,13 +99,29 @@ def submit_batch(
 
     # 4) 어댑터 submit (per job) — 비동기/동기 분기
     # text-only: 단일 job, image_bytes=b"" / filename="" 으로 호출.
+    #
+    # 동시성 게이트 (Q6 — Kling 1303 회피): engine 동시 한도가 있으면(>0) 현재
+    # in-flight 수를 고려해 한도까지만 즉시 submit. 나머지는 처음부터 'pending'
+    # 으로 두고 sensor drain 이 슬롯 빌 때 제출. 1303 은 race 안전망으로만 처리.
+    from adapters import KlingTransientError, engine_max_concurrent
+    max_conc = engine_max_concurrent(engine)
+    budget = None
+    if max_conc > 0:
+        budget = max(0, max_conc - pg.count_inflight_jobs(engine))
+
     iter_items: list[tuple[str, bytes]] = files if files else [("", b"")]
     sync_results: list[dict] = []
     for seq, (filename, blob) in enumerate(iter_items, start=1):
         job_id = f"{batch_id}-{seq:03d}"
+        # 용량 소진 시 즉시 submit 안 하고 deferred(pending) — drain 이 이어받음
+        if budget is not None and budget <= 0:
+            pg.mark_job_deferred(job_id, f"{engine} 동시 작업 한도 대기 (max={max_conc})")
+            continue
         try:
             sub = adapter.submit(blob, filename, prompt, options=options)
             pg.update_job_submitted(job_id, sub.provider_job_id)
+            if budget is not None:
+                budget -= 1
             if sub.is_synchronous:
                 if sub.immediate_result is None:
                     raise RuntimeError(
@@ -117,6 +134,12 @@ def submit_batch(
                     "ext": sub.immediate_ext or adapter.output_ext,
                     "cost_units": sub.cost_units,
                 })
+        except KlingTransientError as exc:
+            # 1303 등 — race 로 한도 초과. failed 아님, deferred 로 두고 budget 소진
+            # 처리해 같은 pass 에서 더 안 쏨 (Codex Q1).
+            pg.mark_job_deferred(job_id, str(exc))
+            if budget is not None:
+                budget = 0
         except Exception as exc:
             pg.update_job_status(job_id, status="failed", error_message=str(exc))
 
@@ -129,6 +152,14 @@ def submit_batch(
             output_media=adapter.output_media,
             results=sync_results,
         )
+
+    # 6) batch status 재계산 — submit 루프에서 일부/전부 실패했거나(비동기 엔진의
+    # submit 실패: Kling 1201/429 등) 동기 finalize 가 없던 경우, 여기서 갱신 안 하면
+    # batch 가 'running' 에 영원히 멈춤 (n_failed=0 인 채로). recompute 는 idempotent
+    # 라 finalize_sync_results 가 이미 호출했어도 안전.
+    #   - 전부 submit 실패 → 'failed'
+    #   - 비동기 일부 submit 성공 → 'running' 유지 (sensor 가 이후 finalize)
+    pg.recompute_batch_status(batch_id)
 
     return {
         "batch_id": batch_id,

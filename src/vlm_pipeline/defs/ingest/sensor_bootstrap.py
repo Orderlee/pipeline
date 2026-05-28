@@ -18,6 +18,7 @@ from pathlib import Path
 from dagster import DefaultSensorStatus, SkipReason, sensor
 
 from vlm_pipeline.lib.env_utils import bool_env, int_env
+from vlm_pipeline.lib.network_probe import probe_path_reachable
 from vlm_pipeline.lib.runtime_profile import resolve_runtime_profile
 from vlm_pipeline.lib.validator import ALLOWED_EXTENSIONS
 from vlm_pipeline.resources.config import PipelineConfig
@@ -89,6 +90,13 @@ def auto_bootstrap_manifest_sensor(context):
     runtime_profile = resolve_runtime_profile()
     incoming_dir = Path(config.incoming_dir)
     pending_dir = Path(config.manifest_dir) / "pending"
+
+    # NAS 도달성 가드 (#3, 2026-05-28): NFS hard-mount hang 시 mkdir/glob/discover 가
+    # 300s 까지 매달려 gRPC DEADLINE_EXCEEDED 유발. 짧은 stat() probe 로 빠른 skip.
+    reachable, probe_reason = probe_path_reachable(incoming_dir)
+    if not reachable:
+        return SkipReason(f"NAS incoming 도달 불가 ({probe_reason}). 다음 tick 재시도.")
+
     pending_dir.mkdir(parents=True, exist_ok=True)
     max_pending_manifests = int_env("AUTO_BOOTSTRAP_MAX_PENDING_MANIFESTS", 200, 1)
     max_new_manifests_per_tick = int_env("AUTO_BOOTSTRAP_MAX_NEW_MANIFESTS_PER_TICK", 20, 1)

@@ -12,8 +12,10 @@ YOLO의 COCO bbox 결과와 1:1 비교가 목적이므로, 동일 이미지에 �
 
 from __future__ import annotations
 
+import time
 from datetime import datetime
 
+import requests
 from dagster import Failure, Field, MetadataValue, asset
 
 from vlm_pipeline.lib.detection_common import (
@@ -40,6 +42,57 @@ _SAM3_CONFIG_SCHEMA = {
     "score_threshold": Field(float, default_value=0.0),
     "max_masks_per_prompt": Field(int, default_value=50),
 }
+
+# SAM3/MinIO 호출에서 재시도할 가치가 있는 일시적 HTTP 상태 (서버 과부하/OOM/게이트웨이).
+_SAM3_TRANSIENT_HTTP = {500, 502, 503, 504}
+
+
+def _is_transient_detection_error(exc: Exception) -> bool:
+    """SAM3 segment / MinIO download 실패가 일시적(재시도 가치 있음)인지 판정.
+
+    - requests ConnectionError/Timeout → 일시적 (네트워크 blip, NAS flap)
+    - HTTPError 500/502/503/504 → 일시적 (SAM3 worker OOM/과부하 — 곧 회복)
+    - HTTPError 4xx (404 NoSuchKey 등) → 영구 (재시도 무의미)
+    - MinIO/boto3 connection/timeout/endpoint 계열 → 일시적
+    """
+    if isinstance(exc, (requests.exceptions.ConnectionError, requests.exceptions.Timeout)):
+        return True
+    if isinstance(exc, requests.exceptions.HTTPError):
+        resp = getattr(exc, "response", None)
+        return resp is not None and resp.status_code in _SAM3_TRANSIENT_HTTP
+    text = f"{type(exc).__name__} {exc}".lower()
+    return any(
+        k in text
+        for k in (
+            "could not connect",
+            "read timeout",
+            "connect timeout",
+            "connectionerror",
+            "endpointconnectionerror",
+            "timeouterror",
+        )
+    )
+
+
+def _retry_transient(fn, *, attempts: int, base_delay_sec: float, log_fn, label: str):
+    """일시적 오류면 exponential backoff 로 재시도, 영구 오류/소진 시 예외 전파.
+
+    2026-05-27 인시던트: NAS flap + SAM3 GPU OOM(503) 으로 ~250 프레임이 즉시 fail 마킹돼
+    영구 손실됨. transient 분류 오류는 재시도해 일시 장애를 흡수한다.
+    """
+    last_exc: Exception | None = None
+    for i in range(max(1, attempts)):
+        try:
+            return fn()
+        except Exception as exc:  # noqa: BLE001 — 분류 후 재전파
+            last_exc = exc
+            if i < attempts - 1 and _is_transient_detection_error(exc):
+                delay = base_delay_sec * (2**i)
+                log_fn(f"SAM3 detection transient retry {i + 1}/{attempts - 1} ({label}, {delay:.0f}s): {exc}")
+                time.sleep(delay)
+                continue
+            raise
+    raise last_exc  # pragma: no cover — 루프에서 반드시 return/raise
 
 
 def _make_sam3_detection_asset(*, name: str, deps: list[str], description: str):
@@ -186,6 +239,9 @@ def _run_sam3_image_detection(
     label_rows_buffer: list[dict] = []
     completed_assets: set[str] = set()
     flush_threshold = int_env("SAM3_DB_FLUSH_THRESHOLD", 50, 10)
+    # transient(503/timeout/connection) 재시도 — 기본 3회, 2s base backoff(2/4s). env 로 조절.
+    retry_attempts = int_env("SAM3_DETECT_RETRY_ATTEMPTS", 3, 1)
+    retry_base_sec = float(int_env("SAM3_DETECT_RETRY_BASE_SEC", 2, 0))
 
     minio.ensure_bucket("vlm-labels")
 
@@ -196,9 +252,12 @@ def _run_sam3_image_detection(
         source_asset_id = cand.get("source_asset_id")
 
         try:
-            img_bytes = minio.download(
-                str(cand.get("image_bucket") or "vlm-processed"),
-                image_key,
+            img_bytes = _retry_transient(
+                lambda: minio.download(str(cand.get("image_bucket") or "vlm-processed"), image_key),
+                attempts=retry_attempts,
+                base_delay_sec=retry_base_sec,
+                log_fn=context.log.warning,
+                label=f"minio_download image_id={image_id}",
             )
         except Exception as exc:
             failed += 1
@@ -206,22 +265,28 @@ def _run_sam3_image_detection(
             continue
 
         try:
-            label_row, annotation_count = run_sam3_and_build_label_row(
-                client=client,
-                minio=minio,
-                image_id=image_id,
-                image_key=image_key,
-                image_bytes=img_bytes,
-                image_width=cand.get("width"),
-                image_height=cand.get("height"),
-                prompts=target_classes,
-                class_source=class_source,
-                resolved_config_id=resolved_config_id,
-                source_clip_id=source_clip_id,
-                score_threshold=score_threshold,
-                max_masks_per_prompt=max_masks_per_prompt,
-                per_prompt_score_thresholds=prompt_score_thresholds,
-                include_detailed_meta=True,
+            label_row, annotation_count = _retry_transient(
+                lambda: run_sam3_and_build_label_row(
+                    client=client,
+                    minio=minio,
+                    image_id=image_id,
+                    image_key=image_key,
+                    image_bytes=img_bytes,
+                    image_width=cand.get("width"),
+                    image_height=cand.get("height"),
+                    prompts=target_classes,
+                    class_source=class_source,
+                    resolved_config_id=resolved_config_id,
+                    source_clip_id=source_clip_id,
+                    score_threshold=score_threshold,
+                    max_masks_per_prompt=max_masks_per_prompt,
+                    per_prompt_score_thresholds=prompt_score_thresholds,
+                    include_detailed_meta=True,
+                ),
+                attempts=retry_attempts,
+                base_delay_sec=retry_base_sec,
+                log_fn=context.log.warning,
+                label=f"sam3_segment image_id={image_id}",
             )
             label_rows_buffer.append(label_row)
             processed += 1

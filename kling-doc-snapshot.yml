@@ -1,0 +1,1033 @@
+- generic [active] [ref=e1]:
+  - generic [ref=e3]:
+    - generic [ref=e4]:
+      - link [ref=e5] [cursor=pointer]:
+        - /url: /dev
+        - img [ref=e6]
+      - img [ref=e10] [cursor=pointer]
+    - generic [ref=e12]:
+      - img [ref=e13]
+      - generic [ref=e15]: 🎉 Kling AI Native 4K + Stripe Payment Now Available 🎉
+      - generic [ref=e16] [cursor=pointer]: Learn More
+    - generic [ref=e17]:
+      - generic [ref=e19]:
+        - generic [ref=e22]:
+          - textbox "Search" [ref=e23]
+          - img [ref=e28]
+        - menubar [ref=e30]:
+          - listitem [ref=e31]:
+            - generic [ref=e32]: Get Started
+            - list [ref=e33]:
+              - menuitem "Overview" [ref=e34] [cursor=pointer]:
+                - link "Overview" [ref=e35]:
+                  - /url: /document-api/quickStart%2FproductIntroduction%2Foverview
+                  - generic [ref=e36]: Overview
+              - menuitem "Quick Start" [ref=e37] [cursor=pointer]:
+                - link "Quick Start" [ref=e38]:
+                  - /url: /document-api/quickStart%2FuserManual
+                  - generic [ref=e39]: Quick Start
+              - menuitem "Changelog" [ref=e40] [cursor=pointer]:
+                - link "Changelog" [ref=e41]:
+                  - /url: /document-api/apiReference%2FupdateNotice
+                  - generic [ref=e42]: Changelog
+          - listitem [ref=e43]:
+            - generic [ref=e44]: API Reference
+            - list [ref=e45]:
+              - menuitem "General Info" [ref=e46] [cursor=pointer]:
+                - link "General Info" [ref=e47]:
+                  - /url: /document-api/apiReference%2FcommonInfo
+                  - generic [ref=e48]: General Info
+              - menuitem "Rate Limits" [ref=e49] [cursor=pointer]:
+                - link "Rate Limits" [ref=e50]:
+                  - /url: /document-api/apiReference%2FrateLimits
+                  - generic [ref=e51]: Rate Limits
+              - menuitem "Callback Schema" [ref=e52] [cursor=pointer]:
+                - link "Callback Schema" [ref=e53]:
+                  - /url: /document-api/apiReference%2FcallbackProtocol
+                  - generic [ref=e54]: Callback Schema
+              - menuitem "Kling Skills Hot" [ref=e55] [cursor=pointer]:
+                - link "Kling Skills Hot" [ref=e56]:
+                  - /url: /document-api/apiReference%2Fskill
+                  - generic [ref=e57]: Kling Skills
+                  - generic [ref=e58]: Hot
+                  - img
+              - menuitem "Video Generation" [expanded] [ref=e59]:
+                - generic [ref=e60] [cursor=pointer]:
+                  - generic [ref=e61]: Video Generation
+                  - img [ref=e63]
+                - menu [ref=e65]:
+                  - menuitem "Models" [ref=e66] [cursor=pointer]:
+                    - link "Models" [ref=e67]:
+                      - /url: /document-api/apiReference%2Fmodel%2FvideoModels
+                      - img [ref=e68]
+                      - generic [ref=e70]: Models
+                  - menuitem "Video Omni" [ref=e71] [cursor=pointer]:
+                    - link "Video Omni" [ref=e72]:
+                      - /url: /document-api/apiReference%2Fmodel%2FOmniVideo
+                      - img [ref=e73]
+                      - generic [ref=e75]: Video Omni
+                  - menuitem "Text to Video" [ref=e76] [cursor=pointer]:
+                    - link "Text to Video" [ref=e77]:
+                      - /url: /document-api/apiReference%2Fmodel%2FtextToVideo
+                      - img [ref=e78]
+                      - generic [ref=e80]: Text to Video
+                  - menuitem "Image to Video" [ref=e81] [cursor=pointer]:
+                    - link "Image to Video" [ref=e82]:
+                      - /url: /document-api/apiReference%2Fmodel%2FimageToVideo
+                      - img [ref=e83]
+                      - generic [ref=e85]: Image to Video
+                  - menuitem "Reference to Video" [ref=e86] [cursor=pointer]:
+                    - link "Reference to Video" [ref=e87]:
+                      - /url: /document-api/apiReference%2Fmodel%2FmultiImageToVideo
+                      - img [ref=e88]
+                      - generic [ref=e90]: Reference to Video
+                  - menuitem "Motion Control" [ref=e91] [cursor=pointer]:
+                    - link "Motion Control" [ref=e92]:
+                      - /url: /document-api/apiReference%2Fmodel%2FmotionControl
+                      - img [ref=e93]
+                      - generic [ref=e95]: Motion Control
+                  - menuitem "Multi-elements to video" [ref=e96] [cursor=pointer]:
+                    - link "Multi-elements to video" [ref=e97]:
+                      - /url: /document-api/apiReference%2Fmodel%2FmultiElements
+                      - img [ref=e98]
+                      - generic [ref=e100]: Multi-elements to video
+                  - menuitem "Extend Video" [ref=e101] [cursor=pointer]:
+                    - link "Extend Video" [ref=e102]:
+                      - /url: /document-api/apiReference%2Fmodel%2FvideoExtension
+                      - img [ref=e103]
+                      - generic [ref=e105]: Extend Video
+                  - menuitem "Lip Sync" [ref=e106] [cursor=pointer]:
+                    - link "Lip Sync" [ref=e107]:
+                      - /url: /document-api/apiReference%2Fmodel%2FlipSync
+                      - img [ref=e108]
+                      - generic [ref=e110]: Lip Sync
+                  - menuitem "Avatar" [ref=e111] [cursor=pointer]:
+                    - link "Avatar" [ref=e112]:
+                      - /url: /document-api/apiReference%2Fmodel%2Favatar
+                      - img [ref=e113]
+                      - generic [ref=e115]: Avatar
+                  - menuitem "Text to Audio" [ref=e116] [cursor=pointer]:
+                    - link "Text to Audio" [ref=e117]:
+                      - /url: /document-api/apiReference%2Fmodel%2FtextToAudio
+                      - img [ref=e118]
+                      - generic [ref=e120]: Text to Audio
+                  - menuitem "Video to Audio" [ref=e121] [cursor=pointer]:
+                    - link "Video to Audio" [ref=e122]:
+                      - /url: /document-api/apiReference%2Fmodel%2FvideoToAudio
+                      - img [ref=e123]
+                      - generic [ref=e125]: Video to Audio
+                  - menuitem "Text to Speech" [ref=e126] [cursor=pointer]:
+                    - link "Text to Speech" [ref=e127]:
+                      - /url: /document-api/apiReference%2Fmodel%2FTTS
+                      - img [ref=e128]
+                      - generic [ref=e130]: Text to Speech
+                  - menuitem "Voice Clone" [ref=e131] [cursor=pointer]:
+                    - link "Voice Clone" [ref=e132]:
+                      - /url: /document-api/apiReference%2Fmodel%2FcustomVoices
+                      - img [ref=e133]
+                      - generic [ref=e135]: Voice Clone
+                  - menuitem "Image Recognize" [ref=e136] [cursor=pointer]:
+                    - link "Image Recognize" [ref=e137]:
+                      - /url: /document-api/apiReference%2Fmodel%2FimageRecognize
+                      - img [ref=e138]
+                      - generic [ref=e140]: Image Recognize
+                  - menuitem "Element" [ref=e141] [cursor=pointer]:
+                    - link "Element" [ref=e142]:
+                      - /url: /document-api/apiReference%2Fmodel%2Felement
+                      - img [ref=e143]
+                      - generic [ref=e145]: Element
+              - menuitem "Effects" [expanded] [ref=e146]:
+                - generic [ref=e147] [cursor=pointer]:
+                  - generic [ref=e148]: Effects
+                  - img [ref=e150]
+                - menu [ref=e152]:
+                  - menuitem "Effect Templates NEW" [ref=e153] [cursor=pointer]:
+                    - link "Effect Templates NEW" [ref=e154]:
+                      - /url: /document-api/quickStart%2FproductIntroduction%2FeffectsCenter
+                      - img [ref=e155]
+                      - generic [ref=e157]: Effect Templates
+                      - generic [ref=e158]: NEW
+                  - menuitem "Video Effects" [ref=e159] [cursor=pointer]:
+                    - link "Video Effects" [ref=e160]:
+                      - /url: /document-api/apiReference%2Fmodel%2FvideoEffects
+                      - img [ref=e161]
+                      - generic [ref=e163]: Video Effects
+              - menuitem "Image Generation" [expanded] [ref=e164]:
+                - generic [ref=e165] [cursor=pointer]:
+                  - generic [ref=e166]: Image Generation
+                  - img [ref=e168]
+                - menu [ref=e170]:
+                  - menuitem "Models" [ref=e171] [cursor=pointer]:
+                    - link "Models" [ref=e172]:
+                      - /url: /document-api/apiReference%2Fmodel%2FimageModels
+                      - img [ref=e173]
+                      - generic [ref=e175]: Models
+                  - menuitem "Image Omni" [ref=e176] [cursor=pointer]:
+                    - link "Image Omni" [ref=e177]:
+                      - /url: /document-api/apiReference%2Fmodel%2FOmniImage
+                      - img [ref=e178]
+                      - generic [ref=e180]: Image Omni
+                  - menuitem "Image Generation" [ref=e181] [cursor=pointer]:
+                    - link "Image Generation" [ref=e182]:
+                      - /url: /document-api/apiReference%2Fmodel%2FimageGeneration
+                      - img [ref=e183]
+                      - generic [ref=e185]: Image Generation
+                  - menuitem "Reference to Image" [ref=e186] [cursor=pointer]:
+                    - link "Reference to Image" [ref=e187]:
+                      - /url: /document-api/apiReference%2Fmodel%2FmultiImageToImage
+                      - img [ref=e188]
+                      - generic [ref=e190]: Reference to Image
+                  - menuitem "Extend Image" [ref=e191] [cursor=pointer]:
+                    - link "Extend Image" [ref=e192]:
+                      - /url: /document-api/apiReference%2Fmodel%2FimageExpansion
+                      - img [ref=e193]
+                      - generic [ref=e195]: Extend Image
+                  - menuitem "AI Multi-Shot" [ref=e196] [cursor=pointer]:
+                    - link "AI Multi-Shot" [ref=e197]:
+                      - /url: /document-api/apiReference%2Fmodel%2FaiMultiShot
+                      - img [ref=e198]
+                      - generic [ref=e200]: AI Multi-Shot
+                  - menuitem "Virtual Try-On" [ref=e201] [cursor=pointer]:
+                    - link "Virtual Try-On" [ref=e202]:
+                      - /url: /document-api/apiReference%2Fmodel%2FvirtualTryOn
+                      - img [ref=e203]
+                      - generic [ref=e205]: Virtual Try-On
+              - menuitem "Others" [expanded] [ref=e206]:
+                - generic [ref=e207] [cursor=pointer]:
+                  - generic [ref=e208]: Others
+                  - img [ref=e210]
+                - menu [ref=e212]:
+                  - menuitem "Query user info" [ref=e213] [cursor=pointer]:
+                    - link "Query user info" [ref=e214]:
+                      - /url: /document-api/apiReference%2FaccountInfoInquiry
+                      - generic [ref=e215]: Query user info
+          - listitem [ref=e216]:
+            - generic [ref=e217]: Pricing
+            - list [ref=e218]:
+              - menuitem "Billing Info" [ref=e219] [cursor=pointer]:
+                - link "Billing Info" [ref=e220]:
+                  - /url: /document-api/productBilling%2FbillingMethod
+                  - generic [ref=e221]: Billing Info
+              - menuitem "Prepaid Resource Packs" [ref=e222] [cursor=pointer]:
+                - link "Prepaid Resource Packs" [ref=e223]:
+                  - /url: /document-api/productBilling%2FprePaidResourcePackage
+                  - generic [ref=e224]: Prepaid Resource Packs
+          - listitem [ref=e225]:
+            - generic [ref=e226]: Protocols
+            - list [ref=e227]:
+              - menuitem "Privacy Policy of API Service" [ref=e228] [cursor=pointer]:
+                - link "Privacy Policy of API Service" [ref=e229]:
+                  - /url: /document-api/protocols%2FprivacyPolicy
+                  - generic [ref=e230]: Privacy Policy of API Service
+              - menuitem "Terms of API Service" [ref=e231] [cursor=pointer]:
+                - link "Terms of API Service" [ref=e232]:
+                  - /url: /document-api/protocols%2FpaidServiceProtocol
+                  - generic [ref=e233]: Terms of API Service
+              - menuitem "API Service Level Agreement" [ref=e234] [cursor=pointer]:
+                - link "API Service Level Agreement" [ref=e235]:
+                  - /url: /document-api/protocols%2FpaidLevelProtocol
+                  - generic [ref=e236]: API Service Level Agreement
+      - generic [ref=e237]:
+        - generic [ref=e238]:
+          - heading "Image to Video" [level=1] [ref=e240]
+          - generic [ref=e242]:
+            - generic [ref=e243]:
+              - generic [ref=e245]:
+                - generic [ref=e246]:
+                  - heading "Create Task" [level=2] [ref=e247]
+                  - generic [ref=e248]:
+                    - generic [ref=e249]: POST
+                    - code [ref=e250]: /v1/videos/image2video
+                  - generic [ref=e253]:
+                    - generic [ref=e254]: 💡
+                    - paragraph [ref=e256]:
+                      - text: Please note that in order to maintain naming consistency, the original model field has been changed to model_name. Please use this field to specify the model version in the future.
+                      - text: We maintain backward compatibility. If you continue using the original model field, it will not affect API calls and will be equivalent to the default behavior when model_name is empty (i.e., calling the V1 model).
+                  - generic [ref=e257]:
+                    - heading "Request Header" [level=3] [ref=e258]
+                    - generic [ref=e259]:
+                      - generic [ref=e260]:
+                        - generic [ref=e261]:
+                          - generic [ref=e262]: Content-Type
+                          - generic [ref=e263]: string
+                          - generic [ref=e264]: Required
+                          - generic [ref=e265]: Default to application/json
+                        - paragraph [ref=e267]: Data Exchange Format
+                      - generic [ref=e268]:
+                        - generic [ref=e269]:
+                          - generic [ref=e270]: Authorization
+                          - generic [ref=e271]: string
+                          - generic [ref=e272]: Required
+                        - paragraph [ref=e274]: Authentication information, refer to API authentication
+                  - generic [ref=e275]:
+                    - heading "Request Body" [level=3] [ref=e276]
+                    - generic [ref=e277]:
+                      - generic [ref=e278]:
+                        - generic [ref=e279]:
+                          - generic [ref=e280]: model_name
+                          - generic [ref=e281]: string
+                          - generic [ref=e282]: Optional
+                          - generic [ref=e283]: Default to kling-v1
+                        - generic [ref=e284]:
+                          - paragraph [ref=e285]: Model Name
+                          - generic [ref=e286]:
+                            - generic [ref=e287]: Enum values：
+                            - generic [ref=e288]: kling-v1
+                            - generic [ref=e289]: kling-v1-5
+                            - generic [ref=e290]: kling-v1-6
+                            - generic [ref=e291]: kling-v2-master
+                            - generic [ref=e292]: kling-v2-1
+                            - generic [ref=e293]: kling-v2-1-master
+                            - generic [ref=e294]: kling-v2-5-turbo
+                            - generic [ref=e295]: kling-v2-6
+                            - generic [ref=e296]: kling-v3
+                      - generic [ref=e297]:
+                        - generic [ref=e298]:
+                          - generic [ref=e299]: image
+                          - generic [ref=e300]: string
+                          - generic [ref=e301]: Optional
+                        - generic [ref=e302]:
+                          - paragraph [ref=e303]: Reference Image
+                          - generic [ref=e304]:
+                            - list [ref=e307]:
+                              - listitem [ref=e308]: Supports image Base64 encoding or image URL (ensure accessibility)
+                            - list [ref=e311]:
+                              - listitem [ref=e312]:
+                                - text: "Important: When using Base64, do NOT add any prefix like"
+                                - code [ref=e313]: data:image/png;base64,
+                                - text: . Submit only the raw Base64 string.
+                            - generic [ref=e314]:
+                              - list [ref=e316]:
+                                - listitem [ref=e317]: "Correct Base64 format:"
+                              - code [ref=e327]: iVBORw0KGgoAAAANSUhEUgAAAAUA...
+                            - generic [ref=e328]:
+                              - list [ref=e330]:
+                                - listitem [ref=e331]: "Incorrect Base64 format (with data: prefix):"
+                              - code [ref=e341]: data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAUA...
+                            - list [ref=e344]:
+                              - listitem [ref=e345]:
+                                - text: "Supported image formats:"
+                                - code [ref=e346]: .jpg / .jpeg / .png
+                            - list [ref=e349]:
+                              - listitem [ref=e350]: "File size: ≤10MB, dimensions: min 300px, aspect ratio: 1:2.5 ~ 2.5:1"
+                            - list [ref=e353]:
+                              - listitem [ref=e354]:
+                                - text: At least one of
+                                - code [ref=e355]: image
+                                - text: or
+                                - code [ref=e356]: image_tail
+                                - text: must be provided; both cannot be empty
+                            - paragraph [ref=e360]:
+                              - text: Support varies by model version and video mode. See
+                              - link "Capability Map" [ref=e361] [cursor=pointer]:
+                                - /url: /document-api/apiReference/model/videoModels
+                              - text: for details.
+                      - generic [ref=e362]:
+                        - generic [ref=e363]:
+                          - generic [ref=e364]: image_tail
+                          - generic [ref=e365]: string
+                          - generic [ref=e366]: Optional
+                        - generic [ref=e367]:
+                          - paragraph [ref=e368]: Reference Image - End frame control
+                          - generic [ref=e369]:
+                            - list [ref=e372]:
+                              - listitem [ref=e373]: Supports image Base64 encoding or image URL (ensure accessibility)
+                            - list [ref=e376]:
+                              - listitem [ref=e377]:
+                                - text: "Important: When using Base64, do NOT add any prefix like"
+                                - code [ref=e378]: data:image/png;base64,
+                                - text: . Submit only the raw Base64 string.
+                            - list [ref=e381]:
+                              - listitem [ref=e382]:
+                                - text: "Supported image formats:"
+                                - code [ref=e383]: .jpg / .jpeg / .png
+                            - list [ref=e386]:
+                              - listitem [ref=e387]: "File size: ≤10MB, dimensions: min 300px"
+                            - list [ref=e390]:
+                              - listitem [ref=e391]:
+                                - text: At least one of
+                                - code [ref=e392]: image
+                                - text: or
+                                - code [ref=e393]: image_tail
+                                - text: must be provided; both cannot be empty
+                            - list [ref=e396]:
+                              - listitem [ref=e397]:
+                                - code [ref=e398]: image_tail
+                                - text: ","
+                                - code [ref=e399]: dynamic_masks/static_mask
+                                - text: ", and"
+                                - code [ref=e400]: camera_control
+                                - text: are mutually exclusive - only one can be used at a time
+                            - paragraph [ref=e404]:
+                              - text: Support varies by model version and video mode. See
+                              - link "Capability Map" [ref=e405] [cursor=pointer]:
+                                - /url: /document-api/apiReference/model/videoModels
+                              - text: for details.
+                      - generic [ref=e406]:
+                        - generic [ref=e407]:
+                          - generic [ref=e408]: multi_shot
+                          - generic [ref=e409]: boolean
+                          - generic [ref=e410]: Optional
+                          - generic [ref=e411]: Default to false
+                        - generic [ref=e412]:
+                          - paragraph [ref=e413]: Whether to generate multi-shot video
+                          - generic [ref=e414]:
+                            - paragraph [ref=e417]: "When true: the prompt parameter is invalid."
+                            - paragraph [ref=e420]: "When false: the shot_type and multi_prompt parameters are invalid"
+                      - generic [ref=e421]:
+                        - generic [ref=e422]:
+                          - generic [ref=e423]: shot_type
+                          - generic [ref=e424]: string
+                          - generic [ref=e425]: Optional
+                        - generic [ref=e426]:
+                          - paragraph [ref=e427]: Storyboard method
+                          - generic [ref=e428]:
+                            - generic [ref=e429]: Enum values：
+                            - generic [ref=e430]: customize
+                            - generic [ref=e431]: intelligence
+                          - paragraph [ref=e435]: When multi_shot is true, this parameter is required
+                      - generic [ref=e436]:
+                        - generic [ref=e437]:
+                          - generic [ref=e438]: prompt
+                          - generic [ref=e439]: string
+                          - generic [ref=e440]: Optional
+                        - generic [ref=e441]:
+                          - paragraph [ref=e442]: Positive text prompt
+                          - generic [ref=e443]:
+                            - generic [ref=e446]:
+                              - generic [ref=e447]: 💡
+                              - generic [ref=e448]:
+                                - paragraph [ref=e449]: "The Omni model can achieve various capabilities through Prompt with elements, images, videos, and other content:"
+                                - list [ref=e450]:
+                                  - listitem [ref=e451]: "Specify elements/images/videos using <<<>>> format, e.g.: <<<element_1>>>, <<<image_1>>>, <<<video_1>>>"
+                                  - listitem [ref=e452]:
+                                    - text: "For detailed capabilities, see:"
+                                    - link "KLING Omni Model User Guide" [ref=e453] [cursor=pointer]:
+                                      - /url: /quickstart/klingai-video-o1-user-guide
+                                    - text: ","
+                                    - link "Kling VIDEO 3.0 Omni Model User Guide" [ref=e454] [cursor=pointer]:
+                                      - /url: /quickstart/klingai-video-3-omni-model-user-guide
+                            - list [ref=e457]:
+                              - listitem [ref=e458]: Cannot exceed 2500 characters
+                            - list [ref=e461]:
+                              - listitem [ref=e462]: When multi_shot is false or shot_type is intelligence, this parameter must not be empty.
+                            - list [ref=e465]:
+                              - listitem [ref=e466]:
+                                - text: Use
+                                - code [ref=e467]: <<<voice_1>>>
+                                - text: to specify voice, with the sequence matching the voice_list parameter order
+                            - list [ref=e470]:
+                              - listitem [ref=e471]: A video generation task can reference up to 2 voices; when specifying a voice, the sound parameter must be "on"
+                            - list [ref=e474]:
+                              - listitem [ref=e475]:
+                                - text: "The simpler the syntax structure, the better. Example:"
+                                - code [ref=e476]: "The man<<<voice_1>>> said: \"Hello\""
+                            - list [ref=e479]:
+                              - listitem [ref=e480]: When voice_list is not empty and prompt references voice ID, the task will be billed as "with specified voice"
+                            - paragraph [ref=e484]:
+                              - text: Support varies by model version and video mode. See
+                              - link "Capability Map" [ref=e485] [cursor=pointer]:
+                                - /url: /document-api/apiReference/model/videoModels
+                              - text: for details.
+                      - generic [ref=e486]:
+                        - generic [ref=e487]:
+                          - generic [ref=e488]: multi_prompt
+                          - generic [ref=e489]: array
+                          - generic [ref=e490]: Optional
+                        - generic [ref=e491]:
+                          - paragraph [ref=e492]: Information about each storyboard, such as prompts and duration
+                          - generic [ref=e493]:
+                            - generic [ref=e495]:
+                              - paragraph [ref=e496]: "Define the shot sequence number, corresponding prompt word, and duration through the index, prompt, and duration parameters, where:"
+                              - list [ref=e497]:
+                                - listitem [ref=e498]: Supports up to 6 storyboards, with a minimum of 1 storyboard.
+                                - listitem [ref=e499]: The maximum length of the prompt for each storyboard 512 characters.
+                                - listitem [ref=e500]: The duration of each storyboard should not exceed the total duration, but should not be less than 1.
+                                - listitem [ref=e501]: The sum of the durations of all storyboards equals the total duration of the current task.
+                            - generic [ref=e502]:
+                              - paragraph [ref=e504]: "Load with key:value format as follows:"
+                              - code [ref=e514]: "\"multi_prompt\":[ {\"index\":int,\"prompt\":\"string\",\"duration\":\"5\"}, {\"index\":int,\"prompt\":\"string\",\"duration\":\"5\"} ]"
+                            - paragraph [ref=e517]: When multi_shot is true and shot_type is customize, this parameter is required.
+                      - generic [ref=e518]:
+                        - generic [ref=e519]:
+                          - generic [ref=e520]: negative_prompt
+                          - generic [ref=e521]: string
+                          - generic [ref=e522]: Optional
+                        - generic [ref=e523]:
+                          - paragraph [ref=e524]: Negative text prompt
+                          - generic [ref=e525]:
+                            - list [ref=e528]:
+                              - listitem [ref=e529]: Cannot exceed 2500 characters
+                            - list [ref=e532]:
+                              - listitem [ref=e533]: It is recommended to supplement negative prompt via negative sentences within positive prompts
+                      - generic [ref=e534]:
+                        - generic [ref=e535]:
+                          - generic [ref=e536]: element_list
+                          - generic [ref=e537]: array
+                          - generic [ref=e538]: Optional
+                        - generic [ref=e539]:
+                          - paragraph [ref=e540]: Reference Element List, based on element ID from element library
+                          - generic [ref=e541]:
+                            - list [ref=e544]:
+                              - listitem [ref=e545]: Supports up to 3 reference elements
+                            - paragraph [ref=e548]:
+                              - text: The elements are categorized into video customization element (named as Video Character Elements) and image customization elements (named as Multi-Image Elements), each with distinct scopes of application. Please exercise caution in distinguishing between them. See
+                              - link "Kling Element Library User Guide" [ref=e549] [cursor=pointer]:
+                                - /url: /quickstart/klingai-element-library-3-user-guide
+                              - text: .
+                            - generic [ref=e550]:
+                              - list [ref=e552]:
+                                - listitem [ref=e553]: "Load with key:value format as follows:"
+                              - code [ref=e563]: "\"element_list\":[ { \"element_id\": long }, { \"element_id\": long } ]"
+                            - paragraph [ref=e567]:
+                              - text: Support varies by model version and video mode. See
+                              - link "Capability Map" [ref=e568] [cursor=pointer]:
+                                - /url: /document-api/apiReference/model/videoModels
+                              - text: for details.
+                          - generic [ref=e569] [cursor=pointer]:
+                            - generic [ref=e570]: ▾
+                            - generic [ref=e571]: Hide child attributes
+                        - generic [ref=e573]:
+                          - generic [ref=e574]:
+                            - generic [ref=e575]: element_id
+                            - generic [ref=e576]: long
+                            - generic [ref=e577]: Required
+                          - paragraph [ref=e579]: Element ID from element library
+                      - generic [ref=e580]:
+                        - generic [ref=e581]:
+                          - generic [ref=e582]: voice_list
+                          - generic [ref=e583]: array
+                          - generic [ref=e584]: Optional
+                        - generic [ref=e585]:
+                          - paragraph [ref=e586]: List of voices referenced when generating videos
+                          - generic [ref=e587]:
+                            - list [ref=e590]:
+                              - listitem [ref=e591]: A video generation task can reference up to 2 voices
+                            - list [ref=e594]:
+                              - listitem [ref=e595]: When voice_list is not empty and prompt references voice ID, the task will be billed as "with specified voice"
+                            - list [ref=e598]:
+                              - listitem [ref=e599]:
+                                - text: voice_id is returned through the voice customization API, or use system preset voices. See
+                                - link "Custom Voices API" [ref=e600] [cursor=pointer]:
+                                  - /url: /document-api/apiReference/model/customVoices
+                                - text: ; NOT the voice_id of Lip-Sync API
+                            - list [ref=e603]:
+                              - listitem [ref=e604]: element_list and voice_list are mutually exclusive and cannot coexist
+                            - generic [ref=e605]:
+                              - paragraph [ref=e607]: "Example:"
+                              - code [ref=e617]: "\"voice_list\":[ {\"voice_id\":\"voice_id_1\"}, {\"voice_id\":\"voice_id_2\"} ]"
+                            - paragraph [ref=e621]:
+                              - text: The support range for different model versions and video modes varies. For details, see
+                              - link "Capability Map" [ref=e622] [cursor=pointer]:
+                                - /url: /document-api/apiReference/model/videoModels
+                      - generic [ref=e623]:
+                        - generic [ref=e624]:
+                          - generic [ref=e625]: sound
+                          - generic [ref=e626]: string
+                          - generic [ref=e627]: Optional
+                          - generic [ref=e628]: Default to off
+                        - generic [ref=e629]:
+                          - paragraph [ref=e630]: Whether to generate sound when generating video
+                          - generic [ref=e631]:
+                            - generic [ref=e632]: Enum values：
+                            - generic [ref=e633]: "on"
+                            - generic [ref=e634]: "off"
+                          - paragraph [ref=e639]:
+                            - text: The support range for different model versions and video modes varies. For details, see
+                            - link "Capability Map" [ref=e640] [cursor=pointer]:
+                              - /url: /document-api/apiReference/model/videoModels
+                      - generic [ref=e641]:
+                        - generic [ref=e642]:
+                          - generic [ref=e643]: cfg_scale
+                          - generic [ref=e644]: float
+                          - generic [ref=e645]: Optional
+                          - generic [ref=e646]: Default to 0.5
+                        - generic [ref=e647]:
+                          - paragraph [ref=e648]: Flexibility in video generation; higher value means lower model flexibility and stronger relevance to user prompt
+                          - generic [ref=e649]:
+                            - list [ref=e652]:
+                              - listitem [ref=e653]: "Value range: [0, 1]"
+                            - paragraph [ref=e657]: kling-v2.x models do not support this parameter
+                      - generic [ref=e658]:
+                        - generic [ref=e659]:
+                          - generic [ref=e660]: mode
+                          - generic [ref=e661]: string
+                          - generic [ref=e662]: Optional
+                          - generic [ref=e663]: Default to std
+                        - generic [ref=e664]:
+                          - paragraph [ref=e665]: Video generation mode
+                          - generic [ref=e666]:
+                            - generic [ref=e667]: Enum values：
+                            - generic [ref=e668]: std
+                            - generic [ref=e669]: pro
+                            - generic [ref=e670]: 4k
+                          - generic [ref=e671]:
+                            - list [ref=e674]:
+                              - listitem [ref=e675]:
+                                - code [ref=e676]: std
+                                - text: ": Standard Mode, basic mode, cost-effective. The output video resolution is 720P."
+                              - listitem [ref=e677]:
+                                - code [ref=e678]: pro
+                                - text: ": Professional Mode, generates videos use longer duration but higher quality video output. The output video resolution is 1080P."
+                              - listitem [ref=e679]:
+                                - code [ref=e680]: 4k
+                                - text: ": 4K Mode, generates videos use longer duration but higher quality video output. The output video resolution is 4K."
+                            - paragraph [ref=e684]:
+                              - text: Support varies by model version and video mode. See
+                              - link "Capability Map" [ref=e685] [cursor=pointer]:
+                                - /url: /document-api/apiReference/model/videoModels
+                              - text: for details.
+                      - generic [ref=e686]:
+                        - generic [ref=e687]:
+                          - generic [ref=e688]: static_mask
+                          - generic [ref=e689]: string
+                          - generic [ref=e690]: Optional
+                        - generic [ref=e691]:
+                          - paragraph [ref=e692]: Static brush mask area (mask image created by user using motion brush)
+                          - generic [ref=e693]:
+                            - paragraph [ref=e697]: The "Motion Brush" feature includes Dynamic Brush (dynamic_masks) and Static Brush (static_mask)
+                            - list [ref=e700]:
+                              - listitem [ref=e701]: Supports image Base64 encoding or image URL (same format requirements as image field)
+                            - list [ref=e704]:
+                              - listitem [ref=e705]:
+                                - text: "Supported image formats:"
+                                - code [ref=e706]: .jpg / .jpeg / .png
+                            - list [ref=e709]:
+                              - listitem [ref=e710]: Aspect ratio must match the input image (image field), otherwise task will fail
+                            - list [ref=e713]:
+                              - listitem [ref=e714]: Resolution of static_mask and dynamic_masks.mask must be identical, otherwise task will fail
+                            - paragraph [ref=e718]:
+                              - text: Support varies by model version and video mode. See
+                              - link "Capability Map" [ref=e719] [cursor=pointer]:
+                                - /url: /document-api/apiReference/model/videoModels
+                              - text: for details.
+                      - generic [ref=e720]:
+                        - generic [ref=e721]:
+                          - generic [ref=e722]: dynamic_masks
+                          - generic [ref=e723]: array
+                          - generic [ref=e724]: Optional
+                        - generic [ref=e725]:
+                          - paragraph [ref=e726]: Dynamic brush configuration list
+                          - generic [ref=e727]:
+                            - list [ref=e730]:
+                              - listitem [ref=e731]: Can configure multiple groups (up to 6), each containing "mask area" and "motion trajectory" sequence
+                            - paragraph [ref=e735]:
+                              - text: Support varies by model version and video mode. See
+                              - link "Capability Map" [ref=e736] [cursor=pointer]:
+                                - /url: /document-api/apiReference/model/videoModels
+                              - text: for details.
+                          - generic [ref=e737] [cursor=pointer]:
+                            - generic [ref=e738]: ▾
+                            - generic [ref=e739]: Hide child attributes
+                        - generic [ref=e740]:
+                          - generic [ref=e741]:
+                            - generic [ref=e742]:
+                              - generic [ref=e743]: mask
+                              - generic [ref=e744]: string
+                              - generic [ref=e745]: Required
+                            - generic [ref=e746]:
+                              - paragraph [ref=e747]: Dynamic brush mask area (mask image created by user using motion brush)
+                              - generic [ref=e748]:
+                                - list [ref=e751]:
+                                  - listitem [ref=e752]: Supports image Base64 encoding or image URL (same format requirements as image field)
+                                - list [ref=e755]:
+                                  - listitem [ref=e756]: "Supported image formats: .jpg / .jpeg / .png"
+                                - list [ref=e759]:
+                                  - listitem [ref=e760]: Aspect ratio must match the input image (image field), otherwise task will fail
+                                - list [ref=e763]:
+                                  - listitem [ref=e764]: Resolution of static_mask and dynamic_masks.mask must be identical, otherwise task will fail
+                          - generic [ref=e765]:
+                            - generic [ref=e766]:
+                              - generic [ref=e767]: trajectories
+                              - generic [ref=e768]: array
+                              - generic [ref=e769]: Required
+                            - generic [ref=e770]:
+                              - paragraph [ref=e771]: Motion trajectory coordinate sequence
+                              - generic [ref=e772]:
+                                - list [ref=e775]:
+                                  - listitem [ref=e776]: "For 5s video, trajectory length ≤77, coordinate count range: [2, 77]"
+                                - list [ref=e779]:
+                                  - listitem [ref=e780]: Coordinate system uses bottom-left corner of image as origin
+                                - paragraph [ref=e784]: "Note 1: More coordinate points = more accurate trajectory. 2 points = straight line between them"
+                                - paragraph [ref=e788]: "Note 2: Trajectory direction follows input order. First coordinate is start point, subsequent coordinates are connected sequentially"
+                              - generic [ref=e789] [cursor=pointer]:
+                                - generic [ref=e790]: ▾
+                                - generic [ref=e791]: Hide child attributes
+                            - generic [ref=e792]:
+                              - generic [ref=e793]:
+                                - generic [ref=e794]:
+                                  - generic [ref=e795]: x
+                                  - generic [ref=e796]: int
+                                  - generic [ref=e797]: Required
+                                - paragraph [ref=e799]: X coordinate of trajectory point (pixel coordinate with image bottom-left as origin)
+                              - generic [ref=e800]:
+                                - generic [ref=e801]:
+                                  - generic [ref=e802]: "y"
+                                  - generic [ref=e803]: int
+                                  - generic [ref=e804]: Required
+                                - paragraph [ref=e806]: Y coordinate of trajectory point (pixel coordinate with image bottom-left as origin)
+                      - generic [ref=e807]:
+                        - generic [ref=e808]:
+                          - generic [ref=e809]: camera_control
+                          - generic [ref=e810]: object
+                          - generic [ref=e811]: Optional
+                        - generic [ref=e812]:
+                          - paragraph [ref=e813]: Camera movement control protocol (if not specified, model will intelligently match based on input text/images)
+                          - paragraph [ref=e818]:
+                            - text: Support varies by model version and video mode. See
+                            - link "Capability Map" [ref=e819] [cursor=pointer]:
+                              - /url: /document-api/apiReference/model/videoModels
+                            - text: for details.
+                          - generic [ref=e820] [cursor=pointer]:
+                            - generic [ref=e821]: ▾
+                            - generic [ref=e822]: Hide child attributes
+                        - generic [ref=e823]:
+                          - generic [ref=e824]:
+                            - generic [ref=e825]:
+                              - generic [ref=e826]: type
+                              - generic [ref=e827]: string
+                              - generic [ref=e828]: Required
+                            - generic [ref=e829]:
+                              - paragraph [ref=e830]: Predefined camera movement type
+                              - generic [ref=e831]:
+                                - generic [ref=e832]: Enum values：
+                                - generic [ref=e833]: simple
+                                - generic [ref=e834]: down_back
+                                - generic [ref=e835]: forward_up
+                                - generic [ref=e836]: right_turn_forward
+                                - generic [ref=e837]: left_turn_forward
+                              - generic [ref=e838]:
+                                - list [ref=e841]:
+                                  - listitem [ref=e842]: "simple: Simple camera movement, can choose one of six options in \"config\""
+                                - list [ref=e845]:
+                                  - listitem [ref=e846]: "down_back: Camera descends and moves backward ➡️ Pan down and zoom out. config parameter not required"
+                                - list [ref=e849]:
+                                  - listitem [ref=e850]: "forward_up: Camera moves forward and tilts up ➡️ Zoom in and pan up. config parameter not required"
+                                - list [ref=e853]:
+                                  - listitem [ref=e854]: "right_turn_forward: Rotate right then move forward ➡️ Right rotation advance. config parameter not required"
+                                - list [ref=e857]:
+                                  - listitem [ref=e858]: "left_turn_forward: Rotate left then move forward ➡️ Left rotation advance. config parameter not required"
+                          - generic [ref=e859]:
+                            - generic [ref=e860]:
+                              - generic [ref=e861]: config
+                              - generic [ref=e862]: object
+                              - generic [ref=e863]: Optional
+                            - generic [ref=e864]:
+                              - paragraph [ref=e865]: Contains 6 fields to specify camera movement in different directions
+                              - generic [ref=e866]:
+                                - list [ref=e869]:
+                                  - listitem [ref=e870]: Required when type is "simple"; leave empty for other types
+                                - list [ref=e873]:
+                                  - listitem [ref=e874]: Choose only one parameter to be non-zero; rest must be 0
+                              - generic [ref=e875] [cursor=pointer]:
+                                - generic [ref=e876]: ▾
+                                - generic [ref=e877]: Hide child attributes
+                            - generic [ref=e878]:
+                              - generic [ref=e879]:
+                                - generic [ref=e880]:
+                                  - generic [ref=e881]: horizontal
+                                  - generic [ref=e882]: float
+                                  - generic [ref=e883]: Optional
+                                - generic [ref=e884]:
+                                  - paragraph [ref=e885]: Horizontal movement - camera translation along x-axis
+                                  - list [ref=e889]:
+                                    - listitem [ref=e890]: "Value range: [-10, 10]. Negative = left, Positive = right"
+                              - generic [ref=e891]:
+                                - generic [ref=e892]:
+                                  - generic [ref=e893]: vertical
+                                  - generic [ref=e894]: float
+                                  - generic [ref=e895]: Optional
+                                - generic [ref=e896]:
+                                  - paragraph [ref=e897]: Vertical movement - camera translation along y-axis
+                                  - list [ref=e901]:
+                                    - listitem [ref=e902]: "Value range: [-10, 10]. Negative = down, Positive = up"
+                              - generic [ref=e903]:
+                                - generic [ref=e904]:
+                                  - generic [ref=e905]: pan
+                                  - generic [ref=e906]: float
+                                  - generic [ref=e907]: Optional
+                                - generic [ref=e908]:
+                                  - paragraph [ref=e909]: Horizontal pan - camera rotation around y-axis
+                                  - list [ref=e913]:
+                                    - listitem [ref=e914]: "Value range: [-10, 10]. Negative = rotate left, Positive = rotate right"
+                              - generic [ref=e915]:
+                                - generic [ref=e916]:
+                                  - generic [ref=e917]: tilt
+                                  - generic [ref=e918]: float
+                                  - generic [ref=e919]: Optional
+                                - generic [ref=e920]:
+                                  - paragraph [ref=e921]: Vertical tilt - camera rotation around x-axis
+                                  - list [ref=e925]:
+                                    - listitem [ref=e926]: "Value range: [-10, 10]. Negative = tilt down, Positive = tilt up"
+                              - generic [ref=e927]:
+                                - generic [ref=e928]:
+                                  - generic [ref=e929]: roll
+                                  - generic [ref=e930]: float
+                                  - generic [ref=e931]: Optional
+                                - generic [ref=e932]:
+                                  - paragraph [ref=e933]: Roll - camera rotation around z-axis
+                                  - list [ref=e937]:
+                                    - listitem [ref=e938]: "Value range: [-10, 10]. Negative = counterclockwise, Positive = clockwise"
+                              - generic [ref=e939]:
+                                - generic [ref=e940]:
+                                  - generic [ref=e941]: zoom
+                                  - generic [ref=e942]: float
+                                  - generic [ref=e943]: Optional
+                                - generic [ref=e944]:
+                                  - paragraph [ref=e945]: Zoom - controls camera focal length change, affects field of view
+                                  - list [ref=e949]:
+                                    - listitem [ref=e950]: "Value range: [-10, 10]. Negative = longer focal length (narrower FOV), Positive = shorter focal length (wider FOV)"
+                      - generic [ref=e951]:
+                        - generic [ref=e952]:
+                          - generic [ref=e953]: duration
+                          - generic [ref=e954]: string
+                          - generic [ref=e955]: Optional
+                          - generic [ref=e956]: Default to 5
+                        - generic [ref=e957]:
+                          - paragraph [ref=e958]: Video duration in seconds
+                          - generic [ref=e959]:
+                            - generic [ref=e960]: Enum values：
+                            - generic [ref=e961]: "3"
+                            - generic [ref=e962]: "4"
+                            - generic [ref=e963]: "5"
+                            - generic [ref=e964]: "6"
+                            - generic [ref=e965]: "7"
+                            - generic [ref=e966]: "8"
+                            - generic [ref=e967]: "9"
+                            - generic [ref=e968]: "10"
+                            - generic [ref=e969]: "11"
+                            - generic [ref=e970]: "12"
+                            - generic [ref=e971]: "13"
+                            - generic [ref=e972]: "14"
+                            - generic [ref=e973]: "15"
+                          - paragraph [ref=e978]:
+                            - text: Support varies by model version and video mode. See
+                            - link "Capability Map" [ref=e979] [cursor=pointer]:
+                              - /url: /document-api/apiReference/model/videoModels
+                            - text: for details.
+                      - generic [ref=e980]:
+                        - generic [ref=e981]:
+                          - generic [ref=e982]: watermark_info
+                          - generic [ref=e983]: object
+                          - generic [ref=e984]: Optional
+                        - generic [ref=e985]:
+                          - paragraph [ref=e986]: Whether to generate watermarked results simultaneously
+                          - generic [ref=e987]:
+                            - generic [ref=e988]:
+                              - list [ref=e990]:
+                                - listitem [ref=e991]: "Defined by the enabled parameter, format:"
+                              - code [ref=e1001]: "\"watermark_info\": { \"enabled\": boolean }"
+                            - list [ref=e1004]:
+                              - listitem [ref=e1005]: "true: generate watermarked result, false: do not generate"
+                            - list [ref=e1008]:
+                              - listitem [ref=e1009]: Custom watermarks are not currently supported
+                      - generic [ref=e1010]:
+                        - generic [ref=e1011]:
+                          - generic [ref=e1012]: callback_url
+                          - generic [ref=e1013]: string
+                          - generic [ref=e1014]: Optional
+                        - generic [ref=e1015]:
+                          - paragraph [ref=e1016]: Callback notification URL for task result. If configured, server will notify when task status changes.
+                          - list [ref=e1020]:
+                            - listitem [ref=e1021]:
+                              - text: For specific message schema, see
+                              - link "Callback Protocol" [ref=e1022] [cursor=pointer]:
+                                - /url: /document-api/apiReference/callbackProtocol
+                      - generic [ref=e1023]:
+                        - generic [ref=e1024]:
+                          - generic [ref=e1025]: external_task_id
+                          - generic [ref=e1026]: string
+                          - generic [ref=e1027]: Optional
+                        - generic [ref=e1028]:
+                          - paragraph [ref=e1029]: Customized Task ID
+                          - generic [ref=e1030]:
+                            - list [ref=e1033]:
+                              - listitem [ref=e1034]: Will not overwrite system-generated task ID, but supports querying task by this ID
+                            - list [ref=e1037]:
+                              - listitem [ref=e1038]: Must be unique within a single user account
+                - generic [ref=e1041]:
+                  - generic [ref=e1042]:
+                    - generic [ref=e1043]:
+                      - button "cURL" [ref=e1045] [cursor=pointer]
+                      - generic [ref=e1046]:
+                        - button "Copy" [ref=e1047] [cursor=pointer]:
+                          - img [ref=e1048]
+                          - generic [ref=e1050]: Copy
+                        - button "Collapse" [ref=e1051] [cursor=pointer]:
+                          - img [ref=e1052]
+                          - generic [ref=e1054]: Collapse
+                    - code [ref=e1062]: "curl --location --request POST 'https://api-singapore.klingai.com/v1/videos/image2video' \\ --header 'Authorization: Bearer <token>' \\ --header 'Content-Type: application/json' \\ --data-raw '{ \"model_name\": \"kling-v2-6\", \"image\": \"https://p2-kling.klingai.com/kcdn/cdn-kcdn112452/kling-qa-test/multi-2.png\", \"image_tail\": \"https://p2-kling.klingai.com/kcdn/cdn-kcdn112452/kling-qa-test/multi-1.png\", \"prompt\": \"Camera zooms out, the girl smiles\", \"negative_prompt\": \"\", \"duration\": \"5\", \"mode\": \"pro\", \"sound\": \"off\", \"callback_url\": \"\", \"external_task_id\": \"\" }'"
+                  - generic [ref=e1063]:
+                    - generic [ref=e1064]:
+                      - generic [ref=e1066]: "200"
+                      - generic [ref=e1067]:
+                        - button "Copy" [ref=e1068] [cursor=pointer]:
+                          - img [ref=e1069]
+                          - generic [ref=e1071]: Copy
+                        - button "Collapse" [ref=e1072] [cursor=pointer]:
+                          - img [ref=e1073]
+                          - generic [ref=e1075]: Collapse
+                    - code [ref=e1083]: "{ \"code\": 0, // Error codes; Specific definitions can be found in \"Error Code\" \"message\": \"string\", // Error information \"request_id\": \"string\", // Request ID, generated by the system \"data\": { \"task_id\": \"string\", // Task ID, generated by the system \"task_info\": { // Task creation parameters \"external_task_id\": \"string\" // Customer-defined task ID }, \"task_status\": \"string\", // Task status, Enum values: submitted, processing, succeed, failed \"created_at\": 1722769557708, // Task creation time, Unix timestamp, unit ms \"updated_at\": 1722769557708 // Task update time, Unix timestamp, unit ms } }"
+              - heading "Scenario invocation examples" [level=2] [ref=e1084]
+              - heading "Image to video with multi-shot" [level=3] [ref=e1085]
+              - code [ref=e1095]: "curl --location 'https://xxx/v1/videos/image2video' \\ --header 'Authorization: Bearer xxx' \\ --header 'Content-Type: application/json' \\ --data '{ \"model_name\": \"kling-v3\", \"image\": \"xxx\", \"prompt\": \"\", \"multi_shot\": \"true\", \"shot_type\": \"customize\", \"multi_prompt\": [ { \"index\": 1, \"prompt\": \"Two friends talking under a streetlight at night. Warm glow, casual poses, no dialogue.\", \"duration\": \"2\" }, { \"index\": 2, \"prompt\": \"A runner sprinting through a forest, leaves flying. Low-angle shot, focus on movement.\", \"duration\": \"3\" }, { \"index\": 3, \"prompt\": \"A woman hugging a cat, smiling. Soft sunlight, cozy home setting, emphasize warmth.\", \"duration\": \"3\" }, { \"index\": 4, \"prompt\": \"A door creaking open, shadowy hallway. Dark tones, minimal details, eerie mood.\", \"duration\": \"3\" }, { \"index\": 5, \"prompt\": \"A man slipping on a banana peel, shocked expression. Exaggerated pose, bright colors.\", \"duration\": \"3\" }, { \"index\": 6, \"prompt\": \"A sunset over mountains, small figure walking away. Wide angle, peaceful atmosphere.\", \"duration\": \"1\" } ], \"negative_prompt\": \"\", \"duration\": \"15\", \"mode\": \"pro\", \"sound\": \"on\", \"callback_url\": \"\", \"external_task_id\": \"\" }'"
+              - heading "Image to video with element" [level=3] [ref=e1096]
+              - code [ref=e1106]: "curl --location 'https://api-singapore.klingai.com/v1/images/generations' \\ --header 'Authorization: Bearer xxx' \\ --header 'Content-Type: application/json' \\ --data '{ \"model_name\": \"kling-v3\", \"prompt\": \"Merge all the characters from the images into the <<<object_2>>> diagram\", \"element_list\": [ { \"element_id\": \"160\" }, { \"element_id\": \"161\" }, { \"element_id\": \"159\" } ], \"image\": \"xxx\", \"resolution\": \"2k\", \"n\": \"9\", \"aspect_ratio\": \"3:2\", \"external_task_id\": \"\", \"callback_url\": \"\" }'"
+              - code [ref=e1116]: "curl --location 'https://xxx/v1/videos/text2video' \\ --header 'Authorization: Bearer xxx' \\ --header 'Content-Type: application/json' \\ --data '{ \"model_name\": \"kling-v3\", \"prompt\": \"\", \"multi_prompt\": [ { \"index\": 1, \"prompt\": \"Two friends talking under a streetlight at night. Warm glow, casual poses, no dialogue.\", \"duration\": \"2\" }, { \"index\": 2, \"prompt\": \"A runner sprinting through a forest, leaves flying. Low-angle shot, focus on movement.\", \"duration\": \"3\" }, { \"index\": 3, \"prompt\": \"A woman hugging a cat, smiling. Soft sunlight, cozy home setting, emphasize warmth.\", \"duration\": \"3\" }, { \"index\": 4, \"prompt\": \"A door creaking open, shadowy hallway. Dark tones, minimal details, eerie mood.\", \"duration\": \"3\" }, { \"index\": 5, \"prompt\": \"A man slipping on a banana peel, shocked expression. Exaggerated pose, bright colors.\", \"duration\": \"3\" }, { \"index\": 6, \"prompt\": \"A sunset over mountains, small figure walking away. Wide angle, peaceful atmosphere.\", \"duration\": \"1\" } ], \"multi_shot\": true, \"shot_type\": \"customize\", \"duration\": \"15\", \"mode\": \"pro\", \"sound\": \"on\", \"aspect_ratio\": \"9:16\", \"callback_url\": \"\", \"external_task_id\": \"\" }'"
+              - heading "Generate video with voice control" [level=3] [ref=e1117]
+              - code [ref=e1127]: "curl --location 'https://api-singapore.klingai.com/v1/videos/image2video/' \\ --header 'Authorization: Bearer {Replace your token}' \\ --header 'Content-Type: application/json; charset=utf-8' \\ --data '{ \"model_name\": \"kling-v2-6\", \"image\": \"Replace the URL of image\", \"prompt\": \"<<<voice_1>>>Ask the people in the picture to say the following words, '\\''Welcome everyone'\\''\", //If a specific dialogue needs to be enclosed in quotation marks \"voice_list\": [ { \"voice_id\": \"Replace the ID of voice\" } ], \"duration\": \"5\", \"mode\": \"pro\", \"sound\": \"on\", \"callback_url\": \"\", \"external_task_id\": \"\" }'"
+              - separator [ref=e1128]
+              - generic [ref=e1130]:
+                - generic [ref=e1131]:
+                  - heading "Query Task (Single)" [level=2] [ref=e1132]
+                  - generic [ref=e1133]:
+                    - generic [ref=e1134]: GET
+                    - code [ref=e1135]: "/v1/videos/image2video/{id}"
+                  - generic [ref=e1136]:
+                    - heading "Request Header" [level=3] [ref=e1137]
+                    - generic [ref=e1138]:
+                      - generic [ref=e1139]:
+                        - generic [ref=e1140]:
+                          - generic [ref=e1141]: Content-Type
+                          - generic [ref=e1142]: string
+                          - generic [ref=e1143]: Required
+                          - generic [ref=e1144]: Default to application/json
+                        - paragraph [ref=e1146]: Data Exchange Format
+                      - generic [ref=e1147]:
+                        - generic [ref=e1148]:
+                          - generic [ref=e1149]: Authorization
+                          - generic [ref=e1150]: string
+                          - generic [ref=e1151]: Required
+                        - paragraph [ref=e1153]: Authentication information, refer to API authentication
+                  - generic [ref=e1154]:
+                    - heading "Path Parameters" [level=3] [ref=e1155]
+                    - generic [ref=e1156]:
+                      - generic [ref=e1157]:
+                        - generic [ref=e1158]:
+                          - generic [ref=e1159]: task_id
+                          - generic [ref=e1160]: string
+                          - generic [ref=e1161]: Optional
+                        - generic [ref=e1162]:
+                          - paragraph [ref=e1163]: Task ID for image to video
+                          - generic [ref=e1164]:
+                            - list [ref=e1167]:
+                              - listitem [ref=e1168]: Request path parameter, fill value directly in request path
+                            - list [ref=e1171]:
+                              - listitem [ref=e1172]: Choose one between task_id and external_task_id for querying
+                      - generic [ref=e1173]:
+                        - generic [ref=e1174]:
+                          - generic [ref=e1175]: external_task_id
+                          - generic [ref=e1176]: string
+                          - generic [ref=e1177]: Optional
+                        - generic [ref=e1178]:
+                          - paragraph [ref=e1179]: Customized Task ID for image to video
+                          - generic [ref=e1180]:
+                            - list [ref=e1183]:
+                              - listitem [ref=e1184]: The external_task_id provided when creating the task
+                            - list [ref=e1187]:
+                              - listitem [ref=e1188]: Choose one between task_id and external_task_id for querying
+                - generic [ref=e1191]:
+                  - generic [ref=e1192]:
+                    - generic [ref=e1193]:
+                      - button "cURL" [ref=e1195] [cursor=pointer]
+                      - generic [ref=e1196]:
+                        - button "Copy" [ref=e1197] [cursor=pointer]:
+                          - img [ref=e1198]
+                          - generic [ref=e1200]: Copy
+                        - button "Collapse" [ref=e1201] [cursor=pointer]:
+                          - img [ref=e1202]
+                          - generic [ref=e1204]: Collapse
+                    - code [ref=e1212]: "curl --request GET \\ --url https://api-singapore.klingai.com/v1/videos/image2video/{task_id} \\ --header 'Authorization: Bearer <token>'"
+                  - generic [ref=e1213]:
+                    - generic [ref=e1214]:
+                      - generic [ref=e1216]: "200"
+                      - generic [ref=e1217]:
+                        - button "Copy" [ref=e1218] [cursor=pointer]:
+                          - img [ref=e1219]
+                          - generic [ref=e1221]: Copy
+                        - button "Collapse" [ref=e1222] [cursor=pointer]:
+                          - img [ref=e1223]
+                          - generic [ref=e1225]: Collapse
+                    - code [ref=e1233]: "{ \"code\": 0, // Error codes; Specific definitions can be found in \"Error Code\" \"message\": \"string\", // Error information \"request_id\": \"string\", // Request ID, generated by the system, is used to track requests and troubleshoot problems \"data\": { \"task_id\": \"string\", // Task ID, generated by the system \"task_status\": \"string\", // Task status, Enum values: submitted, processing, succeed, failed \"task_status_msg\": \"string\", // Task status information, displaying the failure reason when the task fails (such as triggering the content risk control of the platform, etc.) \"watermark_info\": { \"enabled\": boolean }, \"task_result\": { \"videos\": [ { \"id\": \"string\", // Generated video ID; globally unique \"url\": \"string\", // URL for generating videos (To ensure information security, generated images/videos will be cleared after 30 days. Please make sure to save them promptly.) \"watermark_url\": \"string\", // Watermarked video download URL, anti-leech format \"duration\": \"string\" // Total video duration, unit: s } ] }, \"task_info\": { // Task creation parameters \"external_task_id\": \"string\" // Customer-defined task ID }, \"final_unit_deduction\": \"string\", // The deduction units of task \"created_at\": 1722769557708, // Task creation time, Unix timestamp, unit: ms \"updated_at\": 1722769557708 // Task update time, Unix timestamp, unit: ms } }"
+              - separator [ref=e1234]
+              - generic [ref=e1236]:
+                - generic [ref=e1237]:
+                  - heading "Query Task (List)" [level=2] [ref=e1238]
+                  - generic [ref=e1239]:
+                    - generic [ref=e1240]: GET
+                    - code [ref=e1241]: /v1/videos/image2video
+                  - generic [ref=e1242]:
+                    - heading "Request Header" [level=3] [ref=e1243]
+                    - generic [ref=e1244]:
+                      - generic [ref=e1245]:
+                        - generic [ref=e1246]:
+                          - generic [ref=e1247]: Content-Type
+                          - generic [ref=e1248]: string
+                          - generic [ref=e1249]: Required
+                          - generic [ref=e1250]: Default to application/json
+                        - paragraph [ref=e1252]: Data Exchange Format
+                      - generic [ref=e1253]:
+                        - generic [ref=e1254]:
+                          - generic [ref=e1255]: Authorization
+                          - generic [ref=e1256]: string
+                          - generic [ref=e1257]: Required
+                        - paragraph [ref=e1259]: Authentication information, refer to API authentication
+                  - generic [ref=e1260]:
+                    - heading "Query Parameters" [level=3] [ref=e1261]
+                    - generic [ref=e1262]:
+                      - generic [ref=e1263]:
+                        - generic [ref=e1264]:
+                          - generic [ref=e1265]: pageNum
+                          - generic [ref=e1266]: int
+                          - generic [ref=e1267]: Optional
+                          - generic [ref=e1268]: Default to 1
+                        - generic [ref=e1269]:
+                          - paragraph [ref=e1270]: Page number
+                          - list [ref=e1274]:
+                            - listitem [ref=e1275]: "Value range: [1, 1000]"
+                      - generic [ref=e1276]:
+                        - generic [ref=e1277]:
+                          - generic [ref=e1278]: pageSize
+                          - generic [ref=e1279]: int
+                          - generic [ref=e1280]: Optional
+                          - generic [ref=e1281]: Default to 30
+                        - generic [ref=e1282]:
+                          - paragraph [ref=e1283]: Data volume per page
+                          - list [ref=e1287]:
+                            - listitem [ref=e1288]: "Value range: [1, 500]"
+                - generic [ref=e1291]:
+                  - generic [ref=e1292]:
+                    - generic [ref=e1293]:
+                      - button "cURL" [ref=e1295] [cursor=pointer]
+                      - generic [ref=e1296]:
+                        - button "Copy" [ref=e1297] [cursor=pointer]:
+                          - img [ref=e1298]
+                          - generic [ref=e1300]: Copy
+                        - button "Collapse" [ref=e1301] [cursor=pointer]:
+                          - img [ref=e1302]
+                          - generic [ref=e1304]: Collapse
+                    - code [ref=e1312]: "curl --request GET \\ --url 'https://api-singapore.klingai.com/v1/videos/image2video?pageNum=1&pageSize=30' \\ --header 'Authorization: Bearer <token>'"
+                  - generic [ref=e1313]:
+                    - generic [ref=e1314]:
+                      - generic [ref=e1316]: "200"
+                      - generic [ref=e1317]:
+                        - button "Copy" [ref=e1318] [cursor=pointer]:
+                          - img [ref=e1319]
+                          - generic [ref=e1321]: Copy
+                        - button "Collapse" [ref=e1322] [cursor=pointer]:
+                          - img [ref=e1323]
+                          - generic [ref=e1325]: Collapse
+                    - code [ref=e1333]: "{ \"code\": 0, // Error codes; Specific definitions can be found in Error codes \"message\": \"string\", // Error information \"request_id\": \"string\", // Request ID, generated by the system, to track requests and troubleshoot problems \"data\": [ { \"task_id\": \"string\", // Task ID, generated by the system \"task_status\": \"string\", // Task status, Enum values: submitted, processing, succeed, failed \"task_status_msg\": \"string\", // Task status information, displaying the failure reason when the task fails (such as triggering the content risk control of the platform, etc.) \"task_info\": { // Task creation parameters \"external_task_id\": \"string\" // Customer-defined task ID }, \"task_result\": { \"videos\": [ { \"id\": \"string\", // Generated video ID; globally unique \"url\": \"string\", // URL for generating videos (To ensure information security, generated images/videos will be cleared after 30 days. Please make sure to save them promptly.) \"watermark_url\": \"string\", // Watermarked video download URL, anti-leech format \"duration\": \"string\" // Total video duration, unit: s (seconds) } ] }, \"watermark_info\": { \"enabled\": boolean }, \"final_unit_deduction\": \"string\", // The deduction units of task \"created_at\": 1722769557708, // Task creation time, Unix timestamp, unit: ms \"updated_at\": 1722769557708 // Task update time, Unix timestamp, unit: ms } ] }"
+            - generic [ref=e1336]:
+              - generic [ref=e1337] [cursor=pointer]:
+                - img [ref=e1338]
+                - text: Previous chapter：Text to Video
+              - generic [ref=e1340] [cursor=pointer]:
+                - text: Next chapter：Reference to Video
+                - img [ref=e1341]
+        - generic [ref=e1344]:
+          - generic [ref=e1346] [cursor=pointer]: Create Task
+          - generic [ref=e1347] [cursor=pointer]: Scenario invocation examples
+          - generic [ref=e1348] [cursor=pointer]: Query Task (Single)
+          - generic [ref=e1349] [cursor=pointer]: Query Task (List)
+  - img

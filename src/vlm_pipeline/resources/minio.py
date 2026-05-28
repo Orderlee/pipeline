@@ -43,7 +43,15 @@ class MinIOResource(ConfigurableResource):
 
     @cached_property
     def client(self):
-        """boto3 S3 클라이언트 생성 (cached)."""
+        """boto3 S3 클라이언트 생성 (cached).
+
+        2026-05-28 (#4): NAS 일시 degradation 시 boto default(connect/read 60s, retries 5
+        legacy) 가 너무 길어 컨테이너가 분 단위로 매달림. adaptive retry + 짧은 timeout
+        으로 transient blip 빠르게 흡수. env 로 override 가능.
+        """
+        connect_timeout = int(os.getenv("MINIO_CONNECT_TIMEOUT_SEC", "10"))
+        read_timeout = int(os.getenv("MINIO_READ_TIMEOUT_SEC", "30"))
+        max_attempts = int(os.getenv("MINIO_RETRY_MAX_ATTEMPTS", "5"))
         return boto3.client(
             "s3",
             endpoint_url=self._normalize_endpoint(self.endpoint),
@@ -52,6 +60,9 @@ class MinIOResource(ConfigurableResource):
             config=BotoConfig(
                 signature_version="s3v4",
                 s3={"addressing_style": "path"},
+                connect_timeout=connect_timeout,
+                read_timeout=read_timeout,
+                retries={"max_attempts": max_attempts, "mode": "adaptive"},
             ),
         )
 

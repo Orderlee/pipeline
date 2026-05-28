@@ -97,10 +97,11 @@ STANDARD_PRESET_FFMPEG_ARGS_NVENC_BASE: list[str] = [
 
 # 하위 호환: 기존 import 가 STANDARD_PRESET_FFMPEG_ARGS_NVENC 를 직접 참조하는 경우.
 # 정적 리스트로는 round-robin 못 하니 GPU 0 fallback (테스트/import-time 용).
+# `-gpu N` 은 `-c:v h264_nvenc` 한 쌍 다음에 삽입해야 ffmpeg 가 codec 선택 후 옵션 적용.
 STANDARD_PRESET_FFMPEG_ARGS_NVENC: list[str] = (
-    STANDARD_PRESET_FFMPEG_ARGS_NVENC_BASE[:1]
+    STANDARD_PRESET_FFMPEG_ARGS_NVENC_BASE[:2]
     + ["-gpu", "0"]
-    + STANDARD_PRESET_FFMPEG_ARGS_NVENC_BASE[1:]
+    + STANDARD_PRESET_FFMPEG_ARGS_NVENC_BASE[2:]
 )
 # 주의: libx264 의 `-x264-params repeat-headers=1` 는 RTSP 스트리밍 시 SPS/PPS 를 매 IDR
 # 앞에 inline 하는 옵션이지만, 재인코딩 산출물은 archive→MinIO→ML 처리 경로라
@@ -136,11 +137,12 @@ def _resolve_ffmpeg_preset_args() -> list[str]:
     if use_nvenc and _nvenc_available():
         gpu_idx = _next_nvenc_gpu_index()
         logger.info(f"reencode_encoder=h264_nvenc gpu={gpu_idx} (REENCODE_USE_NVENC=true)")
-        # h264_nvenc 직후에 `-gpu N` 삽입 (NVENC 옵션은 codec 다음 위치 권장).
+        # `-c:v h264_nvenc` 한 쌍을 함께 유지하고 그 다음에 `-gpu N` 삽입.
+        # 잘못 끊으면 ffmpeg 가 `-c:v -gpu` 로 해석 → codec 미선택 → reencode_failed.
         return (
-            STANDARD_PRESET_FFMPEG_ARGS_NVENC_BASE[:1]
+            STANDARD_PRESET_FFMPEG_ARGS_NVENC_BASE[:2]
             + ["-gpu", str(gpu_idx)]
-            + STANDARD_PRESET_FFMPEG_ARGS_NVENC_BASE[1:]
+            + STANDARD_PRESET_FFMPEG_ARGS_NVENC_BASE[2:]
         )
     if use_nvenc:
         logger.info("reencode_encoder=libx264 (REENCODE_USE_NVENC=true but NVENC not available, fallback)")
