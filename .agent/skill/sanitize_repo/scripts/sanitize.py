@@ -1,21 +1,26 @@
 #!/usr/bin/env python3
-"""Repo sanitizer — strip internal IPs / host paths / private identifiers from the
-working tree after syncing fresh code from the prod host.
+"""Repo sanitizer — strip internal IPs / host paths / private identifiers / known
+secret patterns from the working tree after syncing fresh code from the prod host.
 
 Reads the replacement mapping from `rules.local.txt` (sibling of this script's parent
 dir, i.e. .agent/skill/sanitize_repo/rules.local.txt). That file is GITIGNORED because
 it lists the real internal values; this script contains none.
 
+Rule format (one per line):
+  <from>==><to>            literal substring replacement
+  regex:<pattern>==><to>   Python regex; <to> may use \\1, \\g<name>, etc.
+
 What it does (in order):
   0. self-check    — warn loudly if rules.local.txt is not gitignored or is staged.
-  1. content pass  — replace every `from`->`to` in all git-tracked + untracked
-                     (non-ignored, non-binary) text files.
+  1. content pass  — replace every `from`->`to` in all git-tracked + untracked-not-ignored
+                     text files, PLUS local `.env*` files (typically gitignored, but
+                     hold real secret values we want scrubbed for defense-in-depth).
   2. rename pass   — for any file whose *path* contains a `from` token, rename the
                      file/dir applying the same mapping to the path; prune empty dirs.
   3. verify pass   — scan for any leftover `from` token; exit 1 if found.
-  4. review        — print every line a RISKY rule touched (short numeric shorthand or
-                     short bare word) so over-matches can be caught by eye — the verify
-                     pass only catches leftovers, never wrong substitutions.
+  4. review        — print every line a RISKY literal rule touched (short numeric
+                     shorthand or short bare word) so over-matches can be caught by
+                     eye — verify only catches leftovers, never wrong substitutions.
 
 Usage:
   python3 .agent/skill/sanitize_repo/scripts/sanitize.py            # apply + verify
@@ -36,8 +41,16 @@ from pathlib import Path
 SCRIPT_DIR = Path(__file__).resolve().parent
 RULES_FILE = SCRIPT_DIR.parent / "rules.local.txt"
 
+# Local files that often hold real secrets (typically gitignored, never published) but
+# should still be scrubbed before sharing the working tree.
+EXTRA_FILE_GLOBS = (".env*",)
+
 # how many sample lines to show per (file, risky-token) in the review section
 REVIEW_SAMPLES_PER_HIT = 3
+
+# Marker in hit/residual dict keys for regex-rule entries (so REVIEW skips them —
+# regex rules are intentional patterns, not at risk of accidental over-match).
+REGEX_KEY_PREFIX = "regex:"
 
 
 def repo_root() -> Path:
@@ -45,20 +58,25 @@ def repo_root() -> Path:
     return Path(out)
 
 
-def is_risky(token: str) -> bool:
-    """A rule whose literal `from` could plausibly match unrelated content:
+def is_risky_literal(token: str) -> bool:
+    """A literal rule whose `from` could plausibly match unrelated content:
     a pure numeric/dotted shorthand (e.g. a partial IP octet pair) or a short bare word."""
     return bool(re.fullmatch(r"[0-9.]+", token)) or bool(re.fullmatch(r"[A-Za-z]{2,6}", token))
 
 
-def load_rules() -> list[tuple[str, str]]:
+def load_rules() -> list[tuple[str, str, bool]]:
+    """Returns list of (from_pattern, to, is_regex).
+
+    Lines beginning with 'regex:' are compiled as Python regular expressions; otherwise
+    the `from` is treated as a literal substring.
+    """
     if not RULES_FILE.exists():
         sys.exit(
             f"ERROR: missing {RULES_FILE}\n"
             "This file holds the real internal->placeholder mapping and is gitignored.\n"
             "Restore it from your local backup (it is never committed)."
         )
-    rules: list[tuple[str, str]] = []
+    rules: list[tuple[str, str, bool]] = []
     for ln, raw in enumerate(RULES_FILE.read_text(encoding="utf-8").splitlines(), 1):
         line = raw.strip()
         if not line or line.startswith("#"):
@@ -68,7 +86,14 @@ def load_rules() -> list[tuple[str, str]]:
         old, new = line.split("==>", 1)
         if not old:
             sys.exit(f"ERROR: {RULES_FILE}:{ln} empty 'from' side")
-        rules.append((old, new))
+        is_regex = old.startswith(REGEX_KEY_PREFIX)
+        if is_regex:
+            old = old[len(REGEX_KEY_PREFIX):]
+            try:
+                re.compile(old)
+            except re.error as e:
+                sys.exit(f"ERROR: {RULES_FILE}:{ln} invalid regex {old!r}: {e}")
+        rules.append((old, new, is_regex))
     if not rules:
         sys.exit(f"ERROR: no rules parsed from {RULES_FILE}")
     return rules
@@ -99,33 +124,59 @@ def check_rules_safety(root: Path) -> list[str]:
 
 
 def list_files(root: Path) -> list[str]:
-    """Tracked + untracked-not-ignored, NUL-separated to survive odd filenames."""
-    seen: list[str] = []
+    """Tracked + untracked-not-ignored, plus local `.env*` files (often gitignored
+    but holding real secrets we want to scrub for defense-in-depth)."""
+    seen_set: set[str] = set()
+    out: list[str] = []
+
+    def add(rel: str) -> None:
+        if rel not in seen_set:
+            seen_set.add(rel)
+            out.append(rel)
+
     for args in (["git", "ls-files", "-z"],
                  ["git", "ls-files", "--others", "--exclude-standard", "-z"]):
         raw = subprocess.check_output(args, cwd=root)
-        seen += [p.decode("utf-8") for p in raw.split(b"\x00") if p]
-    out, sawset = [], set()
-    for p in seen:
-        if p not in sawset:
-            sawset.add(p)
-            out.append(p)
+        for p in raw.split(b"\x00"):
+            if p:
+                add(p.decode("utf-8"))
+    for pattern in EXTRA_FILE_GLOBS:
+        for path in root.rglob(pattern):
+            if ".git" in path.parts or "__pycache__" in path.parts or "node_modules" in path.parts:
+                continue
+            if not path.is_file():
+                continue
+            try:
+                add(str(path.relative_to(root)))
+            except ValueError:
+                continue
     return out
 
 
-def apply_to_text(text: str, rules: list[tuple[str, str]]) -> tuple[str, dict[str, int]]:
+def apply_to_text(text: str, rules: list[tuple[str, str, bool]]) -> tuple[str, dict[str, int]]:
     hits: dict[str, int] = {}
-    for old, new in rules:
-        n = text.count(old)
-        if n:
-            hits[old] = hits.get(old, 0) + n
-            text = text.replace(old, new)
+    for old, new, is_regex in rules:
+        if is_regex:
+            pat = re.compile(old)
+            new_text, n = pat.subn(new, text)
+            if n:
+                key = REGEX_KEY_PREFIX + old
+                hits[key] = hits.get(key, 0) + n
+                text = new_text
+        else:
+            n = text.count(old)
+            if n:
+                hits[old] = hits.get(old, 0) + n
+                text = text.replace(old, new)
     return text, hits
 
 
-def apply_to_path(path: str, rules: list[tuple[str, str]]) -> str:
-    for old, new in rules:
-        path = path.replace(old, new)
+def apply_to_path(path: str, rules: list[tuple[str, str, bool]]) -> str:
+    for old, new, is_regex in rules:
+        if is_regex:
+            path = re.sub(old, new, path)
+        else:
+            path = path.replace(old, new)
     return path
 
 
@@ -137,7 +188,6 @@ def main() -> int:
 
     root = repo_root()
     rules = load_rules()
-    froms = [old for old, _ in rules]
 
     # 0) self-check the rule map (loud, but non-fatal)
     safety = check_rules_safety(root)
@@ -149,8 +199,9 @@ def main() -> int:
 
     files = list_files(root)
     changed_content: list[tuple[str, dict[str, int]]] = []
+    env_touched: list[str] = []
     renamed: list[tuple[str, str]] = []
-    review: list[tuple[str, str, int, str]] = []   # (rel, token, lineno, line) for RISKY rules
+    review: list[tuple[str, str, int, str]] = []   # (rel, token, lineno, line)
     skipped_binary = 0
 
     if not args.verify_only:
@@ -165,17 +216,20 @@ def main() -> int:
             new_text, hits = apply_to_text(text, rules)
             if hits:
                 changed_content.append((rel, hits))
-                # collect review samples for risky tokens, from the ORIGINAL text
-                for tok in hits:
-                    if not is_risky(tok):
+                for key in hits:
+                    if key.startswith(REGEX_KEY_PREFIX):
+                        continue
+                    if not is_risky_literal(key):
                         continue
                     shown = 0
                     for i, line in enumerate(text.splitlines(), 1):
-                        if tok in line:
-                            review.append((rel, tok, i, line.strip()[:140]))
+                        if key in line:
+                            review.append((rel, key, i, line.strip()[:140]))
                             shown += 1
                             if shown >= REVIEW_SAMPLES_PER_HIT:
                                 break
+                if Path(rel).name.startswith(".env"):
+                    env_touched.append(rel)
                 if not args.dry_run:
                     fp.write_text(new_text, encoding="utf-8")
 
@@ -190,7 +244,6 @@ def main() -> int:
                     src = root / rel
                     if src.exists():
                         os.replace(src, dst)
-        # prune now-empty dirs
         if not args.dry_run:
             for dirpath, dirnames, filenames in os.walk(root, topdown=False):
                 if ".git" in Path(dirpath).parts:
@@ -209,9 +262,14 @@ def main() -> int:
             text = fp.read_text(encoding="utf-8")
         except (UnicodeDecodeError, FileNotFoundError, IsADirectoryError):
             continue
-        for old in froms:
-            if old in text or old in rel:
-                residual.setdefault(old, []).append(rel)
+        for old, new, is_regex in rules:
+            if is_regex:
+                pat = re.compile(old)
+                if pat.search(text) or pat.search(rel):
+                    residual.setdefault(REGEX_KEY_PREFIX + old, []).append(rel)
+            else:
+                if old in text or old in rel:
+                    residual.setdefault(old, []).append(rel)
 
     # ---- report ----
     tag = "[DRY-RUN] " if args.dry_run else ""
@@ -222,10 +280,15 @@ def main() -> int:
         print(f"{tag}rename: {len(renamed)} paths")
         for old, new in renamed:
             print(f"  > {old}  ->  {new}")
+        if env_touched:
+            print(f"\n⚠️  Local secret-bearing file(s) modified (gitignored — NOT pushed; "
+                  "but your working values were replaced — restore from a vault / shell env if "
+                  "you actively use them):")
+            for e in env_touched:
+                print(f"    - {e}")
 
-        # 4) review section — risky rules need a human eye (verify can't catch over-match)
         if review:
-            print(f"\n⚠️  REVIEW — {len(review)} line(s) touched by RISKY rules "
+            print(f"\n⚠️  REVIEW — {len(review)} line(s) touched by RISKY literal rules "
                   "(short numeric / short bare word). Confirm each is genuinely sensitive, "
                   "NOT an unrelated number/word. If wrong, make that rule more specific in rules.local.txt:")
             for rel, tok, i, line in review:
@@ -242,7 +305,6 @@ def main() -> int:
         return 1
 
     print("\n✅ verify: no residual sensitive tokens")
-    # closing reminders (the two easy-to-forget rules, surfaced every run)
     print("REMINDERS: (1) never commit rules.local.txt  (2) the REVIEW lines above are NOT "
           "checked by verify — eyeball them before you commit.")
     return 0
