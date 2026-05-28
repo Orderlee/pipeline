@@ -1,5 +1,5 @@
 ---
-description: Strip private values (internal IPs, host paths, host username, org/service identifiers, GCP project id, customer bucket/source names) from the working tree after syncing fresh code from the prod host, then commit and push. Use after an rsync from prod, or on any "sanitize / scrub before publishing" request.
+description: Strip private values (internal IPs, host paths, host username, org/service identifiers, GCP project id, customer bucket/source names, secret-pattern API keys/tokens) from the working tree — including local `.env*` files — after syncing fresh code from the prod host, then commit and push. Use after an rsync from prod, or on any "sanitize / scrub before publishing" request.
 ---
 
 # 🎯 Skill Purpose (Trigger)
@@ -15,8 +15,11 @@ description: Strip private values (internal IPs, host paths, host username, org/
 # 🛠️ Dependencies
 - **Sanitizer:** `.agent/skill/sanitize_repo/scripts/sanitize.py` (stdlib only, Python 3.10+)
 - **Rule map (GITIGNORED — holds the real values):** `.agent/skill/sanitize_repo/rules.local.txt`
-  - Format: `<from>==><to>`, one per line, comments with `#`, applied **top-to-bottom** (put specific/compound entries before short partial ones).
+  - Format, one per line, comments with `#`, applied **top-to-bottom**:
+    - `<from>==><to>` — literal substring replacement (specific/compound entries first)
+    - `regex:<pattern>==><to>` — Python regex; use for value-pattern matches (e.g. API-key prefixes). Put regex rules **early** so partial-token literal rules cannot corrupt the value before it is redacted.
   - This file is **never committed** (`.gitignore`) — it is the only place the real internal values live. If it is missing the script aborts; restore it from your local backup.
+- **File scope:** tracked + untracked-not-ignored files, **plus local `.env*` files** even if gitignored (so real secret values get scrubbed for defense-in-depth — the script prints an explicit notice when an env file is modified).
 - Run from inside the git repo.
 
 # 📝 Action Steps
@@ -50,7 +53,8 @@ Execute strictly in order.
 
 # 🚫 Constraints
 - **Never commit the rule map** — it lists the real internal values. Keep it gitignored; if you ever see it staged, unstage it.
-- **Never** hard-code real IPs / host paths / usernames / customer names into `sanitize.py` or this `SKILL.md`. Real values live **only** in the gitignored rule map. (Both this doc and the script are scanned by the sanitizer and must stay token-free.)
+- **Never** hard-code real IPs / host paths / usernames / customer names / secret values into `sanitize.py` or this `SKILL.md`. Real values live **only** in the gitignored rule map. (Both this doc and the script are scanned by the sanitizer and must stay token-free.)
 - Do not skip the dry-run review for the short shorthand / bare-token rules — the residual scan only catches **leftovers**, not **over-replacement**, so a wrong substitution would pass silently.
 - Do not run `rsync --delete` against this tree unless intended — it would delete the gitignored rule map and local env files.
+- **Working secrets in `.env*` are intentionally scrubbed each apply.** Keep the live values you actually use (API keys, DB passwords, etc.) in a **password manager / vault / shell-env**, not solely in the in-repo `.env` — otherwise you'll have to restore them after every sanitize cycle. The script prints an explicit "Local secret-bearing file(s) modified" notice when this happens.
 - The same rule map doubles as a `git filter-repo --replace-text` rules file if a **history** rewrite is ever required — that is a separate, one-time, human-run operation (requires a force-push).
