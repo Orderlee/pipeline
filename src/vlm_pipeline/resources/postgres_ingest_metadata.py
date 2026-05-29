@@ -367,4 +367,3 @@ class PostgresIngestMetadataMixin(PostgresVideoMetadataMixin):
                         rows,
                     )
         return len(rows)
-

@@ -22,7 +22,9 @@ def artifact_identity(root: Path, path: Path) -> str:
     return f"{root.name.lower()}/{path.relative_to(root).as_posix()}"
 
 
-def normalize_unit_scoped_key(source_unit_name: str, explicit_key: str | None, file_path: Path, source_unit_dir: Path) -> str:
+def normalize_unit_scoped_key(
+    source_unit_name: str, explicit_key: str | None, file_path: Path, source_unit_dir: Path
+) -> str:
     raw_key = str(explicit_key or "").strip().replace("\\", "/")
     if raw_key:
         key_path = PurePosixPath(raw_key)

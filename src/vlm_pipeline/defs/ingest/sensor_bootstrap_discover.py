@@ -105,8 +105,10 @@ def _discover_source_units(
                 bucket_unit_name = str(Path("gcp") / bucket_entry.name)
                 if _has_allowed_direct_file(bucket_entry, allowed_exts):
                     _add_unit(
-                        unit_type="directory", unit_path=bucket_entry,
-                        unit_name=bucket_unit_name, scan_recursive=False,
+                        unit_type="directory",
+                        unit_path=bucket_entry,
+                        unit_name=bucket_unit_name,
+                        scan_recursive=False,
                     )
 
                 for date_entry in _iter_sorted_dir_entries(bucket_entry):
@@ -118,7 +120,8 @@ def _discover_source_units(
                     except OSError:
                         continue
                     _add_unit(
-                        unit_type="directory", unit_path=date_entry,
+                        unit_type="directory",
+                        unit_path=date_entry,
                         unit_name=str(Path(bucket_unit_name) / date_entry.name),
                         scan_recursive=True,
                     )
@@ -136,7 +139,8 @@ def _discover_source_units(
             except OSError:
                 continue
             _add_unit(
-                unit_type="directory", unit_path=child_entry,
+                unit_type="directory",
+                unit_path=child_entry,
                 unit_name=str(Path(top_name) / child_entry.name),
                 scan_recursive=True,
             )

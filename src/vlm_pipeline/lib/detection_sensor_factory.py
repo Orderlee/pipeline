@@ -20,6 +20,7 @@ from vlm_pipeline.lib.sensor_db import open_sensor_read_connection
 # Backlog snapshot (Postgres read-only)
 # ---------------------------------------------------------------------------
 
+
 def read_backlog_snapshot(label_tool: str) -> dict[str, int | str | None]:
     """processed_clip_frame 중 *label_tool* 결과가 없는 이미지 수를 읽는다."""
     conn = None
@@ -66,6 +67,7 @@ def read_backlog_snapshot(label_tool: str) -> dict[str, int | str | None]:
 # Cursor 파싱
 # ---------------------------------------------------------------------------
 
+
 def parse_sensor_cursor(raw_cursor: str | None) -> tuple[int | None, str | None, int]:
     """센서 cursor JSON을 (last_count, last_state_token, event_seq) 로 파싱."""
     if not raw_cursor:
@@ -92,6 +94,7 @@ def parse_sensor_cursor(raw_cursor: str | None) -> tuple[int | None, str | None,
 # Sensor 팩토리
 # ---------------------------------------------------------------------------
 
+
 def build_detection_backlog_sensor(
     *,
     name: str,
@@ -114,7 +117,9 @@ def build_detection_backlog_sensor(
     """
     if env_enable_key:
         enabled_now = bool_env(env_enable_key, False)
-        default_status = DefaultSensorStatus.RUNNING if (default_running and enabled_now) else DefaultSensorStatus.STOPPED
+        default_status = (
+            DefaultSensorStatus.RUNNING if (default_running and enabled_now) else DefaultSensorStatus.STOPPED
+        )
     else:
         default_status = DefaultSensorStatus.RUNNING if default_running else DefaultSensorStatus.STOPPED
 
@@ -139,11 +144,9 @@ def build_detection_backlog_sensor(
             yield SkipReason(f"{label_tool} in-flight run 조회 실패: {exc}")
             return
 
-        active_jobs = sorted({
-            str(run.job_name)
-            for run in in_flight_runs
-            if str(getattr(run, "job_name", "") or "") in target_jobs
-        })
+        active_jobs = sorted(
+            {str(run.job_name) for run in in_flight_runs if str(getattr(run, "job_name", "") or "") in target_jobs}
+        )
         if active_jobs:
             yield SkipReason(f"{label_tool} job already running: {', '.join(active_jobs)}")
             return
@@ -169,11 +172,7 @@ def build_detection_backlog_sensor(
             yield SkipReason(f"{label_tool} backlog 없음")
             return
 
-        if (
-            prev_count is not None
-            and current_count == prev_count
-            and current_state_token == (prev_state_token or "")
-        ):
+        if prev_count is not None and current_count == prev_count and current_state_token == (prev_state_token or ""):
             context.update_cursor(json.dumps(next_cursor, sort_keys=True))
             yield SkipReason(f"{label_tool} backlog unchanged: count={current_count}")
             return

@@ -29,10 +29,21 @@ class PostgresIngestRawMixin:
             has_label_policy = "label_policy" in columns
 
             base_cols = [
-                "asset_id", "source_path", "original_name", "media_type",
-                "file_size", "checksum", "archive_path", "raw_bucket", "raw_key",
-                "ingest_batch_id", "transfer_tool", "ingest_status", "error_message",
-                "created_at", "updated_at",
+                "asset_id",
+                "source_path",
+                "original_name",
+                "media_type",
+                "file_size",
+                "checksum",
+                "archive_path",
+                "raw_bucket",
+                "raw_key",
+                "ingest_batch_id",
+                "transfer_tool",
+                "ingest_status",
+                "error_message",
+                "created_at",
+                "updated_at",
             ]
             if has_source_unit:
                 base_cols.append("source_unit_name")
@@ -196,9 +207,7 @@ class PostgresIngestRawMixin:
                     (status, error_message, archive_path, raw_bucket, datetime.now(), asset_id),
                 )
 
-    def batch_update_spec_and_status(
-        self, updates: list[dict]
-    ) -> int:
+    def batch_update_spec_and_status(self, updates: list[dict]) -> int:
         """raw_files.ingest_status( 및 spec_id) 배치 업데이트."""
         if not updates:
             return 0
@@ -231,14 +240,16 @@ class PostgresIngestRawMixin:
         now = datetime.now()
         rows = []
         for u in updates:
-            rows.append((
-                u["status"],
-                u.get("error_message"),
-                u.get("archive_path"),
-                u.get("raw_bucket"),
-                now,
-                u["asset_id"],
-            ))
+            rows.append(
+                (
+                    u["status"],
+                    u.get("error_message"),
+                    u.get("archive_path"),
+                    u.get("raw_bucket"),
+                    now,
+                    u["asset_id"],
+                )
+            )
         with self.connect() as conn:
             with conn.cursor() as cur:
                 cur.executemany(
@@ -331,6 +342,73 @@ class PostgresIngestRawMixin:
                 row = cur.fetchone()
         return int(row[0]) if row else 0
 
+    def count_completed_raw_files_without_archive(self) -> int:
+        """Phase 3-C asset_check — raw_files.ingest_status='completed' 인데 archive_path NULL.
+
+        정상은 0. >0 이면 archive 이동 누락 (orchestrator 가 archive 이동 전에 status
+        토글한 케이스 등).
+        """
+        with self.connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT COUNT(*)
+                    FROM raw_files
+                    WHERE ingest_status = 'completed'
+                      AND archive_path IS NULL
+                    """
+                )
+                row = cur.fetchone()
+        return int(row[0]) if row else 0
+
+    def count_cross_table_inconsistencies(self) -> dict[str, int]:
+        """Phase 3-B inline DQ #5 — 파이프라인 중간 탈락 카운트.
+
+        반환 dict:
+          - ``ingest_completed_no_metadata``:
+              video raw_files 가 ingest_status='completed' 인데 video_metadata 행이 없음.
+              Phase A meta 추출이 통과했어도 DB insert 가 누락된 케이스 (transient PG
+              에러 + retry race 등). 정상은 0.
+          - ``timestamp_completed_no_label_key``:
+              video_metadata.timestamp_status='completed' 인데 timestamp_label_key 가 NULL.
+              clip_timestamp 가 status 만 업데이트하고 label_key set 을 빠뜨린 케이스.
+              정상은 0.
+
+        둘 다 read-only SELECT — 운영 트래픽 영향 미미 (≤ 10ms typical).
+        """
+        result = {
+            "ingest_completed_no_metadata": 0,
+            "timestamp_completed_no_label_key": 0,
+        }
+        with self.connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT COUNT(*)
+                    FROM raw_files r
+                    WHERE r.ingest_status = 'completed'
+                      AND r.media_type = 'video'
+                      AND NOT EXISTS (
+                          SELECT 1 FROM video_metadata vm
+                          WHERE vm.asset_id = r.asset_id
+                      )
+                    """
+                )
+                row = cur.fetchone()
+                result["ingest_completed_no_metadata"] = int(row[0]) if row else 0
+
+                cur.execute(
+                    """
+                    SELECT COUNT(*)
+                    FROM video_metadata
+                    WHERE timestamp_status = 'completed'
+                      AND timestamp_label_key IS NULL
+                    """
+                )
+                row = cur.fetchone()
+                result["timestamp_completed_no_label_key"] = int(row[0]) if row else 0
+        return result
+
     def mark_duplicate_skipped_assets(self, duplicate_asset_files: dict[str, list[str]]) -> int:
         normalized_items: dict[str, list[str]] = {}
 
@@ -344,10 +422,7 @@ class PostgresIngestRawMixin:
                 continue
             merged = normalized_items.setdefault(normalized_id, [])
             if isinstance(file_names, list):
-                merged.extend(
-                    str(file_name).strip() or "unknown_file"
-                    for file_name in file_names
-                )
+                merged.extend(str(file_name).strip() or "unknown_file" for file_name in file_names)
             else:
                 merged.extend(_parse_file_names(str(file_names)))
 
@@ -367,11 +442,9 @@ class PostgresIngestRawMixin:
             updates: list[tuple] = []
             for asset_id, current_error_raw in rows:
                 current_error = str(current_error_raw or "").strip()
-                file_names = [
-                    file_name
-                    for file_name in normalized_items[asset_id]
-                    if str(file_name).strip()
-                ] or ["unknown_file"]
+                file_names = [file_name for file_name in normalized_items[asset_id] if str(file_name).strip()] or [
+                    "unknown_file"
+                ]
                 if not current_error:
                     merged_files = list(file_names)
                 elif current_error.startswith("duplicate_skipped_in_manifest:"):
@@ -545,9 +618,7 @@ class PostgresIngestRawMixin:
                 row = cur.fetchone()
         return row is not None
 
-    def list_completed_videos_for_spec_router(
-        self, limit: int = 500
-    ) -> list[dict[str, Any]]:
+    def list_completed_videos_for_spec_router(self, limit: int = 500) -> list[dict[str, Any]]:
         """ingest_router용: ingest_status=completed, spec_id 미설정 비디오."""
         with self.connect() as conn:
             columns = self._table_columns(conn, "raw_files")
@@ -567,10 +638,7 @@ class PostgresIngestRawMixin:
                     (max(1, int(limit)),),
                 )
                 rows = cur.fetchall()
-            return [
-                {"asset_id": r[0], "source_unit_name": r[1] or "", "raw_key": r[2]}
-                for r in rows
-            ]
+            return [{"asset_id": r[0], "source_unit_name": r[1] or "", "raw_key": r[2]} for r in rows]
 
     def find_by_raw_key_stem(self, stem: str, source_unit_name: str | None = None) -> dict[str, Any] | None:
         with self.connect() as conn:

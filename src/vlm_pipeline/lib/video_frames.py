@@ -186,9 +186,7 @@ def resolve_frame_sampling_policy(
     normalized_mode = str(sampling_mode or "").strip().lower() or "clip_event"
     normalized_profile = "dense" if str(image_profile or "").strip().lower() == "dense" else "current"
     normalized_outputs = {
-        str(value or "").strip().lower()
-        for value in (requested_outputs or [])
-        if str(value or "").strip()
+        str(value or "").strip().lower() for value in (requested_outputs or []) if str(value or "").strip()
     }
     yolo_only = bool({"bbox", "classification_image"} & normalized_outputs) and not bool(
         {"captioning_video", "captioning_image"} & normalized_outputs
@@ -262,9 +260,7 @@ def build_frame_key(raw_key: str, frame_index: int, frame_sec: float) -> str:
     parent = key_path.parent
     _ = frame_sec
     frame_name = f"{stem}_{int(frame_index):08d}.jpg"
-    return str(parent / stem / frame_name) if str(parent) != "." else str(
-        PurePosixPath(stem) / frame_name
-    )
+    return str(parent / stem / frame_name) if str(parent) != "." else str(PurePosixPath(stem) / frame_name)
 
 
 def _build_extract_frame_cmd(video_path: str | Path, sec: float, q_v: int) -> list[str]:
@@ -325,9 +321,7 @@ def extract_frame_jpeg_bytes(
                      환경변수 VIDEO_FRAME_EXTRACT_RETRIES로 오버라이드 가능.
     """
     timeout = timeout_sec or int(os.getenv("VIDEO_FRAME_EXTRACT_TIMEOUT_SEC", "120"))
-    retries = max_retries if max_retries is not None else int(
-        os.getenv("VIDEO_FRAME_EXTRACT_RETRIES", "2")
-    )
+    retries = max_retries if max_retries is not None else int(os.getenv("VIDEO_FRAME_EXTRACT_RETRIES", "2"))
     retries = max(0, retries)
     # ffmpeg mjpeg -q:v 2~31 (lower = better). PIL quality 90 → -q:v 4 근사.
     q_v = max(2, min(31, round(2 + (100 - max(1, min(100, int(jpeg_quality)))) * 29 / 100)))
@@ -344,7 +338,10 @@ def extract_frame_jpeg_bytes(
             cmd = _build_extract_frame_cmd(video_path, seek_sec, q_v)
             try:
                 proc = subprocess.run(
-                    cmd, capture_output=True, timeout=current_timeout, check=False,
+                    cmd,
+                    capture_output=True,
+                    timeout=current_timeout,
+                    check=False,
                 )
             except subprocess.TimeoutExpired as exc:
                 timeout_error = exc
@@ -374,19 +371,21 @@ def extract_frame_jpeg_bytes(
                 )
                 continue
 
-            frame_error = RuntimeError(
-                f"ffmpeg_frame_extract_failed:{stderr or 'empty_output'}"
-            )
+            frame_error = RuntimeError(f"ffmpeg_frame_extract_failed:{stderr or 'empty_output'}")
             last_error = frame_error
             break
 
         if timeout_error is not None:
             if attempt < retries:
-                wait_sec = 2 ** attempt  # 1s, 2s, 4s ...
+                wait_sec = 2**attempt  # 1s, 2s, 4s ...
                 logger.warning(
                     "ffmpeg 프레임 추출 타임아웃 (attempt %d/%d, timeout=%ds): %s @ %.3fs — %ds 후 재시도",
-                    attempt + 1, retries + 1, current_timeout,
-                    video_path, sec, wait_sec,
+                    attempt + 1,
+                    retries + 1,
+                    current_timeout,
+                    video_path,
+                    sec,
+                    wait_sec,
                 )
                 time.sleep(wait_sec)
                 continue
@@ -398,11 +397,14 @@ def extract_frame_jpeg_bytes(
 
         if frame_error is not None:
             if attempt < retries:
-                wait_sec = 2 ** attempt
+                wait_sec = 2**attempt
                 logger.warning(
                     "ffmpeg 프레임 추출 실패 (attempt %d/%d): %s @ %.3fs — %ds 후 재시도",
-                    attempt + 1, retries + 1,
-                    video_path, requested_sec, wait_sec,
+                    attempt + 1,
+                    retries + 1,
+                    video_path,
+                    requested_sec,
+                    wait_sec,
                 )
                 time.sleep(wait_sec)
                 continue

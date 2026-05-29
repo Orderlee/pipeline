@@ -169,16 +169,22 @@ CREATE TABLE IF NOT EXISTS image_metadata (
 -- 6. datasets: 데이터셋 구성 관리
 -- ============================================================
 CREATE TABLE IF NOT EXISTS datasets (
-    dataset_id      TEXT PRIMARY KEY,
-    name            TEXT,
-    version         TEXT,
-    config          JSONB,
-    split_ratio     JSONB DEFAULT '{"train":0.8,"val":0.1,"test":0.1}'::jsonb,
-    dataset_bucket  TEXT DEFAULT 'vlm-dataset',
-    dataset_prefix  TEXT,
-    build_status    TEXT DEFAULT 'pending',
-    created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    dataset_id        TEXT PRIMARY KEY,
+    name              TEXT,
+    version           TEXT,
+    config            JSONB,
+    split_ratio       JSONB DEFAULT '{"train":0.8,"val":0.1,"test":0.1}'::jsonb,
+    dataset_bucket    TEXT DEFAULT 'vlm-dataset',
+    dataset_prefix    TEXT,
+    build_status      TEXT DEFAULT 'pending',
+    created_at        TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    -- Phase 3-D dataset lineage (migration 004) — 재현성 메타. dataset_prefix 영향 없음.
+    spec_hash         TEXT,
+    git_sha           TEXT,
+    build_started_at  TIMESTAMP
 );
+
+CREATE INDEX IF NOT EXISTS idx_datasets_spec_hash ON datasets(spec_hash);
 
 -- ============================================================
 -- 7. dataset_clips: 데이터셋-클립 연결 (M:N)

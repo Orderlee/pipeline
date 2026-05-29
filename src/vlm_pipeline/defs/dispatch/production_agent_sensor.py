@@ -261,7 +261,9 @@ def _production_agent_dispatch_sensor_fn(context: SensorEvaluationContext):
                     db_resource=db_resource,
                     canonical_request={
                         "request_id": fallback_request_id,
-                        "folder_name": raw_request.get("source_unit_name") if isinstance(raw_request, Mapping) else None,
+                        "folder_name": raw_request.get("source_unit_name")
+                        if isinstance(raw_request, Mapping)
+                        else None,
                         "image_profile": raw_request.get("image_profile") if isinstance(raw_request, Mapping) else None,
                     },
                     request_id=fallback_request_id,
@@ -316,8 +318,7 @@ def _production_agent_dispatch_sensor_fn(context: SensorEvaluationContext):
                 prepared = outcome.prepared
                 folder_name = prepared.folder_name if prepared is not None else ""
                 context.log.info(
-                    "production agent folder in flight -> ack 보류: "
-                    f"delivery_id={delivery_id} folder={folder_name}"
+                    f"production agent folder in flight -> ack 보류: delivery_id={delivery_id} folder={folder_name}"
                 )
                 continue
 

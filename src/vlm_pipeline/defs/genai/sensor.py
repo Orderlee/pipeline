@@ -98,7 +98,7 @@ def genai_poll_sensor(context):
     if not pending:
         d = ""
         if drained and (drained.get("submitted") or drained.get("deferred")):
-            d = f" drained(submitted={drained.get('submitted',0)} deferred={drained.get('deferred',0)})"
+            d = f" drained(submitted={drained.get('submitted', 0)} deferred={drained.get('deferred', 0)})"
         yield SkipReason(f"폴링 대상 GenAI jobs 없음 (reconciled={reconciled}{d})")
         return
 
@@ -124,14 +124,12 @@ def genai_poll_sensor(context):
             else:
                 counts["error"] += 1
         except Exception as exc:
-            context.log.warning(
-                f"poll 실패 job={job.get('job_id')} engine={job.get('engine')}: {exc}"
-            )
+            context.log.warning(f"poll 실패 job={job.get('job_id')} engine={job.get('engine')}: {exc}")
             counts["error"] += 1
 
     yield SkipReason(
         f"polled={len(pending)} done={counts['done']} failed={counts['failed']} "
         f"running={counts['running']} noop={counts['noop']} error={counts['error']} "
         f"reconciled={reconciled} "
-        f"drained(submitted={drained.get('submitted',0)} deferred={drained.get('deferred',0)})"
+        f"drained(submitted={drained.get('submitted', 0)} deferred={drained.get('deferred', 0)})"
     )

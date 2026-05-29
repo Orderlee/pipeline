@@ -69,6 +69,15 @@ jobs:
             exit 1
           }
 
+      - name: Run integration tests (Phase 4-B)
+        # tests/integration/ — PG sidecar 의존. DATAOPS_TEST_POSTGRES_DSN 미설정 시
+        # conftest 가 자동 skip 하므로 fork(upstream-org) 환경에서도 안전.
+        run: |
+          python -m pytest tests/integration -q --tb=short 2>&1 || {
+            echo "::error::Integration tests failed — 배포를 중단합니다"
+            exit 1
+          }
+
   detect_image_rebuild:
     runs-on: [self-hosted, linux, production]
     if: ${{ github.repository == 'Orderlee/Datapipeline-Data-data_pipeline' }}
@@ -107,8 +116,10 @@ jobs:
               || [[ "${path}" =~ ^split_dataset/ ]] \
               || [[ "${path}" =~ ^src/python/ ]] \
               || [[ "${path}" =~ ^src/vlm_pipeline/ ]] \
+              || [[ "${path}" =~ ^src/gemini/ ]] \
               || [[ "${path}" =~ ^docker/sam3/ ]] \
               || [[ "${path}" =~ ^docker/pg-backup/ ]] \
+              || [[ "${path}" =~ ^docker/genai/ ]] \
               || [[ "${path}" == "docker/docker-compose.yaml" ]] \
               || [[ "${path}" == ".github/workflows/deploy-production.yml" ]] \
               || [[ "${path}" == ".github/workflows/deploy-test.yml" ]]; then

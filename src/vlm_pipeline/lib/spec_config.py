@@ -26,12 +26,7 @@ def is_unscoped_mvp_autolabel_run(tags: Mapping[str, str] | None) -> bool:
         return False
     if str(tags.get("folder_name") or "").strip():
         return False
-    outputs_raw = (
-        tags.get("requested_outputs")
-        or tags.get("outputs")
-        or tags.get("labeling_method")
-        or ""
-    )
+    outputs_raw = tags.get("requested_outputs") or tags.get("outputs") or tags.get("labeling_method") or ""
     if parse_outputs_raw(outputs_raw):
         return False
     if str(tags.get("run_mode") or "").strip():
@@ -43,12 +38,7 @@ def parse_requested_outputs(tags: Mapping[str, str] | None) -> list[str]:
     """Parse requested outputs from run tags for routed staging jobs."""
     if not tags:
         return []
-    outputs_raw = (
-        tags.get("requested_outputs")
-        or tags.get("outputs")
-        or tags.get("labeling_method")
-        or ""
-    )
+    outputs_raw = tags.get("requested_outputs") or tags.get("outputs") or tags.get("labeling_method") or ""
     return parse_outputs_raw(outputs_raw)
 
 

@@ -41,9 +41,9 @@ from urllib.parse import urlparse, parse_qs
 # 클립 파일명 패턴: {base}_{8자리ms}_{8자리ms}
 _CLIP_PATTERN = re.compile(r"^(.+)_(\d{8})_(\d{8})$")
 
-import boto3
-import requests
-from botocore.config import Config as BotoConfig
+import boto3  # noqa: E402
+import requests  # noqa: E402
+from botocore.config import Config as BotoConfig  # noqa: E402
 
 DEFAULT_LS_URL = "http://localhost:8080"
 DEFAULT_MINIO_ENDPOINT = "10.0.0.51:9000"
@@ -56,6 +56,7 @@ DEFAULT_FPS = 24
 # ---------------------------------------------------------------------------
 # MinIO
 # ---------------------------------------------------------------------------
+
 
 def build_minio_client(endpoint: str, access_key: str, secret_key: str):
     url = endpoint if endpoint.startswith("http") else f"http://{endpoint}"
@@ -106,7 +107,7 @@ def _extract_raw_key_from_video_url(video_url: str, raw_bucket: str = "vlm-raw")
     fileuri = _decode_fileuri(video_url)
     if fileuri:
         if fileuri.startswith(f"{raw_bucket}/"):
-            return fileuri[len(raw_bucket) + 1:]
+            return fileuri[len(raw_bucket) + 1 :]
         return fileuri or None
     try:
         path = (urlparse(video_url).path or "").lstrip("/")
@@ -134,6 +135,7 @@ def _resolve_labels_key_for_video(raw_key: str, stem: str) -> str:
 # ---------------------------------------------------------------------------
 # Label Studio
 # ---------------------------------------------------------------------------
+
 
 def resolve_auth_headers(ls_url: str, token: str) -> dict[str, str]:
     try:
@@ -219,6 +221,7 @@ def fetch_task_detail(ls_url: str, auth: _LSAuth, task_id: int) -> dict:
 # DuckDB
 # ---------------------------------------------------------------------------
 
+
 def _connect_duckdb_with_retry(
     db_path: str,
     *,
@@ -238,7 +241,7 @@ def _connect_duckdb_with_retry(
         except duckdb.IOException as exc:
             if "lock" not in str(exc).lower() or attempt >= max_retries:
                 raise
-            delay = min(base_delay * (2 ** attempt) + _random.uniform(0, 1), max_delay)
+            delay = min(base_delay * (2**attempt) + _random.uniform(0, 1), max_delay)
             print(f"[RETRY] DuckDB lock 감지, {delay:.1f}s 후 재시도 ({attempt + 1}/{max_retries})")
             _time.sleep(delay)
     raise RuntimeError("DuckDB 연결 재시도 초과")
@@ -296,6 +299,7 @@ def upsert_video_labels(
     반환값: (deleted_count, inserted_count)
     """
     import hashlib
+
     owns_conn = conn is None
     if owns_conn:
         conn = _connect_duckdb_with_retry(db_path)
@@ -339,8 +343,14 @@ def upsert_video_labels(
                           'reviewed', ?, ?, ?, ?, 'completed', NOW())
                 """,
                 [
-                    label_id, asset_id, labels_bucket, labels_key,
-                    i, event_count, start_sec, end_sec,
+                    label_id,
+                    asset_id,
+                    labels_bucket,
+                    labels_key,
+                    i,
+                    event_count,
+                    start_sec,
+                    end_sec,
                 ],
             )
             inserted += 1
@@ -362,6 +372,7 @@ def upsert_video_labels(
 # 변환 로직
 # ---------------------------------------------------------------------------
 
+
 def annotation_to_events(annotation: dict, fps: int) -> list[dict]:
     """LS annotation result → Gemini 이벤트 포맷 변환."""
     events = []
@@ -374,11 +385,13 @@ def annotation_to_events(annotation: dict, fps: int) -> list[dict]:
             end_sec = r["end"] / fps
             labels = value.get("timelinelabels", [])
             category = labels[0] if labels else "unknown"
-            events.append({
-                "category": category,
-                "duration": round(end_sec - start_sec, 3),
-                "timestamp": [round(start_sec, 3), round(end_sec, 3)],
-            })
+            events.append(
+                {
+                    "category": category,
+                    "duration": round(end_sec - start_sec, 3),
+                    "timestamp": [round(start_sec, 3), round(end_sec, 3)],
+                }
+            )
     return events
 
 
@@ -397,6 +410,7 @@ def find_matching_event_index(json_data: list, clip_start_sec: float, clip_end_s
 # ---------------------------------------------------------------------------
 # Image mode helpers (RectangleLabels → SAM3 COCO)
 # ---------------------------------------------------------------------------
+
 
 def _parse_image_url_to_key(image_url: str) -> str | None:
     """presigned URL → MinIO object key.
@@ -448,14 +462,16 @@ def annotation_to_rectangles(annotation: dict) -> list[dict]:
         h = float(v.get("height", 0)) * H / 100.0
         labels = v.get("rectanglelabels") or []
         label_name = str(labels[0]).strip() if labels else "unknown"
-        rects.append({
-            "label": label_name,
-            "bbox": [round(x, 2), round(y, 2), round(w, 2), round(h, 2)],
-            "score": item.get("score"),
-            "rotation": float(v.get("rotation", 0) or 0),
-            "image_width": W,
-            "image_height": H,
-        })
+        rects.append(
+            {
+                "label": label_name,
+                "bbox": [round(x, 2), round(y, 2), round(w, 2), round(h, 2)],
+                "score": item.get("score"),
+                "rotation": float(v.get("rotation", 0) or 0),
+                "image_width": W,
+                "image_height": H,
+            }
+        )
     return rects
 
 
@@ -486,12 +502,14 @@ def build_reviewed_coco_json(
     images = out.get("images") or []
     if not images and rectangles:
         r0 = rectangles[0]
-        images = [{
-            "id": 1,
-            "file_name": image_key,
-            "width": r0.get("image_width"),
-            "height": r0.get("image_height"),
-        }]
+        images = [
+            {
+                "id": 1,
+                "file_name": image_key,
+                "width": r0.get("image_width"),
+                "height": r0.get("image_height"),
+            }
+        ]
     image_id = int(images[0]["id"]) if images else 1
 
     categories_in = out.get("categories") or []
@@ -568,6 +586,7 @@ def update_image_labels_in_db(db_path: str, labels_key: str, object_count: int, 
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
+
 
 def run(
     project_id: int,
@@ -735,12 +754,14 @@ def run(
             else:
                 write_json(minio, bucket, json_key, new_events)
                 deleted, inserted = upsert_video_labels(
-                    db_path, bucket, json_key, asset_id, new_events, conn=db_conn,
+                    db_path,
+                    bucket,
+                    json_key,
+                    asset_id,
+                    new_events,
+                    conn=db_conn,
                 )
-                print(
-                    f"[UPDATED]  task {task_id} → {json_key} "
-                    f"(MinIO {ev_count}건, DB del={deleted} ins={inserted})"
-                )
+                print(f"[UPDATED]  task {task_id} → {json_key} (MinIO {ev_count}건, DB del={deleted} ins={inserted})")
             processed_label_keys.add(json_key)
 
             if ev_count == 0:
@@ -760,8 +781,7 @@ def run(
 
     suffix = " (dry-run)" if dry_run else ""
     print(
-        f"\n[DONE] 업데이트 {updated} / 빈저장 {empty_save} / "
-        f"스킵 {skipped} / 미매칭 {no_match} / 오류 {error}{suffix}"
+        f"\n[DONE] 업데이트 {updated} / 빈저장 {empty_save} / 스킵 {skipped} / 미매칭 {no_match} / 오류 {error}{suffix}"
     )
     return {
         "processed_label_keys": sorted(processed_label_keys),
@@ -780,14 +800,17 @@ def _parse_clip_times(stem: str) -> tuple[float, float]:
     fallback: (0.0, inf)
     """
     import re
+
     m8 = re.search(r"_(\d{8})_(\d{8})$", stem)
     if m8:
         return int(m8.group(1)) / 1000.0, int(m8.group(2)) / 1000.0
 
     m4 = re.search(r"_(\d{4})_(\d{4})$", stem)
     if m4:
+
         def mmss_to_sec(s: str) -> float:
             return int(s[:2]) * 60 + int(s[2:])
+
         return mmss_to_sec(m4.group(1)), mmss_to_sec(m4.group(2))
 
     return 0.0, float("inf")
@@ -805,7 +828,12 @@ def main() -> int:
     parser.add_argument("--bucket", default=DEFAULT_BUCKET)
     parser.add_argument("--prefix", default="", help="MinIO key prefix 필터")
     parser.add_argument("--dry-run", action="store_true", help="실제 업로드 없이 변경사항만 출력")
-    parser.add_argument("--db-path", default=os.environ.get("DATAOPS_DUCKDB_PATH"), required=not os.environ.get("DATAOPS_DUCKDB_PATH"), help="DuckDB 파일 경로 (DATAOPS_DUCKDB_PATH 환경변수로도 설정 가능)")
+    parser.add_argument(
+        "--db-path",
+        default=os.environ.get("DATAOPS_DUCKDB_PATH"),
+        required=not os.environ.get("DATAOPS_DUCKDB_PATH"),
+        help="DuckDB 파일 경로 (DATAOPS_DUCKDB_PATH 환경변수로도 설정 가능)",
+    )
     args = parser.parse_args()
 
     if not args.api_key:

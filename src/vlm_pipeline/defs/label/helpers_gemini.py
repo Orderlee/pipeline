@@ -107,9 +107,7 @@ def prepare_gemini_video_for_request(
 
     fallback_attempts = attempts[1:]
     if not fallback_attempts:
-        raise RuntimeError(
-            f"{last_error}; original_size={source_size}bytes exceeds_safe_limit={safe_bytes}bytes"
-        )
+        raise RuntimeError(f"{last_error}; original_size={source_size}bytes exceeds_safe_limit={safe_bytes}bytes")
 
     fallback_results: list[dict[str, object]] = []
     with ThreadPoolExecutor(max_workers=min(len(fallback_attempts), 2)) as executor:
@@ -142,9 +140,7 @@ def prepare_gemini_video_for_request(
     if fallback_errors:
         last_error = "; ".join(fallback_errors)
 
-    raise RuntimeError(
-        f"{last_error}; original_size={source_size}bytes exceeds_safe_limit={safe_bytes}bytes"
-    )
+    raise RuntimeError(f"{last_error}; original_size={source_size}bytes exceeds_safe_limit={safe_bytes}bytes")
 
 
 def analyze_routed_video_events(
@@ -346,31 +342,30 @@ def _render_gemini_preview_attempt(
     ]
     if needs_trim:
         cmd.extend(["-t", str(int(max_duration))])
-    cmd.extend([
-        "-map",
-        "0:v:0",
-        "-an",
-        "-vf",
-        (
-            f"fps={int(attempt['fps'])},"
-            f"scale=w={int(attempt['width'])}:h=-2:force_original_aspect_ratio=decrease"
-        ),
-        "-c:v",
-        "libx264",
-        "-preset",
-        "veryfast",
-        "-pix_fmt",
-        "yuv420p",
-        "-b:v",
-        f"{bitrate_kbps}k",
-        "-maxrate",
-        f"{bitrate_kbps}k",
-        "-bufsize",
-        f"{max(bitrate_kbps * 2, 256)}k",
-        "-movflags",
-        "+faststart",
-        str(preview_path),
-    ])
+    cmd.extend(
+        [
+            "-map",
+            "0:v:0",
+            "-an",
+            "-vf",
+            (f"fps={int(attempt['fps'])},scale=w={int(attempt['width'])}:h=-2:force_original_aspect_ratio=decrease"),
+            "-c:v",
+            "libx264",
+            "-preset",
+            "veryfast",
+            "-pix_fmt",
+            "yuv420p",
+            "-b:v",
+            f"{bitrate_kbps}k",
+            "-maxrate",
+            f"{bitrate_kbps}k",
+            "-bufsize",
+            f"{max(bitrate_kbps * 2, 256)}k",
+            "-movflags",
+            "+faststart",
+            str(preview_path),
+        ]
+    )
     proc = subprocess.run(cmd, capture_output=True, check=False)
     if proc.returncode == 0 and preview_path.exists() and preview_path.stat().st_size > 0:
         size_bytes = preview_path.stat().st_size

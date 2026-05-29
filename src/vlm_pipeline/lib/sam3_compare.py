@@ -110,8 +110,7 @@ def compare_prompt_boxes(
     model_vs_mask = [
         delta
         for delta in (
-            mean_abs_box_delta(detection.get("model_box"), detection.get("mask_bbox"))
-            for detection in sam_detections
+            mean_abs_box_delta(detection.get("model_box"), detection.get("mask_bbox")) for detection in sam_detections
         )
         if delta is not None
     ]
@@ -183,9 +182,27 @@ def summarize_benchmark_rows(
         "unmatched_sam_rate": _avg(unmatched_sam),
         "prompt_hit_rate": _avg(prompt_hits),
         "sam_model_box_vs_mask_bbox_delta": _avg(model_vs_mask),
-        "match_rate_iou_0_3": round(sum(int(row["match_count_iou_0_3"]) for row in rows) / max(1, sum(int(row["yolo_box_count"]) for row in rows)), 4) if rows else 0.0,
-        "match_rate_iou_0_5": round(sum(int(row["match_count_iou_0_5"]) for row in rows) / max(1, sum(int(row["yolo_box_count"]) for row in rows)), 4) if rows else 0.0,
-        "match_rate_iou_0_7": round(sum(int(row["match_count_iou_0_7"]) for row in rows) / max(1, sum(int(row["yolo_box_count"]) for row in rows)), 4) if rows else 0.0,
+        "match_rate_iou_0_3": round(
+            sum(int(row["match_count_iou_0_3"]) for row in rows)
+            / max(1, sum(int(row["yolo_box_count"]) for row in rows)),
+            4,
+        )
+        if rows
+        else 0.0,
+        "match_rate_iou_0_5": round(
+            sum(int(row["match_count_iou_0_5"]) for row in rows)
+            / max(1, sum(int(row["yolo_box_count"]) for row in rows)),
+            4,
+        )
+        if rows
+        else 0.0,
+        "match_rate_iou_0_7": round(
+            sum(int(row["match_count_iou_0_7"]) for row in rows)
+            / max(1, sum(int(row["yolo_box_count"]) for row in rows)),
+            4,
+        )
+        if rows
+        else 0.0,
         "sam3_total_latency_ms": round(sam_total_ms, 2),
         "yolo_total_latency_ms": round(yolo_total_ms, 2),
         "sam3_avg_latency_ms": _avg(sam3_total_latency_ms),

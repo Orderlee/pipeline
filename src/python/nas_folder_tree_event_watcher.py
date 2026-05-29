@@ -379,8 +379,7 @@ def _write_root_state(
     ]
 
     ext_rows = [
-        (scan_time, folder_path, ext, stats["count"], stats["size"])
-        for (folder_path, ext), stats in ext_stats.items()
+        (scan_time, folder_path, ext, stats["count"], stats["size"]) for (folder_path, ext), stats in ext_stats.items()
     ]
 
     with conn.cursor() as cur:
@@ -623,8 +622,8 @@ class NasEventHandler(FileSystemEventHandler):
         # Aggregate totals from the subtree root folder.
         subtree_root = folders.get(path)
         removed_files = subtree_root["total_file_count"] if subtree_root else len(subtree_files)
-        removed_size = subtree_root["total_size_bytes"] if subtree_root else sum(
-            files[p]["size_bytes"] for p in subtree_files
+        removed_size = (
+            subtree_root["total_size_bytes"] if subtree_root else sum(files[p]["size_bytes"] for p in subtree_files)
         )
 
         # Remove file entries and extension stats for folders in subtree.

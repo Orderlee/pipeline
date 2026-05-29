@@ -128,6 +128,14 @@ pg_backup_active() {
     compose config --services 2>/dev/null | grep -qx pg-backup
 }
 
+# genai 도 profile gating (profiles:["genai"]). prod + staging 둘 다 활성 (운영자가
+# .env / .env.test 에 COMPOSE_PROFILES=...,genai 추가). 활성 시 build/recreate 포함.
+# 2026-05-28: GenAI Studio promote-to-labeling 배포 자동화 — 이전엔 docker/genai/* 변경
+# 시에도 컨테이너가 자동 재빌드 안 돼서 운영자가 수동 build/recreate 해야 했음.
+genai_active() {
+    compose config --services 2>/dev/null | grep -qx genai
+}
+
 if [[ "${BUILD_REQUIRED}" == "true" ]]; then
     # 2026-05-21: sam3 도 build target 에 포함 — docker/sam3/ 변경 시 자동 rebuild.
     # 이전에는 app 만 빌드해서 docker/sam3/app.py 변경이 컨테이너에 반영 안 됐음.
@@ -138,6 +146,9 @@ if [[ "${BUILD_REQUIRED}" == "true" ]]; then
     fi
     if pg_backup_active; then
         build_targets+=(pg-backup)
+    fi
+    if genai_active; then
+        build_targets+=(genai)
     fi
     compose build --progress plain "${build_targets[@]}"
 else
@@ -190,6 +201,18 @@ fi
 if pg_backup_active; then
     compose up -d --no-deps pg-backup
     echo "pg-backup ensured running (cron daily 02:00 KST)"
+fi
+
+# 2026-05-28: GenAI Studio (profiles:["genai"]) — dagster 와 무관한 별도 FastAPI 컨테이너.
+# BUILD_REQUIRED=true 면 새 image 픽업 위해 force-recreate. profile 미활성이면 skip.
+if genai_active; then
+    if [[ "${BUILD_REQUIRED}" == "true" ]]; then
+        compose up -d --no-deps --force-recreate genai
+        echo "genai force-recreated to pick up new image"
+    else
+        compose up -d --no-deps genai
+        echo "genai ensured running"
+    fi
 fi
 
 for i in $(seq 1 30); do

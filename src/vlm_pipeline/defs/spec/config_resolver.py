@@ -21,8 +21,7 @@ def resolve_and_persist_spec_config(db: Any, spec_id: str) -> dict[str, Any]:
     )
     if not config_id:
         raise RuntimeError(
-            f"config_not_found:spec_id={spec_id}:requester_id={spec.get('requester_id')}:"
-            f"team_id={spec.get('team_id')}"
+            f"config_not_found:spec_id={spec_id}:requester_id={spec.get('requester_id')}:team_id={spec.get('team_id')}"
         )
 
     config = db.get_labeling_config(config_id)
@@ -51,9 +50,7 @@ def load_persisted_spec_config(db: Any, spec_id: str) -> dict[str, Any]:
 
     config = db.get_labeling_config(resolved_config_id)
     if not config or not config.get("is_active"):
-        raise RuntimeError(
-            f"resolved_config_payload_not_found:spec_id={spec_id}:config_id={resolved_config_id}"
-        )
+        raise RuntimeError(f"resolved_config_payload_not_found:spec_id={spec_id}:config_id={resolved_config_id}")
 
     return {
         "spec": spec,

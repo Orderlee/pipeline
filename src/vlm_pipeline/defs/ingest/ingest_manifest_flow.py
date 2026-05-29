@@ -45,10 +45,12 @@ def _load_manifest_or_summary(
     with db.connect() as conn:
         with conn.cursor() as cur:
             cur.execute("SELECT COUNT(*) FROM raw_files")
-            total = cur.fetchone()[0]
+            row = cur.fetchone()
+            total = int(row[0]) if row else 0
             cur.execute("SELECT COUNT(*) FROM raw_files WHERE ingest_status = 'completed'")
-            completed = cur.fetchone()[0]
-    return None, {"total": int(total), "success": int(completed), "failed": 0, "skipped": 0}
+            row = cur.fetchone()
+            completed = int(row[0]) if row else 0
+    return None, {"total": total, "success": completed, "failed": 0, "skipped": 0}
 
 
 def _hydrate_manifest(context, state: RawIngestState, *, db=None) -> None:
@@ -60,9 +62,7 @@ def _hydrate_manifest(context, state: RawIngestState, *, db=None) -> None:
     file_count = int(state.manifest.get("file_count") or len(state.manifest.get("files", [])) or 0)
     already_completed = int(state.manifest.get("already_completed_file_count") or 0)
     log_suffix = f" already_completed={already_completed}" if already_completed else ""
-    context.log.info(
-        f"manifest_hydrate:done file_count={file_count}{log_suffix}"
-    )
+    context.log.info(f"manifest_hydrate:done file_count={file_count}{log_suffix}")
 
 
 def _raise_if_manifest_hydration_failed(context, state: RawIngestState) -> None:

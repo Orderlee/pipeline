@@ -297,4 +297,3 @@ def classify_video_environment(video_path: str | Path, duration_sec: float) -> d
         "avg_brightness": avg_brightness,
         "env_method": env_method,
     }
-

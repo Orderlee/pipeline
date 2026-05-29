@@ -9,17 +9,49 @@ from pathlib import Path
 
 ALLOWED_EXTENSIONS: set[str] = {
     # 이미지
-    ".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp", ".heic",
+    ".jpg",
+    ".jpeg",
+    ".png",
+    ".bmp",
+    ".tif",
+    ".tiff",
+    ".webp",
+    ".heic",
     # 비디오
-    ".mp4", ".avi", ".mov", ".mkv", ".webm", ".mpeg", ".mpg", ".m4v", ".mts", ".m2ts",
+    ".mp4",
+    ".avi",
+    ".mov",
+    ".mkv",
+    ".webm",
+    ".mpeg",
+    ".mpg",
+    ".m4v",
+    ".mts",
+    ".m2ts",
 }
 
 IMAGE_EXTENSIONS: set[str] = {
-    ".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp", ".heic",
+    ".jpg",
+    ".jpeg",
+    ".png",
+    ".bmp",
+    ".tif",
+    ".tiff",
+    ".webp",
+    ".heic",
 }
 
 VIDEO_EXTENSIONS: set[str] = {
-    ".mp4", ".avi", ".mov", ".mkv", ".webm", ".mpeg", ".mpg", ".m4v", ".mts", ".m2ts",
+    ".mp4",
+    ".avi",
+    ".mov",
+    ".mkv",
+    ".webm",
+    ".mpeg",
+    ".mpg",
+    ".m4v",
+    ".mts",
+    ".m2ts",
 }
 
 

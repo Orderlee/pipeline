@@ -17,6 +17,7 @@ def materialize_video(
 ) -> tuple[Path, Path | None]:
     """비디오 파일을 로컬에 확보. archive_path 우선, MinIO fallback."""
     from vlm_pipeline.lib.media_utils import materialize_video_path
+
     return materialize_video_path(minio, candidate)
 
 

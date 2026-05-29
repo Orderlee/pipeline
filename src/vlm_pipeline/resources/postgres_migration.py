@@ -137,7 +137,6 @@ class PostgresMigrationMixin:
         with conn.cursor() as cur:
             cur.execute(sql_text)
             cur.execute(
-                "INSERT INTO _pg_migrations (name) VALUES (%s) "
-                "ON CONFLICT (name) DO NOTHING",
+                "INSERT INTO _pg_migrations (name) VALUES (%s) ON CONFLICT (name) DO NOTHING",
                 (path.name,),
             )

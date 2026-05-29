@@ -86,30 +86,18 @@ def nas_health_sensor(context):
 
     if all_ok:
         if _consecutive_failures > 0:
-            context.log.info(
-                f"nas_health: NAS 복구 확인 (연속 실패 {_consecutive_failures}회 후 정상)"
-            )
+            context.log.info(f"nas_health: NAS 복구 확인 (연속 실패 {_consecutive_failures}회 후 정상)")
             if _consecutive_failures >= NAS_HEALTH_CONSECUTIVE_FAIL_ALERT:
-                _send_slack_alert(
-                    f"[NAS 복구] incoming/archive 접근 정상화 "
-                    f"(연속 {_consecutive_failures}회 실패 후)"
-                )
+                _send_slack_alert(f"[NAS 복구] incoming/archive 접근 정상화 (연속 {_consecutive_failures}회 실패 후)")
         _consecutive_failures = 0
         return SkipReason("nas_health: 정상")
 
     _consecutive_failures += 1
-    failure_detail = ", ".join(
-        f"{name}={detail}" for name, (ok, detail) in results.items() if not ok
-    )
-    context.log.warning(
-        f"nas_health: NAS 접근 실패 ({_consecutive_failures}회 연속) — {failure_detail}"
-    )
+    failure_detail = ", ".join(f"{name}={detail}" for name, (ok, detail) in results.items() if not ok)
+    context.log.warning(f"nas_health: NAS 접근 실패 ({_consecutive_failures}회 연속) — {failure_detail}")
 
     now = time.time()
-    if (
-        _consecutive_failures >= NAS_HEALTH_CONSECUTIVE_FAIL_ALERT
-        and (now - _last_alert_ts) > NAS_ALERT_COOLDOWN_SEC
-    ):
+    if _consecutive_failures >= NAS_HEALTH_CONSECUTIVE_FAIL_ALERT and (now - _last_alert_ts) > NAS_ALERT_COOLDOWN_SEC:
         alert_sent = _send_slack_alert(
             f"[NAS 경고] 연속 {_consecutive_failures}회 접근 실패\n"
             f"상세: {failure_detail}\n"

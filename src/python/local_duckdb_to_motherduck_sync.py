@@ -79,11 +79,7 @@ def _normalize_sync_tables(tables: Optional[list[str]]) -> list[str]:
         seen.add(table)
 
     if invalid:
-        raise ValueError(
-            "Invalid table(s): "
-            + ", ".join(sorted(set(invalid)))
-            + f". Allowed: {', '.join(MVP_TABLES)}"
-        )
+        raise ValueError("Invalid table(s): " + ", ".join(sorted(set(invalid))) + f". Allowed: {', '.join(MVP_TABLES)}")
 
     if not normalized:
         raise ValueError("No valid table selected for sync.")
@@ -109,8 +105,7 @@ def _bootstrap_database_from_local(
             return "exists"
 
         create_sql = (
-            f"CREATE DATABASE {quote_identifier(database)} "
-            f"FROM '{quote_string(str(Path(local_db_path).resolve()))}'"
+            f"CREATE DATABASE {quote_identifier(database)} FROM '{quote_string(str(Path(local_db_path).resolve()))}'"
         )
         if dry_run:
             print(f"[DRY-RUN] Would bootstrap MotherDuck DB via local DB: {database}")
@@ -178,40 +173,23 @@ def _ensure_org_share(
 
     share_ident = quote_identifier(share_name)
     db_ident = quote_identifier(database)
-    options = (
-        "ACCESS ORGANIZATION, VISIBILITY DISCOVERABLE, "
-        f"UPDATE {desired}"
-    )
+    options = f"ACCESS ORGANIZATION, VISIBILITY DISCOVERABLE, UPDATE {desired}"
 
     if dry_run:
-        print(
-            f"[DRY-RUN] Would ensure organization share: "
-            f"db='{database}' share='{share_name}' UPDATE={desired}"
-        )
-        print(
-            f"[DRY-RUN] SQL (new share): CREATE SHARE IF NOT EXISTS {share_ident} "
-            f"FROM {db_ident} ({options})"
-        )
-        print(
-            f"[DRY-RUN] SQL (mode mismatch): CREATE OR REPLACE SHARE {share_ident} "
-            f"FROM {db_ident} ({options})"
-        )
+        print(f"[DRY-RUN] Would ensure organization share: db='{database}' share='{share_name}' UPDATE={desired}")
+        print(f"[DRY-RUN] SQL (new share): CREATE SHARE IF NOT EXISTS {share_ident} FROM {db_ident} ({options})")
+        print(f"[DRY-RUN] SQL (mode mismatch): CREATE OR REPLACE SHARE {share_ident} FROM {db_ident} ({options})")
         return
 
     con = connect_motherduck(database, token)
     try:
         current = _fetch_share_update_mode(con, share_name)
         if current == desired:
-            print(
-                f"[SHARE] Share '{share_name}' already has UPDATE {desired}; "
-                "no SQL change."
-            )
+            print(f"[SHARE] Share '{share_name}' already has UPDATE {desired}; no SQL change.")
             return
 
         if current is None:
-            sql = (
-                f"CREATE SHARE IF NOT EXISTS {share_ident} FROM {db_ident} ({options})"
-            )
+            sql = f"CREATE SHARE IF NOT EXISTS {share_ident} FROM {db_ident} ({options})"
             action = "created_or_if_not_exists"
         else:
             print(
@@ -227,10 +205,7 @@ def _ensure_org_share(
 
         row = con.execute(sql).fetchone()
         share_url = row[0] if row and len(row) > 0 else None
-        print(
-            f"[SHARE] Ensured organization share ({action}): db='{database}' "
-            f"share='{share_name}' UPDATE={desired}"
-        )
+        print(f"[SHARE] Ensured organization share ({action}): db='{database}' share='{share_name}' UPDATE={desired}")
         if share_url:
             print(f"[SHARE] URL: {share_url}")
     finally:
@@ -298,10 +273,7 @@ def _sync_mvp_tables(
         motherduck_before = _count_rows(con, dst_rel) if _table_exists(con, table) else 0
 
         if dry_run:
-            print(
-                f"[DRY-RUN] table={table} "
-                f"local={local_count} motherduck_before={motherduck_before} action=REPLACE"
-            )
+            print(f"[DRY-RUN] table={table} local={local_count} motherduck_before={motherduck_before} action=REPLACE")
             results.append((table, local_count, motherduck_before))
             continue
 
@@ -348,8 +320,7 @@ def _attach_pg_source(con: duckdb.DuckDBPyConnection, pg_dsn: str) -> None:
     except Exception as load_exc:  # noqa: BLE001
         if install_exc is not None:
             raise RuntimeError(
-                f"Failed to load DuckDB postgres extension. "
-                f"INSTALL error: {install_exc}. LOAD error: {load_exc}"
+                f"Failed to load DuckDB postgres extension. INSTALL error: {install_exc}. LOAD error: {load_exc}"
             ) from load_exc
         raise RuntimeError(f"Failed to load DuckDB postgres extension: {load_exc}") from load_exc
     con.execute(f"ATTACH '{pg_dsn}' AS local_db (TYPE POSTGRES, READ_ONLY)")
@@ -404,10 +375,7 @@ Examples:
         dest="ensure_org_share",
         action=argparse.BooleanOptionalAction,
         default=True,
-        help=(
-            "Ensure org-level share is enabled "
-            "(default: true)."
-        ),
+        help=("Ensure org-level share is enabled (default: true)."),
     )
     parser.add_argument(
         "--share-name",
@@ -424,10 +392,7 @@ Examples:
         "--tables",
         nargs="+",
         default=None,
-        help=(
-            "Subset of MVP tables to sync. "
-            f"Allowed: {', '.join(MVP_TABLES)}"
-        ),
+        help=(f"Subset of MVP tables to sync. Allowed: {', '.join(MVP_TABLES)}"),
     )
     parser.add_argument("--dry-run", action="store_true", help="Read/compare only")
     return parser.parse_args()
@@ -445,10 +410,7 @@ def main() -> int:
 
     settings = get_settings(args.config)
     local_db_path = (
-        args.local_db_path
-        or os.getenv("DATAOPS_DUCKDB_PATH")
-        or os.getenv("DUCKDB_PATH")
-        or settings.duckdb_path
+        args.local_db_path or os.getenv("DATAOPS_DUCKDB_PATH") or os.getenv("DUCKDB_PATH") or settings.duckdb_path
     )
     pg_dsn = args.source_dsn or os.getenv("DATAOPS_POSTGRES_DSN")
     use_pg_source: bool = bool(pg_dsn)
@@ -530,10 +492,7 @@ def main() -> int:
 
         mode = "DRY-RUN" if args.dry_run else "SYNC"
         synced_table_names = [table for table, _, _ in synced]
-        print(
-            f"[{mode}] synced_tables={len(synced)} "
-            f"tables={','.join(synced_table_names)}"
-        )
+        print(f"[{mode}] synced_tables={len(synced)} tables={','.join(synced_table_names)}")
 
         con.execute("DETACH local_db")
         return 0

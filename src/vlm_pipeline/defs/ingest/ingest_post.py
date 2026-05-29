@@ -44,9 +44,7 @@ def _check_nas_health(context, incoming_dir: str) -> bool:
             future = pool.submit(_probe)
             return future.result(timeout=NAS_HEALTH_TIMEOUT_SEC)
     except FuturesTimeoutError:
-        context.log.error(
-            f"nas_health_check TIMEOUT: {incoming_dir} 에 {NAS_HEALTH_TIMEOUT_SEC}s 내 응답 없음"
-        )
+        context.log.error(f"nas_health_check TIMEOUT: {incoming_dir} 에 {NAS_HEALTH_TIMEOUT_SEC}s 내 응답 없음")
         return False
     except OSError as exc:
         context.log.error(f"nas_health_check FAILED: {incoming_dir} — {exc}")
@@ -92,10 +90,7 @@ def _run_staging_archive_only_artifact_import(
         archive_unit_dir_hint=state.archive_unit_dir_hint,
     )
     if not source_unit_dirs:
-        context.log.info(
-            "archive-only local label import 스킵: "
-            f"folder={state.folder_name} source_unit_dir 없음"
-        )
+        context.log.info(f"archive-only local label import 스킵: folder={state.folder_name} source_unit_dir 없음")
         return None
 
     try:
@@ -111,15 +106,11 @@ def _run_staging_archive_only_artifact_import(
             failure_log_prefix="archive_only_artifact_import",
             update_timestamp_status=True,
         )
-        context.log.info(
-            "archive-only local label import 완료: "
-            f"folder={state.folder_name} summary={summary}"
-        )
+        context.log.info(f"archive-only local label import 완료: folder={state.folder_name} summary={summary}")
         return summary
     except Exception as exc:  # noqa: BLE001
         context.log.warning(
-            "archive-only local label import 실패(원본 적재는 유지): "
-            f"folder={state.folder_name} error={exc}"
+            f"archive-only local label import 실패(원본 적재는 유지): folder={state.folder_name} error={exc}"
         )
         return None
 
@@ -139,9 +130,7 @@ def _finalize_dispatch_success(db: "PostgresResource", state: RawIngestState) ->
         db.update_dispatch_request_status(
             state.request_id,
             "completed",
-            archive_path=(
-                str(state.archive_unit_dir_hint) if state.archive_unit_dir_hint else None
-            ),
+            archive_path=(str(state.archive_unit_dir_hint) if state.archive_unit_dir_hint else None),
             completed_at=completed_at,
             processed_at=completed_at,
         )
@@ -199,26 +188,18 @@ def _finalize_dispatch_failure(
             state.request_id,
             "failed",
             error_message=failure_message,
-            archive_path=(
-                str(state.archive_unit_dir_hint) if state.archive_unit_dir_hint else None
-            ),
+            archive_path=(str(state.archive_unit_dir_hint) if state.archive_unit_dir_hint else None),
             completed_at=completed_at,
             processed_at=completed_at,
         )
     except Exception as dispatch_exc:  # noqa: BLE001
-        context.log.warning(
-            f"dispatch 실패 상태 기록 실패: request_id={state.request_id}: {dispatch_exc}"
-        )
+        context.log.warning(f"dispatch 실패 상태 기록 실패: request_id={state.request_id}: {dispatch_exc}")
 
 
 def _dispatch_request_context(context) -> tuple[str | None, str | None, bool]:
     tags = getattr(context.run, "tags", {}) or {}
-    request_id = (
-        str(tags.get("dispatch_request_id") or tags.get("dagster/run_key") or "").strip() or None
-    )
-    folder_name = (
-        str(tags.get("folder_name_original") or tags.get("folder_name") or "").strip() or None
-    )
+    request_id = str(tags.get("dispatch_request_id") or tags.get("dagster/run_key") or "").strip() or None
+    folder_name = str(tags.get("folder_name_original") or tags.get("folder_name") or "").strip() or None
     archive_only = str(tags.get("dispatch_archive_only") or "").strip().lower() in TRUTHY_STRINGS
     return request_id, folder_name, archive_only
 

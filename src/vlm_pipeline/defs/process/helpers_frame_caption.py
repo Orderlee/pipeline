@@ -221,7 +221,9 @@ def _extract_clip_frames(
                     float(frame_sec),
                 )
             frame_bytes = extract_frame_jpeg_bytes(
-                clip_path, frame_sec, jpeg_quality=jpeg_quality,
+                clip_path,
+                frame_sec,
+                jpeg_quality=jpeg_quality,
             )
             image_key = _build_processed_clip_image_key(clip_key, frame_index)
             minio.upload("vlm-processed", image_key, frame_bytes, "image/jpeg")
@@ -239,8 +241,7 @@ def _extract_clip_frames(
             row_index = len(frame_rows)
             relevance_score = None
             if image_caption_analyzer is not None and (
-                str(image_caption_event_category or "").strip()
-                or str(image_caption_event_caption_text or "").strip()
+                str(image_caption_event_category or "").strip() or str(image_caption_event_caption_text or "").strip()
             ):
                 try:
                     relevance_score = _score_event_frame_image_relevance_with_retry(
@@ -269,29 +270,31 @@ def _extract_clip_frames(
                             "relevance_score": relevance_score,
                         }
                     )
-            frame_rows.append({
-                "image_id": str(uuid4()),
-                "source_clip_id": clip_id,
-                "image_bucket": "vlm-processed",
-                "image_key": image_key,
-                "image_role": "processed_clip_frame",
-                "frame_index": frame_index,
-                "frame_sec": float(frame_sec),
-                "checksum": sha256_bytes(frame_bytes),
-                "file_size": len(frame_bytes),
-                "width": frame_meta["width"],
-                "height": frame_meta["height"],
-                "color_mode": frame_meta["color_mode"],
-                "bit_depth": frame_meta["bit_depth"],
-                "has_alpha": frame_meta["has_alpha"],
-                "orientation": frame_meta["orientation"],
-                "image_caption_text": None,
-                "image_caption_score": relevance_score,
-                "image_caption_bucket": None,
-                "image_caption_key": None,
-                "image_caption_generated_at": None,
-                "extracted_at": now,
-            })
+            frame_rows.append(
+                {
+                    "image_id": str(uuid4()),
+                    "source_clip_id": clip_id,
+                    "image_bucket": "vlm-processed",
+                    "image_key": image_key,
+                    "image_role": "processed_clip_frame",
+                    "frame_index": frame_index,
+                    "frame_sec": float(frame_sec),
+                    "checksum": sha256_bytes(frame_bytes),
+                    "file_size": len(frame_bytes),
+                    "width": frame_meta["width"],
+                    "height": frame_meta["height"],
+                    "color_mode": frame_meta["color_mode"],
+                    "bit_depth": frame_meta["bit_depth"],
+                    "has_alpha": frame_meta["has_alpha"],
+                    "orientation": frame_meta["orientation"],
+                    "image_caption_text": None,
+                    "image_caption_score": relevance_score,
+                    "image_caption_bucket": None,
+                    "image_caption_key": None,
+                    "image_caption_generated_at": None,
+                    "extracted_at": now,
+                }
+            )
 
         best_candidate_index = select_top_relevance_index(
             [candidate.get("relevance_score") for candidate in caption_candidates]

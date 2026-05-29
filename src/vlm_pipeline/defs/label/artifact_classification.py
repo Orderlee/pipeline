@@ -84,9 +84,7 @@ def _import_image_classification_json_files(
         predicted_classes = payload.get("predicted_classes")
         if isinstance(predicted_classes, list):
             normalized_predicted_classes = [
-                str(value or "").strip().lower()
-                for value in predicted_classes
-                if str(value or "").strip()
+                str(value or "").strip().lower() for value in predicted_classes if str(value or "").strip()
             ]
         else:
             normalized_predicted_classes = []
@@ -136,7 +134,9 @@ def _import_image_classification_json_files(
             "predicted_classes": normalized_predicted_classes,
             "class_counts": normalized_class_counts,
             "bbox_labels_key": str(payload.get("bbox_labels_key") or "").strip() or None,
-            "requested_classes": payload.get("requested_classes") if isinstance(payload.get("requested_classes"), list) else [],
+            "requested_classes": payload.get("requested_classes")
+            if isinstance(payload.get("requested_classes"), list)
+            else [],
             "class_source": str(payload.get("class_source") or "manual_import").strip() or "manual_import",
             "generated_at": generated_at.isoformat(),
         }

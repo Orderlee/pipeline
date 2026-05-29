@@ -34,7 +34,10 @@ def _filter_valid_events(events: list) -> list[dict]:
 
 
 def _stable_gemini_label_id(
-    asset_id: str, event_index: int, start_sec: float | None, end_sec: float | None,
+    asset_id: str,
+    event_index: int,
+    start_sec: float | None,
+    end_sec: float | None,
 ) -> str:
     token = f"{asset_id}|gemini|auto|{event_index}|{start_sec}|{end_sec}"
     return sha1(token.encode("utf-8")).hexdigest()
@@ -84,12 +87,22 @@ def _ffprobe_clip_meta(clip_path: Path) -> dict[str, Any]:
     from vlm_pipeline.lib.video_loader import _run_ffprobe_with_retry
 
     cmd = [
-        "ffprobe", "-v", "quiet", "-print_format", "json",
-        "-show_format", "-show_streams", str(clip_path),
+        "ffprobe",
+        "-v",
+        "quiet",
+        "-print_format",
+        "json",
+        "-show_format",
+        "-show_streams",
+        str(clip_path),
     ]
     try:
         result = _run_ffprobe_with_retry(cmd, timeout_sec=30)
-        stdout = result.stdout if isinstance(result.stdout, str) else (result.stdout or b"").decode("utf-8", errors="replace")
+        stdout = (
+            result.stdout
+            if isinstance(result.stdout, str)
+            else (result.stdout or b"").decode("utf-8", errors="replace")
+        )
         if result.returncode != 0:
             return {}
         data = json.loads(stdout)
@@ -157,9 +170,7 @@ def _load_gemini_label_event(
     cached = cache.get(normalized_key)
     if cached is None:
         raw_bytes = minio.download("vlm-labels", normalized_key)
-        cached = normalize_gemini_events(
-            load_clean_json(raw_bytes.decode("utf-8", errors="replace"))
-        )
+        cached = normalize_gemini_events(load_clean_json(raw_bytes.decode("utf-8", errors="replace")))
         cache[normalized_key] = cached
 
     if 0 <= int(event_index) < len(cached):

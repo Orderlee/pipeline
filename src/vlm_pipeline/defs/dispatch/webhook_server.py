@@ -39,11 +39,14 @@ def _verify_signature(body: bytes, signature: str) -> bool:
     """HMAC-SHA256 서명 검증. secret 미설정 시 항상 통과."""
     if not DISPATCH_WEBHOOK_SECRET:
         return True
-    expected = "sha256=" + hmac.new(
-        DISPATCH_WEBHOOK_SECRET.encode(),
-        body,
-        hashlib.sha256,
-    ).hexdigest()
+    expected = (
+        "sha256="
+        + hmac.new(
+            DISPATCH_WEBHOOK_SECRET.encode(),
+            body,
+            hashlib.sha256,
+        ).hexdigest()
+    )
     return hmac.compare_digest(expected, signature)
 
 

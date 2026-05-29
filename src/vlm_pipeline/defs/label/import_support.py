@@ -74,7 +74,9 @@ def build_label_key(
     return f"{base_key}.{suffix}.json"
 
 
-def resolve_matching_asset(db, json_path: Path, payload: dict | list, *, source_unit_name: str | None = None) -> dict | None:
+def resolve_matching_asset(
+    db, json_path: Path, payload: dict | list, *, source_unit_name: str | None = None
+) -> dict | None:
     candidate_stems: list[str] = []
     if isinstance(payload, dict):
         for key in ("raw_key", "source_raw_key", "media_key", "clip_key", "source_path"):
@@ -126,20 +128,13 @@ def normalize_event_payload(item: object, index: int) -> dict:
         or payload.get("begin_sec")
     )
     end_sec = coerce_float(
-        payload.get("timestamp_end_sec")
-        or payload.get("end_sec")
-        or payload.get("end")
-        or payload.get("finish_sec")
+        payload.get("timestamp_end_sec") or payload.get("end_sec") or payload.get("end") or payload.get("finish_sec")
     )
     if start_sec is not None and end_sec is not None and end_sec < start_sec:
         start_sec, end_sec = end_sec, start_sec
 
     detections = (
-        payload.get("detections")
-        or payload.get("objects")
-        or payload.get("annotations")
-        or payload.get("boxes")
-        or []
+        payload.get("detections") or payload.get("objects") or payload.get("annotations") or payload.get("boxes") or []
     )
     object_count = len(detections) if isinstance(detections, list) else 0
     predicted_classes = payload.get("predicted_classes") if isinstance(payload.get("predicted_classes"), list) else []

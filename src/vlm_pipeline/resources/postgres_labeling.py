@@ -71,8 +71,14 @@ class PostgresLabelingMixin:
                 )
                 rows = cur.fetchall()
             columns = [
-                "asset_id", "raw_bucket", "raw_key", "archive_path",
-                "source_path", "duration_sec", "fps", "frame_count",
+                "asset_id",
+                "raw_bucket",
+                "raw_key",
+                "archive_path",
+                "source_path",
+                "duration_sec",
+                "fps",
+                "frame_count",
             ]
             return [dict(zip(columns, row)) for row in rows]
 
@@ -188,9 +194,7 @@ class PostgresLabelingMixin:
                     (status, error, completed_at, asset_id),
                 )
 
-    def find_ready_for_labeling_timestamp_backlog(
-        self, spec_id: str, limit: int = 50
-    ) -> list[dict]:
+    def find_ready_for_labeling_timestamp_backlog(self, spec_id: str, limit: int = 50) -> list[dict]:
         """Staging spec flow: ready_for_labeling + spec_id, timestamp 미완료 비디오."""
         with self.connect() as conn:
             cols = self._table_columns(conn, "raw_files")
@@ -218,18 +222,24 @@ class PostgresLabelingMixin:
                 )
                 rows = cur.fetchall()
             columns = [
-                "asset_id", "raw_bucket", "raw_key", "archive_path", "source_path",
-                "duration_sec", "fps", "frame_count",
+                "asset_id",
+                "raw_bucket",
+                "raw_key",
+                "archive_path",
+                "source_path",
+                "duration_sec",
+                "fps",
+                "frame_count",
             ]
             return [dict(zip(columns, row)) for row in rows]
 
-    def find_timestamp_pending_by_folder(
-        self, folder_name: str, limit: int = 50
-    ) -> list[dict]:
+    def find_timestamp_pending_by_folder(self, folder_name: str, limit: int = 50) -> list[dict]:
         """Dispatch flow: folder_name(source_unit_name) 기준 timestamp 미완료 비디오."""
         with self.connect() as conn:
             vm_cols = self._table_columns(conn, "video_metadata")
-            ts_filter = "AND COALESCE(vm.timestamp_status, 'pending') = 'pending'" if "timestamp_status" in vm_cols else ""
+            ts_filter = (
+                "AND COALESCE(vm.timestamp_status, 'pending') = 'pending'" if "timestamp_status" in vm_cols else ""
+            )
             with conn.cursor() as cur:
                 cur.execute(
                     f"""
@@ -249,14 +259,18 @@ class PostgresLabelingMixin:
                 )
                 rows = cur.fetchall()
             columns = [
-                "asset_id", "raw_bucket", "raw_key", "archive_path", "source_path",
-                "duration_sec", "fps", "frame_count",
+                "asset_id",
+                "raw_bucket",
+                "raw_key",
+                "archive_path",
+                "source_path",
+                "duration_sec",
+                "fps",
+                "frame_count",
             ]
             return [dict(zip(columns, row)) for row in rows]
 
-    def find_ready_for_labeling_caption_backlog(
-        self, spec_id: str, limit: int = 100
-    ) -> list[dict]:
+    def find_ready_for_labeling_caption_backlog(self, spec_id: str, limit: int = 100) -> list[dict]:
         with self.connect() as conn:
             cols = self._table_columns(conn, "raw_files")
             if "spec_id" not in cols:
@@ -291,9 +305,7 @@ class PostgresLabelingMixin:
             columns = ["asset_id", "raw_bucket", "raw_key", "timestamp_label_key", "duration_sec"]
             return [dict(zip(columns, row)) for row in rows]
 
-    def find_caption_pending_by_folder(
-        self, folder_name: str, limit: int = 100
-    ) -> list[dict]:
+    def find_caption_pending_by_folder(self, folder_name: str, limit: int = 100) -> list[dict]:
         with self.connect() as conn:
             vm_cols = self._table_columns(conn, "video_metadata")
             required_vm_cols = {"timestamp_status", "timestamp_label_key", "caption_status"}
@@ -517,9 +529,16 @@ class PostgresLabelingMixin:
                 )
                 rows = cur.fetchall()
             columns = [
-                "clip_id", "source_asset_id", "processed_bucket", "clip_key",
-                "duration_sec", "fps", "frame_count",
-                "clip_start_sec", "clip_end_sec", "raw_key",
+                "clip_id",
+                "source_asset_id",
+                "processed_bucket",
+                "clip_key",
+                "duration_sec",
+                "fps",
+                "frame_count",
+                "clip_start_sec",
+                "clip_end_sec",
+                "raw_key",
             ]
             return [dict(zip(columns, row)) for row in rows]
 
@@ -552,16 +571,12 @@ class PostgresLabelingMixin:
 
             # f-string 으로 라벨 도구 이름을 그대로 SQL 에 박지 말고 placeholder 로 — 보안 + 인덱스 활용.
             missing_detection = (
-                "NOT EXISTS ("
-                "SELECT 1 FROM image_labels il "
-                "WHERE il.image_id = im.image_id AND il.label_tool = %s)"
+                "NOT EXISTS (SELECT 1 FROM image_labels il WHERE il.image_id = im.image_id AND il.label_tool = %s)"
             )
             label_tool_params = [label_tool]
             if include_classification_tool:
                 missing_cls = (
-                    "NOT EXISTS ("
-                    "SELECT 1 FROM image_labels il "
-                    "WHERE il.image_id = im.image_id AND il.label_tool = %s)"
+                    "NOT EXISTS (SELECT 1 FROM image_labels il WHERE il.image_id = im.image_id AND il.label_tool = %s)"
                 )
                 pending_clause = f"({missing_detection} OR {missing_cls})"
                 label_tool_params.append(include_classification_tool)
@@ -596,9 +611,15 @@ class PostgresLabelingMixin:
                 )
                 rows = cur.fetchall()
             columns = [
-                "image_id", "source_asset_id", "source_clip_id",
-                "image_bucket", "image_key", "width", "height",
-                "frame_index", "frame_sec",
+                "image_id",
+                "source_asset_id",
+                "source_clip_id",
+                "image_bucket",
+                "image_key",
+                "width",
+                "height",
+                "frame_index",
+                "frame_sec",
             ]
             return [dict(zip(columns, row)) for row in rows]
 
@@ -630,9 +651,7 @@ class PostgresLabelingMixin:
             spec_id=spec_id,
         )
 
-    def find_dispatch_video_classification_candidates(
-        self, *, folder_name: str, limit: int
-    ) -> list[dict[str, Any]]:
+    def find_dispatch_video_classification_candidates(self, *, folder_name: str, limit: int) -> list[dict[str, Any]]:
         """dispatch `classification_video` 대상 후보 조회 — source_unit_name 매칭.
 
         labels 테이블에 이미 `video_classification_json` 레이블이 있는 raw_files 는 제외.
@@ -668,8 +687,14 @@ class PostgresLabelingMixin:
                 )
                 rows = cur.fetchall()
         columns = [
-            "asset_id", "raw_bucket", "raw_key", "archive_path",
-            "source_path", "duration_sec", "fps", "frame_count",
+            "asset_id",
+            "raw_bucket",
+            "raw_key",
+            "archive_path",
+            "source_path",
+            "duration_sec",
+            "fps",
+            "frame_count",
         ]
         return [dict(zip(columns, row)) for row in rows]
 
@@ -783,20 +808,22 @@ class PostgresLabelingMixin:
             return 0
         payload_rows: list[tuple] = []
         for label in labels:
-            payload_rows.append((
-                label.get("image_label_id") or str(uuid4()),
-                label.get("image_id"),
-                label.get("source_clip_id"),
-                label.get("labels_bucket", "vlm-labels"),
-                label.get("labels_key"),
-                label.get("label_format"),
-                label.get("label_tool"),
-                label.get("label_source"),
-                label.get("review_status", "pending"),
-                label.get("label_status", "pending"),
-                label.get("object_count", 0),
-                label.get("created_at", datetime.now()),
-            ))
+            payload_rows.append(
+                (
+                    label.get("image_label_id") or str(uuid4()),
+                    label.get("image_id"),
+                    label.get("source_clip_id"),
+                    label.get("labels_bucket", "vlm-labels"),
+                    label.get("labels_key"),
+                    label.get("label_format"),
+                    label.get("label_tool"),
+                    label.get("label_source"),
+                    label.get("review_status", "pending"),
+                    label.get("label_status", "pending"),
+                    label.get("object_count", 0),
+                    label.get("created_at", datetime.now()),
+                )
+            )
         with self.connect() as conn:
             with conn.cursor() as cur:
                 cur.executemany(_IMAGE_LABELS_INSERT_SQL, payload_rows)

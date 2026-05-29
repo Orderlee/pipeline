@@ -99,11 +99,7 @@ def storage_raw_key_prefix_from_source_unit(source_unit_name: str | None) -> str
     if not raw:
         return ""
 
-    parts = [
-        sanitize_path_component(part)
-        for part in PurePosixPath(raw).parts
-        if part not in {"", ".", ".."}
-    ]
+    parts = [sanitize_path_component(part) for part in PurePosixPath(raw).parts if part not in {"", ".", ".."}]
     if len(parts) >= 2 and parts[0] == "gcp":
         parts = parts[1:]
 
@@ -256,12 +252,7 @@ def is_dispatch_yolo_only_requested(tags) -> bool:
     """Staging dispatch run에서 YOLO 계열만 실행해야 하는지 판별."""
     if not tags or str(tags.get("spec_id") or "").strip():
         return False
-    outputs_raw = (
-        tags.get("requested_outputs")
-        or tags.get("outputs")
-        or tags.get("labeling_method")
-        or ""
-    )
+    outputs_raw = tags.get("requested_outputs") or tags.get("outputs") or tags.get("labeling_method") or ""
     requested = set(parse_outputs_raw(outputs_raw))
     return bool(requested) and requested.issubset(YOLO_OUTPUTS)
 
@@ -345,11 +336,7 @@ def should_run_any_output(context, required_outputs: set[str] | frozenset[str] |
     if not outputs_raw and not run_mode:
         return True
 
-    required = {
-        normalize_output_name(output)
-        for output in required_outputs
-        if normalize_output_name(output)
-    }
+    required = {normalize_output_name(output) for output in required_outputs if normalize_output_name(output)}
     if not required:
         return False
 

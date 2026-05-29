@@ -48,16 +48,34 @@ def _log_clip_extraction_window(
 
 
 def _extract_video_clip_path(
-    video_path: Path, *, clip_start_sec: float, clip_end_sec: float,
+    video_path: Path,
+    *,
+    clip_start_sec: float,
+    clip_end_sec: float,
 ) -> Path:
     duration_sec = max(0.05, float(clip_end_sec) - float(clip_start_sec))
     output_path = build_nonexistent_temp_path(".mp4")
 
     copy_cmd = [
-        "ffmpeg", "-hide_banner", "-loglevel", "error",
-        "-ss", f"{float(clip_start_sec):.3f}", "-t", f"{duration_sec:.3f}",
-        "-i", str(video_path), "-map", "0:v:0", "-map", "0:a?",
-        "-c", "copy", "-movflags", "+faststart", str(output_path),
+        "ffmpeg",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-ss",
+        f"{float(clip_start_sec):.3f}",
+        "-t",
+        f"{duration_sec:.3f}",
+        "-i",
+        str(video_path),
+        "-map",
+        "0:v:0",
+        "-map",
+        "0:a?",
+        "-c",
+        "copy",
+        "-movflags",
+        "+faststart",
+        str(output_path),
     ]
     copy_proc = subprocess.run(copy_cmd, capture_output=True, check=False)
     if copy_proc.returncode == 0 and output_path.exists() and output_path.stat().st_size > 0:
@@ -66,11 +84,29 @@ def _extract_video_clip_path(
     output_path = build_nonexistent_temp_path(".mp4")
 
     reencode_cmd = [
-        "ffmpeg", "-hide_banner", "-loglevel", "error",
-        "-ss", f"{float(clip_start_sec):.3f}", "-t", f"{duration_sec:.3f}",
-        "-i", str(video_path), "-map", "0:v:0", "-map", "0:a?",
-        "-c:v", "libx264", "-preset", "veryfast", "-c:a", "aac",
-        "-movflags", "+faststart", str(output_path),
+        "ffmpeg",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-ss",
+        f"{float(clip_start_sec):.3f}",
+        "-t",
+        f"{duration_sec:.3f}",
+        "-i",
+        str(video_path),
+        "-map",
+        "0:v:0",
+        "-map",
+        "0:a?",
+        "-c:v",
+        "libx264",
+        "-preset",
+        "veryfast",
+        "-c:a",
+        "aac",
+        "-movflags",
+        "+faststart",
+        str(output_path),
     ]
     reencode_proc = subprocess.run(reencode_cmd, capture_output=True, check=False)
     if reencode_proc.returncode != 0 or not output_path.exists() or output_path.stat().st_size <= 0:
@@ -171,7 +207,7 @@ def _extract_video_clip_media(
     context.log.warning(
         "clip_to_frame checksum collision: asset=%s clip_id=%s existing_clip_id=%s checksum=%s "
         "strategy=%s -> retry event_only",
-                asset_id,
+        asset_id,
         clip_id,
         existing_clip["clip_id"],
         extracted["checksum"],

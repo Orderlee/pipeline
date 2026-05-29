@@ -51,7 +51,9 @@ def cleanup_empty_tree(root: Path, max_depth: int = ARCHIVE_CLEANUP_MAX_DEPTH) -
     _cleanup_recursive(root, 0)
 
 
-def cleanup_empty_parent_chain(start: Path | None, *, stop_at: Path | None = None, max_levels: int = ARCHIVE_CLEANUP_MAX_PARENT_LEVELS) -> None:
+def cleanup_empty_parent_chain(
+    start: Path | None, *, stop_at: Path | None = None, max_levels: int = ARCHIVE_CLEANUP_MAX_PARENT_LEVELS
+) -> None:
     """비어 있는 부모 디렉토리를 상향식으로 정리한다.
 
     `stop_at` 디렉토리는 경계로 취급하고 삭제하지 않는다.

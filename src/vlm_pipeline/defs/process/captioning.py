@@ -215,9 +215,7 @@ def clip_captioning_routed_impl(
 
         try:
             json_bytes = minio.download("vlm-labels", label_key)
-            events = normalize_gemini_events(
-                load_clean_json(json_bytes.decode("utf-8", errors="replace"))
-            )
+            events = normalize_gemini_events(load_clean_json(json_bytes.decode("utf-8", errors="replace")))
             label_rows = _build_gemini_label_rows(asset_id, label_key, events)
             inserted = db.replace_gemini_labels(asset_id, label_key, label_rows)
             labels_inserted += inserted

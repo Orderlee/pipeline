@@ -93,7 +93,8 @@ def _read_auto_label_backlog_snapshot() -> dict[str, int | str | None]:
                 gemini_updated or "",
                 caption_updated or "",
                 clip_updated or "",
-            ) or None,
+            )
+            or None,
             "gemini_pending_count": gemini_pending_count,
             "caption_pending_count": caption_pending_count,
             "clip_pending_count": clip_pending_count,
@@ -120,11 +121,13 @@ def auto_labeling_sensor(context):
         yield SkipReason(f"auto_labeling in-flight run 조회 실패: {exc}")
         return
 
-    active_jobs = sorted({
-        str(run.job_name)
-        for run in in_flight_runs
-        if str(getattr(run, "job_name", "") or "") in AUTO_LABELING_TARGET_JOBS
-    })
+    active_jobs = sorted(
+        {
+            str(run.job_name)
+            for run in in_flight_runs
+            if str(getattr(run, "job_name", "") or "") in AUTO_LABELING_TARGET_JOBS
+        }
+    )
     if active_jobs:
         yield SkipReason(f"auto_labeling job already running: {', '.join(active_jobs)}")
         return

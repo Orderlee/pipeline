@@ -28,7 +28,9 @@ def _mime_type_for_path(path: Path, default: str) -> str:
     return guessed or default
 
 
-def _find_candidate_files(root: Path, *, stem: str, suffixes: tuple[str, ...], preferred_dir: str | None = None) -> list[Path]:
+def _find_candidate_files(
+    root: Path, *, stem: str, suffixes: tuple[str, ...], preferred_dir: str | None = None
+) -> list[Path]:
     candidates: list[Path] = []
     wanted_suffixes = {suffix.lower() for suffix in suffixes}
     for path in root.rglob("*"):

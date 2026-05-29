@@ -64,19 +64,21 @@ class PostgresGenAIMixin:
             return 0
         rows = []
         for job in jobs:
-            rows.append((
-                job["job_id"],
-                job["batch_id"],
-                int(job["seq_in_batch"]),
-                job.get("input_asset_id"),
-                job.get("output_asset_id"),
-                job.get("provider_job_id"),
-                job.get("status", "pending"),
-                job.get("error_message"),
-                job.get("cost_units"),
-                job.get("submitted_at"),
-                job.get("completed_at"),
-            ))
+            rows.append(
+                (
+                    job["job_id"],
+                    job["batch_id"],
+                    int(job["seq_in_batch"]),
+                    job.get("input_asset_id"),
+                    job.get("output_asset_id"),
+                    job.get("provider_job_id"),
+                    job.get("status", "pending"),
+                    job.get("error_message"),
+                    job.get("cost_units"),
+                    job.get("submitted_at"),
+                    job.get("completed_at"),
+                )
+            )
         with self.connect() as conn:
             with conn.cursor() as cur:
                 cur.executemany(_JOB_INSERT_SQL, rows)
@@ -213,9 +215,18 @@ class PostgresGenAIMixin:
                 if not row:
                     return None
                 cols = [
-                    "batch_id", "engine", "output_media", "prompt", "options_json",
-                    "requested_by", "status", "n_total", "n_succeeded", "n_failed",
-                    "submitted_at", "completed_at",
+                    "batch_id",
+                    "engine",
+                    "output_media",
+                    "prompt",
+                    "options_json",
+                    "requested_by",
+                    "status",
+                    "n_total",
+                    "n_succeeded",
+                    "n_failed",
+                    "submitted_at",
+                    "completed_at",
                 ]
                 return dict(zip(cols, row))
 
@@ -241,9 +252,15 @@ class PostgresGenAIMixin:
                 cur.execute(sql, tuple(params))
                 rows = cur.fetchall()
             cols = [
-                "batch_id", "engine", "output_media", "status",
-                "n_total", "n_succeeded", "n_failed",
-                "submitted_at", "completed_at",
+                "batch_id",
+                "engine",
+                "output_media",
+                "status",
+                "n_total",
+                "n_succeeded",
+                "n_failed",
+                "submitted_at",
+                "completed_at",
             ]
             return [dict(zip(cols, row)) for row in rows]
 
@@ -264,10 +281,17 @@ class PostgresGenAIMixin:
                 )
                 rows = cur.fetchall()
             cols = [
-                "job_id", "batch_id", "seq_in_batch",
-                "input_asset_id", "output_asset_id", "provider_job_id",
-                "status", "error_message", "cost_units",
-                "submitted_at", "completed_at",
+                "job_id",
+                "batch_id",
+                "seq_in_batch",
+                "input_asset_id",
+                "output_asset_id",
+                "provider_job_id",
+                "status",
+                "error_message",
+                "cost_units",
+                "submitted_at",
+                "completed_at",
             ]
             return [dict(zip(cols, row)) for row in rows]
 
@@ -296,8 +320,13 @@ class PostgresGenAIMixin:
                 cur.execute(sql, tuple(params))
                 rows = cur.fetchall()
             cols = [
-                "job_id", "batch_id", "seq_in_batch",
-                "provider_job_id", "status", "submitted_at",
-                "engine", "output_media",
+                "job_id",
+                "batch_id",
+                "seq_in_batch",
+                "provider_job_id",
+                "status",
+                "submitted_at",
+                "engine",
+                "output_media",
             ]
             return [dict(zip(cols, row)) for row in rows]

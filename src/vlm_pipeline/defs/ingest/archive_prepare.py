@@ -37,12 +37,9 @@ def prepare_manifest_for_archive_upload(
         return manifest, None, False
 
     manifest_file_count = int(manifest.get("file_count") or len(manifest.get("files", [])) or 0)
-    source_unit_total_file_count = int(
-        manifest.get("source_unit_total_file_count") or manifest_file_count
-    )
+    source_unit_total_file_count = int(manifest.get("source_unit_total_file_count") or manifest_file_count)
     is_chunked_manifest = (
-        int(manifest.get("source_unit_chunk_count") or 1) > 1
-        or source_unit_total_file_count > manifest_file_count
+        int(manifest.get("source_unit_chunk_count") or 1) > 1 or source_unit_total_file_count > manifest_file_count
     )
     if is_chunked_manifest:
         return manifest, Path(archive_dir) / archive_unit_name, False
@@ -105,9 +102,7 @@ def prepare_manifest_for_archive_upload(
             source_unit_path.parent,
             stop_at=Path(source_dir_raw) if source_dir_raw else None,
         )
-        context.log.info(
-            f"archive 선이동 완료(기존 디렉토리 병합): {source_unit_path} -> {existing_archive_dir}"
-        )
+        context.log.info(f"archive 선이동 완료(기존 디렉토리 병합): {source_unit_path} -> {existing_archive_dir}")
         return _rewrite_manifest_paths(existing_archive_dir), existing_archive_dir, True
 
     final_archive_unit_dir = base_archive_unit_dir
@@ -116,7 +111,5 @@ def prepare_manifest_for_archive_upload(
         source_unit_path.parent,
         stop_at=Path(source_dir_raw) if source_dir_raw else None,
     )
-    context.log.info(
-        f"archive 선이동 완료(업로드는 archive 기준): {source_unit_path} -> {final_archive_unit_dir}"
-    )
+    context.log.info(f"archive 선이동 완료(업로드는 archive 기준): {source_unit_path} -> {final_archive_unit_dir}")
     return _rewrite_manifest_paths(final_archive_unit_dir), final_archive_unit_dir, True

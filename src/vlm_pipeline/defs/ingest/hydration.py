@@ -13,10 +13,12 @@ from vlm_pipeline.lib.validator import ALLOWED_EXTENSIONS, is_macos_metadata_fil
 
 STALE_MANIFEST_ALL_MISSING_REASON = "manifest_stale_all_missing"
 ALL_ALREADY_COMPLETED_REASON = "manifest_all_already_completed"
-GCP_AUTO_BOOTSTRAP_TRANSFER_TOOLS: frozenset[str] = frozenset({
-    "auto_bootstrap_sensor",
-    "ingest_retry_manifest",
-})
+GCP_AUTO_BOOTSTRAP_TRANSFER_TOOLS: frozenset[str] = frozenset(
+    {
+        "auto_bootstrap_sensor",
+        "ingest_retry_manifest",
+    }
+)
 STALE_REHYDRATE_TRANSFER_TOOLS = GCP_AUTO_BOOTSTRAP_TRANSFER_TOOLS
 
 
@@ -103,9 +105,7 @@ def reconcile_manifest_files_against_disk(
         try:
             completed_set = db.find_completed_source_paths(candidate_source_paths)
         except Exception as exc:  # noqa: BLE001
-            context.log.warning(
-                f"find_completed_source_paths 조회 실패(필터 스킵): {exc}"
-            )
+            context.log.warning(f"find_completed_source_paths 조회 실패(필터 스킵): {exc}")
             completed_set = set()
 
     for entry in original_entries:
@@ -188,10 +188,7 @@ def hydrate_manifest_files(context, manifest: dict, *, db=None) -> dict:
     manifest["files"] = files
     manifest["file_count"] = len(files)
     manifest["source_unit_total_file_count"] = len(files)
-    context.log.info(
-        "manifest 파일 인덱싱 완료: "
-        f"source_unit_path={source_unit_path}, file_count={len(files)}"
-    )
+    context.log.info(f"manifest 파일 인덱싱 완료: source_unit_path={source_unit_path}, file_count={len(files)}")
     return manifest
 
 
