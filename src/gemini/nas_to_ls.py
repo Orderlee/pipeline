@@ -56,22 +56,23 @@ from botocore.config import Config as BotoConfig
 # Defaults
 # ---------------------------------------------------------------------------
 
-DEFAULT_LS_URL           = "http://localhost:8080"
-DEFAULT_MINIO_ENDPOINT   = "10.0.0.51:9000"
+DEFAULT_LS_URL = "http://localhost:8080"
+DEFAULT_MINIO_ENDPOINT = "10.0.0.51:9000"
 DEFAULT_MINIO_ACCESS_KEY = "minioadmin"
 DEFAULT_MINIO_SECRET_KEY = "minioadmin"
-DEFAULT_IMPORT_BUCKET    = "vlm-poc-import"
-DEFAULT_PRESIGN_EXPIRES  = 3600 * 24 * 7   # 7일
+DEFAULT_IMPORT_BUCKET = "vlm-poc-import"
+DEFAULT_PRESIGN_EXPIRES = 3600 * 24 * 7  # 7일
 
 VIDEO_EXTENSIONS = {".mp4", ".mov", ".mkv", ".avi", ".webm"}
 
 FROM_NAME = "videoLabels"
-TO_NAME   = "video"
+TO_NAME = "video"
 
 
 # ---------------------------------------------------------------------------
 # MinIO
 # ---------------------------------------------------------------------------
+
 
 def build_minio_client(endpoint: str, access_key: str, secret_key: str):
     url = endpoint if endpoint.startswith("http") else f"http://{endpoint}"
@@ -111,6 +112,7 @@ def generate_presigned_url(client, bucket: str, key: str, expires: int = DEFAULT
 # Label Studio auth
 # ---------------------------------------------------------------------------
 
+
 def resolve_auth_headers(ls_url: str, token: str) -> dict[str, str]:
     try:
         payload_part = token.split(".")[1]
@@ -128,6 +130,7 @@ def resolve_auth_headers(ls_url: str, token: str) -> dict[str, str]:
 # ---------------------------------------------------------------------------
 # Label Studio project
 # ---------------------------------------------------------------------------
+
 
 def find_or_create_project(ls_url: str, headers: dict, project_name: str) -> int:
     resp = requests.get(f"{ls_url}/api/projects/", headers=headers)
@@ -209,6 +212,7 @@ def create_prediction(ls_url: str, headers: dict, task_id: int, result: list[dic
 # JSON → LS prediction 변환
 # ---------------------------------------------------------------------------
 
+
 def _rand_id(n: int = 10) -> str:
     return "".join(random.choices(string.ascii_letters + string.digits, k=n))
 
@@ -229,17 +233,19 @@ def json_to_ls_result(
         if len(ts) < 2:
             continue
         start_frame, end_frame = int(ts[0]), int(ts[1])
-        result.append({
-            "value": {
-                "ranges": [{"start": start_frame, "end": end_frame}],
-                "timelinelabels": [category],
-            },
-            "id": _rand_id(),
-            "from_name": FROM_NAME,
-            "to_name": TO_NAME,
-            "type": "timelinelabels",
-            "origin": "prediction",
-        })
+        result.append(
+            {
+                "value": {
+                    "ranges": [{"start": start_frame, "end": end_frame}],
+                    "timelinelabels": [category],
+                },
+                "id": _rand_id(),
+                "from_name": FROM_NAME,
+                "to_name": TO_NAME,
+                "type": "timelinelabels",
+                "origin": "prediction",
+            }
+        )
     return result
 
 
@@ -247,13 +253,14 @@ def json_to_ls_result(
 # 메인 import 로직
 # ---------------------------------------------------------------------------
 
+
 def run_import(args) -> None:
     video_dir = Path(args.dir)
     if not video_dir.exists():
         raise SystemExit(f"경로 없음: {video_dir}")
 
-    ls_url     = args.ls_url.rstrip("/")
-    headers    = resolve_auth_headers(ls_url, args.api_key)
+    ls_url = args.ls_url.rstrip("/")
+    headers = resolve_auth_headers(ls_url, args.api_key)
     project_id = find_or_create_project(ls_url, headers, args.project_name)
 
     minio = build_minio_client(args.minio_endpoint, args.minio_access_key, args.minio_secret_key)
@@ -264,15 +271,13 @@ def run_import(args) -> None:
 
     skip_categories = set(args.skip_categories) if args.skip_categories else set()
 
-    video_files = sorted(
-        f for f in video_dir.iterdir() if f.suffix.lower() in VIDEO_EXTENSIONS
-    )
+    video_files = sorted(f for f in video_dir.iterdir() if f.suffix.lower() in VIDEO_EXTENSIONS)
     print(f"[INFO] 영상 {len(video_files)}개 발견")
 
     created = skipped = error = 0
 
     for video_path in video_files:
-        stem     = video_path.stem
+        stem = video_path.stem
         json_path = video_path.with_suffix(".json")
 
         if stem in existing_stems:
@@ -286,9 +291,9 @@ def run_import(args) -> None:
 
         try:
             label_data = json.loads(json_path.read_text(encoding="utf-8"))
-            clips      = label_data.get("clips", {})
+            clips = label_data.get("clips", {})
             video_info = label_data.get("video_info", {})
-            fps        = video_info.get("fps", 30.0)
+            fps = video_info.get("fps", 30.0)
 
             # MinIO 업로드
             minio_key = f"{args.prefix}/{stem}{video_path.suffix}"
@@ -298,7 +303,10 @@ def run_import(args) -> None:
 
             # task 생성
             task_id = create_task(
-                ls_url, headers, project_id, video_url,
+                ls_url,
+                headers,
+                project_id,
+                video_url,
                 meta={"filename": stem, "source": video_info.get("source", ""), "fps": fps},
             )
 
@@ -321,19 +329,21 @@ def run_import(args) -> None:
 # main
 # ---------------------------------------------------------------------------
 
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="NAS 라벨 데이터 → Label Studio import")
-    parser.add_argument("--dir",          required=True, help="영상+JSON이 있는 NAS 디렉토리 경로")
+    parser.add_argument("--dir", required=True, help="영상+JSON이 있는 NAS 디렉토리 경로")
     parser.add_argument("--project-name", required=True, help="LS project 이름")
-    parser.add_argument("--prefix",       default="poc-import", help="MinIO 저장 prefix (기본: poc-import)")
-    parser.add_argument("--skip-categories", nargs="*", default=["normal"],
-                        help="prediction에서 제외할 카테고리 (기본: normal)")
-    parser.add_argument("--ls-url",       default=os.environ.get("LS_URL", DEFAULT_LS_URL))
-    parser.add_argument("--api-key",      default=os.environ.get("LS_API_KEY"))
-    parser.add_argument("--minio-endpoint",   default=os.environ.get("MINIO_ENDPOINT", DEFAULT_MINIO_ENDPOINT))
+    parser.add_argument("--prefix", default="poc-import", help="MinIO 저장 prefix (기본: poc-import)")
+    parser.add_argument(
+        "--skip-categories", nargs="*", default=["normal"], help="prediction에서 제외할 카테고리 (기본: normal)"
+    )
+    parser.add_argument("--ls-url", default=os.environ.get("LS_URL", DEFAULT_LS_URL))
+    parser.add_argument("--api-key", default=os.environ.get("LS_API_KEY"))
+    parser.add_argument("--minio-endpoint", default=os.environ.get("MINIO_ENDPOINT", DEFAULT_MINIO_ENDPOINT))
     parser.add_argument("--minio-access-key", default=os.environ.get("MINIO_ACCESS_KEY", DEFAULT_MINIO_ACCESS_KEY))
     parser.add_argument("--minio-secret-key", default=os.environ.get("MINIO_SECRET_KEY", DEFAULT_MINIO_SECRET_KEY))
-    parser.add_argument("--bucket",       default=os.environ.get("MINIO_IMPORT_BUCKET", DEFAULT_IMPORT_BUCKET))
+    parser.add_argument("--bucket", default=os.environ.get("MINIO_IMPORT_BUCKET", DEFAULT_IMPORT_BUCKET))
 
     args = parser.parse_args()
 

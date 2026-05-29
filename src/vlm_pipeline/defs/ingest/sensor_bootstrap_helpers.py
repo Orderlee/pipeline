@@ -93,6 +93,6 @@ def _chunk_files(unit_files: list[dict], max_files_per_manifest: int) -> list[li
     if not unit_files:
         return []
     return [
-        unit_files[index:index + max_files_per_manifest]
+        unit_files[index : index + max_files_per_manifest]
         for index in range(0, len(unit_files), max_files_per_manifest)
     ]

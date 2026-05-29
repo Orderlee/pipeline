@@ -188,9 +188,7 @@ def _run_sam3_image_detection(
     client = get_sam3_client()
 
     if not client.wait_until_ready(max_wait_sec=120):
-        context.log.error(
-            f"SAM3 서버가 준비되지 않았습니다: url={client.api_url} pending={len(candidates)}건"
-        )
+        context.log.error(f"SAM3 서버가 준비되지 않았습니다: url={client.api_url} pending={len(candidates)}건")
         raise Failure(
             description="SAM3 서버 미준비 — primary bbox 엔진 연결 실패",
             metadata={
@@ -205,14 +203,8 @@ def _run_sam3_image_detection(
     gpu_mem = health.get("gpu_memory") or {}
     free_gb = gpu_mem.get("free_gb")
     total_gb = gpu_mem.get("total_gb")
-    gpu_mem_str = (
-        f"{free_gb}/{total_gb}GB free" if free_gb is not None and total_gb is not None else "n/a"
-    )
-    context.log.info(
-        f"SAM3 서버 연결: url={client.api_url} "
-        f"device={health.get('device')} "
-        f"gpu_mem={gpu_mem_str}"
-    )
+    gpu_mem_str = f"{free_gb}/{total_gb}GB free" if free_gb is not None and total_gb is not None else "n/a"
+    context.log.info(f"SAM3 서버 연결: url={client.api_url} device={health.get('device')} gpu_mem={gpu_mem_str}")
     context.log.info(
         "SAM3 target classes resolved: "
         f"source={class_source} spec_id={spec_id or '-'} "
@@ -222,10 +214,14 @@ def _run_sam3_image_detection(
     if not target_classes:
         context.log.warning("SAM3 스킵: 프롬프트 클래스가 비어 있습니다. SAM3는 텍스트 프롬프트가 필수입니다.")
         return {
-            "processed": 0, "failed": 0, "total_detections": 0,
-            "requested_classes": [], "class_source": class_source,
+            "processed": 0,
+            "failed": 0,
+            "total_detections": 0,
+            "requested_classes": [],
+            "class_source": class_source,
             "resolved_config_id": resolved_config_id,
-            "skipped_reason": "no_prompt_classes", "label_tool": "sam3",
+            "skipped_reason": "no_prompt_classes",
+            "label_tool": "sam3",
         }
 
     prompt_score_thresholds = resolve_active_class_confidence_thresholds(target_classes, score_threshold)
@@ -343,5 +339,3 @@ def _run_sam3_image_detection(
     )
     context.log.info(f"SAM3 완료: {summary}")
     return summary
-
-

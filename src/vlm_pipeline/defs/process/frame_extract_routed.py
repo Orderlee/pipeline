@@ -66,9 +66,7 @@ def clip_to_frame_routed_impl(
         context.log.info("clip_to_frame 스킵: dispatch labeling_method가 YOLO 전용입니다.")
         return {"processed": 0, "failed": 0, "frames_extracted": 0, "skipped": True}
     should_run = (
-        bool({"bbox"} & set(requested))
-        or requested_outputs_require_caption_labels(requested)
-        or standard_spec_run
+        bool({"bbox"} & set(requested)) or requested_outputs_require_caption_labels(requested) or standard_spec_run
     )
     if not should_run:
         context.log.info("clip_to_frame 스킵: outputs에 captioning/bbox 없음")
@@ -111,8 +109,7 @@ def clip_to_frame_routed_impl(
     clip_window_plans = plan_asset_event_clip_extraction_windows(candidates)
     total_candidates = len(candidates)
     enable_image_captioning = requested_outputs_require_frame_image_caption(requested) and any(
-        str(candidate.get("media_type") or "").strip().lower() == "video"
-        for candidate in candidates
+        str(candidate.get("media_type") or "").strip().lower() == "video" for candidate in candidates
     )
     image_caption_analyzer = GeminiAnalyzer() if enable_image_captioning else None
     label_events_cache: dict[str, list[dict[str, Any]]] = {}
@@ -218,7 +215,11 @@ def clip_to_frame_routed_impl(
                     codec = (img.format or "jpeg").lower()
                 minio.upload("vlm-processed", clip_key, file_bytes, f"image/{codec}")
                 uploaded_clip_key = clip_key
-            elif cf.event_start_sec is not None and cf.event_end_sec is not None and cf.event_end_sec > cf.event_start_sec:
+            elif (
+                cf.event_start_sec is not None
+                and cf.event_end_sec is not None
+                and cf.event_end_sec > cf.event_start_sec
+            ):
                 # 이벤트 시작이 영상 길이를 넘어서면 추출 불가 → 해당 clip만 failed로 마크.
                 if (
                     cf.source_video_duration_sec is not None
@@ -273,11 +274,25 @@ def clip_to_frame_routed_impl(
             else:
                 raise RuntimeError("video_clip_range_missing")
 
-            checksum = extracted_clip["checksum"] if cf.media_type == "video" else (sha256_bytes(file_bytes) if file_bytes else None)
-            file_size = extracted_clip["file_size"] if cf.media_type == "video" else (len(file_bytes) if file_bytes else None)
+            checksum = (
+                extracted_clip["checksum"]
+                if cf.media_type == "video"
+                else (sha256_bytes(file_bytes) if file_bytes else None)
+            )
+            file_size = (
+                extracted_clip["file_size"] if cf.media_type == "video" else (len(file_bytes) if file_bytes else None)
+            )
             updated_row = _build_initial_clip_row(cf, clip_id, clip_key)
-            updated_row.update(checksum=checksum, file_size=file_size, width=width, height=height,
-                               codec=codec, duration_sec=clip_duration, fps=clip_fps, frame_count=clip_frame_count)
+            updated_row.update(
+                checksum=checksum,
+                file_size=file_size,
+                width=width,
+                height=height,
+                codec=codec,
+                duration_sec=clip_duration,
+                fps=clip_fps,
+                frame_count=clip_frame_count,
+            )
             db.insert_processed_clip(updated_row)
 
             frames_count = 0
@@ -379,10 +394,15 @@ def clip_to_frame_routed_impl(
                     "clip_to_frame repeated empty_output 억제: asset=%s threshold=%d",
                     cf.asset_id,
                     _MAX_CONSECUTIVE_EMPTY_OUTPUT_FAILURES_PER_ASSET,
-            )
+                )
             _cleanup_failed_clip(
-                db, minio, clip_id=clip_id, asset_id=cf.asset_id, error_message=error_message,
-                uploaded_clip_key=uploaded_clip_key, uploaded_frame_keys=uploaded_frame_keys,
+                db,
+                minio,
+                clip_id=clip_id,
+                asset_id=cf.asset_id,
+                error_message=error_message,
+                uploaded_clip_key=uploaded_clip_key,
+                uploaded_frame_keys=uploaded_frame_keys,
                 uploaded_caption_keys=uploaded_caption_keys,
             )
         finally:

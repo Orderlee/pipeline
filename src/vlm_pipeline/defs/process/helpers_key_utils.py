@@ -15,7 +15,11 @@ from vlm_pipeline.resources.minio import MinIOResource
 
 
 def _materialize_object_path(
-    minio: MinIOResource, bucket: str, key: str, *, fallback_name: str,
+    minio: MinIOResource,
+    bucket: str,
+    key: str,
+    *,
+    fallback_name: str,
 ) -> tuple[Path, Path]:
     suffix = Path(str(key or fallback_name)).suffix or Path(fallback_name).suffix or ".mp4"
     tmp_file = NamedTemporaryFile(delete=False, suffix=suffix)
@@ -28,6 +32,7 @@ def _materialize_object_path(
 
 def _materialize_video_path(minio: MinIOResource, candidate: dict) -> tuple[Path, Path | None]:
     from vlm_pipeline.lib.media_utils import materialize_video_path
+
     return materialize_video_path(minio, candidate)
 
 
@@ -42,23 +47,33 @@ def _delete_minio_keys(minio: MinIOResource, bucket: str, keys: list[str]) -> No
 
 
 def _build_processed_clip_key(
-    raw_key: str, *, event_index: int,
-    clip_start_sec: float | None, clip_end_sec: float | None, media_type: str,
+    raw_key: str,
+    *,
+    event_index: int,
+    clip_start_sec: float | None,
+    clip_end_sec: float | None,
+    media_type: str,
 ) -> str:
     from vlm_pipeline.lib.key_builders import build_processed_clip_key
+
     return build_processed_clip_key(
-        raw_key, event_index=event_index,
-        clip_start_sec=clip_start_sec, clip_end_sec=clip_end_sec, media_type=media_type,
+        raw_key,
+        event_index=event_index,
+        clip_start_sec=clip_start_sec,
+        clip_end_sec=clip_end_sec,
+        media_type=media_type,
     )
 
 
 def _build_processed_clip_image_key(clip_key: str, frame_index: int) -> str:
     from vlm_pipeline.lib.key_builders import build_processed_clip_image_key
+
     return build_processed_clip_image_key(clip_key, frame_index)
 
 
 def _build_image_caption_key(image_key: str) -> str:
     from vlm_pipeline.lib.key_builders import build_image_caption_key
+
     return build_image_caption_key(image_key)
 
 
@@ -117,11 +132,19 @@ def _coerce_int(value: Any) -> int | None:
 
 
 def _stable_clip_id(
-    label_id: str, event_index: int,
-    clip_start_sec: float | None, clip_end_sec: float | None, clip_key: str,
+    label_id: str,
+    event_index: int,
+    clip_start_sec: float | None,
+    clip_end_sec: float | None,
+    clip_key: str,
 ) -> str:
-    token = "|".join([
-        str(label_id), str(event_index),
-        str(clip_start_sec), str(clip_end_sec), str(clip_key),
-    ])
+    token = "|".join(
+        [
+            str(label_id),
+            str(event_index),
+            str(clip_start_sec),
+            str(clip_end_sec),
+            str(clip_key),
+        ]
+    )
     return sha1(token.encode("utf-8")).hexdigest()

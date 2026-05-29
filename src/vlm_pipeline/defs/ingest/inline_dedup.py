@@ -61,9 +61,7 @@ def run_inline_dedup(
     남는 슬롯이 있으면 기존 phash backlog도 함께 정리한다.
     """
     prioritized_asset_ids = [
-        str(item["asset_id"])
-        for item in uploaded
-        if str(item.get("media_type") or "").strip().lower() == "image"
+        str(item["asset_id"]) for item in uploaded if str(item.get("media_type") or "").strip().lower() == "image"
     ]
     if not prioritized_asset_ids:
         return {"computed": 0, "similar_found": 0, "failed": 0, "gated_failed": 0}
@@ -108,9 +106,7 @@ def run_inline_dedup(
                 db.update_dup_group(asset_id, group_id)
                 db.update_dup_group(other_asset_id, group_id)
                 similar_found += 1
-                context.log.warning(
-                    f"inline DEDUP 유사 이미지 발견: {asset_id} ↔ {other_asset_id} (distance={dist})"
-                )
+                context.log.warning(f"inline DEDUP 유사 이미지 발견: {asset_id} ↔ {other_asset_id} (distance={dist})")
         except Exception as exc:  # noqa: BLE001
             failed += 1
             if asset_id in prioritized_set:

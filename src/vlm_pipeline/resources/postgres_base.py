@@ -114,6 +114,9 @@ class PostgresBaseMixin(PostgresPhashMixin, PostgresMigrationMixin):
         for attempt in range(retry_count + 1):
             try:
                 conn = pool.getconn()
+                # pool.getconn() 이 None 반환 시 (풀 고갈 edge case) transient 로 재시도.
+                if conn is None:
+                    raise psycopg2.InterfaceError("pool returned None connection")
                 # 끊어진 커넥션을 빌려왔는지 가벼운 확인
                 if conn.closed:
                     pool.putconn(conn, close=True)
@@ -122,7 +125,7 @@ class PostgresBaseMixin(PostgresPhashMixin, PostgresMigrationMixin):
             except Exception as exc:  # noqa: BLE001
                 if not self._is_transient_error(exc) or attempt >= retry_count:
                     raise
-                delay_ms = min(max_delay_ms, base_delay_ms * (2 ** attempt))
+                delay_ms = min(max_delay_ms, base_delay_ms * (2**attempt))
                 time.sleep(delay_ms / 1000.0)
 
         assert conn is not None  # for type checker

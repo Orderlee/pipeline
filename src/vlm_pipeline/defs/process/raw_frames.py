@@ -193,31 +193,35 @@ def extract_raw_video_frames(
     try:
         for frame_index, frame_sec in enumerate(timestamps, start=1):
             frame_bytes = extract_frame_jpeg_bytes(
-                video_path, frame_sec, jpeg_quality=jpeg_quality,
+                video_path,
+                frame_sec,
+                jpeg_quality=jpeg_quality,
             )
             image_key = _build_raw_video_image_key(raw_key, frame_index)
             minio.upload("vlm-processed", image_key, frame_bytes, "image/jpeg")
             uploaded_keys.append(image_key)
 
             frame_meta = describe_frame_bytes(frame_bytes)
-            frame_rows.append({
-                "image_id": str(uuid4()),
-                "source_clip_id": None,
-                "image_bucket": "vlm-processed",
-                "image_key": image_key,
-                "image_role": "raw_video_frame",
-                "frame_index": frame_index,
-                "frame_sec": float(frame_sec),
-                "checksum": sha256_bytes(frame_bytes),
-                "file_size": len(frame_bytes),
-                "width": frame_meta["width"],
-                "height": frame_meta["height"],
-                "color_mode": frame_meta["color_mode"],
-                "bit_depth": frame_meta["bit_depth"],
-                "has_alpha": frame_meta["has_alpha"],
-                "orientation": frame_meta["orientation"],
-                "extracted_at": now,
-            })
+            frame_rows.append(
+                {
+                    "image_id": str(uuid4()),
+                    "source_clip_id": None,
+                    "image_bucket": "vlm-processed",
+                    "image_key": image_key,
+                    "image_role": "raw_video_frame",
+                    "frame_index": frame_index,
+                    "frame_sec": float(frame_sec),
+                    "checksum": sha256_bytes(frame_bytes),
+                    "file_size": len(frame_bytes),
+                    "width": frame_meta["width"],
+                    "height": frame_meta["height"],
+                    "color_mode": frame_meta["color_mode"],
+                    "bit_depth": frame_meta["bit_depth"],
+                    "has_alpha": frame_meta["has_alpha"],
+                    "orientation": frame_meta["orientation"],
+                    "extracted_at": now,
+                }
+            )
     except Exception:
         if uploaded_keys:
             _delete_minio_keys(minio, "vlm-processed", uploaded_keys)
@@ -228,4 +232,5 @@ def extract_raw_video_frames(
 
 def _build_raw_video_image_key(raw_key: str, frame_index: int) -> str:
     from vlm_pipeline.lib.key_builders import build_raw_video_image_key
+
     return build_raw_video_image_key(raw_key, frame_index)

@@ -15,6 +15,7 @@ from .helpers_key_utils import _coerce_float, _delete_minio_keys
 @dataclass
 class _CandidateFields:
     """단일 후보에서 파싱한 공통 필드."""
+
     asset_id: str
     raw_bucket: str
     raw_key: str
@@ -83,7 +84,11 @@ def _cleanup_failed_clip(
     if clip_id:
         db.update_processed_clip_status(clip_id, "failed")
         db.update_clip_image_extract_status(
-            clip_id, "failed", count=0, error=error_message, extracted_at=datetime.now(),
+            clip_id,
+            "failed",
+            count=0,
+            error=error_message,
+            extracted_at=datetime.now(),
         )
         db.replace_processed_clip_frame_metadata(asset_id, clip_id, [])
     cleanup_keys = list(uploaded_frame_keys)

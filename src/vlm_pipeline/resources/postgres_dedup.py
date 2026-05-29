@@ -75,11 +75,7 @@ class PostgresDedupMixin:
         그 자산들을 먼저 반환. 그 외 슬롯은 동일 조건의 backlog 로 채움(prioritized 는 제외).
         """
         normalized_limit = max(1, int(limit))
-        prioritized_set = {
-            str(asset_id).strip()
-            for asset_id in (prioritized_asset_ids or [])
-            if str(asset_id).strip()
-        }
+        prioritized_set = {str(asset_id).strip() for asset_id in (prioritized_asset_ids or []) if str(asset_id).strip()}
         columns = ["asset_id", "raw_bucket", "raw_key", "archive_path", "source_path"]
         with self.connect() as conn:
             with conn.cursor() as cur:
@@ -98,9 +94,7 @@ class PostgresDedupMixin:
                         """,
                         tuple(prioritized_set),
                     )
-                    prioritized_targets = [
-                        dict(zip(columns, row)) for row in cur.fetchall()
-                    ]
+                    prioritized_targets = [dict(zip(columns, row)) for row in cur.fetchall()]
 
                 remaining_limit = max(0, normalized_limit - len(prioritized_targets))
                 if remaining_limit <= 0:
@@ -127,9 +121,7 @@ class PostgresDedupMixin:
                     """,
                     tuple(params),
                 )
-                backlog_targets = [
-                    dict(zip(columns, row)) for row in cur.fetchall()
-                ]
+                backlog_targets = [dict(zip(columns, row)) for row in cur.fetchall()]
 
         return prioritized_targets + backlog_targets
 
@@ -209,15 +201,10 @@ class PostgresDedupMixin:
 
             if candidates and len(candidates) < all_prefix_count:
                 placeholders = ", ".join(["%s"] * len(candidates))
-                where_parts.append(
-                    f"lower(substr(phash, 1, {normalized_prefix_len})) IN ({placeholders})"
-                )
+                where_parts.append(f"lower(substr(phash, 1, {normalized_prefix_len})) IN ({placeholders})")
                 params.extend(candidates)
 
-            query = (
-                "SELECT asset_id, phash FROM raw_files "
-                f"WHERE {' AND '.join(where_parts)}"
-            )
+            query = f"SELECT asset_id, phash FROM raw_files WHERE {' AND '.join(where_parts)}"
             with conn.cursor() as cur:
                 cur.execute(query, params)
                 rows = cur.fetchall()
@@ -231,9 +218,7 @@ class PostgresDedupMixin:
             except ValueError:
                 continue
             if distance <= threshold:
-                result.append(
-                    {"asset_id": asset_id, "phash": other_phash, "distance": distance}
-                )
+                result.append({"asset_id": asset_id, "phash": other_phash, "distance": distance})
         result.sort(key=lambda row: (row["distance"], str(row["asset_id"])))
         return result
 
@@ -326,14 +311,26 @@ class PostgresDedupMixin:
                 )
                 rows = cur.fetchall()
             columns = [
-                "asset_id", "raw_bucket", "raw_key", "media_type",
-                "archive_path", "source_path",
-                "label_id", "labels_bucket", "labels_key",
-                "label_source", "review_status", "event_index",
-                "timestamp_start_sec", "timestamp_end_sec",
-                "caption_text", "object_count",
+                "asset_id",
+                "raw_bucket",
+                "raw_key",
+                "media_type",
+                "archive_path",
+                "source_path",
+                "label_id",
+                "labels_bucket",
+                "labels_key",
+                "label_source",
+                "review_status",
+                "event_index",
+                "timestamp_start_sec",
+                "timestamp_end_sec",
+                "caption_text",
+                "object_count",
                 "video_duration_sec",
-                "video_width", "video_height", "video_codec",
+                "video_width",
+                "video_height",
+                "video_codec",
             ]
             return [dict(zip(columns, row)) for row in rows]
 
@@ -440,7 +437,7 @@ class PostgresDedupMixin:
                         clip_key,
                         process_status
                     FROM processed_clips
-                    WHERE {' AND '.join(where_clauses)}
+                    WHERE {" AND ".join(where_clauses)}
                     ORDER BY created_at
                     LIMIT 1
                     """,
@@ -483,14 +480,9 @@ class PostgresDedupMixin:
                     """
                 )
                 rows = cur.fetchall()
-            return [
-                {"folder": row[0], "video_count": row[1], "image_count": row[2]}
-                for row in rows
-            ]
+            return [{"folder": row[0], "video_count": row[1], "image_count": row[2]} for row in rows]
 
-    def find_project_video_candidates(
-        self, folder: str, require_ls_finalized: bool = False
-    ) -> list[dict]:
+    def find_project_video_candidates(self, folder: str, require_ls_finalized: bool = False) -> list[dict]:
         finalized_filter = (
             """
                   AND EXISTS (
@@ -533,9 +525,7 @@ class PostgresDedupMixin:
                 for row in rows
             ]
 
-    def find_project_image_candidates(
-        self, folder: str, require_ls_finalized: bool = False
-    ) -> list[dict]:
+    def find_project_image_candidates(self, folder: str, require_ls_finalized: bool = False) -> list[dict]:
         if require_ls_finalized:
             sql = """
                 SELECT DISTINCT im.image_id, im.image_bucket, im.image_key, im.source_asset_id,
@@ -596,10 +586,16 @@ class PostgresDedupMixin:
                 )
                 rows = cur.fetchall()
             columns = [
-                "clip_id", "processed_bucket", "clip_key",
-                "source_asset_id", "source_label_id",
-                "event_index", "clip_start_sec", "clip_end_sec",
-                "source_raw_key", "source_raw_bucket",
+                "clip_id",
+                "processed_bucket",
+                "clip_key",
+                "source_asset_id",
+                "source_label_id",
+                "event_index",
+                "clip_start_sec",
+                "clip_end_sec",
+                "source_raw_key",
+                "source_raw_bucket",
             ]
             return [dict(zip(columns, row)) for row in rows]
 
@@ -637,38 +633,74 @@ class PostgresDedupMixin:
                 )
                 rows = cur.fetchall()
             columns = [
-                "job_id", "batch_id", "seq_in_batch",
-                "provider_job_id", "cost_units",
-                "engine", "prompt", "output_media",
-                "input_asset_id", "input_raw_bucket",
-                "input_raw_key", "input_media_type",
-                "output_asset_id", "output_raw_bucket",
-                "output_raw_key", "output_media_type",
+                "job_id",
+                "batch_id",
+                "seq_in_batch",
+                "provider_job_id",
+                "cost_units",
+                "engine",
+                "prompt",
+                "output_media",
+                "input_asset_id",
+                "input_raw_bucket",
+                "input_raw_key",
+                "input_media_type",
+                "output_asset_id",
+                "output_raw_bucket",
+                "output_raw_key",
+                "output_media_type",
             ]
             return [dict(zip(columns, row)) for row in rows]
 
     def insert_dataset(self, dataset: dict) -> None:
+        """Insert datasets row. Phase 3-D lineage 컬럼(spec_hash/git_sha/build_started_at)
+        은 마이그레이션 004 적용 후의 schema 에서만 의미. 컬럼 미존재 환경 호환을
+        위해 introspection 기반으로 동적 INSERT 한다 (raw_files insert 와 동일 패턴).
+        """
         with self.connect() as conn:
+            columns_present = self._table_columns(conn, "datasets")
+            has_spec_hash = "spec_hash" in columns_present
+            has_git_sha = "git_sha" in columns_present
+            has_build_started_at = "build_started_at" in columns_present
+
+            base_cols = [
+                "dataset_id",
+                "name",
+                "version",
+                "config",
+                "split_ratio",
+                "dataset_bucket",
+                "dataset_prefix",
+                "build_status",
+                "created_at",
+            ]
+            row: list[Any] = [
+                dataset.get("dataset_id") or str(uuid4()),
+                dataset.get("name"),
+                dataset.get("version"),
+                dataset.get("config"),
+                dataset.get("split_ratio"),
+                dataset.get("dataset_bucket", "vlm-dataset"),
+                dataset.get("dataset_prefix"),
+                dataset.get("build_status", "pending"),
+                dataset.get("created_at", datetime.now()),
+            ]
+            if has_spec_hash:
+                base_cols.append("spec_hash")
+                row.append(dataset.get("spec_hash"))
+            if has_git_sha:
+                base_cols.append("git_sha")
+                row.append(dataset.get("git_sha"))
+            if has_build_started_at:
+                base_cols.append("build_started_at")
+                row.append(dataset.get("build_started_at"))
+
+            placeholders = ", ".join(["%s"] * len(base_cols))
+            insert_cols = ", ".join(base_cols)
+            sql = f"INSERT INTO datasets ({insert_cols}) VALUES ({placeholders})"
+
             with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    INSERT INTO datasets (
-                        dataset_id, name, version, config, split_ratio,
-                        dataset_bucket, dataset_prefix, build_status, created_at
-                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-                    """,
-                    (
-                        dataset.get("dataset_id") or str(uuid4()),
-                        dataset.get("name"),
-                        dataset.get("version"),
-                        dataset.get("config"),
-                        dataset.get("split_ratio"),
-                        dataset.get("dataset_bucket", "vlm-dataset"),
-                        dataset.get("dataset_prefix"),
-                        dataset.get("build_status", "pending"),
-                        dataset.get("created_at", datetime.now()),
-                    ),
-                )
+                cur.execute(sql, row)
 
     def update_dataset_status(self, dataset_id: str, status: str) -> None:
         with self.connect() as conn:
@@ -743,17 +775,13 @@ class PostgresDedupMixin:
             columns = ["folder_name", "labeling_method", "categories", "classes", "latest_at"]
             return [dict(zip(columns, row)) for row in rows]
 
-    def find_project_classification_videos(
-        self, folder: str, require_ls_finalized: bool = False
-    ) -> list[dict]:
+    def find_project_classification_videos(self, folder: str, require_ls_finalized: bool = False) -> list[dict]:
         """video 후보 + labels_key 리스트.
 
         DuckDB ``LIST(DISTINCT col)`` → PG ``array_agg(DISTINCT col)``.
         psycopg2 가 PG ARRAY 를 Python list 로 자동 변환하므로 호출자 코드는 변경 없음.
         """
-        finalized_filter = (
-            "AND l.review_status = 'finalized'" if require_ls_finalized else ""
-        )
+        finalized_filter = "AND l.review_status = 'finalized'" if require_ls_finalized else ""
         with self.connect() as conn:
             with conn.cursor() as cur:
                 cur.execute(
@@ -777,12 +805,8 @@ class PostgresDedupMixin:
             columns = ["asset_id", "raw_bucket", "raw_key", "labels_key_list"]
             return [dict(zip(columns, row)) for row in rows]
 
-    def find_project_classification_images(
-        self, folder: str, require_ls_finalized: bool = False
-    ) -> list[dict]:
-        finalized_filter = (
-            "AND il.review_status = 'finalized'" if require_ls_finalized else ""
-        )
+    def find_project_classification_images(self, folder: str, require_ls_finalized: bool = False) -> list[dict]:
+        finalized_filter = "AND il.review_status = 'finalized'" if require_ls_finalized else ""
         with self.connect() as conn:
             with conn.cursor() as cur:
                 cur.execute(
@@ -804,8 +828,11 @@ class PostgresDedupMixin:
                 )
                 rows = cur.fetchall()
             columns = [
-                "image_id", "image_bucket", "image_key",
-                "source_asset_id", "labels_key_list",
+                "image_id",
+                "image_bucket",
+                "image_key",
+                "source_asset_id",
+                "labels_key_list",
             ]
             return [dict(zip(columns, row)) for row in rows]
 
@@ -852,8 +879,12 @@ class PostgresDedupMixin:
                 )
                 rows = cur.fetchall()
             columns = [
-                "asset_id", "raw_bucket", "raw_key",
-                "duration_sec", "fps", "frame_count",
+                "asset_id",
+                "raw_bucket",
+                "raw_key",
+                "duration_sec",
+                "fps",
+                "frame_count",
             ]
             return [dict(zip(columns, row)) for row in rows]
 

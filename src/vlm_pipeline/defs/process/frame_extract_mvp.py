@@ -104,7 +104,11 @@ def clip_to_frame_mvp(
                 minio.upload("vlm-processed", clip_key, file_bytes, f"image/{codec}")
                 uploaded_clip_key = clip_key
 
-            elif cf.event_start_sec is not None and cf.event_end_sec is not None and cf.event_end_sec > cf.event_start_sec:
+            elif (
+                cf.event_start_sec is not None
+                and cf.event_end_sec is not None
+                and cf.event_end_sec > cf.event_start_sec
+            ):
                 # 이벤트 시작이 영상 길이를 넘어서면 추출 불가 → 해당 clip만 failed로 마크.
                 if (
                     cf.source_video_duration_sec is not None
@@ -159,12 +163,26 @@ def clip_to_frame_mvp(
             else:
                 raise RuntimeError("video_clip_range_missing")
 
-            checksum = extracted_clip["checksum"] if cf.media_type == "video" else (sha256_bytes(file_bytes) if file_bytes else None)
-            file_size = extracted_clip["file_size"] if cf.media_type == "video" else (len(file_bytes) if file_bytes else None)
+            checksum = (
+                extracted_clip["checksum"]
+                if cf.media_type == "video"
+                else (sha256_bytes(file_bytes) if file_bytes else None)
+            )
+            file_size = (
+                extracted_clip["file_size"] if cf.media_type == "video" else (len(file_bytes) if file_bytes else None)
+            )
 
             updated_row = _build_initial_clip_row(cf, clip_id, clip_key)
-            updated_row.update(checksum=checksum, file_size=file_size, width=width, height=height,
-                               codec=codec, duration_sec=clip_duration, fps=clip_fps, frame_count=clip_frame_count)
+            updated_row.update(
+                checksum=checksum,
+                file_size=file_size,
+                width=width,
+                height=height,
+                codec=codec,
+                duration_sec=clip_duration,
+                fps=clip_fps,
+                frame_count=clip_frame_count,
+            )
             db.insert_processed_clip(updated_row)
 
             frames_count = 0
@@ -208,12 +226,20 @@ def clip_to_frame_mvp(
                 db.replace_processed_clip_frame_metadata(cf.asset_id, clip_id, frame_rows)
                 frames_count = len(frame_rows)
                 db.update_clip_image_extract_status(
-                    clip_id, "completed", count=frames_count, error=None, extracted_at=datetime.now(),
+                    clip_id,
+                    "completed",
+                    count=frames_count,
+                    error=None,
+                    extracted_at=datetime.now(),
                 )
                 total_frames += frames_count
             else:
                 db.update_clip_image_extract_status(
-                    clip_id, "completed", count=0, error=None, extracted_at=datetime.now(),
+                    clip_id,
+                    "completed",
+                    count=0,
+                    error=None,
+                    extracted_at=datetime.now(),
                 )
 
             db.update_processed_clip_status(clip_id, "completed")
@@ -231,8 +257,13 @@ def clip_to_frame_mvp(
                 f"asset={cf.asset_id} ❌ {e}"
             )
             _cleanup_failed_clip(
-                db, minio, clip_id=clip_id, asset_id=cf.asset_id, error_message=str(e)[:500],
-                uploaded_clip_key=uploaded_clip_key, uploaded_frame_keys=uploaded_frame_keys,
+                db,
+                minio,
+                clip_id=clip_id,
+                asset_id=cf.asset_id,
+                error_message=str(e)[:500],
+                uploaded_clip_key=uploaded_clip_key,
+                uploaded_frame_keys=uploaded_frame_keys,
                 uploaded_caption_keys=uploaded_caption_keys,
             )
             failed += 1

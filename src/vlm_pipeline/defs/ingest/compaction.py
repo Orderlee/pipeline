@@ -149,14 +149,10 @@ def build_completed_summary_payload(
         max(int(payload.get("source_unit_chunk_count") or 1) for payload in payloads),
     )
     total_file_count = max(
-        int(payload.get("source_unit_total_file_count") or payload.get("file_count") or 0)
-        for payload in payloads
+        int(payload.get("source_unit_total_file_count") or payload.get("file_count") or 0) for payload in payloads
     )
     compacted_manifest_ids = sorted(
-        {
-            str(payload.get("manifest_id") or record["path"].stem).strip()
-            for record, payload in zip(records, payloads)
-        }
+        {str(payload.get("manifest_id") or record["path"].stem).strip() for record, payload in zip(records, payloads)}
     )
 
     return {

@@ -61,9 +61,7 @@ def _archive_dispatch_sensor_fn(context: SensorEvaluationContext):
     # 300s 까지 매달려 gRPC DEADLINE_EXCEEDED 를 유발. 짧은 stat() probe 로 빠른 skip.
     reachable, probe_reason = probe_path_reachable(incoming_dir)
     if not reachable:
-        context.log.warning(
-            f"archive_dispatch_sensor skip: NAS incoming 도달 불가 ({probe_reason}). 다음 tick 재시도."
-        )
+        context.log.warning(f"archive_dispatch_sensor skip: NAS incoming 도달 불가 ({probe_reason}). 다음 tick 재시도.")
         return
 
     if not pending_dir.exists():
@@ -91,9 +89,7 @@ def _archive_dispatch_sensor_fn(context: SensorEvaluationContext):
         try:
             prepared = prepare_dispatch_request(req_data, incoming_dir=incoming_dir)
         except Exception as exc:
-            context.log.warning(
-                f"archive_dispatch: invalid payload {req_file.name}: {exc}"
-            )
+            context.log.warning(f"archive_dispatch: invalid payload {req_file.name}: {exc}")
             move_dispatch_file(req_file, failed_dir, context=context)
             continue
 
@@ -115,13 +111,9 @@ def _archive_dispatch_sensor_fn(context: SensorEvaluationContext):
             continue
 
         try:
-            manifest_path = write_archive_dispatch_manifest(
-                config, prepared, archive_rows
-            )
+            manifest_path = write_archive_dispatch_manifest(config, prepared, archive_rows)
         except Exception as exc:
-            context.log.warning(
-                f"archive_dispatch: manifest write failed {req_file.name}: {exc}"
-            )
+            context.log.warning(f"archive_dispatch: manifest write failed {req_file.name}: {exc}")
             move_dispatch_file(req_file, failed_dir, context=context)
             continue
 

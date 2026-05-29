@@ -22,6 +22,7 @@ from vlm_pipeline.lib.env_utils import derive_classes_from_categories
 # 클래스 정규화 / 태그 파싱
 # ---------------------------------------------------------------------------
 
+
 def normalize_classes(values: Iterable[object] | None) -> list[str]:
     """중복 제거 + lowercase + strip. 순서 보존."""
     seen: set[str] = set()
@@ -59,6 +60,7 @@ def parse_tag_list(raw_value: object) -> list[str]:
 # image_label_id 생성
 # ---------------------------------------------------------------------------
 
+
 def stable_image_label_id(image_id: str, labels_key: str) -> str:
     """Deterministic label ID — 재실행 시 동일 행을 덮어쓸 수 있도록 한다."""
     return sha1(f"{image_id}|{labels_key}".encode()).hexdigest()
@@ -67,6 +69,7 @@ def stable_image_label_id(image_id: str, labels_key: str) -> str:
 # ---------------------------------------------------------------------------
 # DB flush
 # ---------------------------------------------------------------------------
+
 
 def flush_image_labels(db, rows: list[dict], context, *, tool_name: str = "detection") -> None:
     """image_labels 버퍼를 DB에 일괄 삽입한다."""
@@ -81,9 +84,11 @@ def flush_image_labels(db, rows: list[dict], context, *, tool_name: str = "detec
 # Target class resolution (run tags → 클래스 목록)
 # ---------------------------------------------------------------------------
 
+
 @dataclass(frozen=True)
 class TargetClassResolution:
     """run tag로부터 해석된 detection 대상 클래스 정보."""
+
     classes: list[str]
     class_source: str
     spec_id: str | None = None

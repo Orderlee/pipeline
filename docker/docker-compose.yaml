@@ -455,6 +455,9 @@ services:
     volumes:
       # 10.0.0.36 NAS(CIFS) 별도 인프라 — 10.0.0.51 단일 장애와 격리
       - ${BACKUP_REPO_HOST_PATH:-/home/user/mou/nas_192tb/backup/postgres-restic}:/backup/restic
+      # Phase 5-D (#7 SOPS 대안): .env 평문을 restic 으로 백업. SOPS 없이 키 분실 위험 회피.
+      # 운영 host 권한 격리 (.env perm = user user only) + restic 백업 이중망.
+      - ${PIPELINE_ENV_FILE:-./.env}:/backup/env/.env:ro
     networks:
       - default
       - pipeline-network

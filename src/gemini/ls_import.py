@@ -57,6 +57,7 @@ _CLIP_PATTERN = re.compile(r"^(.+)_(\d{8})_(\d{8})$")
 # Data classes
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class ClipTask:
     task_id: int
@@ -67,6 +68,7 @@ class ClipTask:
 # ---------------------------------------------------------------------------
 # MinIO helpers
 # ---------------------------------------------------------------------------
+
 
 def build_minio_client(endpoint: str, access_key: str, secret_key: str):
     url = endpoint if endpoint.startswith("http") else f"http://{endpoint}"
@@ -103,6 +105,7 @@ def read_json_from_minio(client, bucket: str, key: str) -> list | dict:
 # ---------------------------------------------------------------------------
 # Label Studio task index
 # ---------------------------------------------------------------------------
+
 
 def _decode_fileuri(video_url: str) -> str | None:
     """base64 fileuri → S3 경로."""
@@ -190,6 +193,7 @@ def build_clip_task_index(ls_url: str, auth_headers: dict, project_id: int) -> d
 # Gemini JSON → Label Studio result
 # ---------------------------------------------------------------------------
 
+
 def _rand_id(n: int = 10) -> str:
     return "".join(random.choices(string.ascii_letters + string.digits, k=n))
 
@@ -246,6 +250,7 @@ def match_events_to_clips(
 # Label Studio API
 # ---------------------------------------------------------------------------
 
+
 def create_prediction(ls_url: str, headers: dict, task_id: int, result: list[dict]) -> dict:
     resp = requests.post(
         f"{ls_url}/api/predictions/",
@@ -259,6 +264,7 @@ def create_prediction(ls_url: str, headers: dict, task_id: int, result: list[dic
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
+
 
 def run(
     project_id: int,
@@ -310,7 +316,9 @@ def run(
             matched = match_events_to_clips(events, clips, fps)
             for clip, ls_annotations in matched:
                 if not ls_annotations:
-                    print(f"[NO EVENT] task {clip.task_id} ({clip.clip_start_sec:.1f}s~{clip.clip_end_sec:.1f}s) ← 이벤트 없음")
+                    print(
+                        f"[NO EVENT] task {clip.task_id} ({clip.clip_start_sec:.1f}s~{clip.clip_end_sec:.1f}s) ← 이벤트 없음"
+                    )
                     continue
                 prediction = create_prediction(ls_url, auth_headers, clip.task_id, ls_annotations)
                 print(

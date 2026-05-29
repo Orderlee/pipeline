@@ -24,6 +24,7 @@ from .raw_frames import raw_video_to_frame_impl
 # clip_captioning — Gemini JSON 정규화 → labels upsert
 # ═══════════════════════════════════════════════════════════════
 
+
 @asset(
     name="clip_captioning",
     deps=["clip_timestamp"],
@@ -45,6 +46,7 @@ def clip_captioning(
 # ═══════════════════════════════════════════════════════════════
 # clip_to_frame — clip 생성 + ffprobe + 적응형 프레임 추출
 # ═══════════════════════════════════════════════════════════════
+
 
 @asset(
     deps=["clip_captioning"],
@@ -74,6 +76,7 @@ processed_clips = clip_to_frame
 # ═══════════════════════════════════════════════════════════════
 # [DISPATCH YOLO 전용] raw_video_to_frame
 # ═══════════════════════════════════════════════════════════════
+
 
 @asset(
     name="raw_video_to_frame",

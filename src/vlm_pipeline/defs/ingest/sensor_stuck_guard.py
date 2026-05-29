@@ -162,9 +162,7 @@ def stuck_run_guard_sensor(context):
         age_sec = int(now_ts - float(start_time))
         latest_event_ts, observed_pids, live_pids = _extract_run_process_state(context, run.run_id)
         latest_event_age_sec = (
-            int(now_ts - latest_event_ts)
-            if latest_event_ts is not None and latest_event_ts > 0
-            else age_sec
+            int(now_ts - latest_event_ts) if latest_event_ts is not None and latest_event_ts > 0 else age_sec
         )
         cancel_reason = _decide_stuck_run_cancel_reason(
             job_name=str(run.job_name or ""),
@@ -196,7 +194,12 @@ def stuck_run_guard_sensor(context):
                     "stuck_guard_cancel_reason": cancel_reason,
                 },
             )
-            request_id = resolve_dispatch_request_id_from_tags(tags)
+            # Phase 5-A (#6 pre-commit) — ruff F821 catch: 직전엔 ``tags`` 가 정의 안
+            # 된 채로 ``resolve_dispatch_request_id_from_tags(tags)`` 가 호출되어 매번
+            # ``NameError`` → broad except 가 swallow → ``close_dispatch_request`` 가
+            # 사실상 동작 안 했음. 의도된 동작은 run.tags 기준 resolution.
+            run_tags = getattr(run, "tags", {}) or {}
+            request_id = resolve_dispatch_request_id_from_tags(run_tags)
             if request_id:
                 db_resource = getattr(context.resources, "db", None)
                 if db_resource is not None:

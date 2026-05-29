@@ -21,6 +21,20 @@ pg_dump -h "${PGHOST}" -U "${PGUSER}" -d "${DB_NAME}" -F c -Z 9 \
   | restic backup --stdin --stdin-filename "${SNAPSHOT_NAME}" \
       --tag daily --tag "db:${DB_NAME}" --host "${HOST_TAG}"
 
+# Phase 5-D (#7 SOPS 대안): .env 평문 파일을 같은 restic repo 에 백업.
+# 운영자 1명 환경에서 SOPS+age 도입 시 키 분실 = .env 복구 불가 위험. 대신
+# 호스트 권한 격리(평문 .env 호스트 read 권한 ywl 만) + restic 백업으로 처리.
+# /backup/env/.env 는 compose 가 host 의 docker/.env 를 read-only mount.
+if [[ -f /backup/env/.env ]]; then
+  ENV_SNAPSHOT="env_${TS}.txt"
+  log "backup secret env (stdin=${ENV_SNAPSHOT})"
+  restic backup --stdin --stdin-filename "${ENV_SNAPSHOT}" \
+      --tag daily --tag "env" --host "${HOST_TAG}" \
+      < /backup/env/.env
+else
+  log "env source file not mounted at /backup/env/.env — skip env snapshot"
+fi
+
 log "restic forget --prune (daily=${BACKUP_RETENTION_DAILY:-7} weekly=${BACKUP_RETENTION_WEEKLY:-4} monthly=${BACKUP_RETENTION_MONTHLY:-3})"
 restic forget --tag daily \
   --keep-daily "${BACKUP_RETENTION_DAILY:-7}" \

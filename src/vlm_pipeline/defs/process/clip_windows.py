@@ -174,11 +174,7 @@ def plan_asset_event_clip_extraction_windows(
             source_duration_sec = _coerce_float_or_none(candidate.get("video_duration_sec"))
             # 이벤트 시작이 영상 길이를 넘어서면 추출 불가 → 플랜에서 제외 (fail-forward).
             # 호출부(frame_extract)에서 window_plan 부재를 감지하여 해당 clip만 failed 처리한다.
-            if (
-                source_duration_sec is not None
-                and source_duration_sec > 0
-                and event_start_sec >= source_duration_sec
-            ):
+            if source_duration_sec is not None and source_duration_sec > 0 and event_start_sec >= source_duration_sec:
                 continue
             try:
                 base_start_sec, base_end_sec = resolve_event_clip_extraction_window(
@@ -232,7 +228,9 @@ def plan_asset_event_clip_extraction_windows(
             next_cut_point = pair_cut_points.get(idx)
 
             if prev_cut_point is not None or next_cut_point is not None:
-                adjusted_start_sec = extract_start_sec if prev_cut_point is None else max(extract_start_sec, prev_cut_point)
+                adjusted_start_sec = (
+                    extract_start_sec if prev_cut_point is None else max(extract_start_sec, prev_cut_point)
+                )
                 adjusted_end_sec = extract_end_sec if next_cut_point is None else min(extract_end_sec, next_cut_point)
                 adjusted_start_sec = min(adjusted_start_sec, float(planned_event["event_start_sec"]))
                 adjusted_end_sec = max(adjusted_end_sec, float(planned_event["event_end_sec"]))

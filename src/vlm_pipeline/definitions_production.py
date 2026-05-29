@@ -25,6 +25,7 @@ from vlm_pipeline.defs.ingest.assets import raw_ingest
 from vlm_pipeline.defs.ingest.upload_archived_asset import upload_archived
 from vlm_pipeline.defs.ingest.sensor import (
     auto_bootstrap_manifest_sensor,
+    cross_table_consistency_sensor,
     incoming_manifest_sensor,
     nas_health_sensor,
     stuck_run_guard_sensor,
@@ -41,6 +42,7 @@ from vlm_pipeline.defs.sam.detection_assets import (
     dispatch_sam3_image_detection,
     sam3_image_detection,
 )
+
 # DISABLED 2026-05-19: motherduck sync 일시 비활성화 (사용자 요청). build_motherduck_daily_schedule 함수도 dead code 상태이나 시그니처 유지.
 # from vlm_pipeline.defs.sync.assets import motherduck_sync
 from vlm_pipeline.lib.env_utils import default_postgres_dsn
@@ -61,6 +63,7 @@ DISPATCH_STAGE_AUTO_LABEL_ASSETS = (
     clip_captioning,
 )
 
+
 def build_dispatch_stage_selection(*, enable_yolo_detection: bool) -> list[object]:
     """Dispatch 단계 asset selection. YOLO flag=False 면 YOLO asset 미포함 + import 안 함."""
     selection: list[object] = [
@@ -76,6 +79,7 @@ def build_dispatch_stage_selection(*, enable_yolo_detection: bool) -> list[objec
         selection.insert(-1, dispatch_yolo_image_detection)
     return selection
 
+
 # 사람 검수 확정 후 실행되는 clip 생성 단계.
 POST_REVIEW_CLIP_ASSETS = [clip_to_frame]
 
@@ -84,6 +88,7 @@ COMMON_INGEST_SENSORS = (
     auto_bootstrap_manifest_sensor,
     stuck_run_guard_sensor,
     nas_health_sensor,
+    cross_table_consistency_sensor,
 )
 
 COMMON_DISPATCH_STATUS_SENSORS = (

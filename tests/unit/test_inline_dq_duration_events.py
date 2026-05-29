@@ -9,6 +9,7 @@
 #2 는 lib/vertex_chunking.filter_events_over_duration 으로 추출돼 직접 테스트.
 #3 은 logging.warning 호출 모양만 검증 (호출 측 함수는 Gemini SDK 의존성으로 크다).
 """
+
 from __future__ import annotations
 
 import logging
@@ -22,9 +23,7 @@ from vlm_pipeline.lib.vertex_chunking import filter_events_over_duration
 
 def _duration_invalid(duration_raw: Any) -> bool:
     """Mirror of ops_normalize._extract_meta duration check (DQ #1)."""
-    return duration_raw is None or (
-        isinstance(duration_raw, (int, float)) and duration_raw < 1.0
-    )
+    return duration_raw is None or (isinstance(duration_raw, (int, float)) and duration_raw < 1.0)
 
 
 def test_dq1_duration_none_is_invalid() -> None:
@@ -129,9 +128,9 @@ def _emit_dq3_warning_if_anomalous(
     """Mirror of timestamp.py DQ#3 warning emission."""
     if event_count > 50:
         log.warning(
-            "clip_timestamp DQ#3: asset=%s anomalous event_count=%d (>50) — "
-            "Gemini 프롬프트/카테고리 매칭 검토 권장",
-            asset_id, event_count,
+            "clip_timestamp DQ#3: asset=%s anomalous event_count=%d (>50) — Gemini 프롬프트/카테고리 매칭 검토 권장",
+            asset_id,
+            event_count,
         )
 
 

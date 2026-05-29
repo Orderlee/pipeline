@@ -64,44 +64,66 @@ def _next_nvenc_gpu_index() -> int:
 STANDARD_PRESET_NAME = "standard"
 
 STANDARD_PRESET_FFMPEG_ARGS: list[str] = [
-    "-c:v", "libx264",
-    "-profile:v", "baseline",
-    "-level", "4.2",
-    "-pix_fmt", "yuv420p",
-    "-g", "30",
-    "-keyint_min", "30",
-    "-sc_threshold", "0",
-    "-x264-params", "bframes=0:repeat-headers=1",
-    "-preset", "veryfast",
-    "-movflags", "+faststart",
-    "-c:a", "aac",
-    "-b:a", "128k",
+    "-c:v",
+    "libx264",
+    "-profile:v",
+    "baseline",
+    "-level",
+    "4.2",
+    "-pix_fmt",
+    "yuv420p",
+    "-g",
+    "30",
+    "-keyint_min",
+    "30",
+    "-sc_threshold",
+    "0",
+    "-x264-params",
+    "bframes=0:repeat-headers=1",
+    "-preset",
+    "veryfast",
+    "-movflags",
+    "+faststart",
+    "-c:a",
+    "aac",
+    "-b:a",
+    "128k",
 ]
 
 STANDARD_PRESET_FFMPEG_ARGS_NVENC_BASE: list[str] = [
-    "-c:v", "h264_nvenc",
+    "-c:v",
+    "h264_nvenc",
     # 2026-05-22: `-gpu N` 은 _resolve_ffmpeg_preset_args() 에서 round-robin 동적 삽입.
-    "-profile:v", "baseline",
-    "-level", "4.2",
-    "-pix_fmt", "yuv420p",
-    "-g", "30",
-    "-keyint_min", "30",
-    "-bf", "0",                # no B-frames (libx264 의 bframes=0 동치)
-    "-no-scenecut", "1",       # 고정 GOP 30 유지 (libx264 의 sc_threshold=0 동치).
-                               # 없으면 scene cut 시 GOP 끊겨 KlingAI 패턴 재현 위험.
-    "-preset", "p4",           # NVENC 프리셋 (p1=fastest, p7=best quality)
-    "-movflags", "+faststart",
-    "-c:a", "aac",
-    "-b:a", "128k",
+    "-profile:v",
+    "baseline",
+    "-level",
+    "4.2",
+    "-pix_fmt",
+    "yuv420p",
+    "-g",
+    "30",
+    "-keyint_min",
+    "30",
+    "-bf",
+    "0",  # no B-frames (libx264 의 bframes=0 동치)
+    "-no-scenecut",
+    "1",  # 고정 GOP 30 유지 (libx264 의 sc_threshold=0 동치).
+    # 없으면 scene cut 시 GOP 끊겨 KlingAI 패턴 재현 위험.
+    "-preset",
+    "p4",  # NVENC 프리셋 (p1=fastest, p7=best quality)
+    "-movflags",
+    "+faststart",
+    "-c:a",
+    "aac",
+    "-b:a",
+    "128k",
 ]
 
 # 하위 호환: 기존 import 가 STANDARD_PRESET_FFMPEG_ARGS_NVENC 를 직접 참조하는 경우.
 # 정적 리스트로는 round-robin 못 하니 GPU 0 fallback (테스트/import-time 용).
 # `-gpu N` 은 `-c:v h264_nvenc` 한 쌍 다음에 삽입해야 ffmpeg 가 codec 선택 후 옵션 적용.
 STANDARD_PRESET_FFMPEG_ARGS_NVENC: list[str] = (
-    STANDARD_PRESET_FFMPEG_ARGS_NVENC_BASE[:2]
-    + ["-gpu", "0"]
-    + STANDARD_PRESET_FFMPEG_ARGS_NVENC_BASE[2:]
+    STANDARD_PRESET_FFMPEG_ARGS_NVENC_BASE[:2] + ["-gpu", "0"] + STANDARD_PRESET_FFMPEG_ARGS_NVENC_BASE[2:]
 )
 # 주의: libx264 의 `-x264-params repeat-headers=1` 는 RTSP 스트리밍 시 SPS/PPS 를 매 IDR
 # 앞에 inline 하는 옵션이지만, 재인코딩 산출물은 archive→MinIO→ML 처리 경로라
@@ -117,7 +139,9 @@ def _nvenc_available() -> bool:
     try:
         proc = subprocess.run(
             ["ffmpeg", "-hide_banner", "-encoders"],
-            capture_output=True, text=True, timeout=10,
+            capture_output=True,
+            text=True,
+            timeout=10,
         )
         return proc.returncode == 0 and "h264_nvenc" in proc.stdout
     except (subprocess.TimeoutExpired, OSError):
@@ -171,18 +195,22 @@ def probe_keyframe_info(file_path: Path, sample_packets: int = 300) -> float | N
     """
     timeout_sec = int_env("VIDEO_FFPROBE_TIMEOUT_SEC", 120, 10)
     cmd = [
-        "ffprobe", "-v", "error",
-        "-select_streams", "v:0",
+        "ffprobe",
+        "-v",
+        "error",
+        "-select_streams",
+        "v:0",
         "-show_packets",
-        "-show_entries", "packet=flags",
-        "-read_intervals", f"%+#{sample_packets}",
-        "-of", "default=noprint_wrappers=1:nokey=1",
+        "-show_entries",
+        "packet=flags",
+        "-read_intervals",
+        f"%+#{sample_packets}",
+        "-of",
+        "default=noprint_wrappers=1:nokey=1",
         str(file_path),
     ]
     try:
-        proc = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=timeout_sec
-        )
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_sec)
     except (subprocess.TimeoutExpired, OSError):
         return None
 
@@ -247,9 +275,13 @@ def needs_reencode(video_meta: dict, file_path: Path) -> tuple[bool, str | None]
 def _probe_duration_sec(file_path: Path) -> float | None:
     """ffprobe로 영상 길이(초)를 빠르게 조회. 실패 시 None."""
     cmd = [
-        "ffprobe", "-v", "error",
-        "-show_entries", "format=duration",
-        "-of", "default=noprint_wrappers=1:nokey=1",
+        "ffprobe",
+        "-v",
+        "error",
+        "-show_entries",
+        "format=duration",
+        "-of",
+        "default=noprint_wrappers=1:nokey=1",
         str(file_path),
     ]
     try:
@@ -336,21 +368,20 @@ def reencode_to_tmp(src_path: Path, threads: int = 4) -> Path:
         tmp_path = Path(tmp.name)
 
     cmd = [
-        "ffmpeg", "-y",
-        "-i", str(src_path),
+        "ffmpeg",
+        "-y",
+        "-i",
+        str(src_path),
         *_resolve_ffmpeg_preset_args(),
-        "-threads", str(max(1, int(threads))),
+        "-threads",
+        str(max(1, int(threads))),
         str(tmp_path),
     ]
     try:
-        proc = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=timeout_sec
-        )
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_sec)
     except subprocess.TimeoutExpired as exc:
         tmp_path.unlink(missing_ok=True)
-        raise RuntimeError(
-            f"reencode_timeout:{timeout_sec}s path={src_path}"
-        ) from exc
+        raise RuntimeError(f"reencode_timeout:{timeout_sec}s path={src_path}") from exc
     except OSError as exc:
         tmp_path.unlink(missing_ok=True)
         raise RuntimeError(f"reencode_exec_failed:{exc}") from exc
@@ -358,8 +389,6 @@ def reencode_to_tmp(src_path: Path, threads: int = 4) -> Path:
     if proc.returncode != 0:
         tmp_path.unlink(missing_ok=True)
         stderr_tail = (proc.stderr or "")[-300:].strip()
-        raise RuntimeError(
-            f"reencode_failed:returncode={proc.returncode} stderr={stderr_tail}"
-        )
+        raise RuntimeError(f"reencode_failed:returncode={proc.returncode} stderr={stderr_tail}")
 
     return tmp_path

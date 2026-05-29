@@ -3,9 +3,7 @@
 from __future__ import annotations
 
 import json
-import time
 from hashlib import sha1
-from pathlib import Path
 
 from dagster import DefaultSensorStatus, RunRequest, SkipReason, sensor
 from dagster._core.storage.dagster_run import DagsterRunStatus, RunsFilter
@@ -93,9 +91,7 @@ def _read_video_frame_backlog_snapshot() -> dict[str, int | str | None]:
         backlog_asset_count = int(row[0]) if row and row[0] is not None else 0
         backlog_label_count = int(row[1]) if row and row[1] is not None else 0
         latest_created_at = str(row[2]) if row and row[2] is not None else None
-        state_token = (
-            f"assets={backlog_asset_count}|labels={backlog_label_count}|created_at={latest_created_at or ''}"
-        )
+        state_token = f"assets={backlog_asset_count}|labels={backlog_label_count}|created_at={latest_created_at or ''}"
         return {
             "backlog_count": backlog_asset_count,
             "pending_count": backlog_label_count,
@@ -287,15 +283,11 @@ def video_frame_extract_sensor(context):
         return
 
     active_video_jobs = [
-        run
-        for run in in_flight_runs
-        if str(getattr(run, "job_name", "") or "") in VIDEO_FRAME_SENSOR_TARGET_JOBS
+        run for run in in_flight_runs if str(getattr(run, "job_name", "") or "") in VIDEO_FRAME_SENSOR_TARGET_JOBS
     ]
     if active_video_jobs:
         active_jobs = sorted({str(run.job_name) for run in active_video_jobs})
-        yield SkipReason(
-            "video frame extraction job already queued/running: " + ", ".join(active_jobs)
-        )
+        yield SkipReason("video frame extraction job already queued/running: " + ", ".join(active_jobs))
         return
 
     try:
@@ -335,9 +327,7 @@ def video_frame_extract_sensor(context):
                         "config": {
                             "limit": int_env("VIDEO_FRAME_SENSOR_LIMIT", 200, 1),
                             "jpeg_quality": int_env("VIDEO_FRAME_SENSOR_JPEG_QUALITY", 90, 1),
-                            "overwrite_existing": bool_env(
-                                "VIDEO_FRAME_SENSOR_OVERWRITE_EXISTING", False
-                            ),
+                            "overwrite_existing": bool_env("VIDEO_FRAME_SENSOR_OVERWRITE_EXISTING", False),
                         }
                     }
                 }
@@ -382,9 +372,7 @@ def video_frame_extract_sensor(context):
                     "config": {
                         "limit": int_env("VIDEO_FRAME_SENSOR_LIMIT", 200, 1),
                         "jpeg_quality": int_env("VIDEO_FRAME_SENSOR_JPEG_QUALITY", 90, 1),
-                        "overwrite_existing": bool_env(
-                            "VIDEO_FRAME_SENSOR_OVERWRITE_EXISTING", False
-                        ),
+                        "overwrite_existing": bool_env("VIDEO_FRAME_SENSOR_OVERWRITE_EXISTING", False),
                     }
                 }
             }
