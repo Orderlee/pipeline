@@ -105,8 +105,7 @@ def auto_bootstrap_manifest_sensor(context):
     pending_count = len(pending_manifests)
     if pending_count >= max_pending_manifests:
         return SkipReason(
-            f"pending backlog 보호: auto bootstrap 중단 "
-            f"(pending={pending_count}, limit={max_pending_manifests})"
+            f"pending backlog 보호: auto bootstrap 중단 (pending={pending_count}, limit={max_pending_manifests})"
         )
 
     stable_cycles_required = int_env("AUTO_BOOTSTRAP_STABLE_CYCLES", 2, 1)
@@ -121,12 +120,8 @@ def auto_bootstrap_manifest_sensor(context):
     done_marker_name = os.getenv("AUTO_BOOTSTRAP_DONE_MARKER_NAME", "_DONE").strip() or "_DONE"
     max_files_per_manifest = int_env("AUTO_BOOTSTRAP_MAX_FILES_PER_MANIFEST", 100, 1)
     allowed_exts = {ext.lower() for ext in ALLOWED_EXTENSIONS}
-    previous_units, previous_scan_offset, previous_discovery_offset = _parse_auto_bootstrap_cursor(
-        context.cursor
-    )
-    dispatch_requested_folders = _load_dispatch_requested_folders(
-        incoming_dir / ".dispatch" / "pending"
-    )
+    previous_units, previous_scan_offset, previous_discovery_offset = _parse_auto_bootstrap_cursor(context.cursor)
+    dispatch_requested_folders = _load_dispatch_requested_folders(incoming_dir / ".dispatch" / "pending")
     # NAS 지연 시: 0=무제한(기존), 15~30 권장. discovery를 틱당 N개 상위 entry로 나누어 gRPC 타임아웃 방지
     discovery_max_top_entries = int_env("AUTO_BOOTSTRAP_DISCOVERY_MAX_TOP_ENTRIES", 0, 0)
 
@@ -171,7 +166,9 @@ def auto_bootstrap_manifest_sensor(context):
         remaining_budget = max(5, scan_budget_sec - int(discovery_elapsed_sec))
 
         units_to_scan, _ = _select_units_for_tick(
-            discovered_units, scan_offset=previous_scan_offset, max_units_per_tick=max_units_per_tick,
+            discovered_units,
+            scan_offset=previous_scan_offset,
+            max_units_per_tick=max_units_per_tick,
         )
         units, scanned_unit_keys, scanned_unit_count, scan_elapsed_sec, scan_completed_window = _scan_discovered_units(
             units_to_scan,
@@ -189,9 +186,7 @@ def auto_bootstrap_manifest_sensor(context):
     if not discovered_units:
         context.update_cursor(
             json.dumps(
-                _build_auto_bootstrap_cursor_payload(
-                    {}, scan_offset=0, discovery_offset=next_discovery_offset
-                ),
+                _build_auto_bootstrap_cursor_payload({}, scan_offset=0, discovery_offset=next_discovery_offset),
                 ensure_ascii=False,
             )
         )
@@ -253,8 +248,7 @@ def auto_bootstrap_manifest_sensor(context):
         age_ns = (now_ns - max_mtime_ns) if max_mtime_ns > 0 else stable_age_ns
         is_stable = stable_cycles >= stable_cycles_required and age_ns >= stable_age_ns
         has_pending_manifest = (
-            unit["unit_path"] in pending_unit_paths
-            or (unit["unit_path"], signature) in pending_unit_signatures
+            unit["unit_path"] in pending_unit_paths or (unit["unit_path"], signature) in pending_unit_signatures
         )
         already_manifested = manifested_signature == signature or has_pending_manifest
         needs_done_marker = (
@@ -328,9 +322,7 @@ def auto_bootstrap_manifest_sensor(context):
             now = datetime.now()
             manifest_id = f"auto_bootstrap_{now:%Y%m%d_%H%M%S_%f}_{index:03d}_{chunk_index:03d}"
             manifest_filename = f"{manifest_id}.json"
-            source_unit_dispatch_key = (
-                f"{manifest_unit_path}#chunk:{chunk_index:04d}/{chunk_count:04d}"
-            )
+            source_unit_dispatch_key = f"{manifest_unit_path}#chunk:{chunk_index:04d}/{chunk_count:04d}"
 
             manifest = {
                 "manifest_id": manifest_id,
@@ -387,10 +379,10 @@ def auto_bootstrap_manifest_sensor(context):
     context.update_cursor(
         json.dumps(
             _build_auto_bootstrap_cursor_payload(
-                    next_units,
-                    scan_offset=next_scan_offset,
-                    discovery_offset=next_discovery_offset,
-                ),
+                next_units,
+                scan_offset=next_scan_offset,
+                discovery_offset=next_discovery_offset,
+            ),
             ensure_ascii=False,
         )
     )
@@ -410,10 +402,7 @@ def auto_bootstrap_manifest_sensor(context):
             f"max_new_manifests_per_tick={max_new_manifests_per_tick}"
         )
     if not scan_completed_window:
-        suffix += (
-            f", partial_scan={len(units_to_scan) - scanned_unit_count}, "
-            f"scan_budget={scan_budget_sec}s"
-        )
+        suffix += f", partial_scan={len(units_to_scan) - scanned_unit_count}, scan_budget={scan_budget_sec}s"
     return SkipReason(
         f"manifest 생성 완료: {len(created_manifests)}개 "
         f"(안정화 기준 cycles>={stable_cycles_required}, age>={stable_age_sec}s, "

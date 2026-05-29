@@ -65,9 +65,7 @@ def upload_archived_files(
                 int(os.getenv("INGEST_REENCODE_WORKERS", str(DEFAULT_REENCODE_WORKERS))),
             ),
         )
-        reencode_threads = max(
-            1, int(os.getenv("INGEST_REENCODE_THREADS", str(DEFAULT_REENCODE_THREADS)))
-        )
+        reencode_threads = max(1, int(os.getenv("INGEST_REENCODE_THREADS", str(DEFAULT_REENCODE_THREADS))))
     except ValueError:
         reencode_workers = DEFAULT_REENCODE_WORKERS
         reencode_threads = DEFAULT_REENCODE_THREADS
@@ -87,11 +85,7 @@ def upload_archived_files(
         try:
             upload_src = archive_path
             if media_type == "video":
-                meta = (
-                    db.get_video_metadata(asset_id)
-                    if hasattr(db, "get_video_metadata")
-                    else None
-                )
+                meta = db.get_video_metadata(asset_id) if hasattr(db, "get_video_metadata") else None
                 reencode_needed = False
                 if meta and meta.get("reencode_required") is not None:
                     reencode_needed = bool(meta.get("reencode_required"))
@@ -102,9 +96,7 @@ def upload_archived_files(
                     except Exception:
                         reencode_needed = False
                 if reencode_needed:
-                    tmp_path, fallback_reason = reencode_with_fallback(
-                        Path(archive_path), threads=reencode_threads
-                    )
+                    tmp_path, fallback_reason = reencode_with_fallback(Path(archive_path), threads=reencode_threads)
                     if tmp_path is not None:
                         upload_src = str(tmp_path)
                     else:
@@ -118,9 +110,7 @@ def upload_archived_files(
                         except Exception:  # noqa: BLE001
                             pass
 
-            content_type = (
-                DEFAULT_VIDEO_CONTENT_TYPE if media_type == "video" else "image/jpeg"
-            )
+            content_type = DEFAULT_VIDEO_CONTENT_TYPE if media_type == "video" else "image/jpeg"
             minio.upload_file(DEFAULT_RAW_BUCKET, raw_key, upload_src, content_type=content_type)
             return {
                 "asset_id": asset_id,
@@ -137,9 +127,7 @@ def upload_archived_files(
                 except OSError:
                     pass
 
-    has_reencode_candidates = any(
-        str(e.get("media_type", "")).lower() == "video" for e in files
-    )
+    has_reencode_candidates = any(str(e.get("media_type", "")).lower() == "video" for e in files)
     effective_workers = reencode_workers if has_reencode_candidates else max_workers
 
     uploaded_count = 0
@@ -161,12 +149,8 @@ def upload_archived_files(
                         "completed",
                         raw_bucket=DEFAULT_RAW_BUCKET,
                     )
-                    if result.get("reencoded") and hasattr(
-                        db, "update_video_reencode_applied"
-                    ):
-                        db.update_video_reencode_applied(
-                            asset_id, reencode_preset=STANDARD_PRESET_NAME
-                        )
+                    if result.get("reencoded") and hasattr(db, "update_video_reencode_applied"):
+                        db.update_video_reencode_applied(asset_id, reencode_preset=STANDARD_PRESET_NAME)
                     uploaded_count += 1
                     asset_ids.append(asset_id)
                 except Exception as exc:  # noqa: BLE001
@@ -181,9 +165,7 @@ def upload_archived_files(
                     skipped_count += 1
                 else:
                     failed_count += 1
-                context.log.warning(
-                    f"upload_archived 실패: asset_id={result.get('asset_id')} reason={reason}"
-                )
+                context.log.warning(f"upload_archived 실패: asset_id={result.get('asset_id')} reason={reason}")
 
     summary = {
         "uploaded": uploaded_count,

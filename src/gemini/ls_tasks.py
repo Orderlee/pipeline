@@ -35,7 +35,8 @@ import re
 import string
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
-from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
+from urllib.parse import urlparse, parse_qs
+
 
 def _default_ls_state_path() -> Path:
     # 소스 트리(`/src/vlm/gemini/`)는 read-only bind mount 이므로 기본값은 쓰기 가능 위치로 폴백.
@@ -51,9 +52,9 @@ def _default_ls_state_path() -> Path:
 
 STATE_FILE = _default_ls_state_path()
 
-import boto3
-import requests
-from botocore.config import Config as BotoConfig
+import boto3  # noqa: E402
+import requests  # noqa: E402
+from botocore.config import Config as BotoConfig  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Defaults
@@ -68,8 +69,8 @@ DEFAULT_MINIO_SECRET_KEY = "minioadmin"
 DEFAULT_RAW_BUCKET = "vlm-raw"
 DEFAULT_LABEL_BUCKET = "vlm-labels"
 DEFAULT_FPS = 24
-DEFAULT_PRESIGN_EXPIRES = 3600 * 24 * 7   # 7일
-DEFAULT_RENEW_THRESHOLD = 3600 * 24 * 1   # 만료 1일 이내이면 갱신
+DEFAULT_PRESIGN_EXPIRES = 3600 * 24 * 7  # 7일
+DEFAULT_RENEW_THRESHOLD = 3600 * 24 * 1  # 만료 1일 이내이면 갱신
 FROM_NAME = "videoLabels"
 TO_NAME = "video"
 
@@ -82,6 +83,7 @@ _CLIP_PATTERN = re.compile(r"^(.+)_(\d{8})_(\d{8})$")
 # ---------------------------------------------------------------------------
 # MinIO
 # ---------------------------------------------------------------------------
+
 
 def build_minio_client(endpoint: str, access_key: str, secret_key: str):
     url = endpoint if endpoint.startswith("http") else f"http://{endpoint}"
@@ -152,6 +154,7 @@ def read_json_from_minio(client, bucket: str, key: str) -> list | dict:
 # Presigned URL 만료 파싱
 # ---------------------------------------------------------------------------
 
+
 def get_presigned_expiry(url: str) -> datetime | None:
     """presigned URL에서 만료 시각 파싱. 파싱 불가 시 None."""
     try:
@@ -179,6 +182,7 @@ def is_url_expiring(url: str, threshold_sec: int = DEFAULT_RENEW_THRESHOLD) -> b
 # Label Studio auth
 # ---------------------------------------------------------------------------
 
+
 def resolve_auth_headers(ls_url: str, token: str) -> dict[str, str]:
     try:
         payload_part = token.split(".")[1]
@@ -196,6 +200,7 @@ def resolve_auth_headers(ls_url: str, token: str) -> dict[str, str]:
 # ---------------------------------------------------------------------------
 # Label Studio project
 # ---------------------------------------------------------------------------
+
 
 def find_or_create_project(
     ls_url: str,
@@ -267,8 +272,14 @@ def _default_label_config() -> str:
 
 
 _LABEL_PALETTE = [
-    "#e74c3c", "#e67e22", "#f39c12", "#16a085",
-    "#2980b9", "#8e44ad", "#7f8c8d", "#27ae60",
+    "#e74c3c",
+    "#e67e22",
+    "#f39c12",
+    "#16a085",
+    "#2980b9",
+    "#8e44ad",
+    "#7f8c8d",
+    "#27ae60",
 ]
 
 # dispatch canonical category → 동의어 집합 (lowercase). Gemini/SAM3 의 raw prediction 을
@@ -277,18 +288,31 @@ _LABEL_PALETTE = [
 # 운영 중 새 Gemini/SAM3 동의어가 나오면 여기에 추가.
 CATEGORY_SYNONYMS: dict[str, set[str]] = {
     "falldown": {
-        "falldown", "fall", "simulated_fall", "fall_simulation",
-        "intentional_fall_simulation", "fall_recovery_drill",
-        "recovery_from_fall_simulation", "deliberate_fall_from_wheelchair",
-        "fall_recovery", "fall_risk", "fall_assistance",
+        "falldown",
+        "fall",
+        "simulated_fall",
+        "fall_simulation",
+        "intentional_fall_simulation",
+        "fall_recovery_drill",
+        "recovery_from_fall_simulation",
+        "deliberate_fall_from_wheelchair",
+        "fall_recovery",
+        "fall_risk",
+        "fall_assistance",
         # VHC 의료진이 의도적으로 연출한 낙상 시나리오 — falldown 데이터로 유효.
-        "deliberate_lie_down", "deliberate_recovery",
+        "deliberate_lie_down",
+        "deliberate_recovery",
         # smart-city 에서 바닥에 쓰러진 사람 묘사 — 낙상 의미.
         "person_lying_on_ground",
     },
-    "person":   {"person"},
-    "fire":     {"fire", "flame", "explosion"},
-    "smoke":    {"smoke", "smoking", "cigarette"},
+    "person": {"person"},
+    "fire": {"fire", "flame", "explosion"},
+    "smoke": {"smoke", "smoking", "cigarette"},
+    # 2026-05-29: vanguardhealthcarevhc_v2 dispatch 카테고리 매핑 추가.
+    # 운영 진단으로 normalizer drop 폭주 발견 (515 events 중 18건만 매핑됨).
+    # 보수적으로 의미 직접 일치 케이스만 등록. 추가 동의어는 운영자 검토 후 별도 PR.
+    "violence": {"violence", "fight"},
+    "climbing up": {"climbing up", "climbing_up", "unsafe_climbing_activity"},
 }
 
 
@@ -315,8 +339,7 @@ def _labels_xml(categories: list[str]) -> str:
     """카테고리 리스트 → `<Label value=.. background=..>` 라인. (dispatch.categories 만 표시, `other` 없음)"""
     cats = [c for c in (categories or []) if c]
     return "\n".join(
-        f'    <Label value="{c}" background="{_LABEL_PALETTE[i % len(_LABEL_PALETTE)]}"/>'
-        for i, c in enumerate(cats)
+        f'    <Label value="{c}" background="{_LABEL_PALETTE[i % len(_LABEL_PALETTE)]}"/>' for i, c in enumerate(cats)
     )
 
 
@@ -371,9 +394,8 @@ def _parse_csv_or_json_list(raw: str | None) -> list[str]:
 # Image task 생성 (data.image)
 # ---------------------------------------------------------------------------
 
-def create_image_task(
-    ls_url: str, headers: dict, project_id: int, image_url: str, folder: str
-) -> dict:
+
+def create_image_task(ls_url: str, headers: dict, project_id: int, image_url: str, folder: str) -> dict:
     resp = requests.post(
         f"{ls_url}/api/tasks/",
         headers={**headers, "Content-Type": "application/json"},
@@ -389,6 +411,7 @@ def create_image_task(
 # ---------------------------------------------------------------------------
 # Label Studio tasks
 # ---------------------------------------------------------------------------
+
 
 def fetch_existing_task_stems(ls_url: str, headers: dict, project_id: int) -> dict[str, dict]:
     """{clip_stem → task} 인덱스."""
@@ -441,6 +464,7 @@ def update_task_url(ls_url: str, headers: dict, task_id: int, new_url: str, fold
 # Prediction 생성 (ls_import 로직 인라인)
 # ---------------------------------------------------------------------------
 
+
 def _rand_id(n: int = 10) -> str:
     return "".join(random.choices(string.ascii_letters + string.digits, k=n))
 
@@ -477,17 +501,19 @@ def gemini_events_to_ls_result(
             category = canonical
         else:
             category = raw_cat or "unknown"
-        result.append({
-            "value": {
-                "ranges": [{"start": round(local_start * fps), "end": round(local_end * fps)}],
-                "timelinelabels": [category],
-            },
-            "id": _rand_id(),
-            "from_name": FROM_NAME,
-            "to_name": TO_NAME,
-            "type": "timelinelabels",
-            "origin": "prediction",
-        })
+        result.append(
+            {
+                "value": {
+                    "ranges": [{"start": round(local_start * fps), "end": round(local_end * fps)}],
+                    "timelinelabels": [category],
+                },
+                "id": _rand_id(),
+                "from_name": FROM_NAME,
+                "to_name": TO_NAME,
+                "type": "timelinelabels",
+                "origin": "prediction",
+            }
+        )
     return result
 
 
@@ -547,25 +573,27 @@ def sam3_coco_to_ls_rectangles(
             continue
         x, y, w, h = (float(v) for v in bbox[:4])
         score = float(ann.get("score") or 0.0)
-        result.append({
-            "value": {
-                "x": x / width * 100.0,
-                "y": y / height * 100.0,
-                "width": w / width * 100.0,
-                "height": h / height * 100.0,
-                "rotation": 0,
-                "rectanglelabels": [label],
-            },
-            "id": _rand_id(),
-            "from_name": from_name,
-            "to_name": to_name,
-            "type": "rectanglelabels",
-            "origin": "prediction",
-            "original_width": int(width),
-            "original_height": int(height),
-            "image_rotation": 0,
-            "score": score,
-        })
+        result.append(
+            {
+                "value": {
+                    "x": x / width * 100.0,
+                    "y": y / height * 100.0,
+                    "width": w / width * 100.0,
+                    "height": h / height * 100.0,
+                    "rotation": 0,
+                    "rectanglelabels": [label],
+                },
+                "id": _rand_id(),
+                "from_name": from_name,
+                "to_name": to_name,
+                "type": "rectanglelabels",
+                "origin": "prediction",
+                "original_width": int(width),
+                "original_height": int(height),
+                "image_rotation": 0,
+                "score": score,
+            }
+        )
     return result
 
 
@@ -575,6 +603,7 @@ def parse_rectangle_labels_config(label_config: str) -> tuple[str, str, set[str]
     반환: (from_name, to_name, {label_values}) 또는 RectangleLabels 없으면 None.
     """
     import xml.etree.ElementTree as ET
+
     try:
         root = ET.fromstring(label_config)
     except ET.ParseError:
@@ -628,6 +657,7 @@ def fetch_existing_task_image_stems(ls_url: str, headers: dict, project_id: int)
 # 폴더명 추출
 # ---------------------------------------------------------------------------
 
+
 def extract_folder_name(prefix: str) -> str:
     """prefix에서 project name으로 쓸 폴더명 추출 (마지막 non-empty 컴포넌트)."""
     parts = [p for p in prefix.rstrip("/").split("/") if p]
@@ -637,6 +667,7 @@ def extract_folder_name(prefix: str) -> str:
 # ---------------------------------------------------------------------------
 # Review state 관리
 # ---------------------------------------------------------------------------
+
 
 def load_review_state() -> dict:
     if STATE_FILE.exists():
@@ -669,6 +700,7 @@ def update_review_state(project_id: int, title: str, label_keys: list[str], task
 # create 커맨드
 # ---------------------------------------------------------------------------
 
+
 def cmd_create(args, minio, auth_headers: dict) -> None:
     """MinIO 데이터 + JSON → LS task + prediction.
 
@@ -698,9 +730,7 @@ def _build_project_title(folder_name: str, mode: str, suffix: str) -> str:
     return f"{base}_{suffix}" if suffix else base
 
 
-def _ensure_dated_project(
-    ls_url: str, auth_headers: dict, title: str, label_config: str
-) -> int:
+def _ensure_dated_project(ls_url: str, auth_headers: dict, title: str, label_config: str) -> int:
     pid, is_new = find_or_create_project(ls_url, auth_headers, title, label_config=label_config)
     if is_new:
         try:
@@ -724,9 +754,7 @@ def _create_video(args, minio, auth_headers: dict) -> None:
 
     print(f"[INFO] video mode: prefix={prefix}, project={title}, categories={target_cats or '(none)'}")
 
-    project_id = _ensure_dated_project(
-        args.ls_url, auth_headers, title, _video_label_config(target_cats)
-    )
+    project_id = _ensure_dated_project(args.ls_url, auth_headers, title, _video_label_config(target_cats))
 
     print(f"[INFO] 원본 영상 목록 조회 중... (bucket={args.bucket}, prefix={prefix})")
     video_keys = list_clip_keys(minio, args.bucket, prefix)
@@ -760,7 +788,7 @@ def _create_video(args, minio, auth_headers: dict) -> None:
 
         try:
             video_url = generate_presigned_url(minio, args.bucket, key, DEFAULT_PRESIGN_EXPIRES)
-            rel = key[len(prefix):].lstrip("/") if key.startswith(prefix) else key
+            rel = key[len(prefix) :].lstrip("/") if key.startswith(prefix) else key
             subfolder = rel.split("/", 1)[0] if "/" in rel else ""
             task_folder = subfolder or folder_name
             task = create_task(args.ls_url, auth_headers, project_id, video_url, task_folder)
@@ -769,8 +797,10 @@ def _create_video(args, minio, auth_headers: dict) -> None:
             pred_count = 0
             if events:
                 ls_result = gemini_events_to_ls_result(
-                    events, args.fps,
-                    clip_start_sec=0.0, clip_end_sec=float("inf"),
+                    events,
+                    args.fps,
+                    clip_start_sec=0.0,
+                    clip_end_sec=float("inf"),
                     normalizer=normalizer,
                 )
                 if ls_result:
@@ -811,9 +841,7 @@ def _create_image(args, minio, auth_headers: dict) -> None:
 
     print(f"[INFO] image mode: prefix={prefix}, project={title}, categories={target_cats}")
 
-    project_id = _ensure_dated_project(
-        args.ls_url, auth_headers, title, _image_label_config(target_cats)
-    )
+    project_id = _ensure_dated_project(args.ls_url, auth_headers, title, _image_label_config(target_cats))
 
     existing = fetch_existing_task_image_stems(args.ls_url, auth_headers, project_id)
     json_index = list_sam3_json_keys(minio, args.label_bucket, prefix)
@@ -848,18 +876,20 @@ def _create_image(args, minio, auth_headers: dict) -> None:
             continue
 
         try:
-            image_url = generate_presigned_url(
-                minio, processed_bucket, image_key, DEFAULT_PRESIGN_EXPIRES
-            )
-            rel = image_key[len(prefix):].lstrip("/") if image_key.startswith(prefix) else image_key
+            image_url = generate_presigned_url(minio, processed_bucket, image_key, DEFAULT_PRESIGN_EXPIRES)
+            rel = image_key[len(prefix) :].lstrip("/") if image_key.startswith(prefix) else image_key
             subfolder = rel.split("/", 1)[0] if "/" in rel else ""
             task_folder = subfolder or folder_name
             task = create_image_task(args.ls_url, auth_headers, project_id, image_url, task_folder)
             task_id = task["id"]
 
             ls_result = sam3_coco_to_ls_rectangles(
-                coco, allowed_labels, "imageLabels", "image",
-                label_map=None, normalizer=normalizer,
+                coco,
+                allowed_labels,
+                "imageLabels",
+                "image",
+                label_map=None,
+                normalizer=normalizer,
             )
             pred_count = 0
             if ls_result:
@@ -891,6 +921,7 @@ def _create_image(args, minio, auth_headers: dict) -> None:
 # ---------------------------------------------------------------------------
 # renew 커맨드
 # ---------------------------------------------------------------------------
+
 
 def cmd_renew(args, minio, auth_headers: dict) -> None:
     project_id, _ = find_or_create_project(args.ls_url, auth_headers, args.project_name)
@@ -924,7 +955,9 @@ def cmd_renew(args, minio, auth_headers: dict) -> None:
             new_url = generate_presigned_url(minio, bucket, key, DEFAULT_PRESIGN_EXPIRES)
             update_task_url(args.ls_url, auth_headers, task_id, new_url, folder)
             expiry = get_presigned_expiry(new_url)
-            print(f"[RENEWED]  task {task_id} ← {stem} (만료: {expiry.strftime('%Y-%m-%d %H:%M UTC') if expiry else '?'})")
+            print(
+                f"[RENEWED]  task {task_id} ← {stem} (만료: {expiry.strftime('%Y-%m-%d %H:%M UTC') if expiry else '?'})"
+            )
             renewed += 1
         except Exception as exc:
             print(f"[ERROR]    task {task_id}: {exc}")
@@ -944,13 +977,15 @@ def cmd_renew_all(args, minio, auth_headers: dict) -> None:
         print("[INFO] LS에 project가 없습니다.")
         return
 
-    total_renewed = total_skipped = total_error = 0
+    # Phase 5-A (#6) ruff F841 catch: total_renewed/total_skipped 는 loop 안에서
+    # 증가하지 않아 dead. error 만 카운트하는 의도였음.
+    total_error = 0
 
     for project in projects:
         title = project["title"]
-        print(f"\n{'='*60}")
+        print(f"\n{'=' * 60}")
         print(f"[PROJECT] {title} (id={project['id']})")
-        print(f"{'='*60}")
+        print(f"{'=' * 60}")
 
         args.project_name = title
         try:
@@ -965,6 +1000,7 @@ def cmd_renew_all(args, minio, auth_headers: dict) -> None:
 # ---------------------------------------------------------------------------
 # attach-predictions 커맨드 — 기존 task에 Gemini events JSON을 prediction으로 사후 주입
 # ---------------------------------------------------------------------------
+
 
 def _resolve_project_id(ls_url: str, headers: dict, project: str) -> int:
     """project 인자를 id(정수) 또는 title(문자)로 받아 project_id 반환."""
@@ -1120,9 +1156,7 @@ def cmd_attach_predictions(args, minio, auth_headers: dict) -> None:
     skip 조건: task.total_predictions > 0 / stem 매칭 JSON 없음 / 주입 result 0건.
     """
     project_id = _resolve_project_id(args.ls_url, auth_headers, args.project)
-    mode = args.mode if args.mode != "auto" else _detect_task_mode(
-        args.ls_url, auth_headers, project_id
-    )
+    mode = args.mode if args.mode != "auto" else _detect_task_mode(args.ls_url, auth_headers, project_id)
     if mode == "image":
         _attach_sam3_images(args, minio, auth_headers, project_id)
     else:
@@ -1132,6 +1166,7 @@ def cmd_attach_predictions(args, minio, auth_headers: dict) -> None:
 # ---------------------------------------------------------------------------
 # main
 # ---------------------------------------------------------------------------
+
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="MinIO clip → Label Studio task 관리")
@@ -1154,19 +1189,19 @@ def main() -> int:
         choices=["video", "image"],
         default="video",
         help="video(기본): vlm-raw/*.mp4 + events JSON → video task / "
-             "image: vlm-labels/*/sam3_segmentations/*.json → image task (프레임 이미지 presigned)",
+        "image: vlm-labels/*/sam3_segmentations/*.json → image task (프레임 이미지 presigned)",
     )
     p_create.add_argument(
         "--categories",
         default="",
         help="카테고리 CSV 또는 JSON array — label_config 에 선언될 라벨 목록. "
-             "prediction 에 없는 카테고리가 나오면 `other` 로 coerce 됨.",
+        "prediction 에 없는 카테고리가 나오면 `other` 로 coerce 됨.",
     )
     p_create.add_argument(
         "--project-suffix",
         default="",
         help="project 이름 접미사 (예: YYMMDD_HHMM). dispatch.requested_at 기준으로 sensor 가 채움. "
-             "지정 시 project 이름 = <folder>_<mode>_<suffix> (batch 별 격리).",
+        "지정 시 project 이름 = <folder>_<mode>_<suffix> (batch 별 격리).",
     )
     p_create.add_argument(
         "--processed-bucket",
@@ -1179,7 +1214,9 @@ def main() -> int:
     p_renew_group = p_renew.add_mutually_exclusive_group(required=True)
     p_renew_group.add_argument("--project-name", help="LS project 이름 (폴더명)")
     p_renew_group.add_argument("--all-projects", action="store_true", help="모든 project의 URL 일괄 갱신")
-    p_renew.add_argument("--threshold", type=int, default=DEFAULT_RENEW_THRESHOLD, help="갱신 임계값(초), 기본 86400(1일)")
+    p_renew.add_argument(
+        "--threshold", type=int, default=DEFAULT_RENEW_THRESHOLD, help="갱신 임계값(초), 기본 86400(1일)"
+    )
 
     # attach-predictions — 기존 task에 Gemini events JSON을 prediction으로 사후 주입
     p_attach = sub.add_parser(

@@ -54,14 +54,13 @@ from vlm_pipeline.lib.sanitizer import sanitize_path_component
 _VIDEO_METHODS = {"timestamp_video", "timestamp", "video"}
 _IMAGE_METHODS = {"bbox", "segmentation", "image"}
 
-LS_TASKS_SCRIPT = Path(
-    os.environ.get("LS_TASKS_SCRIPT", Path(__file__).parents[3] / "gemini" / "ls_tasks.py")
-)
+LS_TASKS_SCRIPT = Path(os.environ.get("LS_TASKS_SCRIPT", Path(__file__).parents[3] / "gemini" / "ls_tasks.py"))
 
 
 # ---------------------------------------------------------------------------
 # DuckDB helpers
 # ---------------------------------------------------------------------------
+
 
 def _fetch_pending_dispatch_requests() -> list[dict]:
     """ls_task_status='pending'이고 dispatch가 완료된 요청 목록.
@@ -91,7 +90,8 @@ def _fetch_pending_dispatch_requests() -> list[dict]:
                 "categories": r[3],
                 "batch_ts": r[4],
             }
-            for r in rows if r[1]
+            for r in rows
+            if r[1]
         ]
     finally:
         conn.close()
@@ -128,8 +128,7 @@ def _update_ls_task_status(
         with conn.cursor() as cur:
             if error_message is not None:
                 cur.execute(
-                    "UPDATE dispatch_requests SET ls_task_status = %s, error_message = %s "
-                    "WHERE request_id = %s",
+                    "UPDATE dispatch_requests SET ls_task_status = %s, error_message = %s WHERE request_id = %s",
                     (status, error_message[:500], request_id),
                 )
             else:
@@ -142,6 +141,7 @@ def _update_ls_task_status(
 # ---------------------------------------------------------------------------
 # Op
 # ---------------------------------------------------------------------------
+
 
 @op
 def create_ls_tasks(context) -> None:
@@ -201,11 +201,15 @@ def create_ls_tasks(context) -> None:
                 argv = [
                     sys.executable,
                     str(LS_TASKS_SCRIPT),
-                    "--minio-endpoint", target_ep,
-                    "--api-key", api_key,
+                    "--minio-endpoint",
+                    target_ep,
+                    "--api-key",
+                    api_key,
                     "create",
-                    "--mode", mode,
-                    "--prefix", raw_prefix,
+                    "--mode",
+                    mode,
+                    "--prefix",
+                    raw_prefix,
                 ]
                 if cat_csv:
                     argv += ["--categories", cat_csv]
@@ -215,15 +219,12 @@ def create_ls_tasks(context) -> None:
                 # image mode 일 때 timeout 충분히 크게 (default 1800s = 30분). env var 로 override 가능.
                 timeout_sec = int(os.environ.get("LS_TASKS_CREATE_TIMEOUT_SEC", "1800"))
                 try:
-                    result = subprocess.run(
-                        argv, capture_output=True, text=True, timeout=timeout_sec
-                    )
+                    result = subprocess.run(argv, capture_output=True, text=True, timeout=timeout_sec)
                 except subprocess.TimeoutExpired as exc:
                     # subprocess.TimeoutExpired 의 default __str__ 가 argv 전체 (API key 포함) 노출 →
                     # 마스킹된 메시지로 재발생.
                     raise RuntimeError(
-                        f"ls_tasks.py create --mode {mode} timed out after {timeout_sec}s "
-                        f"(prefix={raw_prefix})"
+                        f"ls_tasks.py create --mode {mode} timed out after {timeout_sec}s (prefix={raw_prefix})"
                     ) from exc
                 tail = (result.stderr or result.stdout or "").strip().splitlines()[-20:]
                 context.log.info(f"[ls_tasks create --mode {mode}] stdout:\n{result.stdout}")
@@ -235,9 +236,7 @@ def create_ls_tasks(context) -> None:
                 _run_create("video")
             if run_image:
                 if not categories:
-                    context.log.warning(
-                        f"image mode 요청됐지만 categories 비어있음 — skip: request_id={request_id}"
-                    )
+                    context.log.warning(f"image mode 요청됐지만 categories 비어있음 — skip: request_id={request_id}")
                 else:
                     _run_create("image")
 
@@ -257,6 +256,7 @@ def create_ls_tasks(context) -> None:
 # Job
 # ---------------------------------------------------------------------------
 
+
 @job(name="ls_task_create_job", description="dispatch 완료 후 LS task 자동 생성")
 def ls_task_create_job():
     create_ls_tasks()
@@ -265,6 +265,7 @@ def ls_task_create_job():
 # ---------------------------------------------------------------------------
 # Sensor
 # ---------------------------------------------------------------------------
+
 
 @sensor(
     job=ls_task_create_job,
@@ -286,10 +287,9 @@ def ls_task_create_sensor(context):
         yield SkipReason(f"ls_task in-flight run 조회 실패: {exc}")
         return
 
-    active_jobs = sorted({
-        str(run.job_name) for run in in_flight_runs
-        if str(getattr(run, "job_name", "") or "") == "ls_task_create_job"
-    })
+    active_jobs = sorted(
+        {str(run.job_name) for run in in_flight_runs if str(getattr(run, "job_name", "") or "") == "ls_task_create_job"}
+    )
     if active_jobs:
         yield SkipReason(f"ls_task_create_job already running: {', '.join(active_jobs)}")
         return
@@ -317,6 +317,7 @@ def ls_task_create_sensor(context):
 # Presigned URL 갱신 Job + Schedule
 # ---------------------------------------------------------------------------
 
+
 @op
 def renew_ls_presigned_urls(context) -> None:
     """모든 LS project의 만료 임박 presigned URL 갱신."""
@@ -332,8 +333,10 @@ def renew_ls_presigned_urls(context) -> None:
         [
             sys.executable,
             str(LS_TASKS_SCRIPT),
-            "--minio-endpoint", target_ep,
-            "--api-key", api_key,
+            "--minio-endpoint",
+            target_ep,
+            "--api-key",
+            api_key,
             "renew",
             "--all-projects",
         ],

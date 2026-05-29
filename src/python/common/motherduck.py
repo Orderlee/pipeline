@@ -39,9 +39,7 @@ def load_dotenv_if_present(dotenv_path: Path) -> None:
             continue
 
         # 따옴표 제거
-        if (value.startswith('"') and value.endswith('"')) or (
-            value.startswith("'") and value.endswith("'")
-        ):
+        if (value.startswith('"') and value.endswith('"')) or (value.startswith("'") and value.endswith("'")):
             value = value[1:-1]
 
         os.environ[key] = value
@@ -102,10 +100,7 @@ def connect_motherduck(
     """
     md_token = token or os.getenv("MOTHERDUCK_TOKEN")
     if not md_token:
-        raise ValueError(
-            "MotherDuck token is required. "
-            "Set MOTHERDUCK_TOKEN or pass token argument."
-        )
+        raise ValueError("MotherDuck token is required. Set MOTHERDUCK_TOKEN or pass token argument.")
     return duckdb.connect(f"md:{database}?motherduck_token={md_token}")
 
 
@@ -124,10 +119,7 @@ def connect_motherduck_root(token: Optional[str] = None) -> duckdb.DuckDBPyConne
     """
     md_token = token or os.getenv("MOTHERDUCK_TOKEN")
     if not md_token:
-        raise ValueError(
-            "MotherDuck token is required. "
-            "Set MOTHERDUCK_TOKEN or pass token argument."
-        )
+        raise ValueError("MotherDuck token is required. Set MOTHERDUCK_TOKEN or pass token argument.")
     return duckdb.connect(f"md:?motherduck_token={md_token}")
 
 

@@ -36,13 +36,9 @@ def _move_staging_blocked_manifest(manifest_path: Path, processed_dir: Path, con
     try:
         destination.parent.mkdir(parents=True, exist_ok=True)
         manifest_path.rename(destination)
-        context.log.info(
-            f"staging auto_bootstrap manifest 무시: {manifest_path.name} -> {destination.name}"
-        )
+        context.log.info(f"staging auto_bootstrap manifest 무시: {manifest_path.name} -> {destination.name}")
     except OSError as exc:
-        context.log.warning(
-            f"staging auto_bootstrap manifest 이동 실패: {manifest_path} -> {destination}: {exc}"
-        )
+        context.log.warning(f"staging auto_bootstrap manifest 이동 실패: {manifest_path} -> {destination}: {exc}")
 
 
 @sensor(
@@ -100,9 +96,7 @@ def incoming_manifest_sensor(context):
             blocked_entries += 1
         manifest_entries = allowed_entries
         if blocked_entries > 0:
-            context.log.info(
-                f"runtime policy pending manifest 차단: {blocked_entries}개"
-            )
+            context.log.info(f"runtime policy pending manifest 차단: {blocked_entries}개")
 
     context.log.info(f"pending manifest 발견: {len(manifests)}개, entries: {len(manifest_entries)}개")
 
@@ -122,7 +116,8 @@ def incoming_manifest_sensor(context):
 
     max_in_flight_runs = max(1, int_env("INCOMING_SENSOR_MAX_IN_FLIGHT_RUNS", 2, 1))
     max_new_run_requests_per_tick = max(
-        1, int_env("INCOMING_SENSOR_MAX_NEW_RUN_REQUESTS_PER_TICK", 2, 1),
+        1,
+        int_env("INCOMING_SENSOR_MAX_NEW_RUN_REQUESTS_PER_TICK", 2, 1),
     )
     max_retry_per_manifest = int_env("INCOMING_SENSOR_MAX_RETRY_PER_MANIFEST", 3, 1)
     in_flight_runs = collect_in_flight_runs(context)
@@ -138,7 +133,8 @@ def incoming_manifest_sensor(context):
         is_new = key not in previous_state
         is_modified = prev_mtime != mtime_ns
         should_retry_failed, failed_run_count, latest_manifest_status = manifest_retry_state(
-            context, manifest_id,
+            context,
+            manifest_id,
         )
 
         if should_retry_failed and failed_run_count > max_retry_per_manifest:
@@ -216,15 +212,14 @@ def incoming_manifest_sensor(context):
 
         try:
             run_key = build_source_unit_run_key(
-                source_unit_path, stable_signature,
+                source_unit_path,
+                stable_signature,
                 source_unit_dispatch_key=source_unit_dispatch_key,
                 manifest_id=manifest_id,
             )
             if should_retry_failed:
                 run_key = f"{run_key}-retry-{failed_run_count + 1}-{int(time.time())}"
-            retry_attempt_tag = (
-                failed_run_count + 1 if should_retry_failed else max(0, manifest_retry_attempt)
-            )
+            retry_attempt_tag = failed_run_count + 1 if should_retry_failed else max(0, manifest_retry_attempt)
             retry_flag = should_retry_failed or (manifest_retry_attempt > 0)
             tags = {
                 "trigger": "incoming_manifest_sensor",

@@ -46,6 +46,7 @@ PROCESSED_BUCKET = "vlm-processed"
 # JSON 파싱
 # ---------------------------------------------------------------------------
 
+
 def _extract_video_categories(json_bytes: bytes) -> set[str]:
     """Gemini event JSON 에서 unique category 세트 추출."""
     try:
@@ -53,11 +54,7 @@ def _extract_video_categories(json_bytes: bytes) -> set[str]:
     except Exception:
         return set()
     events = normalize_gemini_events(payload)
-    return {
-        str(e.get("category") or "").strip()
-        for e in events
-        if e.get("category")
-    }
+    return {str(e.get("category") or "").strip() for e in events if e.get("category")}
 
 
 def _extract_image_categories(json_bytes: bytes) -> set[str]:
@@ -70,12 +67,12 @@ def _extract_image_categories(json_bytes: bytes) -> set[str]:
     except Exception:
         return set()
     names: set[str] = set()
-    for c in (data.get("categories") or []):
+    for c in data.get("categories") or []:
         name = str(c.get("name") or "").strip()
         if name:
             names.add(name)
     if not names:
-        for d in (data.get("detections") or []):
+        for d in data.get("detections") or []:
             name = str(d.get("prompt_class") or "").strip()
             if name:
                 names.add(name)
@@ -83,7 +80,7 @@ def _extract_image_categories(json_bytes: bytes) -> set[str]:
     if not names and annotations:
         # categories 가 id 만 있고 name 이 누락된 케이스를 최소 대비
         cat_by_id: dict[int, str] = {}
-        for c in (data.get("categories") or []):
+        for c in data.get("categories") or []:
             cid = c.get("id")
             cname = str(c.get("name") or "").strip()
             if cid is not None and cname:
@@ -101,6 +98,7 @@ def _extract_image_categories(json_bytes: bytes) -> set[str]:
 # ---------------------------------------------------------------------------
 # 카테고리별 복사
 # ---------------------------------------------------------------------------
+
 
 def _copy_video_per_category(
     minio: MinIOResource,
@@ -123,14 +121,16 @@ def _copy_video_per_category(
         dst_key = f"{folder_prefix}/video/{safe_cat}/{rel_stem}{ext}"
         try:
             if _copy_if_outdated(
-                minio, video["raw_bucket"], raw_key, dst_key, log,
+                minio,
+                video["raw_bucket"],
+                raw_key,
+                dst_key,
+                log,
                 dst_bucket=CLASSIFICATION_BUCKET,
             ):
                 new_copies += 1
         except Exception as exc:
-            log.error(
-                f"classification video copy 실패: raw_key={raw_key} cat={safe_cat}: {exc}"
-            )
+            log.error(f"classification video copy 실패: raw_key={raw_key} cat={safe_cat}: {exc}")
     return new_copies, safe_cats
 
 
@@ -155,20 +155,23 @@ def _copy_image_per_category(
         dst_key = f"{folder_prefix}/image/{safe_cat}/{rel_stem}{ext}"
         try:
             if _copy_if_outdated(
-                minio, image["image_bucket"], image_key, dst_key, log,
+                minio,
+                image["image_bucket"],
+                image_key,
+                dst_key,
+                log,
                 dst_bucket=CLASSIFICATION_BUCKET,
             ):
                 new_copies += 1
         except Exception as exc:
-            log.error(
-                f"classification image copy 실패: image_key={image_key} cat={safe_cat}: {exc}"
-            )
+            log.error(f"classification image copy 실패: image_key={image_key} cat={safe_cat}: {exc}")
     return new_copies, safe_cats
 
 
 # ---------------------------------------------------------------------------
 # Fallback: raw video → frame 추출 + SAM3 호출 + image_metadata/image_labels insert
 # ---------------------------------------------------------------------------
+
 
 def _fallback_classify_video(
     context,
@@ -186,9 +189,7 @@ def _fallback_classify_video(
 
     prompt_classes = parse_tag_list((dispatch_row or {}).get("categories"))
     if not prompt_classes:
-        log.warning(
-            f"[fallback] dispatch.categories 비어있음 — asset={asset_id} skip"
-        )
+        log.warning(f"[fallback] dispatch.categories 비어있음 — asset={asset_id} skip")
         return []
 
     duration_sec = float(video.get("duration_sec") or 0.0)
@@ -228,7 +229,9 @@ def _fallback_classify_video(
             frame_interval_sec=None,
         )
         db.replace_video_frame_metadata(
-            asset_id, frame_rows, image_role="raw_video_frame",
+            asset_id,
+            frame_rows,
+            image_role="raw_video_frame",
         )
 
         candidates: list[dict] = []
@@ -263,21 +266,20 @@ def _fallback_classify_video(
                 continue
 
             label_rows.append(label_row)
-            candidates.append({
-                "image_id": image_id,
-                "image_bucket": PROCESSED_BUCKET,
-                "image_key": image_key,
-                "source_asset_id": asset_id,
-                "labels_key_list": [label_row["labels_key"]],
-            })
+            candidates.append(
+                {
+                    "image_id": image_id,
+                    "image_bucket": PROCESSED_BUCKET,
+                    "image_key": image_key,
+                    "source_asset_id": asset_id,
+                    "labels_key_list": [label_row["labels_key"]],
+                }
+            )
 
         if label_rows:
             db.batch_insert_image_labels(label_rows)
 
-        log.info(
-            f"[fallback] asset={asset_id} frames={len(frame_rows)} "
-            f"image_candidates={len(candidates)}"
-        )
+        log.info(f"[fallback] asset={asset_id} frames={len(frame_rows)} image_candidates={len(candidates)}")
         return candidates
 
     except Exception as exc:
@@ -291,6 +293,7 @@ def _fallback_classify_video(
 # 프로젝트 단위 빌드
 # ---------------------------------------------------------------------------
 
+
 def _build_classification_for_project(
     context,
     db: PostgresResource,
@@ -301,21 +304,14 @@ def _build_classification_for_project(
     log = context.log
     require_finalized = _require_ls_finalized()
 
-    videos = db.find_project_classification_videos(
-        folder, require_ls_finalized=require_finalized
-    )
-    images = db.find_project_classification_images(
-        folder, require_ls_finalized=require_finalized
-    )
+    videos = db.find_project_classification_videos(folder, require_ls_finalized=require_finalized)
+    images = db.find_project_classification_images(folder, require_ls_finalized=require_finalized)
     log.info(
         f"[{folder}] classification 후보: videos={len(videos)} images={len(images)} "
         f"(require_ls_finalized={require_finalized})"
     )
 
-    sample_key = (
-        videos[0]["raw_key"] if videos
-        else (images[0]["image_key"] if images else None)
-    )
+    sample_key = videos[0]["raw_key"] if videos else (images[0]["image_key"] if images else None)
     if sample_key is None:
         # fallback 확인: 영상 후보가 있을 수 있음
         missing_videos = db.find_project_video_candidates_missing_images(folder)
@@ -334,17 +330,21 @@ def _build_classification_for_project(
     # ---- dataset row 기록 ----
     dataset_id = str(uuid4())
     labeling_method = (dispatch_row or {}).get("labeling_method") or ""
-    db.insert_classification_dataset({
-        "dataset_id": dataset_id,
-        "name": folder,
-        "folder_prefix": folder_prefix,
-        "config": json.dumps({
-            "labeling_method": labeling_method,
-            "require_ls_finalized": require_finalized,
-        }),
-        "classification_bucket": CLASSIFICATION_BUCKET,
-        "build_status": "building",
-    })
+    db.insert_classification_dataset(
+        {
+            "dataset_id": dataset_id,
+            "name": folder,
+            "folder_prefix": folder_prefix,
+            "config": json.dumps(
+                {
+                    "labeling_method": labeling_method,
+                    "require_ls_finalized": require_finalized,
+                }
+            ),
+            "classification_bucket": CLASSIFICATION_BUCKET,
+            "build_status": "building",
+        }
+    )
 
     # ---- Video 복사 ----
     video_entries: list[dict] = []
@@ -353,7 +353,7 @@ def _build_classification_for_project(
 
     for video in videos:
         cats: set[str] = set()
-        for labels_key in (video.get("labels_key_list") or []):
+        for labels_key in video.get("labels_key_list") or []:
             if not labels_key:
                 continue
             try:
@@ -365,23 +365,26 @@ def _build_classification_for_project(
         if not cats:
             continue
         new_copies, safe_cats = _copy_video_per_category(
-            minio, video, cats, folder_prefix, log,
+            minio,
+            video,
+            cats,
+            folder_prefix,
+            log,
         )
         video_copies_new += new_copies
         all_categories.update(safe_cats)
-        video_entries.append({
-            "asset_id": video["asset_id"],
-            "raw_key": video["raw_key"],
-            "categories": sorted(safe_cats),
-        })
+        video_entries.append(
+            {
+                "asset_id": video["asset_id"],
+                "raw_key": video["raw_key"],
+                "categories": sorted(safe_cats),
+            }
+        )
 
     # ---- Fallback: classification_image 이고 이미지 없으면 ----
     fallback_images: list[dict] = []
     fallback_used = False
-    if (
-        "classification_image" in labeling_method
-        and not images
-    ):
+    if "classification_image" in labeling_method and not images:
         missing_videos = db.find_project_video_candidates_missing_images(folder)
         if missing_videos:
             log.info(
@@ -392,7 +395,12 @@ def _build_classification_for_project(
             for mv in missing_videos:
                 fallback_images.extend(
                     _fallback_classify_video(
-                        context, db, minio, mv, dispatch_row, folder_prefix,
+                        context,
+                        db,
+                        minio,
+                        mv,
+                        dispatch_row,
+                        folder_prefix,
                     )
                 )
 
@@ -403,7 +411,7 @@ def _build_classification_for_project(
 
     for image in all_images:
         cats: set[str] = set()
-        for labels_key in (image.get("labels_key_list") or []):
+        for labels_key in image.get("labels_key_list") or []:
             if not labels_key:
                 continue
             try:
@@ -415,15 +423,21 @@ def _build_classification_for_project(
         if not cats:
             continue
         new_copies, safe_cats = _copy_image_per_category(
-            minio, image, cats, folder_prefix, log,
+            minio,
+            image,
+            cats,
+            folder_prefix,
+            log,
         )
         image_copies_new += new_copies
         all_categories.update(safe_cats)
-        image_entries.append({
-            "image_id": image["image_id"],
-            "image_key": image["image_key"],
-            "categories": sorted(safe_cats),
-        })
+        image_entries.append(
+            {
+                "image_id": image["image_id"],
+                "image_key": image["image_key"],
+                "categories": sorted(safe_cats),
+            }
+        )
 
     # ---- manifest.json ----
     manifest = {
@@ -477,6 +491,7 @@ def _build_classification_for_project(
 # Dagster asset
 # ---------------------------------------------------------------------------
 
+
 @asset(
     deps=["clip_to_frame"],
     description=(
@@ -510,7 +525,11 @@ def build_classification(
         try:
             summaries.append(
                 _build_classification_for_project(
-                    context, db, minio, folder, dispatch_row,
+                    context,
+                    db,
+                    minio,
+                    folder,
+                    dispatch_row,
                 )
             )
         except Exception as exc:

@@ -16,6 +16,7 @@ from uuid import uuid4
 
 from dagster import Field, RetryPolicy, asset
 
+from vlm_pipeline.lib.dataset_lineage import make_build_lineage
 from vlm_pipeline.lib.key_builders import (
     build_gemini_label_key,
     build_sam3_detection_key,
@@ -56,8 +57,7 @@ def _ensure_dataset_root(minio: MinIOResource) -> None:
         minio.ensure_bucket(DATASET_BUCKET)
 
 
-def _copy_to_nfs_if_outdated(minio: MinIOResource, src_bucket: str, src_key: str,
-                             dst_path: Path, log) -> bool:
+def _copy_to_nfs_if_outdated(minio: MinIOResource, src_bucket: str, src_key: str, dst_path: Path, log) -> bool:
     """MinIO src → NFS dst_path. src size != dst size 면 재copy. atomic (tmp + rename)."""
     if dst_path.exists():
         src_head = minio.head(src_bucket, src_key)
@@ -72,8 +72,7 @@ def _copy_to_nfs_if_outdated(minio: MinIOResource, src_bucket: str, src_key: str
     return True
 
 
-def _write_dataset_artifact(minio: MinIOResource, dst_key: str, data: bytes,
-                            content_type: str) -> None:
+def _write_dataset_artifact(minio: MinIOResource, dst_key: str, data: bytes, content_type: str) -> None:
     """dataset artifact (manifest.json 등) 저장. fs/minio 분기."""
     if DATASET_STORAGE == "fs":
         dst_path = Path(NFS_DATASET_ROOT) / dst_key
@@ -85,9 +84,9 @@ def _write_dataset_artifact(minio: MinIOResource, dst_key: str, data: bytes,
         minio.upload(DATASET_BUCKET, dst_key, data, content_type)
 
 
-def _copy_if_outdated(minio: MinIOResource, src_bucket: str, src_key: str,
-                      dst_key: str, log,
-                      dst_bucket: str = DATASET_BUCKET) -> bool:
+def _copy_if_outdated(
+    minio: MinIOResource, src_bucket: str, src_key: str, dst_key: str, log, dst_bucket: str = DATASET_BUCKET
+) -> bool:
     # DATASET_STORAGE=fs (default) → NFS write
     # DATASET_STORAGE=minio        → MinIO server-side copy (legacy)
     if DATASET_STORAGE == "fs":
@@ -158,11 +157,11 @@ def _prompt_hash(prompt: str | None) -> str | None:
     if not prompt:
         return None
     import hashlib
+
     return hashlib.sha256(prompt.encode("utf-8")).hexdigest()[:16]
 
 
-def _build_project_genai(context, db, minio: MinIOResource,
-                         folder: str, pairs: list[dict]) -> dict:
+def _build_project_genai(context, db, minio: MinIOResource, folder: str, pairs: list[dict]) -> dict:
     """GenAI fan-out batch 의 paired dataset 빌드 (label-free).
 
     pairs 의 각 row = 1 batch_id + 1 seq_in_batch + (input image, output {video|image}).
@@ -185,10 +184,7 @@ def _build_project_genai(context, db, minio: MinIOResource,
 
     # 모든 pair 가 같은 folder_prefix 인지 확인 (서로 다른 batch 가 같은 source_unit_name 으로
     # 들어왔을 때 cross-contamination 방어)
-    foreign = [
-        p["job_id"] for p in pairs
-        if _minio_prefix_from_key(p["input_raw_key"]) != folder_prefix
-    ]
+    foreign = [p["job_id"] for p in pairs if _minio_prefix_from_key(p["input_raw_key"]) != folder_prefix]
     if foreign:
         log.error(
             f"[{folder}] folder_prefix invariant 위반: {len(foreign)} pairs "
@@ -202,31 +198,34 @@ def _build_project_genai(context, db, minio: MinIOResource,
     prompt_hashes = sorted({_prompt_hash(p.get("prompt")) for p in pairs if p.get("prompt")})
 
     log.info(
-        f"[{folder}] GenAI pair build: pairs={len(pairs)} prefix={folder_prefix} "
-        f"batches={batch_ids} engines={engines}"
+        f"[{folder}] GenAI pair build: pairs={len(pairs)} prefix={folder_prefix} batches={batch_ids} engines={engines}"
     )
 
-    # ---- 3. dataset row 등록 ----
+    # ---- 3. dataset row 등록 (Phase 3-D lineage 메타 포함) ----
     dataset_id = str(uuid4())
-    db.insert_dataset({
-        "dataset_id": dataset_id,
-        "name": folder,
-        "version": "v1",
-        "config": json.dumps({
-            "schema": "genai_paired",
-            "label_free": True,
-            "with_timestamp": False,
-            "with_bbox": False,
-            "batch_ids": batch_ids,
-            "engines": engines,
-            "prompt_hashes": prompt_hashes,
-            "source_unit_name": folder,
-        }),
-        "split_ratio": None,
-        "dataset_bucket": _dataset_bucket_value(),
-        "dataset_prefix": folder_prefix,
-        "build_status": "building",
-    })
+    config_dict = {
+        "schema": "genai_paired",
+        "label_free": True,
+        "with_timestamp": False,
+        "with_bbox": False,
+        "batch_ids": batch_ids,
+        "engines": engines,
+        "prompt_hashes": prompt_hashes,
+        "source_unit_name": folder,
+    }
+    db.insert_dataset(
+        {
+            "dataset_id": dataset_id,
+            "name": folder,
+            "version": "v1",
+            "config": json.dumps(config_dict),
+            "split_ratio": None,
+            "dataset_bucket": _dataset_bucket_value(),
+            "dataset_prefix": folder_prefix,
+            "build_status": "building",
+            **make_build_lineage(config_dict),
+        }
+    )
 
     # ---- 4. pair 단위 copy ----
     include_prompt = _genai_manifest_include_prompt()
@@ -251,8 +250,9 @@ def _build_project_genai(context, db, minio: MinIOResource,
         out_dir = _GENAI_OUTPUT_DIR.get(output_media)
         if not out_dir:
             log.error(f"[{folder}] pair {seq}: unknown output_media={output_media!r} — skip")
-            skipped_entries.append({"job_id": pair["job_id"], "seq": seq,
-                                     "reason": f"unknown_output_media:{output_media}"})
+            skipped_entries.append(
+                {"job_id": pair["job_id"], "seq": seq, "reason": f"unknown_output_media:{output_media}"}
+            )
             continue
 
         # batch.output_media vs raw_files.media_type cross-validation
@@ -262,8 +262,13 @@ def _build_project_genai(context, db, minio: MinIOResource,
                 f"[{folder}] pair {seq}: output_media mismatch "
                 f"batch={output_media!r} vs raw_files.media_type={actual_media!r} — skip"
             )
-            skipped_entries.append({"job_id": pair["job_id"], "seq": seq,
-                                     "reason": f"output_media_mismatch:{output_media}!={actual_media}"})
+            skipped_entries.append(
+                {
+                    "job_id": pair["job_id"],
+                    "seq": seq,
+                    "reason": f"output_media_mismatch:{output_media}!={actual_media}",
+                }
+            )
             continue
 
         seq_str = f"{seq:03d}"
@@ -277,8 +282,9 @@ def _build_project_genai(context, db, minio: MinIOResource,
                 output_copies_new += 1
         except Exception as exc:
             log.error(f"[{folder}] genai pair {seq} copy 실패: {exc}")
-            skipped_entries.append({"job_id": pair["job_id"], "seq": seq,
-                                     "reason": f"copy_failed:{type(exc).__name__}"})
+            skipped_entries.append(
+                {"job_id": pair["job_id"], "seq": seq, "reason": f"copy_failed:{type(exc).__name__}"}
+            )
             continue
 
         if output_media == "video":
@@ -364,8 +370,7 @@ def _build_project_genai(context, db, minio: MinIOResource,
     return summary
 
 
-def _build_project(context, db: PostgresResource, minio: MinIOResource,
-                   folder: str) -> dict:
+def _build_project(context, db: PostgresResource, minio: MinIOResource, folder: str) -> dict:
     """단일 프로젝트 빌드. 요약 dict 반환.
 
     CASE 분기:
@@ -402,11 +407,7 @@ def _build_project(context, db: PostgresResource, minio: MinIOResource,
         }
 
     # ---- 2. MinIO prefix 결정 (raw_key 기반 sanitized folder) ----
-    sample_key = (
-        videos[0]["raw_key"]
-        if videos
-        else (images[0]["image_key"] if images else clips[0]["source_raw_key"])
-    )
+    sample_key = videos[0]["raw_key"] if videos else (images[0]["image_key"] if images else clips[0]["source_raw_key"])
     folder_prefix = _minio_prefix_from_key(sample_key)
     if not folder_prefix:
         log.error(f"[{folder}] raw_key/image_key에서 folder prefix 추출 실패 — skip")
@@ -421,18 +422,22 @@ def _build_project(context, db: PostgresResource, minio: MinIOResource,
         f"total={len(label_keys)} events={ts_key_count} sam3={bbox_key_count}"
     )
 
-    # ---- 4. dataset row 등록 ----
+    # ---- 4. dataset row 등록 (Phase 3-D lineage 메타 포함) ----
     dataset_id = str(uuid4())
-    db.insert_dataset({
-        "dataset_id": dataset_id,
-        "name": folder,
-        "version": "v1",
-        "config": json.dumps({"schema": "project_flat", "with_timestamp": True, "with_bbox": True}),
-        "split_ratio": None,
-        "dataset_bucket": _dataset_bucket_value(),
-        "dataset_prefix": folder_prefix,
-        "build_status": "building",
-    })
+    config_dict = {"schema": "project_flat", "with_timestamp": True, "with_bbox": True}
+    db.insert_dataset(
+        {
+            "dataset_id": dataset_id,
+            "name": folder,
+            "version": "v1",
+            "config": json.dumps(config_dict),
+            "split_ratio": None,
+            "dataset_bucket": _dataset_bucket_value(),
+            "dataset_prefix": folder_prefix,
+            "build_status": "building",
+            **make_build_lineage(config_dict),
+        }
+    )
 
     # ---- 5. Videos + Timestamps ----
     video_entries: list[dict] = []
@@ -457,13 +462,15 @@ def _build_project(context, db: PostgresResource, minio: MinIOResource,
             log.error(f"[{folder}] video copy 실패: {raw_key}: {exc}")
             continue
 
-        video_entries.append({
-            "rel_stem": rel_stem,
-            "dataset_video_key": dataset_video_key,
-            "dataset_timestamp_key": dataset_ts_key,
-            "source_raw_bucket": video["raw_bucket"],
-            "source_raw_key": raw_key,
-        })
+        video_entries.append(
+            {
+                "rel_stem": rel_stem,
+                "dataset_video_key": dataset_video_key,
+                "dataset_timestamp_key": dataset_ts_key,
+                "source_raw_bucket": video["raw_bucket"],
+                "source_raw_key": raw_key,
+            }
+        )
 
     # ---- 5b. Clips (LS 라벨링 완료된 event 단위 clip video) ----
     clip_entries: list[dict] = []
@@ -493,16 +500,18 @@ def _build_project(context, db: PostgresResource, minio: MinIOResource,
             log.error(f"[{folder}] clip copy 실패: {clip_key}: {exc}")
             continue
 
-        clip_entries.append({
-            "rel_stem": rel_stem,
-            "dataset_clip_key": dataset_clip_key,
-            "source_clip_bucket": src_bucket,
-            "source_clip_key": clip_key,
-            "source_raw_key": clip.get("source_raw_key"),
-            "event_index": clip.get("event_index"),
-            "clip_start_sec": clip.get("clip_start_sec"),
-            "clip_end_sec": clip.get("clip_end_sec"),
-        })
+        clip_entries.append(
+            {
+                "rel_stem": rel_stem,
+                "dataset_clip_key": dataset_clip_key,
+                "source_clip_bucket": src_bucket,
+                "source_clip_key": clip_key,
+                "source_raw_key": clip.get("source_raw_key"),
+                "event_index": clip.get("event_index"),
+                "clip_start_sec": clip.get("clip_start_sec"),
+                "clip_end_sec": clip.get("clip_end_sec"),
+            }
+        )
 
     # ---- 6. Images + Bboxes ----
     image_entries: list[dict] = []
@@ -527,13 +536,15 @@ def _build_project(context, db: PostgresResource, minio: MinIOResource,
             log.error(f"[{folder}] image copy 실패: {image_key}: {exc}")
             continue
 
-        image_entries.append({
-            "rel_stem": rel_stem,
-            "dataset_image_key": dataset_image_key,
-            "dataset_bbox_key": dataset_bbox_key,
-            "source_image_bucket": image["image_bucket"],
-            "source_image_key": image_key,
-        })
+        image_entries.append(
+            {
+                "rel_stem": rel_stem,
+                "dataset_image_key": dataset_image_key,
+                "dataset_bbox_key": dataset_bbox_key,
+                "source_image_bucket": image["image_bucket"],
+                "source_image_key": image_key,
+            }
+        )
 
     # ---- 7. manifest.json ----
     manifest = {
@@ -637,7 +648,6 @@ def build_dataset(
     if errors:
         first_folder, first_exc = errors[0]
         raise RuntimeError(
-            f"build_dataset 실패 {len(errors)}/{len(summaries)} folder. "
-            f"첫 실패: {first_folder} → {first_exc}"
+            f"build_dataset 실패 {len(errors)}/{len(summaries)} folder. 첫 실패: {first_folder} → {first_exc}"
         )
     return {**total, "summaries": summaries}

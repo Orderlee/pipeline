@@ -20,6 +20,9 @@ your-gcp-project-credentials.json
 configs/global.yaml
 !configs/config.sample.yaml
 
+# Node — frequently dropped in by tooling (pyright, pyright-internal, etc.); never commit
+node_modules/
+
 # Python
 __pycache__/
 *.py[cod]
@@ -36,9 +39,25 @@ tests/unit/*
 # Phase 3-A inline DQ — vlm_pipeline.lib.vertex_chunking 만 의존, dagster import 없음
 # → CI host pydantic skew 영향 없음, allowlist 안전.
 !tests/unit/test_inline_dq_duration_events.py
-# Phase 3-B cross-table consistency — db_resource fixture(PG) 만 사용. dagster 없음.
-# CI deploy-test.yml 가 DATAOPS_TEST_POSTGRES_DSN 셋업 → 실제 PG 로 검증.
+# Phase 3-B cross-table consistency — mock 기반 (cursor stub), dagster import 없음.
 !tests/unit/test_cross_table_consistency.py
+# Phase 3-C asset_check resource layer — mock 기반, dagster import 없음.
+!tests/unit/test_asset_check_consistency.py
+# Phase 3-D dataset lineage helpers — hashlib/json/os/subprocess 표준 lib 만 의존.
+!tests/unit/test_dataset_lineage.py
+# Phase 4-A Vertex 503/deadline retry + usage counter — vertexai SDK import-time skip, mock-only.
+!tests/unit/test_gemini_server_error_retry.py
+# 2026-05-29: LS category synonyms 회귀 (vanguardhealthcarevhc_v2 prediction 0건 fix).
+# ls_tasks.py 의 CATEGORY_SYNONYMS / build_label_normalizer 만 import.
+!tests/unit/test_ls_category_synonyms.py
+# Phase 4-B integration tests (#12) — self-contained conftest, sidecar PG 의존
+# (DATAOPS_TEST_POSTGRES_DSN 미설정 시 자동 skip).
+!tests/integration/
+tests/integration/*
+!tests/integration/__init__.py
+!tests/integration/conftest.py
+!tests/integration/test_migration_sequence.py
+!tests/integration/test_ingest_status_lifecycle.py
 
 # IDE
 .vscode/
@@ -77,6 +96,8 @@ pyproject.toml
 # re-ignore Python bytecode under skill scripts (caught by the .agent/skill/** unignore above)
 .agent/skill/**/__pycache__/
 .agent/skill/**/*.py[cod]
+# Sanitizer rule map — lists real internal values, must never be published
+.agent/skill/sanitize_repo/rules.local.txt
 
 # .claude/ — track team-shared agent config, ignore per-user state and runtime data
 .claude/*
@@ -98,8 +119,6 @@ ANTIGRAVITY.md
 
 # Agent & AI Temporary Caches
 .agent/skill/tmp/
-# Sanitizer rule map — lists real internal values, must never be published
-.agent/skill/sanitize_repo/rules.local.txt
 .codex_cache/
 .mcp_logs/
 .windsurf/

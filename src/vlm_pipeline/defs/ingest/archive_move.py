@@ -48,9 +48,7 @@ def _run_with_timeout(func: Callable, *args, timeout_sec: int, op_label: str) ->
         try:
             future.result(timeout=timeout_sec)
         except FuturesTimeoutError:
-            raise OSError(
-                f"archive_move_timeout: {timeout_sec}s 초과 — op={op_label}"
-            ) from None
+            raise OSError(f"archive_move_timeout: {timeout_sec}s 초과 — op={op_label}") from None
     finally:
         pool.shutdown(wait=False, cancel_futures=True)
 

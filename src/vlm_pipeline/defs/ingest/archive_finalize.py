@@ -140,12 +140,9 @@ def archive_uploaded_assets(
     source_unit_path = Path(source_unit_path_raw) if source_unit_path_raw else None
     source_root_dir = Path(source_dir_raw) if source_dir_raw else None
     manifest_file_count = int(manifest.get("file_count") or len(files) or len(uploaded))
-    source_unit_total_file_count = int(
-        manifest.get("source_unit_total_file_count") or manifest_file_count
-    )
+    source_unit_total_file_count = int(manifest.get("source_unit_total_file_count") or manifest_file_count)
     is_chunked_manifest = (
-        int(manifest.get("source_unit_chunk_count") or 1) > 1
-        or source_unit_total_file_count > manifest_file_count
+        int(manifest.get("source_unit_chunk_count") or 1) > 1 or source_unit_total_file_count > manifest_file_count
     )
 
     archived_items: list[dict] = []
@@ -167,7 +164,8 @@ def archive_uploaded_assets(
                 cleanup_residual_source_file(context, sp)
                 cleanup_empty_parent_chain(Path(sp).parent, stop_at=source_root_dir)
             db.update_raw_file_status(
-                asset_id, completion_status,
+                asset_id,
+                completion_status,
                 archive_path=str(archive_path),
                 raw_bucket=raw_bucket,
             )
@@ -215,9 +213,7 @@ def archive_uploaded_assets(
             archive_unit_dir_hint = base_unit_archive_dir
             try:
                 _move_with_timeout(str(source_unit_path), str(base_unit_archive_dir))
-                context.log.info(
-                    f"폴더 단위 아카이브 이동 완료: {source_unit_path} -> {base_unit_archive_dir}"
-                )
+                context.log.info(f"폴더 단위 아카이브 이동 완료: {source_unit_path} -> {base_unit_archive_dir}")
                 for item in uploaded:
                     sp = str(item.get("source_path", "")).strip()
                     rel_path = rel_path_by_source.get(sp) or Path(sp).name
@@ -250,8 +246,13 @@ def archive_uploaded_assets(
             for item in uploaded:
                 fut = executor.submit(
                     _move_single_file,
-                    context, item, unit_archive_dir, rel_path_by_source,
-                    archive_root_dir, archive_unit_name, _mark_archive_result,
+                    context,
+                    item,
+                    unit_archive_dir,
+                    rel_path_by_source,
+                    archive_root_dir,
+                    archive_unit_name,
+                    _mark_archive_result,
                 )
                 futures_map[fut] = item
             for idx, fut in enumerate(as_completed(futures_map), 1):
@@ -304,9 +305,7 @@ def _move_single_file(
     except (OSError, shutil.Error) as exc:
         if dest is not None and dest.exists():
             # timeout 났지만 NFS 서버 측에서 실제 이동은 완료된 정상 회복 케이스 → INFO.
-            context.log.info(
-                f"아카이브 이동 예외 이후 목적지 파일 존재 확인으로 completed 처리: {dest} ({exc})"
-            )
+            context.log.info(f"아카이브 이동 예외 이후 목적지 파일 존재 확인으로 completed 처리: {dest} ({exc})")
             mark_fn(item, dest)
             return
         if is_source_missing_error(exc):
@@ -339,9 +338,7 @@ def _move_single_file_fallback(context, item: dict, archive_root_dir: Path, mark
     except (OSError, shutil.Error) as exc:
         if dest is not None and dest.exists():
             # timeout 났지만 NFS 서버 측에서 실제 이동은 완료된 정상 회복 케이스 → INFO.
-            context.log.info(
-                f"아카이브 이동 예외 이후 목적지 파일 존재 확인으로 completed 처리: {dest} ({exc})"
-            )
+            context.log.info(f"아카이브 이동 예외 이후 목적지 파일 존재 확인으로 completed 처리: {dest} ({exc})")
             mark_fn(item, dest)
             return
         if is_source_missing_error(exc):

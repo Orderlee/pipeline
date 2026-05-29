@@ -57,9 +57,7 @@ class PostgresSpecMixin:
     ) -> tuple[str | None, str | None]:
         """personal → team → _fallback 우선순위. (config_id, scope) 또는 (None, None)."""
         with self.connect() as conn:
-            if not self._table_exists(conn, "requester_config_map") or not self._table_exists(
-                conn, "labeling_configs"
-            ):
+            if not self._table_exists(conn, "requester_config_map") or not self._table_exists(conn, "labeling_configs"):
                 return None, None
             # personal
             if requester_id:

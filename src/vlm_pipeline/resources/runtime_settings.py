@@ -59,16 +59,8 @@ def load_stuck_run_guard_settings() -> StuckRunGuardSettings:
         max_cancels=int_env("STUCK_RUN_GUARD_MAX_CANCELS_PER_TICK", 1, 1),
         auto_requeue_enabled=bool_env("STUCK_RUN_GUARD_AUTO_REQUEUE_ENABLED", True),
         max_requeues=int_env("STUCK_RUN_GUARD_MAX_REQUEUES_PER_TICK", 1, 1),
-        target_jobs={
-            item.strip()
-            for item in target_jobs_raw.split(",")
-            if item.strip()
-        },
-        orphan_only_jobs={
-            item.strip()
-            for item in orphan_only_jobs_raw.split(",")
-            if item.strip()
-        },
+        target_jobs={item.strip() for item in target_jobs_raw.split(",") if item.strip()},
+        orphan_only_jobs={item.strip() for item in orphan_only_jobs_raw.split(",") if item.strip()},
     )
 
 

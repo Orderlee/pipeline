@@ -1,0 +1,29 @@
+{
+  "//": "Phase 5-D pyright basic mode — 점진 도입.",
+  "//-1": "pyproject.toml 이 .gitignore 되어 있어 pyright config 는 분리된 pyrightconfig.json 으로 관리.",
+  "//-2": "include 는 src/vlm_pipeline 한정 — Dagster 핵심 운영 코드. src/gemini/python 은 독립 스크립트라 FP 비율 높음, 추후 영역별 확장.",
+  "//-3": "rule level — 실 null-deref 위험 (Optional Subscript/MemberAccess) 만 error, 나머지는 warning. CI 는 lint.yml 에서 non-blocking 으로 시작.",
+  "pythonVersion": "3.11",
+  "pythonPlatform": "Linux",
+  "typeCheckingMode": "basic",
+  "extraPaths": ["src"],
+  "include": ["src/vlm_pipeline"],
+  "exclude": [
+    "src/gemini",
+    "src/python",
+    "tests",
+    "**/__pycache__",
+    "**/node_modules",
+    "**/.git"
+  ],
+  "reportMissingImports": "none",
+  "reportMissingModuleSource": "none",
+  "reportAttributeAccessIssue": "warning",
+  "reportPossiblyUnboundVariable": "warning",
+  "reportCallIssue": "warning",
+  "reportReturnType": "warning",
+  "reportArgumentType": "warning",
+  "reportOptionalSubscript": "error",
+  "reportOptionalMemberAccess": "error",
+  "reportGeneralTypeIssues": "warning"
+}

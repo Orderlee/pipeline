@@ -35,8 +35,7 @@ build_dataset_single_job = define_asset_job(
     name="build_dataset_single_job",
     selection=AssetSelection.assets(build_dataset),
     description=(
-        "build_dataset asset을 config.folder 단일 프로젝트로 실행. "
-        "build_dataset_on_finalize_sensor 가 트리거."
+        "build_dataset asset을 config.folder 단일 프로젝트로 실행. build_dataset_on_finalize_sensor 가 트리거."
     ),
 )
 
@@ -44,6 +43,7 @@ build_dataset_single_job = define_asset_job(
 # ---------------------------------------------------------------------------
 # Sensor
 # ---------------------------------------------------------------------------
+
 
 def _fetch_projects_ready_to_build(db_path: str | None = None) -> list[str]:  # noqa: ARG001 - signature 호환 유지
     """dispatch.outputs 가 요구하는 모든 검수 단계가 finalized 된 folder 조회.
@@ -167,9 +167,7 @@ def build_dataset_on_finalize_sensor(context):
         attempt = int(cursor.get(folder, 0))
         if _last_run_failed(context, folder):
             attempt += 1
-            context.log.info(
-                f"[{folder}] 직전 run FAILURE 감지 → attempt {cursor.get(folder, 0)} → {attempt}"
-            )
+            context.log.info(f"[{folder}] 직전 run FAILURE 감지 → attempt {cursor.get(folder, 0)} → {attempt}")
         cursor[folder] = attempt
         run_key = f"build-dataset:{folder}:{attempt}"
         yield RunRequest(

@@ -110,8 +110,7 @@ def resolve_effective_request_confidence_threshold(
     """Compute the confidence sent to the YOLO server."""
     base_threshold = _coerce_confidence(global_confidence_threshold, 0.25)
     thresholds = [
-        _coerce_confidence(threshold, base_threshold)
-        for threshold in (class_confidence_thresholds or {}).values()
+        _coerce_confidence(threshold, base_threshold) for threshold in (class_confidence_thresholds or {}).values()
     ]
     return min([base_threshold, *thresholds])
 

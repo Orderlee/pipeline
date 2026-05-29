@@ -40,9 +40,9 @@ def register_incoming(
 
     # GenAI manifest 의 items[seq] 매핑 — orchestrator 가 _manifest.json 에 넣은 경우만.
     # 미지정 시 빈 dict (legacy / 일반 NAS source 영향 없음).
-    _genai_batch_id = manifest.get("batch_id") if manifest.get("source_type") in (
-        "genai_source", "genai_output"
-    ) else None
+    _genai_batch_id = (
+        manifest.get("batch_id") if manifest.get("source_type") in ("genai_source", "genai_output") else None
+    )
     _genai_filename_to_seq: dict[str, int] = {}
     if _genai_batch_id:
         for it in manifest.get("items", []) or []:
@@ -65,9 +65,7 @@ def register_incoming(
     ]
     try:
         _completed_source_set: set[str] = (
-            db.find_completed_source_paths(_candidate_source_paths)
-            if _candidate_source_paths
-            else set()
+            db.find_completed_source_paths(_candidate_source_paths) if _candidate_source_paths else set()
         )
     except Exception as exc:  # noqa: BLE001
         context.log.warning(f"find_completed_source_paths 조회 실패(필터 스킵): {exc}")
@@ -82,11 +80,13 @@ def register_incoming(
         filepath = entry.get("path", "")
         rel_path = entry.get("rel_path", "")
         if filepath and str(filepath).strip() in _completed_source_set:
-            results.append({
-                "path": filepath,
-                "status": "already_completed",
-                "message": "already_completed_in_prior_run",
-            })
+            results.append(
+                {
+                    "path": filepath,
+                    "status": "already_completed",
+                    "message": "already_completed_in_prior_run",
+                }
+            )
             continue
         try:
             vr = validate_incoming(filepath)
@@ -149,7 +149,7 @@ def register_incoming(
         _seen_keys = set()
 
     # 2차 패스: 고유 raw_key 확정 + 레코드 생성
-    for (_entry, filepath, rel_path, original_name, sanitized_name, media_type, vr) in _pre_entries:
+    for _entry, filepath, rel_path, original_name, sanitized_name, media_type, vr in _pre_entries:
         sanitized_source_unit_name = storage_raw_key_prefix_from_source_unit(source_unit_name)
         if rel_path:
             sanitized_rel_dir = _sanitize_path_parts(str(Path(rel_path).parent))
@@ -165,8 +165,7 @@ def register_incoming(
         raw_key = make_unique_key(candidate_key, _seen_keys)
         if raw_key != candidate_key:
             context.log.warning(
-                f"raw_key 충돌 감지, suffix 부여: {candidate_key} -> {raw_key} "
-                f"(original={original_name})"
+                f"raw_key 충돌 감지, suffix 부여: {candidate_key} -> {raw_key} (original={original_name})"
             )
 
         asset_id = str(uuid4())
@@ -191,23 +190,17 @@ def register_incoming(
         genai_source_type = manifest.get("source_type")
         if genai_source_type:
             if genai_source_type not in _VALID_SOURCE_TYPES:
-                raise ValueError(
-                    f"manifest.source_type={genai_source_type!r} not in {sorted(_VALID_SOURCE_TYPES)}"
-                )
+                raise ValueError(f"manifest.source_type={genai_source_type!r} not in {sorted(_VALID_SOURCE_TYPES)}")
             record["source_type"] = genai_source_type
         genai_engine = manifest.get("genai_engine")
         if genai_engine:
             if genai_engine not in _VALID_GENAI_ENGINES:
-                raise ValueError(
-                    f"manifest.genai_engine={genai_engine!r} not in {sorted(_VALID_GENAI_ENGINES)}"
-                )
+                raise ValueError(f"manifest.genai_engine={genai_engine!r} not in {sorted(_VALID_GENAI_ENGINES)}")
             record["genai_engine"] = genai_engine
         genai_label_policy = manifest.get("label_policy")
         if genai_label_policy:
             if genai_label_policy not in _VALID_LABEL_POLICIES:
-                raise ValueError(
-                    f"manifest.label_policy={genai_label_policy!r} not in {sorted(_VALID_LABEL_POLICIES)}"
-                )
+                raise ValueError(f"manifest.label_policy={genai_label_policy!r} not in {sorted(_VALID_LABEL_POLICIES)}")
             record["label_policy"] = genai_label_policy
 
         result_entry = {
@@ -223,8 +216,7 @@ def register_incoming(
         }
         # GenAI items 매핑 — ops_normalize 가 _link_genai_asset_if_any 로 사용.
         if _genai_batch_id and _genai_filename_to_seq:
-            seq = _genai_filename_to_seq.get(original_name) \
-                  or _genai_filename_to_seq.get(sanitized_name)
+            seq = _genai_filename_to_seq.get(original_name) or _genai_filename_to_seq.get(sanitized_name)
             if seq is not None:
                 result_entry["_genai_batch_id"] = _genai_batch_id
                 result_entry["_genai_seq_in_batch"] = int(seq)
