@@ -88,38 +88,40 @@ def schedule_sync_debounced(project_id: int, project_title: str) -> None:
         timer.start()
         print(f"[DEBOUNCE] project {project_id} sync {_SYNC_DEBOUNCE_SEC:.1f}초 후 예약 (중복 수신 시 리셋)")
 
-import requests
-import uvicorn
-from fastapi import BackgroundTasks, FastAPI, Request, Response
-from fastapi.responses import PlainTextResponse
+
+import requests  # noqa: E402
+import uvicorn  # noqa: E402
+from fastapi import BackgroundTasks, FastAPI, Request, Response  # noqa: E402
+from fastapi.responses import PlainTextResponse  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # 환경변수
 # ---------------------------------------------------------------------------
 
-DEFAULT_LS_URL           = "http://localhost:8080"
-DEFAULT_MINIO_ENDPOINT   = "10.0.0.51:9000"
+DEFAULT_LS_URL = "http://localhost:8080"
+DEFAULT_MINIO_ENDPOINT = "10.0.0.51:9000"
 DEFAULT_MINIO_ACCESS_KEY = "minioadmin"
 DEFAULT_MINIO_SECRET_KEY = "minioadmin"
-DEFAULT_LABEL_BUCKET     = "vlm-labels"
-DEFAULT_FPS              = 24
-DEFAULT_WEBHOOK_HOST     = "localhost"
-DEFAULT_WEBHOOK_PORT     = 8001
-DEFAULT_DAGSTER_GRAPHQL  = "http://docker-dagster-1:3030/graphql"
-DEFAULT_POST_REVIEW_JOB  = "post_review_clip_job"
+DEFAULT_LABEL_BUCKET = "vlm-labels"
+DEFAULT_FPS = 24
+DEFAULT_WEBHOOK_HOST = "localhost"
+DEFAULT_WEBHOOK_PORT = 8001
+DEFAULT_DAGSTER_GRAPHQL = "http://docker-dagster-1:3030/graphql"
+DEFAULT_POST_REVIEW_JOB = "post_review_clip_job"
 
-LS_URL            = os.environ.get("LS_URL", DEFAULT_LS_URL).rstrip("/")
-API_KEY           = os.environ.get("LS_API_KEY", "")
-WEBHOOK_HOST      = os.environ.get("WEBHOOK_HOST", DEFAULT_WEBHOOK_HOST)
-WEBHOOK_PORT      = int(os.environ.get("WEBHOOK_PORT", DEFAULT_WEBHOOK_PORT))
+LS_URL = os.environ.get("LS_URL", DEFAULT_LS_URL).rstrip("/")
+API_KEY = os.environ.get("LS_API_KEY", "")
+WEBHOOK_HOST = os.environ.get("WEBHOOK_HOST", DEFAULT_WEBHOOK_HOST)
+WEBHOOK_PORT = int(os.environ.get("WEBHOOK_PORT", DEFAULT_WEBHOOK_PORT))
 SLACK_WEBHOOK_URL = os.environ.get("SLACK_WEBHOOK_URL", "")
 SLACK_SIGNING_SECRET = os.environ.get("SLACK_SIGNING_SECRET", "")
-DB_PATH           = os.environ.get("DATAOPS_DUCKDB_PATH", "")
-MINIO_ENDPOINT    = os.environ.get("MINIO_ENDPOINT", DEFAULT_MINIO_ENDPOINT)
-MINIO_ACCESS_KEY  = os.environ.get("MINIO_ACCESS_KEY", DEFAULT_MINIO_ACCESS_KEY)
-MINIO_SECRET_KEY  = os.environ.get("MINIO_SECRET_KEY", DEFAULT_MINIO_SECRET_KEY)
+DB_PATH = os.environ.get("DATAOPS_DUCKDB_PATH", "")
+MINIO_ENDPOINT = os.environ.get("MINIO_ENDPOINT", DEFAULT_MINIO_ENDPOINT)
+MINIO_ACCESS_KEY = os.environ.get("MINIO_ACCESS_KEY", DEFAULT_MINIO_ACCESS_KEY)
+MINIO_SECRET_KEY = os.environ.get("MINIO_SECRET_KEY", DEFAULT_MINIO_SECRET_KEY)
 DAGSTER_GRAPHQL_URL = os.environ.get("DAGSTER_GRAPHQL_URL", DEFAULT_DAGSTER_GRAPHQL)
 POST_REVIEW_JOB_NAME = os.environ.get("POST_REVIEW_JOB_NAME", DEFAULT_POST_REVIEW_JOB)
+
 
 def _default_ls_state_path() -> Path:
     # 소스 트리(`/src/vlm/gemini/`)는 read-only bind mount 이므로 쓰기 가능 경로로 폴백.
@@ -139,6 +141,7 @@ STATE_FILE = _default_ls_state_path()
 # Review state 관리 (ls_tasks.py와 공유)
 # ---------------------------------------------------------------------------
 
+
 def load_state() -> dict:
     if STATE_FILE.exists():
         try:
@@ -155,6 +158,7 @@ def save_state(state: dict) -> None:
 # ---------------------------------------------------------------------------
 # Label Studio auth
 # ---------------------------------------------------------------------------
+
 
 def resolve_auth_headers(token: str) -> dict[str, str]:
     try:
@@ -173,6 +177,7 @@ def resolve_auth_headers(token: str) -> dict[str, str]:
 # ---------------------------------------------------------------------------
 # 완료 여부 확인
 # ---------------------------------------------------------------------------
+
 
 def count_incomplete_tasks(headers: dict, project_id: int) -> int:
     """annotation이 없는 task 수 반환. 0이면 전체 완료.
@@ -220,6 +225,7 @@ def count_incomplete_tasks(headers: dict, project_id: int) -> int:
 # Slack 알림
 # ---------------------------------------------------------------------------
 
+
 def send_slack(message: str) -> None:
     if not SLACK_WEBHOOK_URL:
         print(f"[SLACK] (URL 미설정) {message}")
@@ -244,6 +250,7 @@ def send_slack_response(response_url: str, message: str) -> None:
 # ---------------------------------------------------------------------------
 # DuckDB finalize
 # ---------------------------------------------------------------------------
+
 
 def _extract_folder_prefixes(label_keys: list[str]) -> list[str]:
     """label_keys 의 첫 path component 집합을 반환 (folder_name).
@@ -280,6 +287,7 @@ def finalize_labels_in_db(label_keys: list[str]) -> dict:
       - auto_recovered: prefix LIKE 매칭으로 추가 finalize 된 row (양 테이블 합)
     """
     import duckdb
+
     if not label_keys or not DB_PATH:
         return {"primary": 0, "auto_recovered": 0}
     conn = None
@@ -389,6 +397,7 @@ def finalize_labels_in_db(label_keys: list[str]) -> dict:
 # sync 실행 (background)
 # ---------------------------------------------------------------------------
 
+
 def run_sync_and_notify(project_id: int, project_title: str) -> None:
     """ls_sync.run() 실행 후 Slack 알림 및 state 업데이트."""
     # debounce: 같은 project의 sync가 이미 돌고 있으면 drop (웹훅 중복 수신 대응).
@@ -411,30 +420,35 @@ def _run_sync_and_notify_inner(project_id: int, project_title: str) -> None:
     is_first = state.get(pid, {}).get("last_sync_at") is None
 
     if not DB_PATH:
-        print(f"[ERROR] DATAOPS_DUCKDB_PATH 미설정 — sync 불가")
+        print("[ERROR] DATAOPS_DUCKDB_PATH 미설정 — sync 불가")
         send_slack(f"❌ *{project_title}* sync 실패: DuckDB 경로 미설정")
         return
 
     sync_result: dict = {}
     try:
         import sys as _sys
+
         _gemini_dir = str(Path(__file__).parent)
         if _gemini_dir not in _sys.path:
             _sys.path.insert(0, _gemini_dir)
         from ls_sync import run as sync_run
-        sync_result = sync_run(
-            project_id=project_id,
-            ls_url=LS_URL,
-            api_key=API_KEY,
-            fps=DEFAULT_FPS,
-            minio_endpoint=MINIO_ENDPOINT,
-            minio_access_key=MINIO_ACCESS_KEY,
-            minio_secret_key=MINIO_SECRET_KEY,
-            bucket=DEFAULT_LABEL_BUCKET,
-            prefix="",
-            dry_run=False,
-            db_path=DB_PATH,
-        ) or {}
+
+        sync_result = (
+            sync_run(
+                project_id=project_id,
+                ls_url=LS_URL,
+                api_key=API_KEY,
+                fps=DEFAULT_FPS,
+                minio_endpoint=MINIO_ENDPOINT,
+                minio_access_key=MINIO_ACCESS_KEY,
+                minio_secret_key=MINIO_SECRET_KEY,
+                bucket=DEFAULT_LABEL_BUCKET,
+                prefix="",
+                dry_run=False,
+                db_path=DB_PATH,
+            )
+            or {}
+        )
     except Exception as exc:
         print(f"[ERROR] sync 실패: {exc}")
         send_slack(f"❌ *{project_title}* (id={project_id}) sync 실패: {exc}")
@@ -449,13 +463,15 @@ def _run_sync_and_notify_inner(project_id: int, project_title: str) -> None:
     existing_keys = set(entry.get("label_keys", []))
     processed_keys = set(sync_result.get("processed_label_keys", []))
     merged_keys = sorted(existing_keys | processed_keys)
-    entry.update({
-        "project_id": project_id,
-        "title": project_title,
-        "last_sync_at": now,
-        "status": "pending_finalize",
-        "label_keys": merged_keys,
-    })
+    entry.update(
+        {
+            "project_id": project_id,
+            "title": project_title,
+            "last_sync_at": now,
+            "status": "pending_finalize",
+            "label_keys": merged_keys,
+        }
+    )
     state[pid] = entry
     save_state(state)
     if processed_keys - existing_keys:
@@ -474,6 +490,7 @@ def _run_sync_and_notify_inner(project_id: int, project_title: str) -> None:
 # ---------------------------------------------------------------------------
 # Dagster GraphQL 트리거
 # ---------------------------------------------------------------------------
+
 
 def _discover_repo_selector(graphql_url: str, job_name: str) -> dict | None:
     """repositoryLocations에서 job_name 보유 repo를 찾아 selector dict 반환."""
@@ -557,6 +574,7 @@ def trigger_dagster_job(job_name: str, tags: dict[str, str]) -> tuple[bool, str]
 # finalize 실행 (background)
 # ---------------------------------------------------------------------------
 
+
 def finalize_project(project_id: int, response_url: str = "") -> None:
     """최종 확정: DuckDB label_status='completed' → downstream 활성화."""
     state = load_state()
@@ -604,7 +622,8 @@ def finalize_project(project_id: int, response_url: str = "") -> None:
         },
     )
     clip_msg = (
-        f"→ clip 생성 job 트리거: run_id={detail}" if ok
+        f"→ clip 생성 job 트리거: run_id={detail}"
+        if ok
         else (
             f"→ ⚠️ clip 생성 트리거 실패 ({detail})\n"
             f"   수동 재실행: `python /src/vlm/gemini/ls_webhook.py finalize --project {project_id}`\n"
@@ -613,18 +632,11 @@ def finalize_project(project_id: int, response_url: str = "") -> None:
     )
 
     if auto_recovered:
-        db_msg = (
-            f"→ DuckDB {total_finalized}건 반영 "
-            f"(state 매칭 {primary} + folder prefix 자동 보정 {auto_recovered})"
-        )
+        db_msg = f"→ DuckDB {total_finalized}건 반영 (state 매칭 {primary} + folder prefix 자동 보정 {auto_recovered})"
     else:
         db_msg = f"→ DuckDB {total_finalized}건 반영"
 
-    msg = (
-        f"✅ *{title}* (id={project_id}) 최종 확정 완료\n"
-        f"{db_msg}\n"
-        f"{clip_msg}"
-    )
+    msg = f"✅ *{title}* (id={project_id}) 최종 확정 완료\n{db_msg}\n{clip_msg}"
     print(f"[FINALIZE] {msg}")
     send_slack(msg)
     send_slack_response(response_url, msg)
@@ -648,8 +660,8 @@ async def receive_webhook(request: Request, background_tasks: BackgroundTasks):
     if action not in {"ANNOTATION_CREATED", "ANNOTATION_UPDATED"}:
         return {"status": "ignored", "action": action}
 
-    project_info  = payload.get("project", {})
-    project_id    = project_info.get("id")
+    project_info = payload.get("project", {})
+    project_id = project_info.get("id")
     project_title = project_info.get("title", str(project_id))
 
     if not project_id:
@@ -672,7 +684,7 @@ async def receive_webhook(request: Request, background_tasks: BackgroundTasks):
         send_slack(msg)
         return {"status": "ignored_finalized", "project_id": project_id}
 
-    headers    = resolve_auth_headers(API_KEY)
+    headers = resolve_auth_headers(API_KEY)
     incomplete = count_incomplete_tasks(headers, project_id)
 
     if incomplete > 0:
@@ -699,15 +711,13 @@ async def slack_commands(request: Request, background_tasks: BackgroundTasks):
         except ValueError:
             return Response(content="Invalid timestamp", status_code=400)
         sig_base = f"v0:{timestamp}:{raw_body.decode()}"
-        expected = "v0=" + hmac.new(
-            SLACK_SIGNING_SECRET.encode(), sig_base.encode(), hashlib.sha256
-        ).hexdigest()
+        expected = "v0=" + hmac.new(SLACK_SIGNING_SECRET.encode(), sig_base.encode(), hashlib.sha256).hexdigest()
         if not hmac.compare_digest(expected, request.headers.get("X-Slack-Signature", "")):
             return Response(content="Invalid signature", status_code=403)
 
-    form         = await request.form()
-    command      = str(form.get("command", ""))
-    text         = str(form.get("text", "")).strip()
+    form = await request.form()
+    command = str(form.get("command", ""))
+    text = str(form.get("text", "")).strip()
     response_url = str(form.get("response_url", ""))
 
     if command == "/sync-list":
@@ -732,6 +742,7 @@ async def health():
 # slash command 핸들러
 # ---------------------------------------------------------------------------
 
+
 def handle_sync_list() -> str:
     state = load_state()
     pending = {k: v for k, v in state.items() if v.get("status") == "pending_finalize"}
@@ -741,9 +752,7 @@ def handle_sync_list() -> str:
     for pid, info in sorted(pending.items(), key=lambda x: x[0]):
         sync_time = (info.get("last_sync_at") or "")[:16].replace("T", " ")
         lines.append(
-            f"[{pid}] {info.get('title', '?')} "
-            f"— {info.get('task_count', '?')}개, "
-            f"마지막 동기화 {sync_time or '없음'}"
+            f"[{pid}] {info.get('title', '?')} — {info.get('task_count', '?')}개, 마지막 동기화 {sync_time or '없음'}"
         )
     return "\n".join(lines)
 
@@ -751,6 +760,7 @@ def handle_sync_list() -> str:
 # ---------------------------------------------------------------------------
 # webhook 등록 / 목록
 # ---------------------------------------------------------------------------
+
 
 def cmd_register(project_id: int) -> None:
     webhook_url = f"http://{WEBHOOK_HOST}:{WEBHOOK_PORT}/webhook"
@@ -790,6 +800,7 @@ def cmd_list() -> None:
 # ---------------------------------------------------------------------------
 # main
 # ---------------------------------------------------------------------------
+
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="LS webhook 수신 서버 / 등록 관리")

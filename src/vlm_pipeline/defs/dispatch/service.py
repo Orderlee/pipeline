@@ -191,10 +191,10 @@ def prepare_dispatch_request(req_data: Mapping[str, Any], *, incoming_dir: Path)
     # GenAI promote 경로 pass-through — payload 에 있으면 manifest 까지 전파.
     # 일반 dispatch 요청은 이 필드 비어있어 무해 (None 이면 manifest 에 키 안 들어감).
     # validate 는 ops_register.py 의 fail-loud (CHECK constraint 와 동기화된 enum).
-    src_type = (str(req_data.get("source_type") or "").strip() or None)
-    g_engine = (str(req_data.get("genai_engine") or "").strip() or None)
-    lpolicy = (str(req_data.get("label_policy") or "").strip() or None)
-    g_batch = (str(req_data.get("batch_id") or "").strip() or None)
+    src_type = str(req_data.get("source_type") or "").strip() or None
+    g_engine = str(req_data.get("genai_engine") or "").strip() or None
+    lpolicy = str(req_data.get("label_policy") or "").strip() or None
+    g_batch = str(req_data.get("batch_id") or "").strip() or None
     items_raw = req_data.get("items")
     items_norm: list[dict] | None = None
     if isinstance(items_raw, list):
@@ -438,9 +438,7 @@ def build_dispatch_pipeline_rows(
                     "step_status": "pending",
                     "model_name": defaults.get("model_name"),
                     "model_version": defaults.get("model_version"),
-                    "applied_params": (
-                        applied_params_json if step_name in {"frame_extract", "yolo_detect"} else None
-                    ),
+                    "applied_params": (applied_params_json if step_name in {"frame_extract", "yolo_detect"} else None),
                 }
             )
     return rows
@@ -499,9 +497,10 @@ def process_dispatch_ingress_request(
     config: PipelineConfig,
     ingress_request: DispatchIngressRequest,
 ) -> DispatchIngressResult:
-    request_id = str(
-        ingress_request.payload.get("request_id") or ingress_request.fallback_request_id or ""
-    ).strip() or ingress_request.fallback_request_id
+    request_id = (
+        str(ingress_request.payload.get("request_id") or ingress_request.fallback_request_id or "").strip()
+        or ingress_request.fallback_request_id
+    )
 
     try:
         prepared = prepare_dispatch_request(ingress_request.payload, incoming_dir=Path(config.incoming_dir))

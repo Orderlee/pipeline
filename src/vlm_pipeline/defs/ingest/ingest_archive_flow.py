@@ -34,8 +34,7 @@ def _prepare_archive_inputs(
     context.log.info("archive_prepare:start")
     if state.archive_requested and policy.premove_archive_enabled:
         context.log.info(
-            "archive_prepare:premove_disabled "
-            "pre-move path is disabled; archive_finalize에서 uploaded 파일만 이동"
+            "archive_prepare:premove_disabled pre-move path is disabled; archive_finalize에서 uploaded 파일만 이동"
         )
 
     context.log.info(

@@ -6,7 +6,6 @@ dispatch_requests, dispatch_pipeline_runs 상태를 마감한다.
 
 from __future__ import annotations
 
-import os
 
 from dagster import (
     DagsterRunStatus,

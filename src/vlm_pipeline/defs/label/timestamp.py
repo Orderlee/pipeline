@@ -94,7 +94,9 @@ def _process_mvp_candidate(
         )
         gemini_elapsed = time.monotonic() - t0
         context.log.info(
-            "clip_timestamp Gemini 응답 수신: asset=%s (%.1fs)", asset_id, gemini_elapsed,
+            "clip_timestamp Gemini 응답 수신: asset=%s (%.1fs)",
+            asset_id,
+            gemini_elapsed,
         )
         label_bytes = extract_clean_json_text(response_text).encode("utf-8")
         minio.ensure_bucket("vlm-labels")
@@ -155,9 +157,10 @@ def _process_routed_candidate(
         events, dropped = filter_events_over_duration(events, duration_for_filter)
         if dropped > 0 and isinstance(duration_for_filter, (int, float)):
             context.log.warning(
-                "clip_timestamp DQ#2: asset=%s duration=%.3fs dropped=%d "
-                "(end_sec > duration)",
-                asset_id, float(duration_for_filter), dropped,
+                "clip_timestamp DQ#2: asset=%s duration=%.3fs dropped=%d (end_sec > duration)",
+                asset_id,
+                float(duration_for_filter),
+                dropped,
             )
 
         event_count = len(events) if isinstance(events, (list, tuple)) else 0
@@ -167,11 +170,14 @@ def _process_routed_candidate(
             context.log.warning(
                 "clip_timestamp DQ#3: asset=%s anomalous event_count=%d (>50) — "
                 "Gemini 프롬프트/카테고리 매칭 검토 권장",
-                asset_id, event_count,
+                asset_id,
+                event_count,
             )
         context.log.info(
             "clip_timestamp Gemini 응답 수신: asset=%s events=%d (%.1fs)",
-            asset_id, event_count, gemini_elapsed,
+            asset_id,
+            event_count,
+            gemini_elapsed,
         )
         label_key = build_gemini_label_key(raw_key)
         minio.ensure_bucket("vlm-labels")
@@ -214,7 +220,9 @@ def clip_timestamp_mvp(
     step_start = time.monotonic()
     context.log.info(
         "clip_timestamp 시작: 총 %d건, workers=%d, folder=%s",
-        total_candidates, max_workers, folder_name or "(all)",
+        total_candidates,
+        max_workers,
+        folder_name or "(all)",
     )
     processed = 0
     failed = 0
@@ -262,7 +270,11 @@ def clip_timestamp_mvp(
                     )
                 context.log.info(
                     "clip_timestamp 진행: [%d/%d] asset=%s label_key=%s (%.1fs)",
-                    idx, total_candidates, asset_id, label_key, elapsed,
+                    idx,
+                    total_candidates,
+                    asset_id,
+                    label_key,
+                    elapsed,
                 )
                 continue
 
@@ -274,7 +286,11 @@ def clip_timestamp_mvp(
             )
             context.log.error(
                 "clip_timestamp 실패: [%d/%d] asset=%s (%.1fs): %s",
-                idx, total_candidates, asset_id, elapsed, error,
+                idx,
+                total_candidates,
+                asset_id,
+                elapsed,
+                error,
             )
 
     total_elapsed = time.monotonic() - step_start
@@ -282,7 +298,9 @@ def clip_timestamp_mvp(
     context.add_output_metadata(summary)
     context.log.info(
         "clip_timestamp 완료: processed=%d failed=%d 소요=%.0fs",
-        processed, failed, total_elapsed,
+        processed,
+        failed,
+        total_elapsed,
     )
     return summary
 
@@ -337,7 +355,9 @@ def clip_timestamp_routed_impl(
     step_start = time.monotonic()
     context.log.info(
         "clip_timestamp 시작: 총 %d건, workers=%d, folder=%s",
-        total_candidates, max_workers, folder_name or "(backlog)",
+        total_candidates,
+        max_workers,
+        folder_name or "(backlog)",
     )
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         submit_times: dict = {}
@@ -370,17 +390,23 @@ def clip_timestamp_routed_impl(
                 processed += 1
                 context.log.info(
                     "clip_timestamp 진행: [%d/%d] asset_id=%s label_key=%s (%.1fs)",
-                    idx, total_candidates, asset_id, label_key, elapsed,
+                    idx,
+                    total_candidates,
+                    asset_id,
+                    label_key,
+                    elapsed,
                 )
                 continue
 
             failed += 1
-            db.update_timestamp_status(
-                asset_id, "failed", error=str(error)[:500], completed_at=datetime.now()
-            )
+            db.update_timestamp_status(asset_id, "failed", error=str(error)[:500], completed_at=datetime.now())
             context.log.error(
                 "clip_timestamp 실패: [%d/%d] asset_id=%s (%.1fs): %s",
-                idx, total_candidates, asset_id, elapsed, error,
+                idx,
+                total_candidates,
+                asset_id,
+                elapsed,
+                error,
             )
 
     total_elapsed = time.monotonic() - step_start
@@ -391,6 +417,8 @@ def clip_timestamp_routed_impl(
     }
     context.log.info(
         "clip_timestamp 완료: processed=%d failed=%d 소요=%.0fs",
-        processed, failed, total_elapsed,
+        processed,
+        failed,
+        total_elapsed,
     )
     return summary

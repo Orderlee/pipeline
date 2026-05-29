@@ -14,6 +14,7 @@ from vlm_pipeline.definitions_production import (
     build_production_sensors,
 )
 from vlm_pipeline.defs.gcp.assets import gcs_download_to_incoming
+from vlm_pipeline.defs.ingest.asset_checks import PHASE_3C_ASSET_CHECKS
 from vlm_pipeline.defs.ingest.assets import raw_ingest
 from vlm_pipeline.defs.ingest.upload_archived_asset import upload_archived
 from vlm_pipeline.defs.label.assets import classification_video, clip_timestamp
@@ -129,6 +130,7 @@ defs = Definitions(
         enable_yolo_detection=_enable_yolo_detection,
         enable_sam3_detection=_enable_sam3_detection,
     ),
+    asset_checks=PHASE_3C_ASSET_CHECKS,
     jobs=_jobs,
     schedules=[
         build_gcs_download_schedule(_gcs_download_job),

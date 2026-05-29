@@ -4,12 +4,14 @@
 """
 
 from .sensor_bootstrap import auto_bootstrap_manifest_sensor
+from .sensor_cross_table_consistency import cross_table_consistency_sensor
 from .sensor_incoming import incoming_manifest_sensor
 from .sensor_nas_health import nas_health_sensor
 from .sensor_stuck_guard import stuck_run_guard_sensor
 
 __all__ = [
     "auto_bootstrap_manifest_sensor",
+    "cross_table_consistency_sensor",
     "incoming_manifest_sensor",
     "nas_health_sensor",
     "stuck_run_guard_sensor",

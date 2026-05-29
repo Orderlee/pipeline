@@ -33,9 +33,7 @@ def resolve_ingest_runtime_policy(
     return IngestRuntimePolicy(
         runtime_profile=profile,
         is_staging=is_staging,
-        defer_video_env_classification=(
-            not is_staging and settings.defer_video_env_classification
-        ),
+        defer_video_env_classification=(not is_staging and settings.defer_video_env_classification),
         premove_archive_enabled=settings.premove_archive_enabled,
     )
 
@@ -88,8 +86,4 @@ def archive_only_artifact_import_allowed(
     archive_only: bool,
     folder_name: str | None,
 ) -> bool:
-    return (
-        runtime_profile is not None
-        and archive_only
-        and bool(str(folder_name or "").strip())
-    )
+    return runtime_profile is not None and archive_only and bool(str(folder_name or "").strip())

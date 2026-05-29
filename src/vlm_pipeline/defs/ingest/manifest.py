@@ -133,10 +133,7 @@ def has_manifest_failure_logs(manifest_dir: Path, manifest_ids: set[str]) -> boo
 
 def archive_dir_has_payload_files(archive_unit_dir: Path) -> bool:
     try:
-        return any(
-            path.is_file() and path.name != DONE_MARKER_FILENAME
-            for path in archive_unit_dir.rglob("*")
-        )
+        return any(path.is_file() and path.name != DONE_MARKER_FILENAME for path in archive_unit_dir.rglob("*"))
     except OSError:
         return False
 
@@ -179,9 +176,7 @@ def write_ingest_failure_logs(
                 }
                 fh.write(json.dumps(payload, ensure_ascii=False) + "\n")
 
-        context.log.warning(
-            f"ingest 실패 로그 기록 완료: {log_path} (count={len(ingest_rejections)})"
-        )
+        context.log.warning(f"ingest 실패 로그 기록 완료: {log_path} (count={len(ingest_rejections)})")
         return log_path
     except Exception as exc:  # noqa: BLE001
         context.log.warning(f"ingest 실패 로그 기록 실패: {exc}")
@@ -233,11 +228,7 @@ def build_retry_manifest(
     if not files:
         return None
 
-    root_manifest_id = str(
-        manifest.get("retry_of_manifest_id")
-        or manifest.get("manifest_id")
-        or "unknown_manifest"
-    )
+    root_manifest_id = str(manifest.get("retry_of_manifest_id") or manifest.get("manifest_id") or "unknown_manifest")
     root_manifest_slug = sanitize_manifest_identifier(root_manifest_id)
     next_attempt = current_attempt + 1
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
@@ -252,9 +243,7 @@ def build_retry_manifest(
         suffix += 1
 
     source_unit_dispatch_key = str(
-        manifest.get("source_unit_dispatch_key")
-        or manifest.get("source_unit_path")
-        or ""
+        manifest.get("source_unit_dispatch_key") or manifest.get("source_unit_path") or ""
     ).strip()
     if source_unit_dispatch_key:
         source_unit_dispatch_key = f"{source_unit_dispatch_key}#retry:{next_attempt:02d}"
@@ -325,16 +314,14 @@ def maybe_write_archive_done_marker(
 
     manifest_root_dir = Path(manifest_dir)
     current_manifest_file = Path(manifest_path) if manifest_path else None
-    processed_chunks, has_pending_manifest, manifest_ids, expected_chunk_count = (
-        collect_source_unit_manifest_progress(
-            manifest_dir=manifest_root_dir,
-            source_unit_path=source_unit_path,
-            stable_signature=stable_signature,
-            current_manifest_path=current_manifest_file,
-            current_manifest_id=current_manifest_id,
-            current_chunk_index=current_chunk_index,
-            current_chunk_count=current_chunk_count,
-        )
+    processed_chunks, has_pending_manifest, manifest_ids, expected_chunk_count = collect_source_unit_manifest_progress(
+        manifest_dir=manifest_root_dir,
+        source_unit_path=source_unit_path,
+        stable_signature=stable_signature,
+        current_manifest_path=current_manifest_file,
+        current_manifest_id=current_manifest_id,
+        current_chunk_index=current_chunk_index,
+        current_chunk_count=current_chunk_count,
     )
 
     if has_pending_manifest:

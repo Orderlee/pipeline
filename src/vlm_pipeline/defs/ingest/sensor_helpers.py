@@ -76,9 +76,7 @@ def load_pending_manifest_entries(manifests: list[Path], context) -> list[dict]:
     for manifest_path in manifests:
         payload = read_manifest_payload(manifest_path, context)
         source_unit_path = str(payload.get("source_unit_path", "")).strip()
-        source_unit_dispatch_key = (
-            str(payload.get("source_unit_dispatch_key", "")).strip() or source_unit_path
-        )
+        source_unit_dispatch_key = str(payload.get("source_unit_dispatch_key", "")).strip() or source_unit_path
         stable_signature = str(payload.get("stable_signature", "")).strip()
         manifest_id = str(payload.get("manifest_id", "") or manifest_path.stem).strip()
         retry_of_manifest_id = str(payload.get("retry_of_manifest_id", "")).strip()
@@ -217,13 +215,9 @@ def move_superseded_manifests(entries: list[dict], processed_dir: Path, context)
             destination.parent.mkdir(parents=True, exist_ok=True)
             manifest_path.rename(destination)
             moved += 1
-            context.log.info(
-                f"중복 pending manifest 정리(superseded): {manifest_path.name} -> {destination.name}"
-            )
+            context.log.info(f"중복 pending manifest 정리(superseded): {manifest_path.name} -> {destination.name}")
         except OSError as exc:
-            context.log.warning(
-                f"superseded manifest 이동 실패: {manifest_path} -> {destination}: {exc}"
-            )
+            context.log.warning(f"superseded manifest 이동 실패: {manifest_path} -> {destination}: {exc}")
     return moved
 
 
@@ -235,11 +229,7 @@ def collect_in_flight_runs(context) -> list:
             ),
             limit=200,
         )
-        return [
-            run
-            for run in runs
-            if str(getattr(run, "job_name", "") or "") in INGEST_MANIFEST_JOB_NAMES
-        ]
+        return [run for run in runs if str(getattr(run, "job_name", "") or "") in INGEST_MANIFEST_JOB_NAMES]
     except Exception as exc:  # noqa: BLE001
         context.log.warning(f"in-flight run 조회 실패(백프레셔 약화): {exc}")
         return []
@@ -255,10 +245,7 @@ def collect_in_flight_source_units(context, runs: list | None = None) -> set[str
         source_units: set[str] = set()
         for run in runs:
             tags = getattr(run, "tags", {}) or {}
-            source_unit_path = str(
-                tags.get("source_unit_dispatch_key", "")
-                or tags.get("source_unit_path", "")
-            ).strip()
+            source_unit_path = str(tags.get("source_unit_dispatch_key", "") or tags.get("source_unit_path", "")).strip()
             if source_unit_path:
                 source_units.add(source_unit_path)
         return source_units
@@ -279,9 +266,7 @@ def manifest_retry_state(context, manifest_id: str) -> tuple[bool, int, str]:
             limit=50,
         )
         recent_runs = [
-            run
-            for run in recent_runs
-            if str(getattr(run, "job_name", "") or "") in INGEST_MANIFEST_JOB_NAMES
+            run for run in recent_runs if str(getattr(run, "job_name", "") or "") in INGEST_MANIFEST_JOB_NAMES
         ]
     except Exception as exc:  # noqa: BLE001
         context.log.warning(f"manifest retry state 조회 실패: {normalized_id}: {exc}")
@@ -294,5 +279,11 @@ def manifest_retry_state(context, manifest_id: str) -> tuple[bool, int, str]:
     failed_statuses = {DagsterRunStatus.FAILURE, DagsterRunStatus.CANCELED}
     failed_run_count = sum(1 for run in recent_runs if getattr(run, "status", None) in failed_statuses)
     should_retry_failed = latest_status in failed_statuses
-    latest_status_name = str(latest_status.name if hasattr(latest_status, "name") else latest_status)
+    # latest_status 가 None 이거나 .name 속성 없을 때 안전 stringify (pyright Optional 가드 명시).
+    if latest_status is None:
+        latest_status_name = "NONE"
+    elif hasattr(latest_status, "name"):
+        latest_status_name = str(latest_status.name)
+    else:
+        latest_status_name = str(latest_status)
     return should_retry_failed, int(failed_run_count), latest_status_name

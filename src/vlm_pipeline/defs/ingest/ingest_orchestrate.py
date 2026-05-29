@@ -71,7 +71,10 @@ def _step_load_and_hydrate(context, db, *, config, state):
 
     state.stage = "manifest_load"
     state.manifest, summary = _load_manifest_or_summary(
-        context, db, manifest_path=state.manifest_path, request_id=state.request_id,
+        context,
+        db,
+        manifest_path=state.manifest_path,
+        request_id=state.request_id,
     )
     if summary is not None:
         return summary
@@ -99,7 +102,10 @@ def _step_register_and_upload(context, db, minio, *, config, state, runtime_poli
     state.stage = "register"
     context.log.info("register:start")
     state.records = register_incoming(
-        context, db, state.manifest, ingest_rejections=state.ingest_rejections,
+        context,
+        db,
+        state.manifest,
+        ingest_rejections=state.ingest_rejections,
     )
     context.log.info(f"register:done records={len(state.records)}")
 
@@ -114,7 +120,11 @@ def _step_register_and_upload(context, db, minio, *, config, state, runtime_poli
         f"upload_enabled={upload_enabled}"
     )
     state.uploaded = normalize_and_archive(
-        context, db, minio, state.records, target_archive_dir,
+        context,
+        db,
+        minio,
+        state.records,
+        target_archive_dir,
         ingest_rejections=state.ingest_rejections,
         retry_candidates=state.retry_candidates,
         defer_video_env_classification=runtime_policy.defer_video_env_classification,
@@ -130,7 +140,8 @@ def _step_register_and_upload(context, db, minio, *, config, state, runtime_poli
     completion_bucket = "vlm-raw" if upload_enabled else None
     # intra-run dedup-skip 카운트 — archive fast-path 가 (uploaded + dedup) >= total 조건에서 활성화되도록 전달.
     duplicate_skip_count = sum(
-        1 for rec in state.records
+        1
+        for rec in state.records
         if str((rec.get("record") or {}).get("error_message") or "").startswith("duplicate_of:")
     )
     context.log.info(
@@ -141,8 +152,11 @@ def _step_register_and_upload(context, db, minio, *, config, state, runtime_poli
     if state.archive_requested:
         try:
             state.archived, state.archive_unit_dir_hint = archive_uploaded_assets(
-                context=context, db=db, manifest=state.manifest,
-                uploaded=state.uploaded, archive_dir=target_archive_dir,
+                context=context,
+                db=db,
+                manifest=state.manifest,
+                uploaded=state.uploaded,
+                archive_dir=target_archive_dir,
                 ingest_rejections=state.ingest_rejections,
                 completion_status=completion_status,
                 raw_bucket=completion_bucket,
@@ -154,14 +168,20 @@ def _step_register_and_upload(context, db, minio, *, config, state, runtime_poli
                     f"archive_finalize TIMEOUT — 업로드 완료분을 {completion_status}로 전환하고 후속 진행: {exc}"
                 )
                 state.archived = complete_uploaded_assets_without_archive(
-                    context=context, db=db, manifest=state.manifest, uploaded=state.uploaded,
+                    context=context,
+                    db=db,
+                    manifest=state.manifest,
+                    uploaded=state.uploaded,
                 )
                 state.archive_unit_dir_hint = None
             else:
                 raise
     else:
         state.archived = complete_uploaded_assets_without_archive(
-            context=context, db=db, manifest=state.manifest, uploaded=state.uploaded,
+            context=context,
+            db=db,
+            manifest=state.manifest,
+            uploaded=state.uploaded,
         )
         state.archive_unit_dir_hint = None
     context.log.info(
@@ -176,23 +196,34 @@ def _step_post_ingest(context, db, minio, *, config, state, runtime_policy, targ
     """라벨 artifact import, retry manifest, inline dedup, done marker."""
     state.stage = "label_artifact_import"
     local_artifact_summary = _run_staging_archive_only_artifact_import(
-        context, db, minio, config=config, state=state,
+        context,
+        db,
+        minio,
+        config=config,
+        state=state,
         runtime_profile=runtime_policy.runtime_profile,
     )
 
     state.stage = "retry_manifest"
     retry_manifest_path = build_retry_manifest(
-        context=context, config=config, manifest=state.manifest, retry_candidates=state.retry_candidates,
+        context=context,
+        config=config,
+        manifest=state.manifest,
+        retry_candidates=state.retry_candidates,
     )
     failure_log_path = write_ingest_failure_logs(
-        context=context, config=config, manifest=state.manifest, ingest_rejections=state.ingest_rejections,
+        context=context,
+        config=config,
+        manifest=state.manifest,
+        ingest_rejections=state.ingest_rejections,
     )
 
     state.stage = "inline_dedup"
     duplicate_targets = collect_duplicate_asset_file_map(state.records)
     if duplicate_targets:
         duplicate_files_count = sum(
-            1 for rec in state.records
+            1
+            for rec in state.records
             if str((rec.get("record") or {}).get("error_message") or "").startswith("duplicate_of:")
         )
         updated_assets = db.mark_duplicate_skipped_assets(duplicate_targets)
@@ -205,9 +236,13 @@ def _step_post_ingest(context, db, minio, *, config, state, runtime_policy, targ
 
     state.stage = "done_marker"
     archive_done_marker_path = maybe_write_archive_done_marker(
-        context=context, db=db, manifest=state.manifest,
-        manifest_dir=config.manifest_dir, manifest_path=state.manifest_path,
-        archive_dir=target_archive_dir, archive_unit_dir_hint=state.archive_unit_dir_hint,
+        context=context,
+        db=db,
+        manifest=state.manifest,
+        manifest_dir=config.manifest_dir,
+        manifest_path=state.manifest_path,
+        archive_dir=target_archive_dir,
+        archive_unit_dir_hint=state.archive_unit_dir_hint,
     )
 
     return dedup_summary, retry_manifest_path, failure_log_path, archive_done_marker_path, local_artifact_summary
@@ -232,20 +267,31 @@ def _run_raw_ingest_pipeline(
 
         # 2) DB 등록 + MinIO 업로드 + archive
         target_archive_dir = _step_register_and_upload(
-            context, db, minio, config=config, state=state, runtime_policy=runtime_policy,
+            context,
+            db,
+            minio,
+            config=config,
+            state=state,
+            runtime_policy=runtime_policy,
         )
 
         # 3) 후처리 (artifact import, retry, dedup, done marker)
         dedup_summary, retry_manifest_path, failure_log_path, archive_done_marker_path, local_artifact_summary = (
             _step_post_ingest(
-                context, db, minio, config=config, state=state,
-                runtime_policy=runtime_policy, target_archive_dir=target_archive_dir,
+                context,
+                db,
+                minio,
+                config=config,
+                state=state,
+                runtime_policy=runtime_policy,
+                target_archive_dir=target_archive_dir,
             )
         )
 
         # 4) summary + output metadata 조립
         common_meta = _build_ingest_result_metadata(
-            state, dedup_summary=dedup_summary,
+            state,
+            dedup_summary=dedup_summary,
             retry_manifest_path=retry_manifest_path,
             archive_done_marker_path=archive_done_marker_path,
             local_artifact_summary=local_artifact_summary,
@@ -275,7 +321,10 @@ def _run_raw_ingest_pipeline(
         _move_manifest_to_processed(context, config, state.manifest_path)
         _finalize_dispatch_success(db, state)
         compaction_report = _maybe_compact_completed_gcp_manifests(
-            context, config=config, state=state, archive_done_marker_path=archive_done_marker_path,
+            context,
+            config=config,
+            state=state,
+            archive_done_marker_path=archive_done_marker_path,
         )
         if compaction_report:
             context.add_output_metadata(
@@ -291,9 +340,7 @@ def _run_raw_ingest_pipeline(
 
     except Exception as exc:
         failure_message = f"{state.stage}_failed:{exc}"
-        context.log.error(
-            f"raw_ingest 실패: stage={state.stage}, request_id={state.request_id or ''}, error={exc}"
-        )
+        context.log.error(f"raw_ingest 실패: stage={state.stage}, request_id={state.request_id or ''}, error={exc}")
         _mark_failed_records(context, db, state=state, failure_message=failure_message)
         _finalize_dispatch_failure(context, db, state=state, failure_message=failure_message)
         if manifest_hydration_failure_reason(state.manifest) == STALE_MANIFEST_ALL_MISSING_REASON:

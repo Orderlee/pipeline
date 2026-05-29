@@ -64,8 +64,12 @@ class PostgresVideoMetadataMixin:
                 )
             columns = self._table_columns(conn, "video_metadata")
             reencode_cols = {
-                "original_codec", "original_profile", "original_has_b_frames",
-                "original_level_int", "reencode_required", "reencode_reason",
+                "original_codec",
+                "original_profile",
+                "original_has_b_frames",
+                "original_level_int",
+                "reencode_required",
+                "reencode_reason",
             }
             if reencode_cols.issubset(columns):
                 with conn.cursor() as cur:
@@ -201,7 +205,12 @@ class PostgresVideoMetadataMixin:
                 )
                 rows = cur.fetchall()
             columns = [
-                "asset_id", "raw_bucket", "raw_key", "archive_path",
-                "duration_sec", "fps", "frame_count",
+                "asset_id",
+                "raw_bucket",
+                "raw_key",
+                "archive_path",
+                "duration_sec",
+                "fps",
+                "frame_count",
             ]
             return [dict(zip(columns, row)) for row in rows]

@@ -95,9 +95,7 @@ def _run_yolo_image_detection(
 ) -> dict:
     """processed_clip_frame 이미지에 YOLO-World-L detection 실행."""
     if not bool_env("ENABLE_YOLO_DETECTION", False):
-        context.log.info(
-            "yolo_image_detection 스킵: ENABLE_YOLO_DETECTION=false (SAM3가 primary bbox 엔진)"
-        )
+        context.log.info("yolo_image_detection 스킵: ENABLE_YOLO_DETECTION=false (SAM3가 primary bbox 엔진)")
         return {"processed": 0, "failed": 0, "total_detections": 0, "skipped": True}
 
     if not should_run_any_output(context, YOLO_OUTPUTS):
@@ -205,8 +203,7 @@ def _run_yolo_image_detection(
             except Exception as exc:
                 failed += 1
                 context.log.error(
-                    f"YOLO 이미지 다운로드 실패: image_id={cand['image_id']} "
-                    f"key={cand.get('image_key')}: {exc}"
+                    f"YOLO 이미지 다운로드 실패: image_id={cand['image_id']} key={cand.get('image_key')}: {exc}"
                 )
 
         if not image_bytes_list:
@@ -243,8 +240,10 @@ def _run_yolo_image_detection(
                     image_id=image_id,
                     source_clip_id=source_clip_id,
                     image_key=image_key,
-                    image_width=result.get("image_width") or (image_size[0] if isinstance(image_size, list) and len(image_size) >= 1 else cand.get("width")),
-                    image_height=result.get("image_height") or (image_size[1] if isinstance(image_size, list) and len(image_size) >= 2 else cand.get("height")),
+                    image_width=result.get("image_width")
+                    or (image_size[0] if isinstance(image_size, list) and len(image_size) >= 1 else cand.get("width")),
+                    image_height=result.get("image_height")
+                    or (image_size[1] if isinstance(image_size, list) and len(image_size) >= 2 else cand.get("height")),
                     detections=detections,
                     requested_classes=target_classes,
                     class_source=class_source,
@@ -262,20 +261,22 @@ def _run_yolo_image_detection(
                 label_bytes = json.dumps(label_json, ensure_ascii=False).encode("utf-8")
                 minio.upload("vlm-labels", labels_key, label_bytes, "application/json")
 
-                label_rows_buffer.append({
-                    "image_label_id": stable_image_label_id(str(image_id), labels_key),
-                    "image_id": image_id,
-                    "source_clip_id": source_clip_id,
-                    "labels_bucket": "vlm-labels",
-                    "labels_key": labels_key,
-                    "label_format": "coco",
-                    "label_tool": "yolo-world",
-                    "label_source": "auto",
-                    "review_status": "auto_generated",
-                    "label_status": "completed",
-                    "object_count": annotation_count,
-                    "created_at": detected_at,
-                })
+                label_rows_buffer.append(
+                    {
+                        "image_label_id": stable_image_label_id(str(image_id), labels_key),
+                        "image_id": image_id,
+                        "source_clip_id": source_clip_id,
+                        "labels_bucket": "vlm-labels",
+                        "labels_key": labels_key,
+                        "label_format": "coco",
+                        "label_tool": "yolo-world",
+                        "label_source": "auto",
+                        "review_status": "auto_generated",
+                        "label_status": "completed",
+                        "object_count": annotation_count,
+                        "created_at": detected_at,
+                    }
+                )
 
                 if store_image_classification:
                     classification_key = _build_image_classification_key(image_key)
@@ -296,20 +297,22 @@ def _run_yolo_image_detection(
                         json.dumps(classification_payload, ensure_ascii=False).encode("utf-8"),
                         "application/json",
                     )
-                    label_rows_buffer.append({
-                        "image_label_id": stable_image_label_id(str(image_id), classification_key),
-                        "image_id": image_id,
-                        "source_clip_id": source_clip_id,
-                        "labels_bucket": "vlm-labels",
-                        "labels_key": classification_key,
-                        "label_format": "image_classification_json",
-                        "label_tool": "yolo-world-classification",
-                        "label_source": "auto",
-                        "review_status": "auto_generated",
-                        "label_status": "completed",
-                        "object_count": len(classification_payload.get("predicted_classes") or []),
-                        "created_at": detected_at,
-                    })
+                    label_rows_buffer.append(
+                        {
+                            "image_label_id": stable_image_label_id(str(image_id), classification_key),
+                            "image_id": image_id,
+                            "source_clip_id": source_clip_id,
+                            "labels_bucket": "vlm-labels",
+                            "labels_key": classification_key,
+                            "label_format": "image_classification_json",
+                            "label_tool": "yolo-world-classification",
+                            "label_source": "auto",
+                            "review_status": "auto_generated",
+                            "label_status": "completed",
+                            "object_count": len(classification_payload.get("predicted_classes") or []),
+                            "created_at": detected_at,
+                        }
+                    )
 
                 processed += 1
                 total_detections += annotation_count
@@ -365,11 +368,13 @@ def _run_yolo_image_detection(
 
 def _build_yolo_label_key(image_key: str) -> str:
     from vlm_pipeline.lib.key_builders import build_yolo_label_key
+
     return build_yolo_label_key(image_key)
 
 
 def _build_image_classification_key(image_key: str) -> str:
     from vlm_pipeline.lib.key_builders import build_image_classification_key
+
     return build_image_classification_key(image_key)
 
 
@@ -431,8 +436,7 @@ def _build_image_classification_payload(
         class_counts[class_name] = int(class_counts.get(class_name, 0)) + 1
 
     predicted_classes = [
-        class_name
-        for class_name, _count in sorted(class_counts.items(), key=lambda item: (-item[1], item[0]))
+        class_name for class_name, _count in sorted(class_counts.items(), key=lambda item: (-item[1], item[0]))
     ]
     return {
         "image_id": image_id,
@@ -446,7 +450,6 @@ def _build_image_classification_payload(
         "resolved_config_id": resolved_config_id,
         "generated_at": detected_at.isoformat(),
     }
-
 
 
 # Backward-compatible aliases for external imports.

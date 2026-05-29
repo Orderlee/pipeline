@@ -59,8 +59,7 @@ def _link_genai_asset_if_any(db, entry: dict, context) -> None:
     if not callable(update):
         # legacy DuckDB backend — Phase 3 은 PG 전제. 누락 시 warn 후 skip.
         context.log.warning(
-            f"genai link skipped (no update_genai_job_assets on {type(db).__name__}): "
-            f"batch={batch_id} seq={seq}"
+            f"genai link skipped (no update_genai_job_assets on {type(db).__name__}): batch={batch_id} seq={seq}"
         )
         return
     kwargs = {"batch_id": batch_id, "seq_in_batch": int(seq)}
@@ -71,9 +70,7 @@ def _link_genai_asset_if_any(db, entry: dict, context) -> None:
     try:
         update(**kwargs)
     except Exception as exc:  # noqa: BLE001
-        context.log.warning(
-            f"update_genai_job_assets 실패 batch={batch_id} seq={seq} role={role}: {exc}"
-        )
+        context.log.warning(f"update_genai_job_assets 실패 batch={batch_id} seq={seq} role={role}: {exc}")
 
 
 def normalize_and_archive(
@@ -105,7 +102,9 @@ def normalize_and_archive(
     max_workers = max(1, min(MAX_UPLOAD_WORKERS, max_workers))
 
     try:
-        reencode_workers = max(1, min(MAX_UPLOAD_WORKERS, int(os.getenv("INGEST_REENCODE_WORKERS", str(DEFAULT_REENCODE_WORKERS)))))
+        reencode_workers = max(
+            1, min(MAX_UPLOAD_WORKERS, int(os.getenv("INGEST_REENCODE_WORKERS", str(DEFAULT_REENCODE_WORKERS))))
+        )
         reencode_threads = max(1, int(os.getenv("INGEST_REENCODE_THREADS", str(DEFAULT_REENCODE_THREADS))))
     except ValueError:
         reencode_workers = DEFAULT_REENCODE_WORKERS
@@ -134,10 +133,7 @@ def normalize_and_archive(
         db_record["ingest_status"] = "skipped"
         db_record["error_message"] = f"duplicate_of:{duplicate_asset_id}"
         rec["status"] = "skipped"
-        context.log.info(
-            "중복 파일 스킵(raw_files insert 생략): "
-            f"{source_path} -> {duplicate_asset_id}"
-        )
+        context.log.info(f"중복 파일 스킵(raw_files insert 생략): {source_path} -> {duplicate_asset_id}")
 
     pending_db_rows: list[dict[str, Any]] = []
     pending_checksums: dict[str, str] = {}
@@ -173,9 +169,7 @@ def normalize_and_archive(
                 "db_record": entry["db_record"],
                 "meta": meta,
                 "reencode_required": (
-                    meta["video_metadata"].get("reencode_required", False)
-                    if media_type == "video"
-                    else False
+                    meta["video_metadata"].get("reencode_required", False) if media_type == "video" else False
                 ),
                 "reencode_threads": reencode_threads,
             }
@@ -211,10 +205,7 @@ def normalize_and_archive(
             cleanup_error = cleanup_exc
 
         if cleanup_error is not None:
-            context.log.warning(
-                "ingest 실패 레코드 정리 중 추가 오류: "
-                f"asset_id={asset_id}, err={cleanup_error}"
-            )
+            context.log.warning(f"ingest 실패 레코드 정리 중 추가 오류: asset_id={asset_id}, err={cleanup_error}")
 
         _append_ingest_rejection(
             ingest_rejections,
@@ -240,8 +231,7 @@ def normalize_and_archive(
             db.insert_raw_files_batch([entry["db_record"] for entry in batch_entries])
         except Exception as batch_exc:  # noqa: BLE001
             context.log.warning(
-                "raw_files batch insert 실패, 낱개 fallback: "
-                f"count={len(batch_entries)} err={batch_exc}"
+                f"raw_files batch insert 실패, 낱개 fallback: count={len(batch_entries)} err={batch_exc}"
             )
             for entry in batch_entries:
                 try:
@@ -279,15 +269,9 @@ def normalize_and_archive(
                 # 이미지/짧은 GIF 처럼 합법적인 0.x sec 비디오는 매우 드물고, 그런 케이스
                 # 는 Gemini 청크 분할이 어차피 실패하므로 reject 가 옳다.
                 duration_raw = meta["video_metadata"].get("duration_sec")
-                if duration_raw is None or (
-                    isinstance(duration_raw, (int, float)) and duration_raw < 1.0
-                ):
-                    raise ValueError(
-                        f"invalid duration_sec={duration_raw!r} (must be >= 1.0s)"
-                    )
-                reencode_req, reencode_rsn = needs_reencode(
-                    meta["video_metadata"], Path(filepath)
-                )
+                if duration_raw is None or (isinstance(duration_raw, (int, float)) and duration_raw < 1.0):
+                    raise ValueError(f"invalid duration_sec={duration_raw!r} (must be >= 1.0s)")
+                reencode_req, reencode_rsn = needs_reencode(meta["video_metadata"], Path(filepath))
                 meta["video_metadata"]["reencode_required"] = reencode_req
                 meta["video_metadata"]["reencode_reason"] = reencode_rsn
             return {"rec": rec, "meta": meta, "error": None}
@@ -305,10 +289,7 @@ def normalize_and_archive(
     if total_candidates > 1 and meta_workers > 1:
         context.log.info(f"meta_extract:parallel workers={meta_workers} candidates={total_candidates}")
         with ThreadPoolExecutor(max_workers=meta_workers) as meta_pool:
-            futures = {
-                meta_pool.submit(_extract_meta, rec): rec
-                for rec in candidate_records
-            }
+            futures = {meta_pool.submit(_extract_meta, rec): rec for rec in candidate_records}
             for future in as_completed(futures):
                 result = future.result()
                 meta_results.append(result)
@@ -369,9 +350,7 @@ def normalize_and_archive(
             except Exception as cleanup_exc:  # noqa: BLE001
                 cleanup_error = cleanup_exc
             if cleanup_error is not None:
-                context.log.warning(
-                    f"ingest 실패 레코드 정리 중 추가 오류: asset_id={asset_id}, err={cleanup_error}"
-                )
+                context.log.warning(f"ingest 실패 레코드 정리 중 추가 오류: asset_id={asset_id}, err={cleanup_error}")
             _append_ingest_rejection(
                 ingest_rejections,
                 source_path=filepath,
@@ -412,9 +391,7 @@ def normalize_and_archive(
             pending_duplicate_asset_id = pending_checksums.get(str(meta["checksum"]))
             if pending_duplicate_asset_id:
                 _close_video_stream(meta)
-                context.log.warning(
-                    f"중복 건너뜀: {filepath} (동일 batch 기존: {pending_duplicate_asset_id})"
-                )
+                context.log.warning(f"중복 건너뜀: {filepath} (동일 batch 기존: {pending_duplicate_asset_id})")
                 _mark_duplicate_skip(filepath, pending_duplicate_asset_id, db_record, rec)
                 continue
 
@@ -497,8 +474,7 @@ def normalize_and_archive(
                 }
             )
         context.log.info(
-            f"upload_skip:done (upload_enabled=False) ready={len(ready)} "
-            f"reason='MinIO 업로드는 dispatch 단계로 연기'"
+            f"upload_skip:done (upload_enabled=False) ready={len(ready)} reason='MinIO 업로드는 dispatch 단계로 연기'"
         )
         return ready
 
@@ -550,15 +526,12 @@ def normalize_and_archive(
                     task["reencode_info"] = {"reencode_preset": STANDARD_PRESET_NAME}
                 else:
                     context.log.warning(
-                        f"reencode fallback to original after 3 retries: "
-                        f"asset_id={asset_id} reason={fallback_reason}"
+                        f"reencode fallback to original after 3 retries: asset_id={asset_id} reason={fallback_reason}"
                     )
                     try:
                         db.update_video_reencode_reason(asset_id, fallback_reason)
                     except Exception as upd_exc:  # noqa: BLE001
-                        context.log.warning(
-                            f"reencode_reason 갱신 실패: asset_id={asset_id}: {upd_exc}"
-                        )
+                        context.log.warning(f"reencode_reason 갱신 실패: asset_id={asset_id}: {upd_exc}")
             _upload_single(task)
             return {"success": True, "task": task}
         except Exception as exc:
@@ -596,14 +569,10 @@ def normalize_and_archive(
                     try:
                         db.update_video_reencode_applied(
                             asset_id,
-                            reencode_preset=reencode_info.get(
-                                "reencode_preset", STANDARD_PRESET_NAME
-                            ),
+                            reencode_preset=reencode_info.get("reencode_preset", STANDARD_PRESET_NAME),
                         )
                     except Exception as re_exc:  # noqa: BLE001
-                        context.log.warning(
-                            f"reencode_applied 업데이트 실패: {asset_id}: {re_exc}"
-                        )
+                        context.log.warning(f"reencode_applied 업데이트 실패: {asset_id}: {re_exc}")
                 uploaded.append(
                     {
                         "asset_id": asset_id,
@@ -623,11 +592,7 @@ def normalize_and_archive(
                 db.update_raw_file_status(asset_id, "failed", str(exc))
 
             completed_uploads += 1
-            context.log.info(
-                "upload progress="
-                f"{completed_uploads}/{len(upload_tasks)} "
-                f"success={successful_uploads}"
-            )
+            context.log.info(f"upload progress={completed_uploads}/{len(upload_tasks)} success={successful_uploads}")
 
     return uploaded
 

@@ -16,9 +16,7 @@ class PostgresIngestDispatchMixin:
 
     # 같은 request_id 에 대해 두 run_status sensor 가 순차 fire 될 때
     # 앞선 terminal 마감을 뒷 sensor 가 덮어쓰지 않도록 하는 가드.
-    _TERMINAL_DISPATCH_STATUSES: ClassVar[frozenset[str]] = frozenset(
-        {"completed", "failed", "canceled"}
-    )
+    _TERMINAL_DISPATCH_STATUSES: ClassVar[frozenset[str]] = frozenset({"completed", "failed", "canceled"})
 
     def get_in_flight_dispatch_requests(self, folder_name: str) -> list[dict[str, Any]]:
         normalized_folder = str(folder_name or "").strip()
@@ -39,10 +37,7 @@ class PostgresIngestDispatchMixin:
                     (normalized_folder,),
                 )
                 rows = cur.fetchall()
-        return [
-            {"request_id": str(row[0]), "status": str(row[1]) if row[1] is not None else ""}
-            for row in rows
-        ]
+        return [{"request_id": str(row[0]), "status": str(row[1]) if row[1] is not None else ""} for row in rows]
 
     def get_dispatch_request_status(self, request_id: str) -> str | None:
         normalized_request_id = str(request_id or "").strip()
@@ -223,10 +218,7 @@ class PostgresIngestDispatchMixin:
                 current_row = cur.fetchone()
             if current_row:
                 current_status = str(current_row[0] or "")
-                if (
-                    current_status in self._TERMINAL_DISPATCH_STATUSES
-                    and current_status != status
-                ):
+                if current_status in self._TERMINAL_DISPATCH_STATUSES and current_status != status:
                     # race: 이미 마감된 terminal status 는 덮어쓰지 않음
                     return
 

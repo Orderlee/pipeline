@@ -38,9 +38,7 @@ def _run_ffprobe_with_retry(cmd: list[str], timeout_sec: int) -> subprocess.Comp
             return subprocess.run(cmd, capture_output=True, text=True, timeout=current_timeout)
         except subprocess.TimeoutExpired as exc:
             if attempt >= retry_count:
-                raise RuntimeError(
-                    f"ffprobe_timeout:{current_timeout}s path={cmd[-1]}"
-                ) from exc
+                raise RuntimeError(f"ffprobe_timeout:{current_timeout}s path={cmd[-1]}") from exc
             next_timeout = int(current_timeout * timeout_backoff)
             current_timeout = max(current_timeout + 1, next_timeout)
         except OSError as exc:
@@ -150,9 +148,12 @@ def load_video_once(
     timeout_sec = int_env("VIDEO_FFPROBE_TIMEOUT_SEC", 120, 10)
     cmd = [
         "ffprobe",
-        "-v", "error",
-        "-print_format", "json",
-        "-show_format", "-show_streams",
+        "-v",
+        "error",
+        "-print_format",
+        "json",
+        "-show_format",
+        "-show_streams",
         str(file_path),
     ]
     proc = _run_ffprobe_with_retry(cmd, timeout_sec=timeout_sec)
@@ -163,9 +164,7 @@ def load_video_once(
     streams = parsed.get("streams", [])
     format_info = parsed.get("format", {})
 
-    video_stream = next(
-        (s for s in streams if s.get("codec_type") == "video"), {}
-    )
+    video_stream = next((s for s in streams if s.get("codec_type") == "video"), {})
     has_audio = any(s.get("codec_type") == "audio" for s in streams)
 
     width = int(video_stream.get("width") or 0)

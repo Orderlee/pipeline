@@ -54,9 +54,7 @@ def _run_sam3_shadow_compare(context, db: PostgresResource, minio: MinIOResource
     max_per_source_unit = int(context.op_config.get("max_per_source_unit", 50))
     score_threshold = float(context.op_config.get("score_threshold", 0.0))
     max_masks_per_prompt = int(context.op_config.get("max_masks_per_prompt", 50))
-    benchmark_id = str(context.op_config.get("benchmark_id") or "").strip() or datetime.now().strftime(
-        "%Y%m%d_%H%M%S"
-    )
+    benchmark_id = str(context.op_config.get("benchmark_id") or "").strip() or datetime.now().strftime("%Y%m%d_%H%M%S")
 
     db.ensure_runtime_schema()
 
@@ -306,7 +304,9 @@ def _extract_yolo_latency_ms(payload: Mapping[str, Any]) -> float:
         return 0.0
 
 
-def _resolve_prompt_classes(payload: Mapping[str, Any], yolo_boxes_by_class: Mapping[str, list[list[float]]]) -> list[str]:
+def _resolve_prompt_classes(
+    payload: Mapping[str, Any], yolo_boxes_by_class: Mapping[str, list[list[float]]]
+) -> list[str]:
     meta = payload.get("meta")
     if isinstance(meta, Mapping) and isinstance(meta.get("requested_classes"), list):
         resolved: list[str] = []
