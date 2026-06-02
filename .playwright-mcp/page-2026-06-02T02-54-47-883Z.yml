@@ -1,0 +1,136 @@
+- generic [ref=e2]:
+  - banner [ref=e3]:
+    - generic [ref=e4]:
+      - img [ref=e6]
+      - generic [ref=e8]: GenAI Studio
+      - generic [ref=e9]: / workspace
+    - navigation [ref=e10]:
+      - link "Submit" [ref=e11] [cursor=pointer]:
+        - /url: /
+      - link "Bulk" [ref=e12] [cursor=pointer]:
+        - /url: /genai/bulk
+      - link "Batches" [ref=e13] [cursor=pointer]:
+        - /url: /genai/batches
+      - link "Costs" [ref=e14] [cursor=pointer]:
+        - /url: /genai/costs
+    - generic [ref=e15]:
+      - img [ref=e16]
+      - generic [ref=e19]: staging · dev
+    - generic [ref=e20]: PI
+  - main [ref=e21]:
+    - generic [ref=e22]:
+      - heading "🏷 라벨링으로 보내기 592eecdc-e09" [level=1] [ref=e23]:
+        - text: 🏷 라벨링으로 보내기
+        - code [ref=e25]: 592eecdc-e09
+      - link "← Batch 상세로 돌아가기" [ref=e26] [cursor=pointer]:
+        - /url: /genai/batches/592eecdc-e09
+    - generic [ref=e28]:
+      - term [ref=e29]: engine
+      - definition [ref=e30]: veo (video)
+      - term [ref=e31]: done jobs
+      - definition [ref=e32]: 1 / 1
+      - term [ref=e33]: output
+      - definition [ref=e34]:
+        - text: .mp4 비디오 N개 →
+        - code [ref=e35]: <INCOMING_DIR>/genai_592eecdc-e09/
+        - text: 로 복사 + dispatch 요청
+    - generic [ref=e36]:
+      - heading "라벨링 방법 (다중 선택)" [level=2] [ref=e37]
+      - paragraph [ref=e38]:
+        - text: 선택한 방법별로 step 이 dispatch_stage_job 에 추가됩니다.
+        - code [ref=e39]: archive_move
+        - text: →
+        - code [ref=e40]: frame_extract
+        - text: →
+        - code [ref=e41]: gemini_*
+        - text: /
+        - code [ref=e42]: yolo_detect
+        - text: 순으로 실행.
+      - generic [ref=e43]:
+        - generic [ref=e44] [cursor=pointer]:
+          - checkbox "timestamp (video) Gemini 가 비디오에서 이벤트 구간(시작/끝 sec)을 검출" [checked] [ref=e45]
+          - generic [ref=e46]:
+            - generic [ref=e47]: timestamp (video)
+            - generic [ref=e48]: Gemini 가 비디오에서 이벤트 구간(시작/끝 sec)을 검출
+        - generic [ref=e49] [cursor=pointer]:
+          - checkbox "captioning (video) timestamp 후 각 이벤트 구간 캡션 생성" [ref=e50]
+          - generic [ref=e51]:
+            - generic [ref=e52]: captioning (video)
+            - generic [ref=e53]: timestamp 후 각 이벤트 구간 캡션 생성
+        - generic [ref=e54] [cursor=pointer]:
+          - checkbox "captioning (image) 프레임 추출 → 프레임당 캡션 (image batch)" [ref=e55]
+          - generic [ref=e56]:
+            - generic [ref=e57]: captioning (image)
+            - generic [ref=e58]: 프레임 추출 → 프레임당 캡션 (image batch)
+        - generic [ref=e59] [cursor=pointer]:
+          - checkbox "bbox (YOLO/SAM3) 프레임 추출 → YOLO/SAM3 detect → image_labels" [ref=e60]
+          - generic [ref=e61]:
+            - generic [ref=e62]: bbox (YOLO/SAM3)
+            - generic [ref=e63]: 프레임 추출 → YOLO/SAM3 detect → image_labels
+        - generic [ref=e64] [cursor=pointer]:
+          - checkbox "classification (video) 비디오 단위 카테고리/클래스 분류" [ref=e65]
+          - generic [ref=e66]:
+            - generic [ref=e67]: classification (video)
+            - generic [ref=e68]: 비디오 단위 카테고리/클래스 분류
+        - generic [ref=e69] [cursor=pointer]:
+          - checkbox "classification (image) 프레임 추출 → 분류 (이미지 단위)" [ref=e70]
+          - generic [ref=e71]:
+            - generic [ref=e72]: classification (image)
+            - generic [ref=e73]: 프레임 추출 → 분류 (이미지 단위)
+        - generic [ref=e74] [cursor=pointer]:
+          - checkbox "skip 라벨링 안 함 (archive 이동 + raw_files INSERT 만)" [ref=e75]
+          - generic [ref=e76]:
+            - generic [ref=e77]: skip
+            - generic [ref=e78]: 라벨링 안 함 (archive 이동 + raw_files INSERT 만)
+      - heading "라벨 정책" [level=2] [ref=e79]
+      - paragraph [ref=e80]:
+        - code [ref=e81]: required
+        - text: ": 라벨 미생성시 dispatch fail /"
+        - code [ref=e82]: none
+        - text: ": 라벨 없어도 OK (archive 만)."
+      - generic [ref=e83]:
+        - generic [ref=e84]:
+          - radio "required" [checked] [ref=e85]
+          - text: required
+        - generic [ref=e86]:
+          - radio "none" [ref=e87]
+          - text: none
+      - heading "카테고리 preset (권장)" [level=2] [ref=e88]
+      - paragraph [ref=e89]:
+        - text: 클릭하면 아래 카테고리 + 클래스 칸이 자동 채워집니다 (중복 자동 제거). 여러 개 선택 가능.
+        - strong [ref=e90]: 토글
+        - text: ": 한 번 더 클릭하면 해제. Gemini 의 검출 정확도 향상을 위한 자연어 설명도 같이 전달됩니다."
+      - generic [ref=e91]:
+        - button "🔥 Fire" [ref=e92] [cursor=pointer]
+        - button "💨 Smoke" [ref=e93] [cursor=pointer]
+        - button "🚶 Falldown" [ref=e94] [cursor=pointer]
+        - button "🔫 Weapon" [ref=e95] [cursor=pointer]
+        - button "⚠️ Violence" [ref=e96] [cursor=pointer]
+      - generic [ref=e97]:
+        - text: "선택됨:"
+        - emphasis [ref=e98]: 없음
+      - heading "카테고리 (LS 라벨 + Gemini 이벤트)" [level=2] [ref=e99]
+      - paragraph [ref=e100]: 짧은 라벨명 — preset 클릭으로 자동 채워짐. 수동 추가/수정 가능. Custom 카테고리 입력 시 Gemini 자연어 설명은 비어 있어 정확도 떨어질 수 있음.
+      - 'textbox "예: fire, fight, fall" [ref=e101]'
+      - heading "클래스 (SAM3/YOLO 자연어 prompt)" [level=2] [ref=e102]
+      - paragraph [ref=e103]:
+        - text: "preset 이 자동 채워주는 자연어 phrase 들 (예: \"fallen person, person lying down\"). 직접 추가/수정 OK."
+        - strong [ref=e104]: 카테고리 비고 bbox 시 LS 박스 라벨에 fallback
+        - text: . 콤마 또는 줄바꿈 구분.
+      - 'textbox "예: person, fallen person, fire, smoke" [ref=e105]'
+      - group [ref=e106]:
+        - generic "Gemini 검출 설명 (자동 채워짐, 수정 가능) ▼" [ref=e107] [cursor=pointer]
+      - generic [ref=e108]:
+        - link "취소" [ref=e109] [cursor=pointer]:
+          - /url: /genai/batches/592eecdc-e09
+        - button "라벨링으로 보내기 →" [ref=e110] [cursor=pointer]
+    - generic [ref=e111]:
+      - strong [ref=e112]: "참고:"
+      - list [ref=e113]:
+        - listitem [ref=e114]:
+          - code [ref=e115]: archive_move
+          - text: 는 자동 추가됨 — done jobs 의 출력물이
+          - code [ref=e116]: archive/genai_592eecdc-e09/
+          - text: 로 이동.
+        - listitem [ref=e117]: auto-bootstrap 이 같은 폴더를 중복 픽업하지 않도록 dispatch 요청 JSON 을 먼저 쓰고 파일 복사함.
+        - listitem [ref=e118]: 실패한 job (failed/pending) 은 복사 안 됨. 재시도 후 다시 promote 하려면 DB unset 필요.

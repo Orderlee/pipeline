@@ -3,8 +3,11 @@
 Mixin 구조:
     PostgresBaseMixin (connect / pool / introspection + migration runner)
     PostgresIngestMixin   (Dispatch + Raw + Metadata via inheritance)
-    PostgresDedupMixin
-    PostgresLabelingMixin
+    PostgresDedupMixin    (phash / dup_group — inherits ProcessMixin + BuildMixin)
+    PostgresProcessMixin  (labels insert, processable, processed_clips CRUD)
+    PostgresBuildMixin    (dataset-build + classification-build queries)
+    PostgresLabelingMixin  (auto-label, clip image extract; inherits PostgresDetectionMixin)
+    PostgresDetectionMixin (image_labels CRUD + detection 대상 이미지 조회; inherited via Labeling — not listed explicitly to keep C3 MRO valid)
     PostgresSpecMixin
     PostgresGenAIMixin    (genai_batches / genai_jobs CRUD + status rollup)
 
@@ -15,10 +18,12 @@ Import:
 from dagster import ConfigurableResource
 
 from .postgres_base import PostgresBaseMixin
+from .postgres_build import PostgresBuildMixin
 from .postgres_dedup import PostgresDedupMixin
 from .postgres_genai import PostgresGenAIMixin
 from .postgres_ingest import PostgresIngestMixin
 from .postgres_labeling import PostgresLabelingMixin
+from .postgres_process import PostgresProcessMixin
 from .postgres_spec import PostgresSpecMixin
 
 
@@ -26,6 +31,8 @@ class PostgresResource(
     PostgresBaseMixin,
     PostgresIngestMixin,
     PostgresDedupMixin,
+    PostgresProcessMixin,
+    PostgresBuildMixin,
     PostgresLabelingMixin,
     PostgresSpecMixin,
     PostgresGenAIMixin,

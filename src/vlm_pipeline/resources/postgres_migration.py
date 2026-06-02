@@ -38,6 +38,15 @@ CREATE TABLE IF NOT EXISTS _pg_migrations (
 """
 
 
+class PostgresSchemaBaselineError(RuntimeError):
+    """PostgreSQL 스키마가 애플리케이션이 요구하는 baseline 미만일 때 발생.
+
+    Per-call ``_table_columns()`` 가드를 제거하고 startup-time 단일 검사로
+    대체했기 때문에, 필수 migration 누락이 곧 runtime 호환성 실패를 의미한다.
+    호출자가 ``RuntimeError`` 일반과 구분해 처리할 수 있도록 별도 subclass.
+    """
+
+
 class PostgresMigrationMixin:
     """forward-only file-based migration runner."""
 
@@ -63,11 +72,23 @@ class PostgresMigrationMixin:
                     continue
                 self._apply_one(conn, path)
 
+    _REQUIRED_MIGRATIONS: ClassVar[frozenset[str]] = frozenset(
+        {
+            "001_init.sql",
+            "002_genai.sql",
+            "003_genai_veo.sql",
+            "004_dataset_lineage.sql",
+        }
+    )
+
     def ensure_runtime_schema(self) -> None:
         """런타임 hot path 가드 — 프로세스당 1회만 실행.
 
         Dagster code-server 부팅 시 한 번만 마이그레이션을 적용하기 위함.
         ``ensure_schema()`` 와 동작은 같지만 ClassVar 플래그로 후속 호출을 skip한다.
+
+        모든 필수 마이그레이션(001-004)이 적용됐는지 확인하고, 누락 시 RuntimeError 를 던진다.
+        이 검사가 per-call 컬럼 guard 를 대체한다.
         """
         if PostgresMigrationMixin._runtime_schema_ensured:
             return
@@ -75,7 +96,24 @@ class PostgresMigrationMixin:
             if PostgresMigrationMixin._runtime_schema_ensured:
                 return
             self.ensure_schema()
+            self._assert_required_migrations_applied()
             PostgresMigrationMixin._runtime_schema_ensured = True
+
+    def _assert_required_migrations_applied(self) -> None:
+        """필수 마이그레이션 001-004 가 모두 적용됐는지 확인한다.
+
+        미적용 마이그레이션이 있으면 RuntimeError 를 발생시켜 조용한 no-op 대신
+        명확한 오류로 schema drift 를 표면화한다.
+        """
+        with self._autocommit_conn() as conn:
+            applied = self._fetch_applied(conn)
+        missing = self._REQUIRED_MIGRATIONS - applied
+        if missing:
+            missing_str = ", ".join(sorted(missing))
+            raise PostgresSchemaBaselineError(
+                f"Required PG migrations not applied: {missing_str}. "
+                "Run ensure_schema() or check migration runner logs."
+            )
 
     # ── Internals ──
 

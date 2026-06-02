@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import shutil
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Literal
@@ -98,6 +98,14 @@ class PreparedDispatchRequest:
     label_policy: str | None = None
     genai_batch_id: str | None = None
     items: list[dict] | None = None
+    # archive 경로 override — archive_dir 기준 상대 경로. 예: "genai/abc123".
+    # None 이면 기존 동작(archive_dir / folder_name). GenAI promote 가 평탄한 archive/
+    # 루트 대신 archive/genai/<batch_id>/ 형태로 묶으려고 추가됨 (2026-05-29).
+    archive_path: str | None = None
+    # category → description (자연어 설명) 매핑. Gemini prompt 에 inject 되어 검출 정확도
+    # 향상. promote 폼의 hybrid preset 이 자동 채움. 빈 dict / 미입력 = 기존 prompt 동작
+    # (regression 0). 2026-06-02 등록.
+    gemini_descriptions: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -200,6 +208,45 @@ def prepare_dispatch_request(req_data: Mapping[str, Any], *, incoming_dir: Path)
     if isinstance(items_raw, list):
         items_norm = [it for it in items_raw if isinstance(it, dict)]
 
+    # archive_path override — path traversal/절대경로 차단. 빈 컴포넌트('a//b'), '..',
+    # 절대경로('/foo') 거부. None 이면 무시. 정규화는 PurePosixPath 로 강제 — Windows
+    # path 차단 (운영 환경 linux 전제).
+    raw_arch_path = str(req_data.get("archive_path") or "").strip()
+    arch_path: str | None = None
+    if raw_arch_path:
+        from pathlib import PurePosixPath
+        pp = PurePosixPath(raw_arch_path)
+        bad_parts = [p for p in pp.parts if p in ("", ".", "..")]
+        if pp.is_absolute() or bad_parts or "\\" in raw_arch_path:
+            raise ValueError(f"invalid_archive_path:{raw_arch_path!r}")
+        arch_path = str(pp)
+
+    # gemini_descriptions: category → description 매핑. Gemini prompt 에 inject.
+    # 입력 형식: dict 직접 또는 JSON string (`gemini_descriptions_json`). 둘 다 지원해
+    # promote 폼 (multipart string) + CLI (JSON) 양쪽에서 보낼 수 있게.
+    g_desc_raw = req_data.get("gemini_descriptions")
+    if g_desc_raw is None:
+        g_desc_raw = req_data.get("gemini_descriptions_json")
+    g_descriptions: dict[str, str] = {}
+    if g_desc_raw not in (None, ""):
+        if isinstance(g_desc_raw, str):
+            try:
+                parsed = json.loads(g_desc_raw)
+            except json.JSONDecodeError as exc:
+                raise ValueError(f"invalid_gemini_descriptions_json: {exc}")
+        else:
+            parsed = g_desc_raw
+        if not isinstance(parsed, dict):
+            raise ValueError("invalid_gemini_descriptions")
+        for k, v in parsed.items():
+            if not isinstance(k, str):
+                raise ValueError("invalid_gemini_descriptions_key")
+            ks = k.strip()
+            if not ks:
+                continue
+            vs = v.strip() if isinstance(v, str) else ""
+            g_descriptions[ks] = vs
+
     return PreparedDispatchRequest(
         request_id=request_id,
         folder_name=folder_name,
@@ -222,6 +269,8 @@ def prepare_dispatch_request(req_data: Mapping[str, Any], *, incoming_dir: Path)
         label_policy=lpolicy,
         genai_batch_id=g_batch,
         items=items_norm,
+        archive_path=arch_path,
+        gemini_descriptions=g_descriptions,
     )
 
 
@@ -247,7 +296,16 @@ def write_dispatch_manifest(
 ) -> tuple[Path, Path]:
     archive_dir = Path(config.archive_dir)
     archive_dir.mkdir(parents=True, exist_ok=True)
-    archive_dest = resolve_unique_directory(archive_dir / prepared.folder_name)
+    # archive_path override 가 있으면 그 경로(상대) 로 archive_dest. 기본은 folder_name.
+    # 예: GenAI promote → archive_path="genai/abc" → archive_dir/genai/abc/
+    # 일반 dispatch (archive_path 없음) → archive_dir/folder_name/ (기존 동작).
+    if prepared.archive_path:
+        archive_dest_base = archive_dir / prepared.archive_path
+    else:
+        archive_dest_base = archive_dir / prepared.folder_name
+    archive_dest = resolve_unique_directory(archive_dest_base)
+    # 부모 디렉토리(예: archive/genai/) 미존재 시 archive_move 가 mkdir 한다.
+    archive_dest.parent.mkdir(parents=True, exist_ok=True)
 
     now = datetime.now()
     manifest_id = f"dispatch_{prepared.request_id}_{now:%Y%m%d_%H%M%S}"
@@ -281,6 +339,11 @@ def write_dispatch_manifest(
         manifest["batch_id"] = prepared.genai_batch_id
     if prepared.items:
         manifest["items"] = prepared.items
+    if prepared.archive_path:
+        # 트레이서빌리티 — manifest 에도 기록. archive_finalize 의 archive_dest 와 일관.
+        manifest["archive_path"] = prepared.archive_path
+    if prepared.gemini_descriptions:
+        manifest["gemini_descriptions"] = prepared.gemini_descriptions
     manifest_dir = Path(config.manifest_dir) / "dispatch"
     manifest_dir.mkdir(parents=True, exist_ok=True)
     manifest_path = manifest_dir / f"{manifest_id}.json"
@@ -356,6 +419,8 @@ def write_archive_dispatch_manifest(
         "requested_by": prepared.requested_by,
         "files": files,
     }
+    if prepared.gemini_descriptions:
+        manifest["gemini_descriptions"] = prepared.gemini_descriptions
     manifest_dir = Path(config.manifest_dir) / "dispatch"
     manifest_dir.mkdir(parents=True, exist_ok=True)
     manifest_path = manifest_dir / f"{manifest_id}.json"
@@ -462,6 +527,10 @@ def build_dispatch_run_request(
         common_tags["categories"] = json.dumps(prepared.categories, ensure_ascii=False)
     if prepared.classes:
         common_tags["classes"] = json.dumps(prepared.classes, ensure_ascii=False)
+    if prepared.gemini_descriptions:
+        common_tags["gemini_descriptions"] = json.dumps(
+            prepared.gemini_descriptions, ensure_ascii=False
+        )
 
     if prepared.archive_only:
         return RunRequest(

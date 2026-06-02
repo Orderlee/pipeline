@@ -7,12 +7,15 @@ PostgresResource uses mixin composition (file-based DuckDB was removed
     postgres_base.py            PostgresBaseMixin (connect / pool / introspection)
     postgres_migration.py       PostgresMigrationMixin (schema ensure / migration)
     postgres_phash.py           PostgresPhashMixin (perceptual hash prefix lookup)
-    postgres_dedup.py           PostgresDedupMixin (deduplication queries)
+    postgres_dedup.py           PostgresDedupMixin (phash/dup_group dedup; inherits Process+Build)
+    postgres_process.py         PostgresProcessMixin (labels insert, processable, processed_clips)
+    postgres_build.py           PostgresBuildMixin (dataset-build + classification-build queries)
     postgres_ingest.py          PostgresIngestMixin (dispatch + raw + metadata)
     postgres_ingest_dispatch.py Dispatch tracking CRUD
     postgres_ingest_raw.py      Raw files CRUD
     postgres_ingest_metadata.py Image/video metadata CRUD
-    postgres_labeling.py        PostgresLabelingMixin (label / caption queries)
+    postgres_detection.py       PostgresDetectionMixin (image_labels CRUD + detection 대상 이미지 조회)
+    postgres_labeling.py        PostgresLabelingMixin (auto-label / caption / clip; inherits DetectionMixin)
     postgres_spec.py            PostgresSpecMixin (labeling spec queries)
     postgres_genai.py           PostgresGenAIMixin (genai batch / job CRUD)
 """

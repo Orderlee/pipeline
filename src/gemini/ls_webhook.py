@@ -2,7 +2,7 @@
 
 annotation 제출 이벤트를 수신하여:
   1. project 내 전체 task 완료 여부 확인
-  2. 완료 시 ls_sync.run() 호출 (MinIO + DuckDB 동기화)
+  2. 완료 시 ls_sync.run() 호출 (MinIO + PostgreSQL 동기화)
   3. Slack 알림 발송 (첫 완료 vs 재동기화 구분)
 
 Slack slash command:
@@ -26,7 +26,7 @@ Usage:
     WEBHOOK_PORT         이 서버 포트 (기본: 8001)
     SLACK_WEBHOOK_URL    Slack Incoming Webhook URL (미설정 시 알림 생략)
     SLACK_SIGNING_SECRET Slack slash command 검증 시크릿 (미설정 시 검증 생략)
-    DATAOPS_DUCKDB_PATH  DuckDB 파일 경로 (필수)
+    DATAOPS_POSTGRES_DSN PostgreSQL DSN (필수, postgresql://user:pass@host:port/dbname)
     MINIO_ENDPOINT       (기본: 10.0.0.51:9000)
     MINIO_ACCESS_KEY     (기본: minioadmin)
     MINIO_SECRET_KEY     (기본: minioadmin)
@@ -115,7 +115,7 @@ WEBHOOK_HOST = os.environ.get("WEBHOOK_HOST", DEFAULT_WEBHOOK_HOST)
 WEBHOOK_PORT = int(os.environ.get("WEBHOOK_PORT", DEFAULT_WEBHOOK_PORT))
 SLACK_WEBHOOK_URL = os.environ.get("SLACK_WEBHOOK_URL", "")
 SLACK_SIGNING_SECRET = os.environ.get("SLACK_SIGNING_SECRET", "")
-DB_PATH = os.environ.get("DATAOPS_DUCKDB_PATH", "")
+PG_DSN = os.environ.get("DATAOPS_POSTGRES_DSN", "")
 MINIO_ENDPOINT = os.environ.get("MINIO_ENDPOINT", DEFAULT_MINIO_ENDPOINT)
 MINIO_ACCESS_KEY = os.environ.get("MINIO_ACCESS_KEY", DEFAULT_MINIO_ACCESS_KEY)
 MINIO_SECRET_KEY = os.environ.get("MINIO_SECRET_KEY", DEFAULT_MINIO_SECRET_KEY)
@@ -248,7 +248,7 @@ def send_slack_response(response_url: str, message: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# DuckDB finalize
+# PostgreSQL finalize
 # ---------------------------------------------------------------------------
 
 
@@ -286,109 +286,122 @@ def finalize_labels_in_db(label_keys: list[str]) -> dict:
       - primary: state.label_keys IN 매칭으로 finalize 된 row (양 테이블 합)
       - auto_recovered: prefix LIKE 매칭으로 추가 finalize 된 row (양 테이블 합)
     """
-    import duckdb
+    import psycopg2
 
-    if not label_keys or not DB_PATH:
+    if not label_keys or not PG_DSN:
         return {"primary": 0, "auto_recovered": 0}
     conn = None
     for attempt in range(5):
         try:
-            conn = duckdb.connect(DB_PATH)
+            conn = psycopg2.connect(PG_DSN)
             break
-        except Exception as e:
-            if "locked" in str(e).lower() and attempt < 4:
+        except (psycopg2.OperationalError, psycopg2.InterfaceError):
+            if attempt < 4:
                 time.sleep(2)
                 continue
             raise
     if conn is None:
-        raise RuntimeError("DuckDB 연결 실패 (5회 재시도 초과)")
+        raise RuntimeError("PostgreSQL 연결 실패 (5회 재시도 초과)")
+    # 모든 UPDATE/COUNT 를 단일 트랜잭션으로 묶고 마지막에 commit (psycopg2 autocommit=False).
+    # DuckDB 는 statement 마다 auto-commit 이었으나 PG 는 명시 commit 필요.
     try:
-        placeholders = ",".join(["?"] * len(label_keys))
-        # Video-level labels (Gemini events) — image_labels 와 동일 정책 (review_status 기준)
-        # 기존엔 label_status='pending_review' 조건이었으나, captioning.py 등 upstream 이
-        # INSERT 시 label_status='completed' 로 박아 prod 의 모든 video labels 가 'completed'
-        # 상태였기에 UPDATE 가 0건 영향 → review_status 가 'finalized' 로 못 가서
-        # build_dataset_on_finalize_sensor 가 video 검수 프로젝트를 영구히 못 잡았던 버그.
-        conn.execute(
-            f"""
-            UPDATE labels
-            SET label_status  = 'completed',
-                review_status = 'finalized'
-            WHERE labels_key IN ({placeholders})
-              AND review_status <> 'finalized'
-            """,
-            label_keys,
-        )
-        # Image-level labels (SAM3 segmentations) — review_status 기준으로 전이
-        conn.execute(
-            f"""
-            UPDATE image_labels
-            SET label_status  = 'completed',
-                review_status = 'finalized'
-            WHERE labels_key IN ({placeholders})
-              AND review_status <> 'finalized'
-            """,
-            label_keys,
-        )
-        primary_row = conn.execute(
-            f"""
-            SELECT
-              (SELECT COUNT(*) FROM labels
-                 WHERE labels_key IN ({placeholders}) AND review_status = 'finalized')
-              +
-              (SELECT COUNT(*) FROM image_labels
-                 WHERE labels_key IN ({placeholders}) AND review_status = 'finalized')
-            """,
-            label_keys + label_keys,
-        ).fetchone()
-        primary = int(primary_row[0]) if primary_row else 0
+        with conn.cursor() as cur:
+            placeholders = ",".join(["%s"] * len(label_keys))
+            # Video-level labels (Gemini events) — image_labels 와 동일 정책 (review_status 기준)
+            # 기존엔 label_status='pending_review' 조건이었으나, captioning.py 등 upstream 이
+            # INSERT 시 label_status='completed' 로 박아 prod 의 모든 video labels 가 'completed'
+            # 상태였기에 UPDATE 가 0건 영향 → review_status 가 'finalized' 로 못 가서
+            # build_dataset_on_finalize_sensor 가 video 검수 프로젝트를 영구히 못 잡았던 버그.
+            cur.execute(
+                f"""
+                UPDATE labels
+                SET label_status  = 'completed',
+                    review_status = 'finalized'
+                WHERE labels_key IN ({placeholders})
+                  AND review_status <> 'finalized'
+                """,
+                label_keys,
+            )
+            # Image-level labels (SAM3 segmentations) — review_status 기준으로 전이
+            cur.execute(
+                f"""
+                UPDATE image_labels
+                SET label_status  = 'completed',
+                    review_status = 'finalized'
+                WHERE labels_key IN ({placeholders})
+                  AND review_status <> 'finalized'
+                """,
+                label_keys,
+            )
+            cur.execute(
+                f"""
+                SELECT
+                  (SELECT COUNT(*) FROM labels
+                     WHERE labels_key IN ({placeholders}) AND review_status = 'finalized')
+                  +
+                  (SELECT COUNT(*) FROM image_labels
+                     WHERE labels_key IN ({placeholders}) AND review_status = 'finalized')
+                """,
+                label_keys + label_keys,
+            )
+            primary_row = cur.fetchone()
+            primary = int(primary_row[0]) if primary_row else 0
 
-        # 2차: folder prefix 기반 잔존 자동 보정.
-        # state.label_keys 에 빠진 키가 있어도 같은 folder 의 사람 검수 완료 row 는
-        # 함께 finalize. 'reviewed' 만 매칭하여 미검수 row 는 안전하게 제외.
-        auto_recovered = 0
-        prefixes = _extract_folder_prefixes(label_keys)
-        if prefixes:
-            patterns = [p + "/%" for p in prefixes]
-            or_clauses = " OR ".join(["labels_key LIKE ?"] * len(prefixes))
-            # pre-count: 매칭 row 가 곧 UPDATE 영향 row (단일 트랜잭션 + 동시 INSERT 없음 가정).
-            pre_v = conn.execute(
-                f"SELECT COUNT(*) FROM labels WHERE ({or_clauses}) AND review_status = 'reviewed'",
-                patterns,
-            ).fetchone()
-            pre_i = conn.execute(
-                f"SELECT COUNT(*) FROM image_labels WHERE ({or_clauses}) AND review_status = 'reviewed'",
-                patterns,
-            ).fetchone()
-            pending_v = int(pre_v[0]) if pre_v else 0
-            pending_i = int(pre_i[0]) if pre_i else 0
-            if pending_v:
-                conn.execute(
-                    f"""
-                    UPDATE labels
-                    SET label_status  = 'completed',
-                        review_status = 'finalized'
-                    WHERE ({or_clauses}) AND review_status = 'reviewed'
-                    """,
+            # 2차: folder prefix 기반 잔존 자동 보정.
+            # state.label_keys 에 빠진 키가 있어도 같은 folder 의 사람 검수 완료 row 는
+            # 함께 finalize. 'reviewed' 만 매칭하여 미검수 row 는 안전하게 제외.
+            auto_recovered = 0
+            prefixes = _extract_folder_prefixes(label_keys)
+            if prefixes:
+                patterns = [p + "/%" for p in prefixes]
+                or_clauses = " OR ".join(["labels_key LIKE %s"] * len(prefixes))
+                # pre-count: 매칭 row 가 곧 UPDATE 영향 row (단일 트랜잭션 + 동시 INSERT 없음 가정).
+                cur.execute(
+                    f"SELECT COUNT(*) FROM labels WHERE ({or_clauses}) AND review_status = 'reviewed'",
                     patterns,
                 )
-            if pending_i:
-                conn.execute(
-                    f"""
-                    UPDATE image_labels
-                    SET label_status  = 'completed',
-                        review_status = 'finalized'
-                    WHERE ({or_clauses}) AND review_status = 'reviewed'
-                    """,
+                pre_v = cur.fetchone()
+                cur.execute(
+                    f"SELECT COUNT(*) FROM image_labels WHERE ({or_clauses}) AND review_status = 'reviewed'",
                     patterns,
                 )
-            auto_recovered = pending_v + pending_i
-            if auto_recovered:
-                print(
-                    f"[FINALIZE] folder prefix 잔존 자동 보정: labels +{pending_v}, "
-                    f"image_labels +{pending_i} (prefixes={prefixes})"
-                )
+                pre_i = cur.fetchone()
+                pending_v = int(pre_v[0]) if pre_v else 0
+                pending_i = int(pre_i[0]) if pre_i else 0
+                if pending_v:
+                    cur.execute(
+                        f"""
+                        UPDATE labels
+                        SET label_status  = 'completed',
+                            review_status = 'finalized'
+                        WHERE ({or_clauses}) AND review_status = 'reviewed'
+                        """,
+                        patterns,
+                    )
+                if pending_i:
+                    cur.execute(
+                        f"""
+                        UPDATE image_labels
+                        SET label_status  = 'completed',
+                            review_status = 'finalized'
+                        WHERE ({or_clauses}) AND review_status = 'reviewed'
+                        """,
+                        patterns,
+                    )
+                auto_recovered = pending_v + pending_i
+                if auto_recovered:
+                    print(
+                        f"[FINALIZE] folder prefix 잔존 자동 보정: labels +{pending_v}, "
+                        f"image_labels +{pending_i} (prefixes={prefixes})"
+                    )
+        conn.commit()
         return {"primary": primary, "auto_recovered": auto_recovered}
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        raise
     finally:
         conn.close()
 
@@ -419,9 +432,9 @@ def _run_sync_and_notify_inner(project_id: int, project_title: str) -> None:
     pid = str(project_id)
     is_first = state.get(pid, {}).get("last_sync_at") is None
 
-    if not DB_PATH:
-        print("[ERROR] DATAOPS_DUCKDB_PATH 미설정 — sync 불가")
-        send_slack(f"❌ *{project_title}* sync 실패: DuckDB 경로 미설정")
+    if not PG_DSN:
+        print("[ERROR] DATAOPS_POSTGRES_DSN 미설정 — sync 불가")
+        send_slack(f"❌ *{project_title}* sync 실패: PostgreSQL DSN 미설정")
         return
 
     sync_result: dict = {}
@@ -445,7 +458,7 @@ def _run_sync_and_notify_inner(project_id: int, project_title: str) -> None:
                 bucket=DEFAULT_LABEL_BUCKET,
                 prefix="",
                 dry_run=False,
-                db_path=DB_PATH,
+                dsn=PG_DSN,
             )
             or {}
         )
@@ -576,7 +589,7 @@ def trigger_dagster_job(job_name: str, tags: dict[str, str]) -> tuple[bool, str]
 
 
 def finalize_project(project_id: int, response_url: str = "") -> None:
-    """최종 확정: DuckDB label_status='completed' → downstream 활성화."""
+    """최종 확정: PostgreSQL label_status='completed' → downstream 활성화."""
     state = load_state()
     pid = str(project_id)
     info = state.get(pid)
@@ -632,9 +645,9 @@ def finalize_project(project_id: int, response_url: str = "") -> None:
     )
 
     if auto_recovered:
-        db_msg = f"→ DuckDB {total_finalized}건 반영 (state 매칭 {primary} + folder prefix 자동 보정 {auto_recovered})"
+        db_msg = f"→ PostgreSQL {total_finalized}건 반영 (state 매칭 {primary} + folder prefix 자동 보정 {auto_recovered})"
     else:
-        db_msg = f"→ DuckDB {total_finalized}건 반영"
+        db_msg = f"→ PostgreSQL {total_finalized}건 반영"
 
     msg = f"✅ *{title}* (id={project_id}) 최종 확정 완료\n{db_msg}\n{clip_msg}"
     print(f"[FINALIZE] {msg}")
@@ -828,7 +841,7 @@ def main() -> int:
         print(f"[INFO] 수신 서버 시작: http://{args.host}:{args.port}/webhook")
         print(f"[INFO] LS 연결: {LS_URL}")
         print(f"[INFO] Slack: {'설정됨' if SLACK_WEBHOOK_URL else '미설정 (로그만 출력)'}")
-        print(f"[INFO] DuckDB: {DB_PATH or '미설정'}")
+        print(f"[INFO] PostgreSQL: {'설정됨' if PG_DSN else '미설정'}")
         uvicorn.run(app, host=args.host, port=args.port, log_level="warning")
 
     elif args.command == "register":

@@ -258,6 +258,12 @@ services:
       timeout: 5s
       retries: 5
     restart: unless-stopped
+    # 공유 버스에도 노출: 별도 compose 프로젝트의 LS 스택(ls_sync/ls_webhook)이
+    # 컨테이너명(docker-postgres-1)으로 prod PG 에 닿게 한다. dagster·SAM3 가 이미
+    # 쓰는 external 네트워크라 신규 인프라 아님. (2026-06-02 LS PG cutover 누락 수정)
+    networks:
+      - default
+      - pipeline-network
 
   yolo:
     build:

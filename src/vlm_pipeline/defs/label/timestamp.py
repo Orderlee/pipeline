@@ -5,6 +5,7 @@ assets.py의 @asset clip_timestamp 래퍼에서 호출됩니다.
 
 from __future__ import annotations
 
+import json
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
@@ -20,7 +21,7 @@ from vlm_pipeline.lib.env_utils import (
 )
 from vlm_pipeline.lib.gemini import extract_clean_json_text
 from vlm_pipeline.defs.spec.config_resolver import resolve_and_persist_spec_config
-from vlm_pipeline.lib.gemini_prompts import VIDEO_EVENT_PROMPT
+from vlm_pipeline.lib.gemini_prompts import VIDEO_EVENT_PROMPT, build_video_event_prompt
 from vlm_pipeline.lib.vertex_chunking import filter_events_over_duration
 from vlm_pipeline.lib.spec_config import (
     is_standard_spec_run,
@@ -312,7 +313,51 @@ def clip_timestamp_routed_impl(
 ) -> dict:
     """spec/dispatch: requested_outputs·spec_id 기준 timestamp 단계."""
     tags = context.run.tags if context.run else {}
-    video_prompt = VIDEO_EVENT_PROMPT
+
+    # category-aware Gemini prompt — dispatch tag 에서 categories + gemini_descriptions
+    # 읽어서 build_video_event_prompt() 로 빌드. JSON 파싱 실패 시 silent fallback
+    # (운영 안전성 우선 — 잘못된 tag 에 의한 prompt 누락 보다 기존 prompt 동작이 안전).
+    def _parse_json_tag(tag_name: str, expected_type: type) -> Any:
+        raw = tags.get(tag_name)
+        if not raw:
+            return None
+        try:
+            parsed = json.loads(str(raw))
+        except json.JSONDecodeError:
+            context.log.warning(
+                "clip_timestamp: invalid JSON for tag %s — ignored", tag_name
+            )
+            return None
+        if not isinstance(parsed, expected_type):
+            context.log.warning(
+                "clip_timestamp: tag %s wrong type (expected %s) — ignored",
+                tag_name, expected_type.__name__,
+            )
+            return None
+        return parsed
+
+    _categories = _parse_json_tag("categories", list) or []
+    _descriptions = _parse_json_tag("gemini_descriptions", dict) or {}
+    # 형식 검증 — list/dict 안 모든 element str
+    if not all(isinstance(c, str) for c in _categories):
+        _categories = []
+    if not all(isinstance(k, str) and isinstance(v, str) for k, v in _descriptions.items()):
+        _descriptions = {}
+    video_prompt = build_video_event_prompt(
+        categories=_categories or None,
+        descriptions=_descriptions or None,
+    )
+    if _descriptions:
+        context.log.info(
+            "clip_timestamp: Gemini prompt with descriptions injected — categories=%s",
+            list(_descriptions.keys()),
+        )
+    elif _categories:
+        context.log.info(
+            "clip_timestamp: Gemini prompt with category filter — categories=%s",
+            _categories,
+        )
+
     spec_id = tags.get("spec_id")
     requested = parse_requested_outputs(tags)
     standard_spec_run = is_standard_spec_run(tags)

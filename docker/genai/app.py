@@ -141,6 +141,7 @@ def create_app() -> FastAPI:
         # 빈 문자열은 None 취급 (chip 의 'all' 링크와 호환)
         f_engine = (engine or "").strip() or None
         f_status = (status or "").strip() or None
+        from lib.kling_pricing import pricing_table_json
         return templates.TemplateResponse(
             request=request,
             name="index.html",
@@ -155,6 +156,7 @@ def create_app() -> FastAPI:
                 "filter_engine": f_engine,
                 "filter_status": f_status,
                 "user": user,
+                "kling_pricing": pricing_table_json(),
             },
         )
 
@@ -308,17 +310,39 @@ def create_app() -> FastAPI:
             return JSONResponse(jsonable_encoder(batch))
         # template 에서 promote 버튼 표시 여부 결정용 — options_json 안 flag 확인.
         promoted = False
+        cost_estimate = None
+        cost_total_estimate = None
         opt_text = batch.get("options_json") or ""
         if opt_text:
             try:
                 import json as _json
-                promoted = bool(_json.loads(opt_text).get("promoted_to_labeling"))
+                opts = _json.loads(opt_text)
+                promoted = bool(opts.get("promoted_to_labeling"))
+                # Kling 만 예상 비용 — model/mode/duration 으로 lookup.
+                if (batch.get("engine") or "").strip().lower() == "kling":
+                    from lib.kling_pricing import estimate_kling_cost
+                    cost_estimate = estimate_kling_cost(
+                        model_name=opts.get("model_name") or "",
+                        mode=opts.get("mode") or "pro",
+                        duration=opts.get("duration") or "5",
+                    )
+                    if cost_estimate["cost_usd"] is not None:
+                        # n_total 곱셈해서 batch 합계도 노출 (실제 submit 한 job 수 기준)
+                        n_total = int(batch.get("n_total") or 0)
+                        if n_total > 0:
+                            cost_total_estimate = round(
+                                cost_estimate["cost_usd"] * n_total, 4
+                            )
             except Exception:
                 promoted = False
         return templates.TemplateResponse(
             request=request,
             name="batch_detail.html",
-            context={"batch": batch, "user": user, "promoted": promoted},
+            context={
+                "batch": batch, "user": user, "promoted": promoted,
+                "cost_estimate": cost_estimate,
+                "cost_total_estimate": cost_total_estimate,
+            },
         )
 
     @app.get("/genai/batches/{batch_id}/promote", response_class=HTMLResponse)
@@ -359,17 +383,24 @@ def create_app() -> FastAPI:
         categories_text: Annotated[str, Form()] = "",
         classes_text: Annotated[str, Form()] = "",
         image_profile: Annotated[str, Form()] = "current",
+        force: Annotated[bool, Form()] = False,
+        # 2026-06-02 hybrid preset: { "falldown": "a person falling...", ... } JSON.
+        # preset 버튼이 hidden field 에 자동 채움. 사용자 직접 입력 안 함. dispatch
+        # service 가 파싱 + validate. 빈 string / 누락 시 기존 동작 (Gemini 자유 카테고리).
+        gemini_descriptions_json: Annotated[str, Form()] = "",
         user: str = Depends(_check_auth),
     ):
         """form-encoded multi-select 폼을 받아 promote 실행.
         - labeling_method: 다중 체크박스 (timestamp_video, bbox 등)
         - label_policy: required|none
         - categories_text/classes_text: comma 또는 newline 구분 텍스트 → list
+        - gemini_descriptions_json: hybrid preset 의 dict {category: description}
         """
         from jobs.promote import (
             PromoteConflictError,
             PromoteValidationError,
             promote_batch_to_labeling,
+            repromote_batch_to_labeling,
         )
 
         def _split_list(s: str) -> list[str]:
@@ -380,15 +411,20 @@ def create_app() -> FastAPI:
         labeling_clean = [m.strip() for m in (labeling_method or []) if m.strip()]
         categories = _split_list(categories_text)
         classes = _split_list(classes_text)
+        # gemini_descriptions_json: form 에서 빈 string 으로 올 수 있음 — 그대로 전달
+        # 하면 service.prepare_dispatch_request 가 None 으로 정규화.
+        gemini_desc_raw = (gemini_descriptions_json or "").strip() or None
 
         try:
-            result = promote_batch_to_labeling(
+            promote_func = repromote_batch_to_labeling if force else promote_batch_to_labeling
+            result = promote_func(
                 batch_id,
                 labeling_method=labeling_clean,
                 label_policy=label_policy.strip(),
                 categories=categories,
                 classes=classes,
                 image_profile=(image_profile or "current").strip(),
+                gemini_descriptions_json=gemini_desc_raw,
                 requested_by=user,
             )
         except PromoteValidationError as exc:
@@ -479,6 +515,7 @@ def create_app() -> FastAPI:
             }
           }
         """
+        from lib.kling_pricing import pricing_table_json
         return JSONResponse({
             "limits": limits.status(),
             "usage": limits.usage(user),
@@ -486,12 +523,16 @@ def create_app() -> FastAPI:
                 "max_files": _MAX_FILES_PER_BATCH,
                 "max_bytes_per_file": _MAX_BYTES_PER_FILE,
             },
+            "pricing": {
+                "kling": pricing_table_json(),
+            },
         })
 
     # ----- UI bulk-submit -------------------------------------------------
     @app.get("/genai/bulk", response_class=HTMLResponse)
     def bulk_form(request: Request, user: str = Depends(_check_auth)):
         """대량 (이미지 × 프롬프트) 제출 폼. 클라이언트 JS 가 plan/cost preview."""
+        from lib.kling_pricing import pricing_table_json
         return templates.TemplateResponse(
             request=request,
             name="bulk.html",
@@ -502,6 +543,7 @@ def create_app() -> FastAPI:
                 "max_bulk_jobs": _MAX_BULK_JOBS,
                 "max_files_per_batch": _MAX_FILES_PER_BATCH,
                 "user": user,
+                "kling_pricing": pricing_table_json(),
             },
         )
 
