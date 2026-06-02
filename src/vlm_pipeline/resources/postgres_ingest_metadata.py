@@ -130,10 +130,8 @@ class PostgresIngestMetadataMixin(PostgresVideoMetadataMixin):
             """
             params: list[Any] = [normalized_stem]
             if source_unit_name:
-                columns = self._table_columns(conn, "raw_files")
-                if "source_unit_name" in columns:
-                    query += " AND r.source_unit_name = %s"
-                    params.append(str(source_unit_name))
+                query += " AND r.source_unit_name = %s"
+                params.append(str(source_unit_name))
             query += " ORDER BY im.extracted_at DESC LIMIT 1"
             with conn.cursor() as cur:
                 cur.execute(query, params)

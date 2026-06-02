@@ -43,8 +43,6 @@ from vlm_pipeline.defs.sam.detection_assets import (
     sam3_image_detection,
 )
 
-# DISABLED 2026-05-19: motherduck sync 일시 비활성화 (사용자 요청). build_motherduck_daily_schedule 함수도 dead code 상태이나 시그니처 유지.
-# from vlm_pipeline.defs.sync.assets import motherduck_sync
 from vlm_pipeline.lib.env_utils import default_postgres_dsn
 from vlm_pipeline.resources.minio import MinIOResource
 from vlm_pipeline.resources.postgres import PostgresResource
@@ -165,25 +163,6 @@ def build_gcs_download_schedule(job) -> ScheduleDefinition:
     )
 
 
-def build_motherduck_daily_schedule(job) -> ScheduleDefinition:
-    return ScheduleDefinition(
-        name="motherduck_daily_schedule",
-        job=job,
-        cron_schedule="0 5 * * *",
-        execution_timezone="Asia/Seoul",
-        run_config={
-            "ops": {
-                "pipeline__motherduck_sync": {
-                    "config": {
-                        "enabled": True,
-                        "tables": [],
-                    }
-                }
-            }
-        },
-    )
-
-
 def build_production_assets(
     *,
     enable_manual_label_import: bool,
@@ -198,8 +177,6 @@ def build_production_assets(
         raw_video_to_frame,
         build_dataset,
         build_classification,
-        # DISABLED 2026-05-19: motherduck sync asset 일시 비활성화 (사용자 요청)
-        # motherduck_sync,
         classification_video,
         dispatch_sam3_image_detection,
         sam3_shadow_compare,
@@ -216,7 +193,6 @@ def build_production_assets(
 
 
 def build_production_sensors(
-    motherduck_table_sensors: list[object] | tuple[object, ...],
     *,
     dispatch_target_jobs: list[object],
     archive_dispatch_jobs: list[object] | None = None,
@@ -226,7 +202,6 @@ def build_production_sensors(
         build_dispatch_sensor(jobs=dispatch_target_jobs),
         build_production_agent_dispatch_sensor(jobs=dispatch_target_jobs),
         *COMMON_DISPATCH_STATUS_SENSORS,
-        *motherduck_table_sensors,
         ls_task_create_sensor,
         build_dataset_on_finalize_sensor,
         genai_poll_sensor,

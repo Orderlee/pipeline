@@ -44,13 +44,6 @@ _gcs_download_job = build_asset_job(
     selection=[gcs_download_to_incoming],
     description="GCS 외부 데이터 수집",
 )
-# DISABLED 2026-05-19: motherduck sync 일시 비활성화 (사용자 요청)
-# _motherduck_sync_job = build_asset_job(
-#     name="motherduck_sync_job",
-#     selection=[motherduck_sync],
-#     writer_tag=DUCKDB_LABEL_WRITER_TAG,
-#     description="클라우드 동기화 — DuckDB → MotherDuck",
-# )
 _dispatch_stage_job = build_asset_job(
     name="dispatch_stage_job",
     selection=build_dispatch_stage_selection(enable_yolo_detection=_enable_yolo_detection),
@@ -87,8 +80,6 @@ _jobs: list[object] = [
     _mvp_stage_job,
     _ingest_job,
     _gcs_download_job,
-    # DISABLED 2026-05-19: motherduck sync 일시 비활성화 (사용자 요청)
-    # _motherduck_sync_job,
     _dispatch_stage_job,
     _auto_labeling_job,
     _upload_label_job,
@@ -134,13 +125,9 @@ defs = Definitions(
     jobs=_jobs,
     schedules=[
         build_gcs_download_schedule(_gcs_download_job),
-        # DISABLED 2026-05-19: motherduck sync 일시 비활성화 (사용자 요청)
-        # build_motherduck_daily_schedule(_motherduck_sync_job),
         ls_presign_renew_schedule,
     ],
     sensors=build_production_sensors(
-        # DISABLED 2026-05-19: motherduck table sensors 일시 비활성화. 재활성화시 MOTHERDUCK_TABLE_SENSORS 복원.
-        [],
         dispatch_target_jobs=[_dispatch_stage_job, _ingest_job],
         archive_dispatch_jobs=[_upload_label_job],
     ),

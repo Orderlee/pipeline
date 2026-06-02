@@ -85,6 +85,7 @@ def promote_batch_to_labeling(
     image_profile: str = "current",
     run_mode: str = "labeling_only",
     requested_by: str | None = None,
+    gemini_descriptions_json: str | None = None,
 ) -> dict[str, Any]:
     """promote 실행. validate → claim → dispatch request 쓰기 → 파일 copy + rename.
 
@@ -213,6 +214,16 @@ def promote_batch_to_labeling(
         "batch_id": batch_id,
         "items": items,
         "transfer_tool": "genai_promote",
+        # archive 구조 변경 (2026-05-29): archive/genai_<batch>/ → archive/genai/<batch>/.
+        # GenAI promote 만의 archive subdir. service.write_dispatch_manifest 가
+        # archive_path 있으면 archive_dir + archive_path 로 archive_dest 계산.
+        # 일반 dispatch 는 이 필드 없음 → 기존 archive_dir/folder_name 그대로.
+        "archive_path": f"genai/{batch_id}",
+        # 2026-06-02 hybrid preset: { "falldown": "a person falling...", ... } JSON string.
+        # service.prepare_dispatch_request 가 json.loads + validate. None / empty 일 때
+        # 키 자체 안 들어가게 — 일반 dispatch 흐름 영향 0.
+        **({"gemini_descriptions_json": gemini_descriptions_json}
+           if gemini_descriptions_json else {}),
     }
 
     # 5) 파일 복사 먼저 — tmp dir 에 전부 복사 후 atomic rename.
@@ -278,4 +289,148 @@ def promote_batch_to_labeling(
         "folder_name": folder_name,
         "copied_count": len(src_paths),
         "dispatch_path": str(dispatch_target),
+    }
+
+
+def repromote_batch_to_labeling(
+    batch_id: str,
+    *,
+    labeling_method: list[str],
+    label_policy: str,
+    categories: list[str],
+    classes: list[str],
+    image_profile: str = "current",
+    run_mode: str = "labeling_only",
+    requested_by: str | None = None,
+    gemini_descriptions_json: str | None = None,
+) -> dict[str, Any]:
+    """이미 promote 된 GenAI batch 를 archive 기반 라벨링으로 다시 dispatch.
+
+    regular promote 와 달리 NAS outputs/ 와 incoming/genai_<batch>/ 를 보지 않는다.
+    첫 promote 가 이미 archive/genai/<batch_id>/ 와 raw_files 를 만든 상태를 전제로,
+    `from_archived=True` dispatch JSON 만 생성해 archive_dispatch_sensor 가 재라벨링한다.
+
+    race note: 기존 promote claim 을 release 한 뒤 다시 claim 하는 순서는 원자적이지 않다.
+    두 repromote 요청이 동시에 들어오면 둘 다 release 할 수 있지만, claim 은 UPDATE
+    조건으로 직렬화되어 하나만 성공한다. 실패한 쪽은 409 로 매핑하는 것이 의도 동작이다.
+    """
+    # 1) 입력 validate — promote_batch_to_labeling 과 같은 fail-loud enum 검증.
+    if not labeling_method:
+        raise PromoteValidationError("labeling_method 비어있음")
+    bad_methods = [m for m in labeling_method if m not in VALID_LABELING_METHODS]
+    if bad_methods:
+        raise PromoteValidationError(
+            f"unknown labeling_method: {bad_methods} (allowed: {sorted(VALID_LABELING_METHODS)})"
+        )
+    if label_policy not in VALID_LABEL_POLICIES:
+        raise PromoteValidationError(
+            f"label_policy={label_policy!r} not in {sorted(VALID_LABEL_POLICIES)}"
+        )
+
+    # 2) batch 조회 + 상태 확인.
+    batch = pg.get_batch_with_jobs(batch_id)
+    if batch is None:
+        raise PromoteValidationError(f"batch not found: {batch_id}")
+    status = (batch.get("status") or "").strip().lower()
+    if status not in PROMOTABLE_STATUSES:
+        raise PromoteValidationError(
+            f"batch.status={status!r} not promotable (need one of {sorted(PROMOTABLE_STATUSES)})"
+        )
+
+    opt_text = batch.get("options_json") or ""
+    opts: dict[str, Any] = {}
+    if opt_text:
+        try:
+            parsed_opts = json.loads(opt_text)
+        except json.JSONDecodeError as exc:
+            raise PromoteValidationError(f"batch.options_json invalid JSON: {exc}") from exc
+        if isinstance(parsed_opts, dict):
+            opts = parsed_opts
+    if not bool(opts.get("promoted_to_labeling")):
+        raise PromoteValidationError("not yet promoted, use regular promote")
+
+    done_jobs = sorted(
+        [j for j in (batch.get("jobs") or []) if (j.get("status") or "") == "done"],
+        key=lambda j: int(j.get("seq_in_batch") or 0),
+    )
+    if not done_jobs:
+        raise PromoteValidationError("no done jobs in batch (모두 실패/대기)")
+
+    engine = (batch.get("engine") or "").strip().lower()
+    if not engine:
+        raise PromoteValidationError(f"batch.engine missing for {batch_id}")
+    if engine not in VALID_GENAI_ENGINES:
+        raise PromoteValidationError(
+            f"engine={engine!r} not in {sorted(VALID_GENAI_ENGINES)} "
+            f"(ops_register 가 CHECK constraint 로 reject 했을 것)"
+        )
+
+    output_ext = _output_ext_for(batch)
+    folder_name = f"genai_{batch_id}"
+    items: list[dict[str, Any]] = []
+    for j in done_jobs:
+        seq = int(j.get("seq_in_batch") or 0)
+        items.append({
+            "seq": seq,
+            "filename": f"{seq:03d}{output_ext}",
+            "provider_job_id": j.get("provider_job_id"),
+        })
+
+    # 3) 기존 promote claim 을 재설정. release+claim 사이의 작은 race 는 위 docstring 참고.
+    pg.release_batch_promote_claim(batch_id)
+    claimed = pg.claim_batch_for_promote(batch_id)
+    if not claimed:
+        raise PromoteConflictError(f"batch {batch_id} repromote claim 충돌")
+
+    incoming_dir = Path(os.getenv("INCOMING_DIR", "/nas/data/incoming"))
+    pending_dir = incoming_dir / ".dispatch" / "pending"
+    request_id = uuid4().hex
+    now_iso = datetime.now().isoformat()
+    payload: dict[str, Any] = {
+        "request_id": request_id,
+        "folder_name": folder_name,
+        "from_archived": True,
+        "run_mode": run_mode,
+        "labeling_method": labeling_method,
+        "categories": categories,
+        "classes": classes,
+        "image_profile": image_profile,
+        "requested_by": requested_by,
+        "requested_at": now_iso,
+        "source_type": "genai_output",
+        "genai_engine": engine,
+        "label_policy": label_policy,
+        "batch_id": batch_id,
+        "items": items,
+        "archive_path": f"genai/{batch_id}",
+        **({"gemini_descriptions_json": gemini_descriptions_json}
+           if gemini_descriptions_json else {}),
+    }
+
+    pending_dir.mkdir(parents=True, exist_ok=True)
+    dispatch_target = pending_dir / f"{request_id}.json"
+    dispatch_tmp = pending_dir / f".{request_id}.json.tmp"
+
+    def _rollback_claim() -> None:
+        try:
+            pg.release_batch_promote_claim(batch_id)
+        except Exception:
+            pass
+
+    try:
+        dispatch_tmp.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+        dispatch_tmp.replace(dispatch_target)
+    except Exception:
+        try:
+            dispatch_tmp.unlink(missing_ok=True)
+        except Exception:
+            pass
+        _rollback_claim()
+        raise
+
+    return {
+        "request_id": request_id,
+        "folder_name": folder_name,
+        "dispatch_path": str(dispatch_target),
+        "repromoted": True,
     }

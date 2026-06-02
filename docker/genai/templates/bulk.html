@@ -63,7 +63,9 @@
           <div class="gs-field">
             <div class="gs-field__label gs-mono">model_name</div>
             <div class="gs-select-shell">
-              <select name="model_name">
+              {# data-default-model: '— default —' 옵션 선택 시 JS 가 가격 lookup 용도로
+                 fallback 할 실제 모델. submit 시엔 빈 값으로 보내 backend env default 사용. #}
+              <select name="model_name" data-default-model="{{ k.default_model }}">
                 <option value="">— default —</option>
                 {% for m in k.models %}<option value="{{ m }}">{{ m }}</option>{% endfor %}
               </select>
@@ -99,6 +101,20 @@
               {% endfor %}
             </div>
           </div>
+          {# 예상 비용 — JS 가 model/mode/duration + N (images × prompts) 곱셈 #}
+          <div class="gs-field" style="padding-top:6px;border-top:1px dashed #2a2a2e">
+            <div class="gs-field__label gs-mono">예상 총 비용</div>
+            <div id="bulk-kling-cost-est" class="gs-mono"
+                 style="font-size:14px;color:#9ce29c">
+              <strong id="bulk-kling-cost-total-usd">—</strong>
+              <span style="color:#888">·</span>
+              <span id="bulk-kling-cost-detail">— jobs × — = — credits</span>
+            </div>
+            <div class="gs-hint" style="font-size:11px;margin-top:2px"
+                 id="bulk-kling-cost-note">
+              Kling Trial / Paid 동일 단가. 1 unit = $0.14.
+            </div>
+          </div>
         </div>
         {% endif %}
 
@@ -120,7 +136,10 @@
               <div class="gs-field__label gs-mono">aspect_ratio</div>
               <div class="gs-segmented">
                 {% for a in v.aspect_ratios %}
-                  <input type="radio" name="aspect_ratio" id="bulk-veo-ar-{{ loop.index }}" value="{{ a }}" {% if a == v.default_aspect_ratio %}checked{% endif %} disabled>
+                  {# 2026-06-01 fix: 'checked' 제거 — kling 과 name=aspect_ratio 공유라
+                     radio group 충돌. veo 활성화 시 syncEngineOpt 가 disabled 해제하면
+                     사용자가 클릭해 선택. submit 시 disabled radio 는 미전송이라 무해. #}
+                  <input type="radio" name="aspect_ratio" id="bulk-veo-ar-{{ loop.index }}" value="{{ a }}" disabled>
                   <label for="bulk-veo-ar-{{ loop.index }}">{{ a }}</label>
                 {% endfor %}
               </div>
@@ -129,7 +148,10 @@
               <div class="gs-field__label gs-mono">duration (sec)</div>
               <div class="gs-segmented">
                 {% for d in v.durations %}
-                  <input type="radio" name="duration" id="bulk-veo-dur-{{ d }}" value="{{ d }}" {% if d == v.default_duration %}checked{% endif %} disabled>
+                  {# 2026-06-01 fix: 'checked' 제거 — name=duration 공유로 kling 의
+                     default :checked 를 덮어써서 initial 페이지 로드시 가격표 lookup 이
+                     "duration=undefined" 로 누락. veo 활성화시 사용자가 클릭. #}
+                  <input type="radio" name="duration" id="bulk-veo-dur-{{ d }}" value="{{ d }}" disabled>
                   <label for="bulk-veo-dur-{{ d }}">{{ d }}s</label>
                 {% endfor %}
               </div>
@@ -435,12 +457,72 @@
     return promptsEl.value.split('\n').map(l => l.trim()).filter(Boolean);
   }
   function chunks(n, k) { return Math.max(1, Math.ceil(n / k)); }
-  function estCostUSD(engine, jobs, durationSec) {
+
+  // Kling 가격표 — server-rendered (lib/kling_pricing.py)
+  window.__KLING_PRICING__ = {{ kling_pricing|tojson }};
+
+  function klingUnitCost(model, mode, durationSec) {
+    const p = window.__KLING_PRICING__ || {};
+    const m = (model || '').toLowerCase();
+    if (m === 'kling-v3') {
+      const rate = (p.video_per_second || {})['kling-v3']?.[mode];
+      const sec = parseInt(durationSec, 10);
+      if (!rate || !sec) return null;
+      const units = rate * sec;
+      return { units, usd: units * (p.usd_per_unit || 0.14), note: `v3 ${rate}/s × ${sec}s` };
+    }
+    const byModel = (p.video || {})[m];
+    if (!byModel) return null;
+    let units = byModel[mode]?.[durationSec];
+    if (units == null) units = byModel.std?.[durationSec] ?? byModel.pro?.[durationSec];
+    if (units == null) return null;
+    return { units, usd: units * (p.usd_per_unit || 0.14), note: 'image2video / text2video (sound=off)' };
+  }
+
+  function estCostUSD(engine, jobs, durationSec, klingModel, klingMode) {
     if (engine === 'veo') {
       const sec = Number(durationSec || 8);
       return jobs * sec * 0.40;
     }
+    if (engine === 'kling') {
+      const u = klingUnitCost(klingModel, klingMode, String(durationSec || '5'));
+      return u === null ? null : u.usd * jobs;
+    }
     return null;
+  }
+
+  function updateKlingCostBlock(jobs) {
+    const usdEl = document.getElementById('bulk-kling-cost-total-usd');
+    const detailEl = document.getElementById('bulk-kling-cost-detail');
+    const noteEl = document.getElementById('bulk-kling-cost-note');
+    if (!usdEl) return;
+    const engine = document.querySelector('input[name=engine]:checked')?.value;
+    if (engine !== 'kling') {
+      usdEl.textContent = '—'; detailEl.textContent = 'Kling 선택 시 표시';
+      return;
+    }
+    const opt = document.querySelector('.gs-engine-opt[data-only-engine="kling"]');
+    if (!opt) return;
+    const sel = opt.querySelector('select[name="model_name"]');
+    // 빈 value ('— default —') 면 data-default-model 로 fallback (server env default).
+    const model = sel?.value || sel?.dataset?.defaultModel || '';
+    // mode/duration 도 radio group 충돌 등으로 nothing :checked 면 hard default 적용.
+    // estCostUSD 의 `|| '5'` 와 동일 패턴 — UI 가 '가격표 누락' 으로 빠지지 않게.
+    const mode = opt.querySelector('input[name="mode"]:checked')?.value || 'pro';
+    const dur = opt.querySelector('input[name="duration"]:checked')?.value || '5';
+    const u = klingUnitCost(model, mode, dur);
+    if (!u) {
+      usdEl.textContent = '—';
+      detailEl.textContent = `가격표 누락 (${model}/${mode}/${dur}s)`;
+      noteEl.textContent = '';
+      return;
+    }
+    const totalUsd = u.usd * (jobs || 0);
+    const totalCredits = u.units * (jobs || 0);
+    usdEl.textContent = '$' + totalUsd.toFixed(4).replace(/0+$/,'').replace(/\.$/,'');
+    detailEl.textContent = `${jobs || 0} jobs × ${u.units} credits = ${totalCredits} credits`;
+    const p = window.__KLING_PRICING__ || {};
+    noteEl.textContent = u.note + ' · 1 unit = $' + (p.usd_per_unit || 0.14);
   }
   function fmtBytes(n) {
     if (n < 1024) return `${n} B`;
@@ -491,8 +573,14 @@
     pvBatches.textContent = batches;
     pvJobs.textContent = jobs;
     pvBytes.textContent = fmtBytes(filesArr.reduce((s, f) => s + f.size, 0));
-    const cost = estCostUSD(engine, jobs, duration);
+    // Kling 인 경우 model + mode 도 lookup 키. 빈 value 면 data-default-model fallback.
+    const klingOpt = document.querySelector('.gs-engine-opt[data-only-engine="kling"]');
+    const klingSel = klingOpt?.querySelector('select[name="model_name"]');
+    const klingModel = klingSel?.value || klingSel?.dataset?.defaultModel || '';
+    const klingMode = klingOpt?.querySelector('input[name="mode"]:checked')?.value;
+    const cost = estCostUSD(engine, jobs, duration, klingModel, klingMode);
     pvCost.textContent = cost === null ? '—' : `≈ $${cost.toFixed(2)}`;
+    updateKlingCostBlock(jobs);
 
     let disabled = false;
     if (warning) {
@@ -508,9 +596,10 @@
   }
 
   promptsEl.addEventListener('input', updatePreview);
-  document.querySelectorAll('input[name=pair_mode], input[name=duration], input[name=aspect_ratio]').forEach(
-    r => r.addEventListener('change', updatePreview)
-  );
+  document.querySelectorAll(
+    'input[name=pair_mode], input[name=duration], input[name=aspect_ratio], ' +
+    'input[name=engine], input[name=mode], select[name=model_name]'
+  ).forEach(r => r.addEventListener('change', updatePreview));
   syncEngineOpt();
   updatePreview();
 

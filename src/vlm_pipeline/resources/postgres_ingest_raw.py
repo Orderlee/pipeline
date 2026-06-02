@@ -21,76 +21,42 @@ class PostgresIngestRawMixin:
         if not records:
             return 0
         with self.connect() as conn:
-            columns = self._table_columns(conn, "raw_files")
-            has_source_unit = "source_unit_name" in columns
-            has_spec_id = "spec_id" in columns
-            has_source_type = "source_type" in columns
-            has_genai_engine = "genai_engine" in columns
-            has_label_policy = "label_policy" in columns
-
-            base_cols = [
-                "asset_id",
-                "source_path",
-                "original_name",
-                "media_type",
-                "file_size",
-                "checksum",
-                "archive_path",
-                "raw_bucket",
-                "raw_key",
-                "ingest_batch_id",
-                "transfer_tool",
-                "ingest_status",
-                "error_message",
-                "created_at",
-                "updated_at",
-            ]
-            if has_source_unit:
-                base_cols.append("source_unit_name")
-            if has_spec_id:
-                base_cols.append("spec_id")
-            if has_source_type:
-                base_cols.append("source_type")
-            if has_genai_engine:
-                base_cols.append("genai_engine")
-            if has_label_policy:
-                base_cols.append("label_policy")
-
-            placeholders = ", ".join(["%s"] * len(base_cols))
-            insert_cols = ", ".join(base_cols)
-            sql = f"INSERT INTO raw_files ({insert_cols}) VALUES ({placeholders})"
-
+            sql = """
+                INSERT INTO raw_files (
+                    asset_id, source_path, original_name, media_type,
+                    file_size, checksum, archive_path, raw_bucket, raw_key,
+                    ingest_batch_id, transfer_tool, ingest_status, error_message,
+                    created_at, updated_at,
+                    source_unit_name, spec_id, source_type, genai_engine, label_policy
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """
             rows = []
             for rec in records:
                 now = datetime.now()
-                row = [
-                    rec.get("asset_id") or str(uuid4()),
-                    rec.get("source_path"),
-                    rec.get("original_name"),
-                    rec.get("media_type", "image"),
-                    rec.get("file_size"),
-                    rec.get("checksum"),
-                    rec.get("archive_path"),
-                    rec.get("raw_bucket", "vlm-raw"),
-                    rec.get("raw_key"),
-                    rec.get("ingest_batch_id"),
-                    rec.get("transfer_tool", "manual"),
-                    rec.get("ingest_status", "pending"),
-                    rec.get("error_message"),
-                    rec.get("created_at", now),
-                    rec.get("updated_at", now),
-                ]
-                if has_source_unit:
-                    row.append(rec.get("source_unit_name"))
-                if has_spec_id:
-                    row.append(rec.get("spec_id"))
-                if has_source_type:
-                    row.append(rec.get("source_type", "camera"))
-                if has_genai_engine:
-                    row.append(rec.get("genai_engine"))
-                if has_label_policy:
-                    row.append(rec.get("label_policy", "required"))
-                rows.append(row)
+                rows.append(
+                    (
+                        rec.get("asset_id") or str(uuid4()),
+                        rec.get("source_path"),
+                        rec.get("original_name"),
+                        rec.get("media_type", "image"),
+                        rec.get("file_size"),
+                        rec.get("checksum"),
+                        rec.get("archive_path"),
+                        rec.get("raw_bucket", "vlm-raw"),
+                        rec.get("raw_key"),
+                        rec.get("ingest_batch_id"),
+                        rec.get("transfer_tool", "manual"),
+                        rec.get("ingest_status", "pending"),
+                        rec.get("error_message"),
+                        rec.get("created_at", now),
+                        rec.get("updated_at", now),
+                        rec.get("source_unit_name"),
+                        rec.get("spec_id"),
+                        rec.get("source_type", "camera"),
+                        rec.get("genai_engine"),
+                        rec.get("label_policy", "required"),
+                    )
+                )
 
             with conn.cursor() as cur:
                 cur.executemany(sql, rows)
@@ -213,15 +179,13 @@ class PostgresIngestRawMixin:
             return 0
         now = datetime.now()
         with self.connect() as conn:
-            columns = self._table_columns(conn, "raw_files")
-            has_spec_id = "spec_id" in columns
             with conn.cursor() as cur:
                 for u in updates:
                     aid = u.get("asset_id")
                     if not aid:
                         continue
                     status = u.get("ingest_status", "pending")
-                    if has_spec_id and "spec_id" in u:
+                    if "spec_id" in u:
                         cur.execute(
                             "UPDATE raw_files SET ingest_status = %s, spec_id = %s, updated_at = %s WHERE asset_id = %s",
                             (status, u.get("spec_id"), now, aid),
@@ -327,9 +291,6 @@ class PostgresIngestRawMixin:
         if not normalized_name:
             return 0
         with self.connect() as conn:
-            columns = self._table_columns(conn, "raw_files")
-            if "source_unit_name" not in columns:
-                return 0
             with conn.cursor() as cur:
                 cur.execute(
                     """
@@ -494,9 +455,6 @@ class PostgresIngestRawMixin:
         if not normalized_name:
             return []
         with self.connect() as conn:
-            columns = self._table_columns(conn, "raw_files")
-            if "source_unit_name" not in columns:
-                return []
             with conn.cursor() as cur:
                 cur.execute(
                     """
@@ -515,7 +473,9 @@ class PostgresIngestRawMixin:
         """Phase 2b: archive 에 이미 옮겨진 raw_files 조회.
 
         ``from_archived=True`` dispatch JSON 처리 시 folder_name 으로 raw_files 의
-        archived 행들을 lookup 해서 archive_path/raw_key/asset_id/media_type 반환.
+        archive-backed 행들을 lookup 해서 archive_path/raw_key/asset_id/media_type 반환.
+        첫 archive dispatch upload 이후 행 상태가 ``completed`` 로 바뀌므로 재처리
+        요청은 ``archived`` 와 ``completed`` 를 모두 허용한다.
         동일 folder 가 다중 source_unit_name (예: ``<folder>`` + ``<folder>/<sub>``) 으로
         저장된 경우 둘 다 매칭한다.
         """
@@ -529,7 +489,7 @@ class PostgresIngestRawMixin:
                     SELECT asset_id, archive_path, raw_key, media_type, file_size, source_unit_name
                     FROM raw_files
                     WHERE (source_unit_name = %s OR source_unit_name LIKE %s)
-                      AND ingest_status = 'archived'
+                      AND ingest_status IN ('archived', 'completed')
                       AND archive_path IS NOT NULL
                     ORDER BY raw_key
                     """,
@@ -621,9 +581,6 @@ class PostgresIngestRawMixin:
     def list_completed_videos_for_spec_router(self, limit: int = 500) -> list[dict[str, Any]]:
         """ingest_router용: ingest_status=completed, spec_id 미설정 비디오."""
         with self.connect() as conn:
-            columns = self._table_columns(conn, "raw_files")
-            if "source_unit_name" not in columns or "spec_id" not in columns:
-                return []
             with conn.cursor() as cur:
                 cur.execute(
                     """
@@ -650,10 +607,8 @@ class PostgresIngestRawMixin:
                 """
             params: list[Any] = [stem]
             if source_unit_name:
-                columns = self._table_columns(conn, "raw_files")
-                if "source_unit_name" in columns:
-                    query += " AND source_unit_name = %s"
-                    params.append(str(source_unit_name))
+                query += " AND source_unit_name = %s"
+                params.append(str(source_unit_name))
             query += " LIMIT 1"
             with conn.cursor() as cur:
                 cur.execute(query, params)
