@@ -104,6 +104,20 @@
                 {% endfor %}
               </div>
             </div>
+            {# 예상 비용 — JS 가 model/mode/duration 변경마다 실시간 갱신 #}
+            <div class="gs-field" style="padding-top:6px;border-top:1px dashed #2a2a2e">
+              <div class="gs-field__label gs-mono">예상 비용 (per video)</div>
+              <div id="kling-cost-est" class="gs-mono"
+                   style="font-size:14px;color:#9ce29c">
+                <strong id="kling-cost-est-usd">—</strong>
+                <span style="color:#888">·</span>
+                <span id="kling-cost-est-credits">— credits</span>
+              </div>
+              <div class="gs-hint" style="font-size:11px;margin-top:2px"
+                   id="kling-cost-est-note">
+                Kling Trial / Paid 동일 단가. 1 unit = $0.14.
+              </div>
+            </div>
           </div>
           {% endif %}
 
@@ -125,7 +139,8 @@
                 <div class="gs-field__label gs-mono">aspect_ratio</div>
                 <div class="gs-segmented">
                   {% for a in v.aspect_ratios %}
-                    <input type="radio" name="aspect_ratio" id="veo-ar-{{ loop.index }}" value="{{ a }}" {% if a == v.default_aspect_ratio %}checked{% endif %} disabled>
+                    {# 2026-06-01 fix: 'checked' 제거 — kling 과 name=aspect_ratio 공유 충돌 #}
+                    <input type="radio" name="aspect_ratio" id="veo-ar-{{ loop.index }}" value="{{ a }}" disabled>
                     <label for="veo-ar-{{ loop.index }}">{{ a }}</label>
                   {% endfor %}
                 </div>
@@ -134,7 +149,9 @@
                 <div class="gs-field__label gs-mono">duration (sec)</div>
                 <div class="gs-segmented">
                   {% for d in v.durations %}
-                    <input type="radio" name="duration" id="veo-dur-{{ d }}" value="{{ d }}" {% if d == v.default_duration %}checked{% endif %} disabled>
+                    {# 2026-06-01 fix: 'checked' 제거 — name=duration 공유로 kling 5s :checked 가
+                     veo 8s 'checked' 에 덮여 초기 페이지 로드 시 가격표 누락 표시 #}
+                  <input type="radio" name="duration" id="veo-dur-{{ d }}" value="{{ d }}" disabled>
                     <label for="veo-dur-{{ d }}">{{ d }}s</label>
                   {% endfor %}
                 </div>
@@ -546,6 +563,74 @@
       document.getElementById('gs-submit-form')?.requestSubmit();
     }
   });
+
+  // Kling 예상 비용 — model/mode/duration 변경 시 실시간 갱신
+  window.__KLING_PRICING__ = {{ kling_pricing|tojson }};
+  (function setupKlingCost() {
+    const pricing = window.__KLING_PRICING__;
+    if (!pricing) return;
+    const usdEl = document.getElementById('kling-cost-est-usd');
+    const credEl = document.getElementById('kling-cost-est-credits');
+    const noteEl = document.getElementById('kling-cost-est-note');
+    if (!usdEl) return;
+
+    function lookup(model, mode, dur) {
+      const v = pricing.video || {};
+      const m = (model || '').toLowerCase();
+      // V3 — per-second
+      if (m === 'kling-v3') {
+        const rate = (pricing.video_per_second || {})['kling-v3']?.[mode];
+        const sec = parseInt(dur, 10);
+        if (!rate || !sec) return null;
+        const units = Math.round(rate * sec * 1000) / 1000;
+        return { units, usd: Math.round(units * pricing.usd_per_unit * 10000) / 10000, note: `v3 ${rate}/s × ${sec}s (sound=off)` };
+      }
+      const byMode = v[m];
+      if (!byMode) return null;
+      let units = byMode[mode]?.[dur];
+      // Master 모델 등 — std/pro 같은 값
+      if (units == null) units = byMode.std?.[dur] ?? byMode.pro?.[dur];
+      if (units == null) return null;
+      return { units, usd: Math.round(units * pricing.usd_per_unit * 10000) / 10000, note: 'image2video / text2video (sound=off)' };
+    }
+
+    function getSelected() {
+      const engineEl = document.querySelector('input[name="engine"]:checked');
+      if (!engineEl || engineEl.value !== 'kling') return null;
+      const opt = document.querySelector('.gs-engine-opt[data-only-engine="kling"]');
+      if (!opt) return null;
+      const model = opt.querySelector('select[name="model_name"]')?.value;
+      const mode = opt.querySelector('input[name="mode"]:checked')?.value;
+      const dur = opt.querySelector('input[name="duration"]:checked')?.value;
+      return { model, mode, dur };
+    }
+
+    function refresh() {
+      const sel = getSelected();
+      if (!sel) {
+        usdEl.textContent = '—';
+        credEl.textContent = '— credits';
+        noteEl.textContent = 'Kling 선택 시 표시';
+        return;
+      }
+      const r = lookup(sel.model, sel.mode, sel.dur);
+      if (!r) {
+        usdEl.textContent = '—';
+        credEl.textContent = '— credits';
+        noteEl.textContent = `가격표 누락 (${sel.model}/${sel.mode}/${sel.dur}s)`;
+        return;
+      }
+      usdEl.textContent = '$' + r.usd.toFixed(4).replace(/0+$/,'').replace(/\.$/,'');
+      credEl.textContent = `${r.units} credits`;
+      noteEl.textContent = r.note + ' · 1 unit = $' + pricing.usd_per_unit;
+    }
+
+    // 모든 input/select 변경 감지
+    document.querySelectorAll(
+      'input[name="engine"], select[name="model_name"], input[name="mode"], input[name="duration"]'
+    ).forEach(el => el.addEventListener('change', refresh));
+    refresh();
+  })();
 
   // ?created=<batch_id> toast
   (function showCreatedToast() {

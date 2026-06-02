@@ -23,12 +23,19 @@
   {% if promoted %}
   <div class="gs-card-block" style="padding:14px 18px;margin-bottom:16px;
        border-left:3px solid #facc15;background:#1f1a05">
-    ⚠️ 이 batch 는 이미 라벨링 파이프라인에 보냈습니다. 다시 보내려면 DB 의 <code>options_json.promoted_to_labeling</code> 를 수동으로 unset 하세요.
+    ⚠️ 이 batch 는 이미 라벨링 파이프라인에 보냈습니다. 다시 보내려면 아래 폼에
+    <strong>새 카테고리/클래스/preset</strong> 을 설정한 뒤 <strong>"↻ 다시 보내기"</strong>
+    버튼 클릭. 기존 archive 파일은 재사용 (Kling 비용 0). SAM3/Gemini 만 새 prompt 로
+    재실행됩니다.
   </div>
   {% endif %}
 
   <form method="post" action="/genai/batches/{{ batch.batch_id }}/promote-to-labeling"
         class="gs-card-block" style="padding:18px;margin-bottom:24px">
+    {# 2026-06-02 re-dispatch: promoted=True 면 submit 시 force=true 로 전송 →
+       backend repromote_batch_to_labeling 분기. button 클릭 시 JS 가 hidden field
+       value 를 'true' 로 설정 후 submit. #}
+    <input type="hidden" name="force" id="ls-force-field" value="false">
 
     <h2 class="gs-h2" style="margin-top:0">라벨링 방법 (다중 선택)</h2>
     <p class="gs-hint">선택한 방법별로 step 이 dispatch_stage_job 에 추가됩니다.
@@ -66,30 +73,79 @@
       <label><input type="radio" name="label_policy" value="none"> none</label>
     </div>
 
-    <h2 class="gs-h2">카테고리 (선택)</h2>
-    <p class="gs-hint">Gemini 가 검출할 이벤트 카테고리. 콤마 또는 줄바꿈 구분. 비워두면 모든 이벤트 대상.</p>
-    <textarea name="categories_text" rows="2"
+    <h2 class="gs-h2">카테고리 preset (권장)</h2>
+    <p class="gs-hint">
+      클릭하면 아래 카테고리 + 클래스 칸이 자동 채워집니다 (중복 자동 제거).
+      여러 개 선택 가능. <strong>토글</strong>: 한 번 더 클릭하면 해제.
+      Gemini 의 검출 정확도 향상을 위한 자연어 설명도 같이 전달됩니다.
+    </p>
+    <div id="ls-preset-buttons"
+         style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:10px">
+      {# 각 preset 의 정의는 ls_preset.html 데이터 + JS 가 dispatch 시 사용 #}
+      <button type="button" class="gs-pill preset-btn" data-preset="fire">🔥 Fire</button>
+      <button type="button" class="gs-pill preset-btn" data-preset="smoke">💨 Smoke</button>
+      <button type="button" class="gs-pill preset-btn" data-preset="falldown">🚶 Falldown</button>
+      <button type="button" class="gs-pill preset-btn" data-preset="weapon">🔫 Weapon</button>
+      <button type="button" class="gs-pill preset-btn" data-preset="violence">⚠️ Violence</button>
+    </div>
+    <div id="ls-preset-active-chips" class="gs-hint"
+         style="font-size:12px;margin-bottom:14px">선택됨: <em>없음</em></div>
+
+    <h2 class="gs-h2">카테고리 (LS 라벨 + Gemini 이벤트)</h2>
+    <p class="gs-hint">
+      짧은 라벨명 — preset 클릭으로 자동 채워짐. 수동 추가/수정 가능.
+      Custom 카테고리 입력 시 Gemini 자연어 설명은 비어 있어 정확도 떨어질 수 있음.
+    </p>
+    <textarea name="categories_text" id="ls-categories-text" rows="2"
               placeholder="예: fire, fight, fall"
               style="width:100%;background:#0a0a0c;color:#e7e7ea;
                      border:1px solid #2a2a2e;border-radius:6px;padding:8px 10px;
                      font-family:'JetBrains Mono',monospace;font-size:13px"></textarea>
 
-    <h2 class="gs-h2" style="margin-top:18px">클래스 (선택, bbox 용)</h2>
-    <p class="gs-hint">YOLO/SAM3 가 검출할 객체 클래스. 콤마 또는 줄바꿈 구분. bbox 미선택시 무시.</p>
-    <textarea name="classes_text" rows="2"
-              placeholder="예: person, fire, smoke"
+    <h2 class="gs-h2" style="margin-top:18px">클래스 (SAM3/YOLO 자연어 prompt)</h2>
+    <p class="gs-hint">
+      preset 이 자동 채워주는 자연어 phrase 들 (예: "fallen person, person lying down").
+      직접 추가/수정 OK. <strong>카테고리 비고 bbox 시 LS 박스 라벨에 fallback</strong>.
+      콤마 또는 줄바꿈 구분.
+    </p>
+    <textarea name="classes_text" id="ls-classes-text" rows="2"
+              placeholder="예: person, fallen person, fire, smoke"
               style="width:100%;background:#0a0a0c;color:#e7e7ea;
                      border:1px solid #2a2a2e;border-radius:6px;padding:8px 10px;
                      font-family:'JetBrains Mono',monospace;font-size:13px"></textarea>
+
+    <details style="margin-top:14px;border:1px dashed #2a2a2e;border-radius:6px;padding:8px 12px">
+      <summary class="gs-hint" style="cursor:pointer;font-size:12px">
+        Gemini 검출 설명 (자동 채워짐, 수정 가능) ▼
+      </summary>
+      <p class="gs-hint" style="margin:8px 0">
+        category → 자연어 설명. Gemini prompt 에 inject. preset 이 채우지만
+        커스터마이즈 가능. dispatch 전송 시 hidden field 로 전달.
+      </p>
+      <textarea id="ls-gemini-desc-display" rows="4" readonly
+                style="width:100%;background:#0a0a0c;color:#9ce29c;
+                       border:1px solid #2a2a2e;border-radius:6px;padding:8px 10px;
+                       font-family:'JetBrains Mono',monospace;font-size:11px"
+                placeholder="(preset 클릭 시 자동 채워짐)"></textarea>
+    </details>
+    {# hidden field: form submit 시 백엔드로 전달되는 JSON string. #}
+    <input type="hidden" name="gemini_descriptions_json" id="ls-gemini-desc-json" value="">
 
     <input type="hidden" name="image_profile" value="current">
 
     <div style="margin-top:22px;display:flex;gap:10px;justify-content:flex-end">
       <a href="/genai/batches/{{ batch.batch_id }}" class="gs-pill muted">취소</a>
-      <button type="submit" class="gs-pill"
-              {% if promoted %}disabled style="opacity:.4;cursor:not-allowed"{% endif %}>
-        {% if promoted %}이미 전송됨{% else %}라벨링으로 보내기 →{% endif %}
-      </button>
+      {% if promoted %}
+        {# 이미 promote 된 batch — '다시 보내기' 만 노출. JS 가 force=true set 후 submit. #}
+        <button type="submit" class="gs-pill" id="ls-repromote-btn"
+                onclick="document.getElementById('ls-force-field').value='true';
+                         return confirm('새 카테고리/클래스로 다시 라벨링에 보냅니다. (archive 파일 재사용, Kling 비용 0) 진행할까요?');"
+                style="background:#1a2e1a;color:#9ce29c;border-color:#2d5a2d">
+          ↻ 다시 보내기
+        </button>
+      {% else %}
+        <button type="submit" class="gs-pill">라벨링으로 보내기 →</button>
+      {% endif %}
     </div>
   </form>
 
@@ -102,4 +158,181 @@
     </ul>
   </div>
 </main>
+
+<script>
+/**
+ * Hybrid Preset for promote-to-labeling form (2026-06-02).
+ * - 버튼 클릭 = toggle. preset 의 categories + classes + gemini_desc 자동 채움/제거.
+ * - 사용자가 textarea 수동 편집 가능.
+ * - 제출 시 gemini_descriptions_json hidden field 가 dispatch 백엔드로 전달.
+ */
+(function () {
+  // Source of truth — 새 카테고리 추가는 이 dict 만 수정.
+  const PRESETS = {
+    fire: {
+      label: 'Fire',
+      categories: ['fire'],
+      classes: ['fire', 'flame', 'open flame'],
+      gemini_desc: 'visible flames, burning objects, or active fire',
+    },
+    smoke: {
+      label: 'Smoke',
+      categories: ['smoke'],
+      classes: ['smoke', 'flame', 'smoke cloud'],
+      gemini_desc: 'visible smoke, smoke clouds, or burning fumes',
+    },
+    falldown: {
+      label: 'Falldown',
+      categories: ['falldown'],
+      classes: ['fallen person', 'person lying down', 'person on the ground'],
+      gemini_desc: 'a person falling down, collapsing, or lying motionless on the ground',
+    },
+    weapon: {
+      label: 'Weapon',
+      categories: ['weapon'],
+      classes: ['gun', 'knife', 'baseball bat', 'sword'],
+      gemini_desc: 'a person carrying or wielding a weapon such as gun, knife, or bat',
+    },
+    violence: {
+      label: 'Violence',
+      categories: ['violence'],
+      classes: ['fighting people', 'punching person', 'person hitting person'],
+      gemini_desc: 'physical violence, fighting, punching, or aggressive contact between people',
+    },
+  };
+
+  const catEl = document.getElementById('ls-categories-text');
+  const clsEl = document.getElementById('ls-classes-text');
+  const geminiDisplayEl = document.getElementById('ls-gemini-desc-display');
+  const geminiJsonEl = document.getElementById('ls-gemini-desc-json');
+  const chipsEl = document.getElementById('ls-preset-active-chips');
+  const buttons = document.querySelectorAll('.preset-btn');
+
+  // 활성 preset set — toggle 상태 관리.
+  const activePresets = new Set();
+
+  // textarea 의 콤마/줄바꿈 구분 list 파싱.
+  function parseList(text) {
+    return (text || '').replace(/,/g, '\n').split('\n')
+      .map(s => s.trim()).filter(Boolean);
+  }
+  function dedup(arr) {
+    return [...new Set(arr)];
+  }
+  function joinList(arr) {
+    return dedup(arr).join(', ');
+  }
+
+  function recompute() {
+    // 1) 기존 textarea 값 보존 (사용자가 직접 추가한 항목)
+    const existingCats = parseList(catEl.value);
+    const existingCls = parseList(clsEl.value);
+
+    // 2) 활성 preset 의 categories/classes 누적
+    const presetCats = [];
+    const presetCls = [];
+    const descDict = {};
+    activePresets.forEach(key => {
+      const p = PRESETS[key];
+      if (!p) return;
+      presetCats.push(...p.categories);
+      presetCls.push(...p.classes);
+      p.categories.forEach(c => { descDict[c] = p.gemini_desc; });
+    });
+
+    // 3) 기존 + preset 합치고 중복 제거. preset 해제 시엔 그 preset 의 항목만 제거.
+    // 간단화: 전체 재구성. 사용자가 add 한 custom 은 별도 추적이 복잡해
+    // "Custom 입력은 preset 적용 후에 다시 추가" 패턴 권장. 이 동작을 hint 로 안내.
+    const allCats = dedup([...presetCats, ...existingCats.filter(c => !isPresetGenerated(c, 'cat'))]);
+    const allCls = dedup([...presetCls, ...existingCls.filter(c => !isPresetGenerated(c, 'cls'))]);
+
+    catEl.value = joinList(allCats);
+    clsEl.value = joinList(allCls);
+
+    // 4) Gemini descriptions JSON
+    geminiJsonEl.value = Object.keys(descDict).length ? JSON.stringify(descDict) : '';
+
+    // 5) Gemini desc display (readonly)
+    const lines = Object.entries(descDict).map(([cat, desc]) => `${cat} = ${desc}`);
+    geminiDisplayEl.value = lines.length ? lines.join('\n') : '';
+
+    // 6) chips 업데이트 — ✕ 클릭하면 해당 preset 해제 (click delegation 으로)
+    if (activePresets.size === 0) {
+      chipsEl.innerHTML = '선택됨: <em>없음</em>';
+    } else {
+      const chipHtml = [...activePresets].map(key =>
+        `<span data-chip-key="${key}"
+               title="클릭하여 ${PRESETS[key].label} preset 해제"
+               style="display:inline-block;padding:2px 10px 2px 8px;margin:0 4px 4px 0;
+                      background:#1a2e1a;border:1px solid #2d5a2d;border-radius:10px;
+                      color:#9ce29c;font-size:11px;cursor:pointer;
+                      transition:background 0.15s">${PRESETS[key].label}
+          <span style="margin-left:4px;font-weight:bold;color:#7cd17c">✕</span>
+         </span>`
+      ).join('');
+      chipsEl.innerHTML = '선택됨: ' + chipHtml;
+    }
+  }
+
+  // chip ✕ 클릭 — preset 해제 (event delegation)
+  document.getElementById('ls-preset-active-chips').addEventListener('click', (e) => {
+    // ✕ 또는 chip 본체 어디 클릭해도 해제
+    const chip = e.target.closest('[data-chip-key]');
+    if (!chip) return;
+    const key = chip.dataset.chipKey;
+    if (activePresets.has(key)) {
+      activePresets.delete(key);
+      // preset 버튼 색도 reset
+      const btn = document.querySelector(`.preset-btn[data-preset="${key}"]`);
+      if (btn) { btn.style.background = ''; btn.style.color = ''; }
+      recompute();
+    }
+  });
+
+  function isPresetGenerated(value, kind) {
+    // value 가 어떤 preset 의 항목인지 — 활성/비활성 무관, 모든 preset 의 값 검사.
+    // preset 으로 들어온 값을 다시 추가 안 하기 위해.
+    for (const p of Object.values(PRESETS)) {
+      if (kind === 'cat' && p.categories.includes(value)) return true;
+      if (kind === 'cls' && p.classes.includes(value)) return true;
+    }
+    return false;
+  }
+
+  buttons.forEach(btn => {
+    btn.addEventListener('click', () => {
+      const key = btn.dataset.preset;
+      if (activePresets.has(key)) {
+        activePresets.delete(key);
+        btn.style.background = '';
+        btn.style.color = '';
+      } else {
+        activePresets.add(key);
+        btn.style.background = '#1a2e1a';
+        btn.style.color = '#9ce29c';
+      }
+      recompute();
+    });
+  });
+
+  // 사용자가 textarea 직접 수정 시 — Gemini desc 는 자동 재계산 안 함
+  // (custom 입력은 desc 없음 의도).
+  // 하지만 categories 칸의 preset 항목 지우면 hidden JSON 도 정리해야 더 정확.
+  // 단순화: 사용자가 카테고리에서 preset 항목 지우면, 그 preset 의 desc 도 빠지도록.
+  catEl.addEventListener('blur', () => {
+    const remaining = new Set(parseList(catEl.value));
+    Object.keys(PRESETS).forEach(key => {
+      const presetCat = PRESETS[key].categories[0];
+      if (activePresets.has(key) && !remaining.has(presetCat)) {
+        activePresets.delete(key);
+        const btn = document.querySelector(`.preset-btn[data-preset="${key}"]`);
+        if (btn) { btn.style.background = ''; btn.style.color = ''; }
+      }
+    });
+    recompute();
+  });
+
+  recompute();
+})();
+</script>
 {% endblock %}

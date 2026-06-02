@@ -1,0 +1,140 @@
+- generic [ref=e2]:
+  - banner [ref=e3]:
+    - generic [ref=e4]:
+      - img [ref=e6]
+      - generic [ref=e8]: GenAI Studio
+      - generic [ref=e9]: / workspace
+    - navigation [ref=e10]:
+      - link "Submit" [ref=e11] [cursor=pointer]:
+        - /url: /
+      - link "Bulk" [ref=e12] [cursor=pointer]:
+        - /url: /genai/bulk
+      - link "Batches" [ref=e13] [cursor=pointer]:
+        - /url: /genai/batches
+      - link "Costs" [ref=e14] [cursor=pointer]:
+        - /url: /genai/costs
+    - generic [ref=e15]:
+      - img [ref=e16]
+      - generic [ref=e19]: staging · dev
+    - generic [ref=e20]: PI
+  - generic [ref=e21]:
+    - generic [ref=e22]:
+      - generic [ref=e23]:
+        - button "Images × Prompts" [ref=e24] [cursor=pointer]:
+          - img [ref=e25]
+          - text: Images × Prompts
+        - button "Text → Video (veo)" [ref=e29] [cursor=pointer]:
+          - img [ref=e30]
+          - text: Text → Video (veo)
+      - generic [ref=e32]:
+        - generic [ref=e33]:
+          - generic [ref=e34]:
+            - generic [ref=e35]: Engine
+            - generic [ref=e36]: 모델군
+          - generic [ref=e37]:
+            - generic [ref=e38]:
+              - radio "veo google · veo" [checked] [ref=e39] [cursor=pointer]
+              - generic [ref=e40] [cursor=pointer]:
+                - generic [ref=e42]: veo
+                - generic [ref=e43]: google · veo
+            - generic [ref=e44]:
+              - radio "kling kling · video" [ref=e45] [cursor=pointer]
+              - generic [ref=e46] [cursor=pointer]:
+                - generic [ref=e48]: kling
+                - generic [ref=e49]: kling · video
+        - generic [ref=e50]:
+          - generic [ref=e51]:
+            - generic [ref=e52]: Veo 옵션 (Vertex AI)
+            - generic [ref=e53]: model parameters
+          - generic [ref=e54]:
+            - generic [ref=e55]:
+              - generic [ref=e56]: model_name
+              - generic [ref=e57]:
+                - combobox [ref=e58] [cursor=pointer]:
+                  - option "— default —" [selected]
+                  - option "veo-3.1-generate-001"
+                  - option "veo-3.1-fast-generate-001"
+                  - option "veo-3.0-generate-001"
+                - img
+            - generic [ref=e59]:
+              - generic [ref=e60]:
+                - generic [ref=e61]: aspect_ratio
+                - generic [ref=e62]:
+                  - generic [ref=e63] [cursor=pointer]: 16:9
+                  - generic [ref=e64] [cursor=pointer]: 9:16
+              - generic [ref=e65]:
+                - generic [ref=e66]: duration (sec)
+                - generic [ref=e67]:
+                  - generic [ref=e68] [cursor=pointer]: 4s
+                  - generic [ref=e69] [cursor=pointer]: 6s
+                  - generic [ref=e70] [cursor=pointer]: 8s
+        - generic [ref=e71]:
+          - generic [ref=e72]:
+            - generic [ref=e73]: Pair mode
+            - generic [ref=e74]: 매핑 규칙
+          - generic [ref=e75]:
+            - generic [ref=e76] [cursor=pointer]: paired (1:1, N==M)
+            - generic [ref=e77] [cursor=pointer]: cartesian (N×M)
+        - generic [ref=e78]:
+          - generic [ref=e79]:
+            - generic [ref=e80]: 이미지
+            - generic [ref=e81]: png · jpg · webp · ≤ 20장/batch · 50MB/장
+          - generic [ref=e82] [cursor=pointer]:
+            - generic:
+              - generic:
+                - img
+              - generic:
+                - text: 이미지를 드래그하거나
+                - emphasis: 클릭하여 선택
+              - generic: 여러 장 선택 가능 · 누적 추가
+        - generic [ref=e83]:
+          - generic [ref=e84]:
+            - generic [ref=e85]: 프롬프트
+            - generic [ref=e86]: 한 줄에 하나 · 0 prompts
+          - textbox "첫 번째 프롬프트 두 번째 프롬프트 세 번째 프롬프트 ..." [ref=e87]:
+            - /placeholder: "첫 번째 프롬프트\n두 번째 프롬프트\n세 번째 프롬프트\n..."
+          - generic [ref=e88]:
+            - generic [ref=e89]:
+              - img [ref=e90]
+              - text: 여러 프롬프트 × 이미지 일괄 생성
+            - generic [ref=e92]: 0 chars
+        - generic [ref=e93]:
+          - generic [ref=e94]:
+            - generic [ref=e95]: Group ID
+            - generic [ref=e96]: 선택 · 미입력 시 자동 bgi-…
+          - 'textbox "예: nightly.2026-05-13 (영숫자 / _ / - / . 1~64자)" [ref=e97]':
+            - /placeholder: "예: nightly.2026-05-13  (영숫자 / _ / - / . 1~64자)"
+      - button "생성 시작" [disabled] [ref=e99]:
+        - img [ref=e100]
+        - text: 생성 시작
+    - main [ref=e102]:
+      - generic [ref=e103]:
+        - generic [ref=e104]:
+          - generic [ref=e105]: Plan preview
+          - generic [ref=e106]: 서버 호출 없이 클라이언트에서 실시간 추정 · 한도 25 jobs
+        - link "단건" [ref=e108] [cursor=pointer]:
+          - /url: /
+          - img [ref=e109]
+          - text: 단건
+      - generic [ref=e112]:
+        - generic [ref=e113]:
+          - term [ref=e114]: engine
+          - definition [ref=e115]: veo
+          - term [ref=e116]: prompts
+          - definition [ref=e117]: "0"
+          - term [ref=e118]: images
+          - definition [ref=e119]: "0"
+          - term [ref=e120]: pair mode
+          - definition [ref=e121]: paired
+          - term [ref=e122]: batches
+          - definition [ref=e123]: "0"
+          - term [ref=e124]: jobs (total)
+          - definition [ref=e125]: "0"
+          - term [ref=e126]: input bytes
+          - definition [ref=e127]: "0"
+          - term [ref=e128]: est cost*
+          - definition [ref=e129]: —
+        - paragraph [ref=e130]:
+          - text: 서버 hard cap GENAI_MAX_BULK_JOBS=25. 초과 시 자동 차단 — 더 큰 batch 는 CLI bulk-submit 사용.
+          - text: "* 비용은 Veo $0.40/sec 기준 추정. 다른 엔진은 unknown."
+      - paragraph [ref=e131]: Tip — Cmd/Ctrl+Enter 로 빠르게 제출. window.confirm 으로 한 번 더 확인.

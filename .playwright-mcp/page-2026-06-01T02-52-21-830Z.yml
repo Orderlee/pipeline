@@ -1,0 +1,1033 @@
+- generic [ref=e1]:
+  - generic [ref=e2]:
+    - generic [ref=e3]:
+      - generic [ref=e4]:
+        - link [ref=e5] [cursor=pointer]:
+          - /url: /dev
+          - img [ref=e6]
+        - img [ref=e10] [cursor=pointer]
+      - generic [ref=e12]:
+        - img [ref=e13]
+        - generic [ref=e15]: 🎉 Kling AI Native 4K + Stripe Payment Now Available 🎉
+        - generic [ref=e16] [cursor=pointer]: Learn More
+      - generic [ref=e17]:
+        - generic [ref=e19]:
+          - generic [ref=e22]:
+            - textbox "Search" [ref=e23]
+            - img [ref=e28]
+          - menubar [ref=e30]:
+            - listitem [ref=e31]:
+              - generic [ref=e32]: Get Started
+              - list [ref=e33]:
+                - menuitem "Overview" [ref=e34] [cursor=pointer]:
+                  - link "Overview" [ref=e35]:
+                    - /url: /document-api/quickStart%2FproductIntroduction%2Foverview
+                    - generic [ref=e36]: Overview
+                - menuitem "Quick Start" [ref=e37] [cursor=pointer]:
+                  - link "Quick Start" [ref=e38]:
+                    - /url: /document-api/quickStart%2FuserManual
+                    - generic [ref=e39]: Quick Start
+                - menuitem "Changelog" [ref=e40] [cursor=pointer]:
+                  - link "Changelog" [ref=e41]:
+                    - /url: /document-api/apiReference%2FupdateNotice
+                    - generic [ref=e42]: Changelog
+            - listitem [ref=e43]:
+              - generic [ref=e44]: API Reference
+              - list [ref=e45]:
+                - menuitem "General Info" [ref=e46] [cursor=pointer]:
+                  - link "General Info" [ref=e47]:
+                    - /url: /document-api/apiReference%2FcommonInfo
+                    - generic [ref=e48]: General Info
+                - menuitem "Rate Limits" [ref=e49] [cursor=pointer]:
+                  - link "Rate Limits" [ref=e50]:
+                    - /url: /document-api/apiReference%2FrateLimits
+                    - generic [ref=e51]: Rate Limits
+                - menuitem "Callback Schema" [ref=e52] [cursor=pointer]:
+                  - link "Callback Schema" [ref=e53]:
+                    - /url: /document-api/apiReference%2FcallbackProtocol
+                    - generic [ref=e54]: Callback Schema
+                - menuitem "Kling Skills Hot" [ref=e55] [cursor=pointer]:
+                  - link "Kling Skills Hot" [ref=e56]:
+                    - /url: /document-api/apiReference%2Fskill
+                    - generic [ref=e57]: Kling Skills
+                    - generic [ref=e58]: Hot
+                    - img
+                - menuitem "Video Generation" [expanded] [ref=e59]:
+                  - generic [ref=e60] [cursor=pointer]:
+                    - generic [ref=e61]: Video Generation
+                    - img [ref=e63]
+                  - menu [ref=e65]:
+                    - menuitem "Models" [ref=e66] [cursor=pointer]:
+                      - link "Models" [ref=e67]:
+                        - /url: /document-api/apiReference%2Fmodel%2FvideoModels
+                        - img [ref=e68]
+                        - generic [ref=e70]: Models
+                    - menuitem "Video Omni" [ref=e71] [cursor=pointer]:
+                      - link "Video Omni" [ref=e72]:
+                        - /url: /document-api/apiReference%2Fmodel%2FOmniVideo
+                        - img [ref=e73]
+                        - generic [ref=e75]: Video Omni
+                    - menuitem "Text to Video" [ref=e76] [cursor=pointer]:
+                      - link "Text to Video" [ref=e77]:
+                        - /url: /document-api/apiReference%2Fmodel%2FtextToVideo
+                        - img [ref=e78]
+                        - generic [ref=e80]: Text to Video
+                    - menuitem "Image to Video" [ref=e81] [cursor=pointer]:
+                      - link "Image to Video" [ref=e82]:
+                        - /url: /document-api/apiReference%2Fmodel%2FimageToVideo
+                        - img [ref=e83]
+                        - generic [ref=e85]: Image to Video
+                    - menuitem "Reference to Video" [ref=e86] [cursor=pointer]:
+                      - link "Reference to Video" [ref=e87]:
+                        - /url: /document-api/apiReference%2Fmodel%2FmultiImageToVideo
+                        - img [ref=e88]
+                        - generic [ref=e90]: Reference to Video
+                    - menuitem "Motion Control" [ref=e91] [cursor=pointer]:
+                      - link "Motion Control" [ref=e92]:
+                        - /url: /document-api/apiReference%2Fmodel%2FmotionControl
+                        - img [ref=e93]
+                        - generic [ref=e95]: Motion Control
+                    - menuitem "Multi-elements to video" [ref=e96] [cursor=pointer]:
+                      - link "Multi-elements to video" [ref=e97]:
+                        - /url: /document-api/apiReference%2Fmodel%2FmultiElements
+                        - img [ref=e98]
+                        - generic [ref=e100]: Multi-elements to video
+                    - menuitem "Extend Video" [ref=e101] [cursor=pointer]:
+                      - link "Extend Video" [ref=e102]:
+                        - /url: /document-api/apiReference%2Fmodel%2FvideoExtension
+                        - img [ref=e103]
+                        - generic [ref=e105]: Extend Video
+                    - menuitem "Lip Sync" [ref=e106] [cursor=pointer]:
+                      - link "Lip Sync" [ref=e107]:
+                        - /url: /document-api/apiReference%2Fmodel%2FlipSync
+                        - img [ref=e108]
+                        - generic [ref=e110]: Lip Sync
+                    - menuitem "Avatar" [ref=e111] [cursor=pointer]:
+                      - link "Avatar" [ref=e112]:
+                        - /url: /document-api/apiReference%2Fmodel%2Favatar
+                        - img [ref=e113]
+                        - generic [ref=e115]: Avatar
+                    - menuitem "Text to Audio" [ref=e116] [cursor=pointer]:
+                      - link "Text to Audio" [ref=e117]:
+                        - /url: /document-api/apiReference%2Fmodel%2FtextToAudio
+                        - img [ref=e118]
+                        - generic [ref=e120]: Text to Audio
+                    - menuitem "Video to Audio" [ref=e121] [cursor=pointer]:
+                      - link "Video to Audio" [ref=e122]:
+                        - /url: /document-api/apiReference%2Fmodel%2FvideoToAudio
+                        - img [ref=e123]
+                        - generic [ref=e125]: Video to Audio
+                    - menuitem "Text to Speech" [ref=e126] [cursor=pointer]:
+                      - link "Text to Speech" [ref=e127]:
+                        - /url: /document-api/apiReference%2Fmodel%2FTTS
+                        - img [ref=e128]
+                        - generic [ref=e130]: Text to Speech
+                    - menuitem "Voice Clone" [ref=e131] [cursor=pointer]:
+                      - link "Voice Clone" [ref=e132]:
+                        - /url: /document-api/apiReference%2Fmodel%2FcustomVoices
+                        - img [ref=e133]
+                        - generic [ref=e135]: Voice Clone
+                    - menuitem "Image Recognize" [ref=e136] [cursor=pointer]:
+                      - link "Image Recognize" [ref=e137]:
+                        - /url: /document-api/apiReference%2Fmodel%2FimageRecognize
+                        - img [ref=e138]
+                        - generic [ref=e140]: Image Recognize
+                    - menuitem "Element" [ref=e141] [cursor=pointer]:
+                      - link "Element" [ref=e142]:
+                        - /url: /document-api/apiReference%2Fmodel%2Felement
+                        - img [ref=e143]
+                        - generic [ref=e145]: Element
+                - menuitem "Effects" [expanded] [ref=e146]:
+                  - generic [ref=e147] [cursor=pointer]:
+                    - generic [ref=e148]: Effects
+                    - img [ref=e150]
+                  - menu [ref=e152]:
+                    - menuitem "Effect Templates NEW" [ref=e153] [cursor=pointer]:
+                      - link "Effect Templates NEW" [ref=e154]:
+                        - /url: /document-api/quickStart%2FproductIntroduction%2FeffectsCenter
+                        - img [ref=e155]
+                        - generic [ref=e157]: Effect Templates
+                        - generic [ref=e158]: NEW
+                    - menuitem "Video Effects" [ref=e159] [cursor=pointer]:
+                      - link "Video Effects" [ref=e160]:
+                        - /url: /document-api/apiReference%2Fmodel%2FvideoEffects
+                        - img [ref=e161]
+                        - generic [ref=e163]: Video Effects
+                - menuitem "Image Generation" [expanded] [ref=e164]:
+                  - generic [ref=e165] [cursor=pointer]:
+                    - generic [ref=e166]: Image Generation
+                    - img [ref=e168]
+                  - menu [ref=e170]:
+                    - menuitem "Models" [ref=e171] [cursor=pointer]:
+                      - link "Models" [ref=e172]:
+                        - /url: /document-api/apiReference%2Fmodel%2FimageModels
+                        - img [ref=e173]
+                        - generic [ref=e175]: Models
+                    - menuitem "Image Omni" [ref=e176] [cursor=pointer]:
+                      - link "Image Omni" [ref=e177]:
+                        - /url: /document-api/apiReference%2Fmodel%2FOmniImage
+                        - img [ref=e178]
+                        - generic [ref=e180]: Image Omni
+                    - menuitem "Image Generation" [ref=e181] [cursor=pointer]:
+                      - link "Image Generation" [ref=e182]:
+                        - /url: /document-api/apiReference%2Fmodel%2FimageGeneration
+                        - img [ref=e183]
+                        - generic [ref=e185]: Image Generation
+                    - menuitem "Reference to Image" [ref=e186] [cursor=pointer]:
+                      - link "Reference to Image" [ref=e187]:
+                        - /url: /document-api/apiReference%2Fmodel%2FmultiImageToImage
+                        - img [ref=e188]
+                        - generic [ref=e190]: Reference to Image
+                    - menuitem "Extend Image" [ref=e191] [cursor=pointer]:
+                      - link "Extend Image" [ref=e192]:
+                        - /url: /document-api/apiReference%2Fmodel%2FimageExpansion
+                        - img [ref=e193]
+                        - generic [ref=e195]: Extend Image
+                    - menuitem "AI Multi-Shot" [ref=e196] [cursor=pointer]:
+                      - link "AI Multi-Shot" [ref=e197]:
+                        - /url: /document-api/apiReference%2Fmodel%2FaiMultiShot
+                        - img [ref=e198]
+                        - generic [ref=e200]: AI Multi-Shot
+                    - menuitem "Virtual Try-On" [ref=e201] [cursor=pointer]:
+                      - link "Virtual Try-On" [ref=e202]:
+                        - /url: /document-api/apiReference%2Fmodel%2FvirtualTryOn
+                        - img [ref=e203]
+                        - generic [ref=e205]: Virtual Try-On
+                - menuitem "Others" [expanded] [ref=e206]:
+                  - generic [ref=e207] [cursor=pointer]:
+                    - generic [ref=e208]: Others
+                    - img [ref=e210]
+                  - menu [ref=e212]:
+                    - menuitem "Query user info" [ref=e213] [cursor=pointer]:
+                      - link "Query user info" [ref=e214]:
+                        - /url: /document-api/apiReference%2FaccountInfoInquiry
+                        - generic [ref=e215]: Query user info
+            - listitem [ref=e216]:
+              - generic [ref=e217]: Pricing
+              - list [ref=e218]:
+                - menuitem "Billing Info" [ref=e219] [cursor=pointer]:
+                  - link "Billing Info" [ref=e220]:
+                    - /url: /document-api/productBilling%2FbillingMethod
+                    - generic [ref=e221]: Billing Info
+                - menuitem "Prepaid Resource Packs" [ref=e222] [cursor=pointer]:
+                  - link "Prepaid Resource Packs" [ref=e223]:
+                    - /url: /document-api/productBilling%2FprePaidResourcePackage
+                    - generic [ref=e224]: Prepaid Resource Packs
+            - listitem [ref=e225]:
+              - generic [ref=e226]: Protocols
+              - list [ref=e227]:
+                - menuitem "Privacy Policy of API Service" [ref=e228] [cursor=pointer]:
+                  - link "Privacy Policy of API Service" [ref=e229]:
+                    - /url: /document-api/protocols%2FprivacyPolicy
+                    - generic [ref=e230]: Privacy Policy of API Service
+                - menuitem "Terms of API Service" [ref=e231] [cursor=pointer]:
+                  - link "Terms of API Service" [ref=e232]:
+                    - /url: /document-api/protocols%2FpaidServiceProtocol
+                    - generic [ref=e233]: Terms of API Service
+                - menuitem "API Service Level Agreement" [ref=e234] [cursor=pointer]:
+                  - link "API Service Level Agreement" [ref=e235]:
+                    - /url: /document-api/protocols%2FpaidLevelProtocol
+                    - generic [ref=e236]: API Service Level Agreement
+        - generic [ref=e238]:
+          - heading "Prepaid Resource Packs" [level=1] [ref=e240]
+          - generic [ref=e242]:
+            - generic [ref=e243]:
+              - heading "Image Generation Resource Package" [level=4] [ref=e244]
+              - blockquote [ref=e245]:
+                - paragraph [ref=e246]: Credit Deduction Details
+              - table [ref=e247]:
+                - rowgroup [ref=e252]:
+                  - row "Single Image Specification Resource Package Deduction Count Pricing (Original)" [ref=e253]:
+                    - columnheader "Single Image Specification" [ref=e254]:
+                      - paragraph [ref=e255]: Single Image Specification
+                    - columnheader "Resource Package Deduction Count" [ref=e256]:
+                      - paragraph [ref=e257]: Resource Package Deduction Count
+                    - columnheader "Pricing (Original)" [ref=e258]:
+                      - paragraph [ref=e259]: Pricing (Original)
+                  - row "【Kolors Image-O1】text-to-image Deduct 8 unit from total $0.028" [ref=e260]:
+                    - cell "【Kolors Image-O1】text-to-image" [ref=e261]:
+                      - paragraph [ref=e262]: 【Kolors Image-O1】text-to-image
+                    - cell "Deduct 8 unit from total" [ref=e263]:
+                      - paragraph [ref=e264]: Deduct 8 unit from total
+                    - cell "$0.028" [ref=e265]:
+                      - paragraph [ref=e266]: $0.028
+                  - row "【Kolors Image-O1】image-to-image Deduct 8 unit from total $0.028" [ref=e267]:
+                    - cell "【Kolors Image-O1】image-to-image" [ref=e268]:
+                      - paragraph [ref=e269]: 【Kolors Image-O1】image-to-image
+                    - cell "Deduct 8 unit from total" [ref=e270]:
+                      - paragraph [ref=e271]: Deduct 8 unit from total
+                    - cell "$0.028" [ref=e272]:
+                      - paragraph [ref=e273]: $0.028
+                  - row "【Kolors Image-O1】image editing Deduct 8 unit from total $0.028" [ref=e274]:
+                    - cell "【Kolors Image-O1】image editing" [ref=e275]:
+                      - paragraph [ref=e276]: 【Kolors Image-O1】image editing
+                    - cell "Deduct 8 unit from total" [ref=e277]:
+                      - paragraph [ref=e278]: Deduct 8 unit from total
+                    - cell "$0.028" [ref=e279]:
+                      - paragraph [ref=e280]: $0.028
+                  - row "【Kolors Image-3O】1K/2K Deduct 8 unit from total $0.028" [ref=e281]:
+                    - cell "【Kolors Image-3O】1K/2K" [ref=e282]:
+                      - paragraph [ref=e283]: 【Kolors Image-3O】1K/2K
+                    - cell "Deduct 8 unit from total" [ref=e284]:
+                      - paragraph [ref=e285]: Deduct 8 unit from total
+                    - cell "$0.028" [ref=e286]:
+                      - paragraph [ref=e287]: $0.028
+                  - row "【Kolors Image-3O】4K Deduct 16 unit from total $0.056" [ref=e288]:
+                    - cell "【Kolors Image-3O】4K" [ref=e289]:
+                      - paragraph [ref=e290]: 【Kolors Image-3O】4K
+                    - cell "Deduct 16 unit from total" [ref=e291]:
+                      - paragraph [ref=e292]: Deduct 16 unit from total
+                    - cell "$0.056" [ref=e293]:
+                      - paragraph [ref=e294]: $0.056
+                  - row "【Kolors V1.0】text-to-image Deduct 1 unit from total $0.0035" [ref=e295]:
+                    - cell "【Kolors V1.0】text-to-image" [ref=e296]:
+                      - paragraph [ref=e297]: 【Kolors V1.0】text-to-image
+                    - cell "Deduct 1 unit from total" [ref=e298]:
+                      - paragraph [ref=e299]: Deduct 1 unit from total
+                    - cell "$0.0035" [ref=e300]:
+                      - paragraph [ref=e301]: $0.0035
+                  - row "【Kolors V1.0】image-to-image Deduct 1 unit from total $0.0035" [ref=e302]:
+                    - cell "【Kolors V1.0】image-to-image" [ref=e303]:
+                      - paragraph [ref=e304]: 【Kolors V1.0】image-to-image
+                    - cell "Deduct 1 unit from total" [ref=e305]:
+                      - paragraph [ref=e306]: Deduct 1 unit from total
+                    - cell "$0.0035" [ref=e307]:
+                      - paragraph [ref=e308]: $0.0035
+                  - row "【Kolors V1.5】text-to-image Deduct 4 units from total $0.014" [ref=e309]:
+                    - cell "【Kolors V1.5】text-to-image" [ref=e310]:
+                      - paragraph [ref=e311]: 【Kolors V1.5】text-to-image
+                    - cell "Deduct 4 units from total" [ref=e312]:
+                      - paragraph [ref=e313]: Deduct 4 units from total
+                    - cell "$0.014" [ref=e314]:
+                      - paragraph [ref=e315]: $0.014
+                  - row "【Kolors V1.5】image-to-image Deduct 8 units from total $0.028" [ref=e316]:
+                    - cell "【Kolors V1.5】image-to-image" [ref=e317]:
+                      - paragraph [ref=e318]: 【Kolors V1.5】image-to-image
+                    - cell "Deduct 8 units from total" [ref=e319]:
+                      - paragraph [ref=e320]: Deduct 8 units from total
+                    - cell "$0.028" [ref=e321]:
+                      - paragraph [ref=e322]: $0.028
+                  - row "【Kolors V2.0】text-to-image Deduct 4 units from total $0.014" [ref=e323]:
+                    - cell "【Kolors V2.0】text-to-image" [ref=e324]:
+                      - paragraph [ref=e325]: 【Kolors V2.0】text-to-image
+                    - cell "Deduct 4 units from total" [ref=e326]:
+                      - paragraph [ref=e327]: Deduct 4 units from total
+                    - cell "$0.014" [ref=e328]:
+                      - paragraph [ref=e329]: $0.014
+                  - row "【Kolors V2.0】image-to-image Deduct 8 units from total $0.028" [ref=e330]:
+                    - cell "【Kolors V2.0】image-to-image" [ref=e331]:
+                      - paragraph [ref=e332]: 【Kolors V2.0】image-to-image
+                    - cell "Deduct 8 units from total" [ref=e333]:
+                      - paragraph [ref=e334]: Deduct 8 units from total
+                    - cell "$0.028" [ref=e335]:
+                      - paragraph [ref=e336]: $0.028
+                  - row "【Kolors V2.0-new】image-to-image Deduct 8 units from total $0.028" [ref=e337]:
+                    - cell "【Kolors V2.0-new】image-to-image" [ref=e338]:
+                      - paragraph [ref=e339]: 【Kolors V2.0-new】image-to-image
+                    - cell "Deduct 8 units from total" [ref=e340]:
+                      - paragraph [ref=e341]: Deduct 8 units from total
+                    - cell "$0.028" [ref=e342]:
+                      - paragraph [ref=e343]: $0.028
+                  - row "【Kolors V2.0】multi-image to image Deduct 16 units from total $0.056" [ref=e344]:
+                    - cell "【Kolors V2.0】multi-image to image" [ref=e345]:
+                      - paragraph [ref=e346]: 【Kolors V2.0】multi-image to image
+                    - cell "Deduct 16 units from total" [ref=e347]:
+                      - paragraph [ref=e348]: Deduct 16 units from total
+                    - cell "$0.056" [ref=e349]:
+                      - paragraph [ref=e350]: $0.056
+                  - row "【Kolors V2.1】text-to-image Deduct 4 units from total $0.014" [ref=e351]:
+                    - cell "【Kolors V2.1】text-to-image" [ref=e352]:
+                      - paragraph [ref=e353]: 【Kolors V2.1】text-to-image
+                    - cell "Deduct 4 units from total" [ref=e354]:
+                      - paragraph [ref=e355]: Deduct 4 units from total
+                    - cell "$0.014" [ref=e356]:
+                      - paragraph [ref=e357]: $0.014
+                  - row "【Kolors V2.1】image-to-image Deduct 8 units from total $0.028" [ref=e358]:
+                    - cell "【Kolors V2.1】image-to-image" [ref=e359]:
+                      - paragraph [ref=e360]: 【Kolors V2.1】image-to-image
+                    - cell "Deduct 8 units from total" [ref=e361]:
+                      - paragraph [ref=e362]: Deduct 8 units from total
+                    - cell "$0.028" [ref=e363]:
+                      - paragraph [ref=e364]: $0.028
+                  - row "【Kolors V2.1】multi-image to image Deduct 16 units from total $0.056" [ref=e365]:
+                    - cell "【Kolors V2.1】multi-image to image" [ref=e366]:
+                      - paragraph [ref=e367]: 【Kolors V2.1】multi-image to image
+                    - cell "Deduct 16 units from total" [ref=e368]:
+                      - paragraph [ref=e369]: Deduct 16 units from total
+                    - cell "$0.056" [ref=e370]:
+                      - paragraph [ref=e371]: $0.056
+                  - row "【Kolors V3.0】1K/2K Deduct 8 unit from total $0.028" [ref=e372]:
+                    - cell "【Kolors V3.0】1K/2K" [ref=e373]:
+                      - paragraph [ref=e374]: 【Kolors V3.0】1K/2K
+                    - cell "Deduct 8 unit from total" [ref=e375]:
+                      - paragraph [ref=e376]: Deduct 8 unit from total
+                    - cell "$0.028" [ref=e377]:
+                      - paragraph [ref=e378]: $0.028
+                  - row "【Image Editing】image expansion Deduct 8 units from total $0.028" [ref=e379]:
+                    - cell "【Image Editing】image expansion" [ref=e380]:
+                      - paragraph [ref=e381]: 【Image Editing】image expansion
+                    - cell "Deduct 8 units from total" [ref=e382]:
+                      - paragraph [ref=e383]: Deduct 8 units from total
+                    - cell "$0.028" [ref=e384]:
+                      - paragraph [ref=e385]: $0.028
+                  - row "【AI Multi-Shot】Deduct based on the times of service access Deduct 20 units from total $0.07" [ref=e386]:
+                    - cell "【AI Multi-Shot】Deduct based on the times of service access" [ref=e387]:
+                      - paragraph [ref=e388]: 【AI Multi-Shot】Deduct based on the times of service access
+                    - cell "Deduct 20 units from total" [ref=e389]:
+                      - paragraph [ref=e390]: Deduct 20 units from total
+                    - cell "$0.07" [ref=e391]:
+                      - paragraph [ref=e392]: $0.07
+              - heading "Video Generation Resource Package" [level=4] [ref=e393]
+              - blockquote [ref=e394]:
+                - paragraph [ref=e395]: Credit Deduction Details
+              - table [ref=e396]:
+                - rowgroup [ref=e401]:
+                  - row "Single Video Specification Resource Package Deduction Count Pricing (Original)" [ref=e402]:
+                    - columnheader "Single Video Specification" [ref=e403]:
+                      - paragraph [ref=e404]: Single Video Specification
+                    - columnheader "Resource Package Deduction Count" [ref=e405]:
+                      - paragraph [ref=e406]: Resource Package Deduction Count
+                    - columnheader "Pricing (Original)" [ref=e407]:
+                      - paragraph [ref=e408]: Pricing (Original)
+                  - row "【Kling Video-O1】 Standard mode, 1-second video duration, without video input Deduct 0.6 units from total $0.084" [ref=e409]:
+                    - cell "【Kling Video-O1】 Standard mode, 1-second video duration, without video input" [ref=e410]:
+                      - paragraph [ref=e411]: 【Kling Video-O1】
+                      - paragraph [ref=e412]: Standard mode, 1-second video duration, without video input
+                    - cell "Deduct 0.6 units from total" [ref=e413]:
+                      - paragraph [ref=e414]: Deduct 0.6 units from total
+                    - cell "$0.084" [ref=e415]:
+                      - paragraph [ref=e416]: $0.084
+                  - row "【Kling Video-O1】 Standard mode, 1-second video duration, with video input Deduct 0.9 units from total $0.126" [ref=e417]:
+                    - cell "【Kling Video-O1】 Standard mode, 1-second video duration, with video input" [ref=e418]:
+                      - paragraph [ref=e419]: 【Kling Video-O1】
+                      - paragraph [ref=e420]: Standard mode, 1-second video duration, with video input
+                    - cell "Deduct 0.9 units from total" [ref=e421]:
+                      - paragraph [ref=e422]: Deduct 0.9 units from total
+                    - cell "$0.126" [ref=e423]:
+                      - paragraph [ref=e424]: $0.126
+                  - row "【Kling Video-O1】 Professional mode, 1-second video duration, without video input Deduct 0.8 units from total $0.112" [ref=e425]:
+                    - cell "【Kling Video-O1】 Professional mode, 1-second video duration, without video input" [ref=e426]:
+                      - paragraph [ref=e427]: 【Kling Video-O1】
+                      - paragraph [ref=e428]: Professional mode, 1-second video duration, without video input
+                    - cell "Deduct 0.8 units from total" [ref=e429]:
+                      - paragraph [ref=e430]: Deduct 0.8 units from total
+                    - cell "$0.112" [ref=e431]:
+                      - paragraph [ref=e432]: $0.112
+                  - row "【Kling Video-O1】 Professional mode, 1-second video duration, with video input Deduct 1.2 units from total $0.168" [ref=e433]:
+                    - cell "【Kling Video-O1】 Professional mode, 1-second video duration, with video input" [ref=e434]:
+                      - paragraph [ref=e435]: 【Kling Video-O1】
+                      - paragraph [ref=e436]: Professional mode, 1-second video duration, with video input
+                    - cell "Deduct 1.2 units from total" [ref=e437]:
+                      - paragraph [ref=e438]: Deduct 1.2 units from total
+                    - cell "$0.168" [ref=e439]:
+                      - paragraph [ref=e440]: $0.168
+                  - row "【Kling Video-3O】Standard mode, 1-second video duration, without video input, without native audio generation Deduct 0.6 units from total $0.084" [ref=e441]:
+                    - cell "【Kling Video-3O】Standard mode, 1-second video duration, without video input, without native audio generation" [ref=e442]:
+                      - paragraph [ref=e443]: 【Kling Video-3O】Standard mode, 1-second video duration, without video input, without native audio generation
+                    - cell "Deduct 0.6 units from total" [ref=e444]:
+                      - paragraph [ref=e445]: Deduct 0.6 units from total
+                    - cell "$0.084" [ref=e446]:
+                      - paragraph [ref=e447]: $0.084
+                  - row "【Kling Video-3O】Standard mode, 1-second video duration, without video input, with native audio generation Deduct 0.8 units from total $0.112" [ref=e448]:
+                    - cell "【Kling Video-3O】Standard mode, 1-second video duration, without video input, with native audio generation" [ref=e449]:
+                      - paragraph [ref=e450]: 【Kling Video-3O】Standard mode, 1-second video duration, without video input, with native audio generation
+                    - cell "Deduct 0.8 units from total" [ref=e451]:
+                      - paragraph [ref=e452]: Deduct 0.8 units from total
+                    - cell "$0.112" [ref=e453]:
+                      - paragraph [ref=e454]: $0.112
+                  - row "【Kling Video-3O】Standard mode, 1-second video duration, with video input, without native audio generation Deduct 0.9 units from total $0.126" [ref=e455]:
+                    - cell "【Kling Video-3O】Standard mode, 1-second video duration, with video input, without native audio generation" [ref=e456]:
+                      - paragraph [ref=e457]: 【Kling Video-3O】Standard mode, 1-second video duration, with video input, without native audio generation
+                    - cell "Deduct 0.9 units from total" [ref=e458]:
+                      - paragraph [ref=e459]: Deduct 0.9 units from total
+                    - cell "$0.126" [ref=e460]:
+                      - paragraph [ref=e461]: $0.126
+                  - row "【Kling Video-3O】Professional mode, 1-second video duration, without video input, without native audio generation Deduct 0.8 units from total $0.112" [ref=e462]:
+                    - cell "【Kling Video-3O】Professional mode, 1-second video duration, without video input, without native audio generation" [ref=e463]:
+                      - paragraph [ref=e464]: 【Kling Video-3O】Professional mode, 1-second video duration, without video input, without native audio generation
+                    - cell "Deduct 0.8 units from total" [ref=e465]:
+                      - paragraph [ref=e466]: Deduct 0.8 units from total
+                    - cell "$0.112" [ref=e467]:
+                      - paragraph [ref=e468]: $0.112
+                  - row "【Kling Video-3O】Professional mode, 1-second video duration, without video input, with native audio generation Deduct 1.0 units from total $0.14" [ref=e469]:
+                    - cell "【Kling Video-3O】Professional mode, 1-second video duration, without video input, with native audio generation" [ref=e470]:
+                      - paragraph [ref=e471]: 【Kling Video-3O】Professional mode, 1-second video duration, without video input, with native audio generation
+                    - cell "Deduct 1.0 units from total" [ref=e472]:
+                      - paragraph [ref=e473]: Deduct 1.0 units from total
+                    - cell "$0.14" [ref=e474]:
+                      - paragraph [ref=e475]: $0.14
+                  - row "【Kling Video-3O】Professional mode, 1-second video duration, with video input, without native audio generation Deduct 1.2 units from total $0.168" [ref=e476]:
+                    - cell "【Kling Video-3O】Professional mode, 1-second video duration, with video input, without native audio generation" [ref=e477]:
+                      - paragraph [ref=e478]: 【Kling Video-3O】Professional mode, 1-second video duration, with video input, without native audio generation
+                    - cell "Deduct 1.2 units from total" [ref=e479]:
+                      - paragraph [ref=e480]: Deduct 1.2 units from total
+                    - cell "$0.168" [ref=e481]:
+                      - paragraph [ref=e482]: $0.168
+                  - row "【Kling Video-3O】4K mode, 1-second video duration, without video input, without native audio generation Deduct 3 units from total $0.42" [ref=e483]:
+                    - cell "【Kling Video-3O】4K mode, 1-second video duration, without video input, without native audio generation" [ref=e484]:
+                      - paragraph [ref=e485]: 【Kling Video-3O】4K mode, 1-second video duration, without video input, without native audio generation
+                    - cell "Deduct 3 units from total" [ref=e486]:
+                      - paragraph [ref=e487]: Deduct 3 units from total
+                    - cell "$0.42" [ref=e488]:
+                      - paragraph [ref=e489]: $0.42
+                  - row "【Kling Video-3O】4K mode, 1-second video duration, without video input, with native audio generation Deduct 3 units from total $0.42" [ref=e490]:
+                    - cell "【Kling Video-3O】4K mode, 1-second video duration, without video input, with native audio generation" [ref=e491]:
+                      - paragraph [ref=e492]: 【Kling Video-3O】4K mode, 1-second video duration, without video input, with native audio generation
+                    - cell "Deduct 3 units from total" [ref=e493]:
+                      - paragraph [ref=e494]: Deduct 3 units from total
+                    - cell "$0.42" [ref=e495]:
+                      - paragraph [ref=e496]: $0.42
+                  - row "【Kling V1.0】Standard mode, 5-second video duration Deduct 1 unit from total $0.14" [ref=e497]:
+                    - cell "【Kling V1.0】Standard mode, 5-second video duration" [ref=e498]:
+                      - paragraph [ref=e499]: 【Kling V1.0】Standard mode, 5-second video duration
+                    - cell "Deduct 1 unit from total" [ref=e500]:
+                      - paragraph [ref=e501]: Deduct 1 unit from total
+                    - cell "$0.14" [ref=e502]:
+                      - paragraph [ref=e503]: $0.14
+                  - row "【Kling V1.0】Standard mode, 10-second video duration Deduct 2 units from total $0.28" [ref=e504]:
+                    - cell "【Kling V1.0】Standard mode, 10-second video duration" [ref=e505]:
+                      - paragraph [ref=e506]: 【Kling V1.0】Standard mode, 10-second video duration
+                    - cell "Deduct 2 units from total" [ref=e507]:
+                      - paragraph [ref=e508]: Deduct 2 units from total
+                    - cell "$0.28" [ref=e509]:
+                      - paragraph [ref=e510]: $0.28
+                  - row "【Kling V1.0】Professional mode, 5-second video duration Deduct 3.5 units from total $0.49" [ref=e511]:
+                    - cell "【Kling V1.0】Professional mode, 5-second video duration" [ref=e512]:
+                      - paragraph [ref=e513]: 【Kling V1.0】Professional mode, 5-second video duration
+                    - cell "Deduct 3.5 units from total" [ref=e514]:
+                      - paragraph [ref=e515]: Deduct 3.5 units from total
+                    - cell "$0.49" [ref=e516]:
+                      - paragraph [ref=e517]: $0.49
+                  - row "【Kling V1.0】Professional mode, 10-second video duration Deduct 7 units from total $0.98" [ref=e518]:
+                    - cell "【Kling V1.0】Professional mode, 10-second video duration" [ref=e519]:
+                      - paragraph [ref=e520]: 【Kling V1.0】Professional mode, 10-second video duration
+                    - cell "Deduct 7 units from total" [ref=e521]:
+                      - paragraph [ref=e522]: Deduct 7 units from total
+                    - cell "$0.98" [ref=e523]:
+                      - paragraph [ref=e524]: $0.98
+                  - row "【Kling V1.5】Standard mode, 5-second video duration Deduct 2 units from total $0.28" [ref=e525]:
+                    - cell "【Kling V1.5】Standard mode, 5-second video duration" [ref=e526]:
+                      - paragraph [ref=e527]: 【Kling V1.5】Standard mode, 5-second video duration
+                    - cell "Deduct 2 units from total" [ref=e528]:
+                      - paragraph [ref=e529]: Deduct 2 units from total
+                    - cell "$0.28" [ref=e530]:
+                      - paragraph [ref=e531]: $0.28
+                  - row "【Kling V1.5】Standard mode, 10-second video duration Deduct 4 units from total $0.56" [ref=e532]:
+                    - cell "【Kling V1.5】Standard mode, 10-second video duration" [ref=e533]:
+                      - paragraph [ref=e534]: 【Kling V1.5】Standard mode, 10-second video duration
+                    - cell "Deduct 4 units from total" [ref=e535]:
+                      - paragraph [ref=e536]: Deduct 4 units from total
+                    - cell "$0.56" [ref=e537]:
+                      - paragraph [ref=e538]: $0.56
+                  - row "【Kling V1.5】Professional mode, 5-second video duration Deduct 3.5 units from total $0.49" [ref=e539]:
+                    - cell "【Kling V1.5】Professional mode, 5-second video duration" [ref=e540]:
+                      - paragraph [ref=e541]: 【Kling V1.5】Professional mode, 5-second video duration
+                    - cell "Deduct 3.5 units from total" [ref=e542]:
+                      - paragraph [ref=e543]: Deduct 3.5 units from total
+                    - cell "$0.49" [ref=e544]:
+                      - paragraph [ref=e545]: $0.49
+                  - row "【Kling V1.5】Professional mode, 10-second video duration Deduct 7 units from total $0.98" [ref=e546]:
+                    - cell "【Kling V1.5】Professional mode, 10-second video duration" [ref=e547]:
+                      - paragraph [ref=e548]: 【Kling V1.5】Professional mode, 10-second video duration
+                    - cell "Deduct 7 units from total" [ref=e549]:
+                      - paragraph [ref=e550]: Deduct 7 units from total
+                    - cell "$0.98" [ref=e551]:
+                      - paragraph [ref=e552]: $0.98
+                  - row "【Kling V1.6】Standard mode, 5-second video duration Deduct 2 units from total $0.28" [ref=e553]:
+                    - cell "【Kling V1.6】Standard mode, 5-second video duration" [ref=e554]:
+                      - paragraph [ref=e555]: 【Kling V1.6】Standard mode, 5-second video duration
+                    - cell "Deduct 2 units from total" [ref=e556]:
+                      - paragraph [ref=e557]: Deduct 2 units from total
+                    - cell "$0.28" [ref=e558]:
+                      - paragraph [ref=e559]: $0.28
+                  - row "【Kling V1.6】Standard mode, 10-second video duration Deduct 4 units from total $0.56" [ref=e560]:
+                    - cell "【Kling V1.6】Standard mode, 10-second video duration" [ref=e561]:
+                      - paragraph [ref=e562]: 【Kling V1.6】Standard mode, 10-second video duration
+                    - cell "Deduct 4 units from total" [ref=e563]:
+                      - paragraph [ref=e564]: Deduct 4 units from total
+                    - cell "$0.56" [ref=e565]:
+                      - paragraph [ref=e566]: $0.56
+                  - row "【Kling V1.6】Professional mode, 5-second video duration Deduct 3.5 units from total $0.49" [ref=e567]:
+                    - cell "【Kling V1.6】Professional mode, 5-second video duration" [ref=e568]:
+                      - paragraph [ref=e569]: 【Kling V1.6】Professional mode, 5-second video duration
+                    - cell "Deduct 3.5 units from total" [ref=e570]:
+                      - paragraph [ref=e571]: Deduct 3.5 units from total
+                    - cell "$0.49" [ref=e572]:
+                      - paragraph [ref=e573]: $0.49
+                  - row "【Kling V1.6】Professional mode, 10-second video duration Deduct 7 units from total $0.98" [ref=e574]:
+                    - cell "【Kling V1.6】Professional mode, 10-second video duration" [ref=e575]:
+                      - paragraph [ref=e576]: 【Kling V1.6】Professional mode, 10-second video duration
+                    - cell "Deduct 7 units from total" [ref=e577]:
+                      - paragraph [ref=e578]: Deduct 7 units from total
+                    - cell "$0.98" [ref=e579]:
+                      - paragraph [ref=e580]: $0.98
+                  - row "【Kling V1.6 multi-image to video】Standard mode, 5-second video duration Deduct 2 units from total $0.28" [ref=e581]:
+                    - cell "【Kling V1.6 multi-image to video】Standard mode, 5-second video duration" [ref=e582]:
+                      - paragraph [ref=e583]: 【Kling V1.6 multi-image to video】Standard mode, 5-second video duration
+                    - cell "Deduct 2 units from total" [ref=e584]:
+                      - paragraph [ref=e585]: Deduct 2 units from total
+                    - cell "$0.28" [ref=e586]:
+                      - paragraph [ref=e587]: $0.28
+                  - row "【Kling V1.6 multi-image to video】Standard mode, 10-second video duration Deduct 4 units from total $0.56" [ref=e588]:
+                    - cell "【Kling V1.6 multi-image to video】Standard mode, 10-second video duration" [ref=e589]:
+                      - paragraph [ref=e590]: 【Kling V1.6 multi-image to video】Standard mode, 10-second video duration
+                    - cell "Deduct 4 units from total" [ref=e591]:
+                      - paragraph [ref=e592]: Deduct 4 units from total
+                    - cell "$0.56" [ref=e593]:
+                      - paragraph [ref=e594]: $0.56
+                  - row "【Kling V1.6 multi-image to video】Professional mode, 5-second video duration Deduct 3.5 units from total $0.49" [ref=e595]:
+                    - cell "【Kling V1.6 multi-image to video】Professional mode, 5-second video duration" [ref=e596]:
+                      - paragraph [ref=e597]: 【Kling V1.6 multi-image to video】Professional mode, 5-second video duration
+                    - cell "Deduct 3.5 units from total" [ref=e598]:
+                      - paragraph [ref=e599]: Deduct 3.5 units from total
+                    - cell "$0.49" [ref=e600]:
+                      - paragraph [ref=e601]: $0.49
+                  - row "【Kling V1.6 multi-image to video】Professional mode, 10-second video duration Deduct 7 units from total $0.98" [ref=e602]:
+                    - cell "【Kling V1.6 multi-image to video】Professional mode, 10-second video duration" [ref=e603]:
+                      - paragraph [ref=e604]: 【Kling V1.6 multi-image to video】Professional mode, 10-second video duration
+                    - cell "Deduct 7 units from total" [ref=e605]:
+                      - paragraph [ref=e606]: Deduct 7 units from total
+                    - cell "$0.98" [ref=e607]:
+                      - paragraph [ref=e608]: $0.98
+                  - row "【Kling V2.0 Master】5-second video duration Deduct 10 units from total $1.4" [ref=e609]:
+                    - cell "【Kling V2.0 Master】5-second video duration" [ref=e610]:
+                      - paragraph [ref=e611]: 【Kling V2.0 Master】5-second video duration
+                    - cell "Deduct 10 units from total" [ref=e612]:
+                      - paragraph [ref=e613]: Deduct 10 units from total
+                    - cell "$1.4" [ref=e614]:
+                      - paragraph [ref=e615]: $1.4
+                  - row "【Kling V2.0 Master】10-second video duration Deduct 20 units from total $2.8" [ref=e616]:
+                    - cell "【Kling V2.0 Master】10-second video duration" [ref=e617]:
+                      - paragraph [ref=e618]: 【Kling V2.0 Master】10-second video duration
+                    - cell "Deduct 20 units from total" [ref=e619]:
+                      - paragraph [ref=e620]: Deduct 20 units from total
+                    - cell "$2.8" [ref=e621]:
+                      - paragraph [ref=e622]: $2.8
+                  - row "【Kling V2.1】Standard mode, 5-second video duration Deduct 2 units from total $0.28" [ref=e623]:
+                    - cell "【Kling V2.1】Standard mode, 5-second video duration" [ref=e624]:
+                      - paragraph [ref=e625]: 【Kling V2.1】Standard mode, 5-second video duration
+                    - cell "Deduct 2 units from total" [ref=e626]:
+                      - paragraph [ref=e627]: Deduct 2 units from total
+                    - cell "$0.28" [ref=e628]:
+                      - paragraph [ref=e629]: $0.28
+                  - row "【Kling V2.1】Standard mode, 10-second video duration Deduct 4 units from total $0.56" [ref=e630]:
+                    - cell "【Kling V2.1】Standard mode, 10-second video duration" [ref=e631]:
+                      - paragraph [ref=e632]: 【Kling V2.1】Standard mode, 10-second video duration
+                    - cell "Deduct 4 units from total" [ref=e633]:
+                      - paragraph [ref=e634]: Deduct 4 units from total
+                    - cell "$0.56" [ref=e635]:
+                      - paragraph [ref=e636]: $0.56
+                  - row "【Kling V2.1】Professional mode, 5-second video duration Deduct 3.5 units from total $0.49" [ref=e637]:
+                    - cell "【Kling V2.1】Professional mode, 5-second video duration" [ref=e638]:
+                      - paragraph [ref=e639]: 【Kling V2.1】Professional mode, 5-second video duration
+                    - cell "Deduct 3.5 units from total" [ref=e640]:
+                      - paragraph [ref=e641]: Deduct 3.5 units from total
+                    - cell "$0.49" [ref=e642]:
+                      - paragraph [ref=e643]: $0.49
+                  - row "【Kling V2.1】Professional mode, 10-second video duration Deduct 7 units from total $0.98" [ref=e644]:
+                    - cell "【Kling V2.1】Professional mode, 10-second video duration" [ref=e645]:
+                      - paragraph [ref=e646]: 【Kling V2.1】Professional mode, 10-second video duration
+                    - cell "Deduct 7 units from total" [ref=e647]:
+                      - paragraph [ref=e648]: Deduct 7 units from total
+                    - cell "$0.98" [ref=e649]:
+                      - paragraph [ref=e650]: $0.98
+                  - row "【Kling V2.1 Master】5-second video duration Deduct 10 units from total $1.4" [ref=e651]:
+                    - cell "【Kling V2.1 Master】5-second video duration" [ref=e652]:
+                      - paragraph [ref=e653]: 【Kling V2.1 Master】5-second video duration
+                    - cell "Deduct 10 units from total" [ref=e654]:
+                      - paragraph [ref=e655]: Deduct 10 units from total
+                    - cell "$1.4" [ref=e656]:
+                      - paragraph [ref=e657]: $1.4
+                  - row "【Kling V2.1 Master】10-second video duration Deduct 20 units from total $2.8" [ref=e658]:
+                    - cell "【Kling V2.1 Master】10-second video duration" [ref=e659]:
+                      - paragraph [ref=e660]: 【Kling V2.1 Master】10-second video duration
+                    - cell "Deduct 20 units from total" [ref=e661]:
+                      - paragraph [ref=e662]: Deduct 20 units from total
+                    - cell "$2.8" [ref=e663]:
+                      - paragraph [ref=e664]: $2.8
+                  - row "【Kling V2.5 Turbo】Standard mode, 5-second video duration Deduct 1.5 units from total $0.21" [ref=e665]:
+                    - cell "【Kling V2.5 Turbo】Standard mode, 5-second video duration" [ref=e666]:
+                      - paragraph [ref=e667]: 【Kling V2.5 Turbo】Standard mode, 5-second video duration
+                    - cell "Deduct 1.5 units from total" [ref=e668]:
+                      - paragraph [ref=e669]: Deduct 1.5 units from total
+                    - cell "$0.21" [ref=e670]:
+                      - paragraph [ref=e671]: $0.21
+                  - row "【Kling V2.5 Turbo】Standard mode, 10-second video duration Deduct 3 units from total $0.42" [ref=e672]:
+                    - cell "【Kling V2.5 Turbo】Standard mode, 10-second video duration" [ref=e673]:
+                      - paragraph [ref=e674]: 【Kling V2.5 Turbo】Standard mode, 10-second video duration
+                    - cell "Deduct 3 units from total" [ref=e675]:
+                      - paragraph [ref=e676]: Deduct 3 units from total
+                    - cell "$0.42" [ref=e677]:
+                      - paragraph [ref=e678]: $0.42
+                  - row "【Kling V2.5 Turbo】Professional mode, 5-second video duration Deduct 2.5 units from total $0.35" [ref=e679]:
+                    - cell "【Kling V2.5 Turbo】Professional mode, 5-second video duration" [ref=e680]:
+                      - paragraph [ref=e681]: 【Kling V2.5 Turbo】Professional mode, 5-second video duration
+                    - cell "Deduct 2.5 units from total" [ref=e682]:
+                      - paragraph [ref=e683]: Deduct 2.5 units from total
+                    - cell "$0.35" [ref=e684]:
+                      - paragraph [ref=e685]: $0.35
+                  - row "【Kling V2.5 Turbo】Professional mode, 10-second video duration Deduct 5 units from total $0.7" [ref=e686]:
+                    - cell "【Kling V2.5 Turbo】Professional mode, 10-second video duration" [ref=e687]:
+                      - paragraph [ref=e688]: 【Kling V2.5 Turbo】Professional mode, 10-second video duration
+                    - cell "Deduct 5 units from total" [ref=e689]:
+                      - paragraph [ref=e690]: Deduct 5 units from total
+                    - cell "$0.7" [ref=e691]:
+                      - paragraph [ref=e692]: $0.7
+                  - row "【Kling V2.6】Standard mode, 5-second video duration, without native audio generation Deduct 1.5 units from total $0.21" [ref=e693]:
+                    - cell "【Kling V2.6】Standard mode, 5-second video duration, without native audio generation" [ref=e694]:
+                      - paragraph [ref=e695]: 【Kling V2.6】Standard mode, 5-second video duration, without native audio generation
+                    - cell "Deduct 1.5 units from total" [ref=e696]:
+                      - paragraph [ref=e697]: Deduct 1.5 units from total
+                    - cell "$0.21" [ref=e698]:
+                      - paragraph [ref=e699]: $0.21
+                  - row "【Kling V2.6】Standard mode, 10-second video duration, without native audio generation Deduct 3 units from total $0.42" [ref=e700]:
+                    - cell "【Kling V2.6】Standard mode, 10-second video duration, without native audio generation" [ref=e701]:
+                      - paragraph [ref=e702]: 【Kling V2.6】Standard mode, 10-second video duration, without native audio generation
+                    - cell "Deduct 3 units from total" [ref=e703]:
+                      - paragraph [ref=e704]: Deduct 3 units from total
+                    - cell "$0.42" [ref=e705]:
+                      - paragraph [ref=e706]: $0.42
+                  - row "【Kling V2.6】Professional mode, 5-second video duration, without native audio generation Deduct 2.5 units from total $0.35" [ref=e707]:
+                    - cell "【Kling V2.6】Professional mode, 5-second video duration, without native audio generation" [ref=e708]:
+                      - paragraph [ref=e709]: 【Kling V2.6】Professional mode, 5-second video duration, without native audio generation
+                    - cell "Deduct 2.5 units from total" [ref=e710]:
+                      - paragraph [ref=e711]: Deduct 2.5 units from total
+                    - cell "$0.35" [ref=e712]:
+                      - paragraph [ref=e713]: $0.35
+                  - row "【Kling V2.6】Professional mode, 10-second video duration, without native audio generation Deduct 5 units from total $0.7" [ref=e714]:
+                    - cell "【Kling V2.6】Professional mode, 10-second video duration, without native audio generation" [ref=e715]:
+                      - paragraph [ref=e716]: 【Kling V2.6】Professional mode, 10-second video duration, without native audio generation
+                    - cell "Deduct 5 units from total" [ref=e717]:
+                      - paragraph [ref=e718]: Deduct 5 units from total
+                    - cell "$0.7" [ref=e719]:
+                      - paragraph [ref=e720]: $0.7
+                  - row "【Kling V2.6】Professional mode, 5-second video duration, with native audio generation, without voice control Deduct 5 units from total $0.7" [ref=e721]:
+                    - cell "【Kling V2.6】Professional mode, 5-second video duration, with native audio generation, without voice control" [ref=e722]:
+                      - paragraph [ref=e723]: 【Kling V2.6】Professional mode, 5-second video duration, with native audio generation, without voice control
+                    - cell "Deduct 5 units from total" [ref=e724]:
+                      - paragraph [ref=e725]: Deduct 5 units from total
+                    - cell "$0.7" [ref=e726]:
+                      - paragraph [ref=e727]: $0.7
+                  - row "【Kling V2.6】Professional mode, 10-second video duration, with native audio generation, without voice control Deduct 10 units from total $1.4" [ref=e728]:
+                    - cell "【Kling V2.6】Professional mode, 10-second video duration, with native audio generation, without voice control" [ref=e729]:
+                      - paragraph [ref=e730]: 【Kling V2.6】Professional mode, 10-second video duration, with native audio generation, without voice control
+                    - cell "Deduct 10 units from total" [ref=e731]:
+                      - paragraph [ref=e732]: Deduct 10 units from total
+                    - cell "$1.4" [ref=e733]:
+                      - paragraph [ref=e734]: $1.4
+                  - row "【Kling V2.6】Professional mode, 5-second video duration, with native audio generation, with voice control Deduct 6 units from total $0.84" [ref=e735]:
+                    - cell "【Kling V2.6】Professional mode, 5-second video duration, with native audio generation, with voice control" [ref=e736]:
+                      - paragraph [ref=e737]: 【Kling V2.6】Professional mode, 5-second video duration, with native audio generation, with voice control
+                    - cell "Deduct 6 units from total" [ref=e738]:
+                      - paragraph [ref=e739]: Deduct 6 units from total
+                    - cell "$0.84" [ref=e740]:
+                      - paragraph [ref=e741]: $0.84
+                  - row "【Kling V2.6】Professional mode, 10-second video duration, with native audio generation, with voice control Deduct 12 units from total $1.68" [ref=e742]:
+                    - cell "【Kling V2.6】Professional mode, 10-second video duration, with native audio generation, with voice control" [ref=e743]:
+                      - paragraph [ref=e744]: 【Kling V2.6】Professional mode, 10-second video duration, with native audio generation, with voice control
+                    - cell "Deduct 12 units from total" [ref=e745]:
+                      - paragraph [ref=e746]: Deduct 12 units from total
+                    - cell "$1.68" [ref=e747]:
+                      - paragraph [ref=e748]: $1.68
+                  - row "【Kling V3.0】Standard mode, 1-second video duration, without native audio generation Deduct 0.6 units from total $0.084" [ref=e749]:
+                    - cell "【Kling V3.0】Standard mode, 1-second video duration, without native audio generation" [ref=e750]:
+                      - paragraph [ref=e751]: 【Kling V3.0】Standard mode, 1-second video duration, without native audio generation
+                    - cell "Deduct 0.6 units from total" [ref=e752]:
+                      - paragraph [ref=e753]: Deduct 0.6 units from total
+                    - cell "$0.084" [ref=e754]:
+                      - paragraph [ref=e755]: $0.084
+                  - row "【Kling V3.0】Standard mode, 1-second video duration, with native audio generation, without voice control Deduct 0.9 units from total $0.126" [ref=e756]:
+                    - cell "【Kling V3.0】Standard mode, 1-second video duration, with native audio generation, without voice control" [ref=e757]:
+                      - paragraph [ref=e758]: 【Kling V3.0】Standard mode, 1-second video duration, with native audio generation, without voice control
+                    - cell "Deduct 0.9 units from total" [ref=e759]:
+                      - paragraph [ref=e760]: Deduct 0.9 units from total
+                    - cell "$0.126" [ref=e761]:
+                      - paragraph [ref=e762]: $0.126
+                  - row "【Kling V3.0】Professional mode, 1-second video duration, without native audio generation Deduct 0.8 units from total $0.112" [ref=e763]:
+                    - cell "【Kling V3.0】Professional mode, 1-second video duration, without native audio generation" [ref=e764]:
+                      - paragraph [ref=e765]: 【Kling V3.0】Professional mode, 1-second video duration, without native audio generation
+                    - cell "Deduct 0.8 units from total" [ref=e766]:
+                      - paragraph [ref=e767]: Deduct 0.8 units from total
+                    - cell "$0.112" [ref=e768]:
+                      - paragraph [ref=e769]: $0.112
+                  - row "【Kling V3.0】Professional mode, 1-second video duration, with native audio generation, without voice control Deduct 1.2 units from total $0.168" [ref=e770]:
+                    - cell "【Kling V3.0】Professional mode, 1-second video duration, with native audio generation, without voice control" [ref=e771]:
+                      - paragraph [ref=e772]: 【Kling V3.0】Professional mode, 1-second video duration, with native audio generation, without voice control
+                    - cell "Deduct 1.2 units from total" [ref=e773]:
+                      - paragraph [ref=e774]: Deduct 1.2 units from total
+                    - cell "$0.168" [ref=e775]:
+                      - paragraph [ref=e776]: $0.168
+                  - row "【Kling V3.0】4K mode, 1-second video duration, without native audio generation Deduct 3 units from total $0.42" [ref=e777]:
+                    - cell "【Kling V3.0】4K mode, 1-second video duration, without native audio generation" [ref=e778]:
+                      - paragraph [ref=e779]: 【Kling V3.0】4K mode, 1-second video duration, without native audio generation
+                    - cell "Deduct 3 units from total" [ref=e780]:
+                      - paragraph [ref=e781]: Deduct 3 units from total
+                    - cell "$0.42" [ref=e782]:
+                      - paragraph [ref=e783]: $0.42
+                  - row "【Kling V3.0】4K mode, 1-second video duration, with native audio generation, without voice control Deduct 3 units from total $0.42" [ref=e784]:
+                    - cell "【Kling V3.0】4K mode, 1-second video duration, with native audio generation, without voice control" [ref=e785]:
+                      - paragraph [ref=e786]: 【Kling V3.0】4K mode, 1-second video duration, with native audio generation, without voice control
+                    - cell "Deduct 3 units from total" [ref=e787]:
+                      - paragraph [ref=e788]: Deduct 3 units from total
+                    - cell "$0.42" [ref=e789]:
+                      - paragraph [ref=e790]: $0.42
+                  - row "【Kling V2.6】Motion Control, Standard mode, per second video duration Deduct 0.5 unit from total $0.07" [ref=e791]:
+                    - cell "【Kling V2.6】Motion Control, Standard mode, per second video duration" [ref=e792]:
+                      - paragraph [ref=e793]: 【Kling V2.6】Motion Control, Standard mode, per second video duration
+                    - cell "Deduct 0.5 unit from total" [ref=e794]:
+                      - paragraph [ref=e795]: Deduct 0.5 unit from total
+                    - cell "$0.07" [ref=e796]:
+                      - paragraph [ref=e797]: $0.07
+                  - row "【Kling V2.6】Motion Control, Pro mode, per second video duration Deduct 0.8 units from total $0.112" [ref=e798]:
+                    - cell "【Kling V2.6】Motion Control, Pro mode, per second video duration" [ref=e799]:
+                      - paragraph [ref=e800]: 【Kling V2.6】Motion Control, Pro mode, per second video duration
+                    - cell "Deduct 0.8 units from total" [ref=e801]:
+                      - paragraph [ref=e802]: Deduct 0.8 units from total
+                    - cell "$0.112" [ref=e803]:
+                      - paragraph [ref=e804]: $0.112
+                  - row "【Kling V3.0】Motion Control, Standard mode, 1-second video duration Deduct 0.9 units from total $0.126" [ref=e805]:
+                    - cell "【Kling V3.0】Motion Control, Standard mode, 1-second video duration" [ref=e806]:
+                      - paragraph [ref=e807]: 【Kling V3.0】Motion Control, Standard mode, 1-second video duration
+                    - cell "Deduct 0.9 units from total" [ref=e808]:
+                      - paragraph [ref=e809]: Deduct 0.9 units from total
+                    - cell "$0.126" [ref=e810]:
+                      - paragraph [ref=e811]: $0.126
+                  - row "【Kling V3.0】Motion Control, Professional mode, 1-second video duration Deduct 1.2 units from total $0.168" [ref=e812]:
+                    - cell "【Kling V3.0】Motion Control, Professional mode, 1-second video duration" [ref=e813]:
+                      - paragraph [ref=e814]: 【Kling V3.0】Motion Control, Professional mode, 1-second video duration
+                    - cell "Deduct 1.2 units from total" [ref=e815]:
+                      - paragraph [ref=e816]: Deduct 1.2 units from total
+                    - cell "$0.168" [ref=e817]:
+                      - paragraph [ref=e818]: $0.168
+                  - row "【Kling V1.6】Multi-elements, Standard mode, 5-second video duration Deduct 3 units from total $0.42" [ref=e819]:
+                    - cell "【Kling V1.6】Multi-elements, Standard mode, 5-second video duration" [ref=e820]:
+                      - paragraph [ref=e821]: 【Kling V1.6】Multi-elements, Standard mode, 5-second video duration
+                    - cell "Deduct 3 units from total" [ref=e822]:
+                      - paragraph [ref=e823]: Deduct 3 units from total
+                    - cell "$0.42" [ref=e824]:
+                      - paragraph [ref=e825]: $0.42
+                  - row "【Kling V1.6】Multi-elements, Standard mode, 10-second video duration Deduct 6 units from total $0.84" [ref=e826]:
+                    - cell "【Kling V1.6】Multi-elements, Standard mode, 10-second video duration" [ref=e827]:
+                      - paragraph [ref=e828]: 【Kling V1.6】Multi-elements, Standard mode, 10-second video duration
+                    - cell "Deduct 6 units from total" [ref=e829]:
+                      - paragraph [ref=e830]: Deduct 6 units from total
+                    - cell "$0.84" [ref=e831]:
+                      - paragraph [ref=e832]: $0.84
+                  - row "【Kling V1.6】Multi-elements, Professional mode, 5-second video duration Deduct 5 units from total $0.7" [ref=e833]:
+                    - cell "【Kling V1.6】Multi-elements, Professional mode, 5-second video duration" [ref=e834]:
+                      - paragraph [ref=e835]: 【Kling V1.6】Multi-elements, Professional mode, 5-second video duration
+                    - cell "Deduct 5 units from total" [ref=e836]:
+                      - paragraph [ref=e837]: Deduct 5 units from total
+                    - cell "$0.7" [ref=e838]:
+                      - paragraph [ref=e839]: $0.7
+                  - row "【Kling V1.6】Multi-elements, Professional mode, 10-second video duration Deduct 10 units from total $1.4" [ref=e840]:
+                    - cell "【Kling V1.6】Multi-elements, Professional mode, 10-second video duration" [ref=e841]:
+                      - paragraph [ref=e842]: 【Kling V1.6】Multi-elements, Professional mode, 10-second video duration
+                    - cell "Deduct 10 units from total" [ref=e843]:
+                      - paragraph [ref=e844]: Deduct 10 units from total
+                    - cell "$1.4" [ref=e845]:
+                      - paragraph [ref=e846]: $1.4
+                  - row "【Kling V1.0】Video extension, Standard mode, 4~5-second video duration Deduct 1 unit from total $0.14" [ref=e847]:
+                    - cell "【Kling V1.0】Video extension, Standard mode, 4~5-second video duration" [ref=e848]:
+                      - paragraph [ref=e849]: 【Kling V1.0】Video extension, Standard mode, 4~5-second video duration
+                    - cell "Deduct 1 unit from total" [ref=e850]:
+                      - paragraph [ref=e851]: Deduct 1 unit from total
+                    - cell "$0.14" [ref=e852]:
+                      - paragraph [ref=e853]: $0.14
+                  - row "【Kling V1.0】Video extension, Professional mode, 4~5-second video duration Deduct 3.5 units from total $0.49" [ref=e854]:
+                    - cell "【Kling V1.0】Video extension, Professional mode, 4~5-second video duration" [ref=e855]:
+                      - paragraph [ref=e856]: 【Kling V1.0】Video extension, Professional mode, 4~5-second video duration
+                    - cell "Deduct 3.5 units from total" [ref=e857]:
+                      - paragraph [ref=e858]: Deduct 3.5 units from total
+                    - cell "$0.49" [ref=e859]:
+                      - paragraph [ref=e860]: $0.49
+                  - row "【Kling V1.5】Video extension, Standard mode, 4~5-second video duration Deduct 2 units from total $0.28" [ref=e861]:
+                    - cell "【Kling V1.5】Video extension, Standard mode, 4~5-second video duration" [ref=e862]:
+                      - paragraph [ref=e863]: 【Kling V1.5】Video extension, Standard mode, 4~5-second video duration
+                    - cell "Deduct 2 units from total" [ref=e864]:
+                      - paragraph [ref=e865]: Deduct 2 units from total
+                    - cell "$0.28" [ref=e866]:
+                      - paragraph [ref=e867]: $0.28
+                  - row "【Kling V1.5】Video extension, Professional mode, 4~5-second video duration Deduct 3.5 units from total $0.49" [ref=e868]:
+                    - cell "【Kling V1.5】Video extension, Professional mode, 4~5-second video duration" [ref=e869]:
+                      - paragraph [ref=e870]: 【Kling V1.5】Video extension, Professional mode, 4~5-second video duration
+                    - cell "Deduct 3.5 units from total" [ref=e871]:
+                      - paragraph [ref=e872]: Deduct 3.5 units from total
+                    - cell "$0.49" [ref=e873]:
+                      - paragraph [ref=e874]: $0.49
+                  - row "【Kling V1.6】Video extension, Standard mode, 4~5-second video duration Deduct 2 units from total $0.28" [ref=e875]:
+                    - cell "【Kling V1.6】Video extension, Standard mode, 4~5-second video duration" [ref=e876]:
+                      - paragraph [ref=e877]: 【Kling V1.6】Video extension, Standard mode, 4~5-second video duration
+                    - cell "Deduct 2 units from total" [ref=e878]:
+                      - paragraph [ref=e879]: Deduct 2 units from total
+                    - cell "$0.28" [ref=e880]:
+                      - paragraph [ref=e881]: $0.28
+                  - row "【Kling V1.6】Video extension, Professional mode, 4~5-second video duration Deduct 3.5 units from total $0.49" [ref=e882]:
+                    - cell "【Kling V1.6】Video extension, Professional mode, 4~5-second video duration" [ref=e883]:
+                      - paragraph [ref=e884]: 【Kling V1.6】Video extension, Professional mode, 4~5-second video duration
+                    - cell "Deduct 3.5 units from total" [ref=e885]:
+                      - paragraph [ref=e886]: Deduct 3.5 units from total
+                    - cell "$0.49" [ref=e887]:
+                      - paragraph [ref=e888]: $0.49
+                  - row "【Avatar】Standard mode, Charged by seconds, rounding up the visible duration, with the actual price rounded to the nearest second Deduct 0.4 unit from total $0.056" [ref=e889]:
+                    - cell "【Avatar】Standard mode, Charged by seconds, rounding up the visible duration, with the actual price rounded to the nearest second" [ref=e890]:
+                      - paragraph [ref=e891]: 【Avatar】Standard mode, Charged by seconds, rounding up the visible duration, with the actual price rounded to the nearest second
+                    - cell "Deduct 0.4 unit from total" [ref=e892]:
+                      - paragraph [ref=e893]: Deduct 0.4 unit from total
+                    - cell "$0.056" [ref=e894]:
+                      - paragraph [ref=e895]: $0.056
+                  - row "【Avatar】Professional mode, Charged by seconds, rounding up the visible duration, with the actual price rounded to the nearest second Deduct 0.8 unit from total $0.112" [ref=e896]:
+                    - cell "【Avatar】Professional mode, Charged by seconds, rounding up the visible duration, with the actual price rounded to the nearest second" [ref=e897]:
+                      - paragraph [ref=e898]: 【Avatar】Professional mode, Charged by seconds, rounding up the visible duration, with the actual price rounded to the nearest second
+                    - cell "Deduct 0.8 unit from total" [ref=e899]:
+                      - paragraph [ref=e900]: Deduct 0.8 unit from total
+                    - cell "$0.112" [ref=e901]:
+                      - paragraph [ref=e902]: $0.112
+                  - row "【Lip-sync】It is related to video duration, less than 5 seconds rounded up to 5 seconds Deduct 0.5 per 5 seconds from total $0.07" [ref=e903]:
+                    - cell "【Lip-sync】It is related to video duration, less than 5 seconds rounded up to 5 seconds" [ref=e904]:
+                      - paragraph [ref=e905]: 【Lip-sync】It is related to video duration, less than 5 seconds rounded up to 5 seconds
+                    - cell "Deduct 0.5 per 5 seconds from total" [ref=e906]:
+                      - paragraph [ref=e907]: Deduct 0.5 per 5 seconds from total
+                    - cell "$0.07" [ref=e908]:
+                      - paragraph [ref=e909]: $0.07
+                  - 'row "【Video Effects】 relates to the template, and each video effect template has a different cost Price List for Special Effects: Price List Price List for Special Effects: Price List" [ref=e910]':
+                    - cell "【Video Effects】 relates to the template, and each video effect template has a different cost" [ref=e911]:
+                      - paragraph [ref=e912]: 【Video Effects】 relates to the template, and each video effect template has a different cost
+                    - 'cell "Price List for Special Effects: Price List" [ref=e913]':
+                      - paragraph [ref=e914]:
+                        - text: "Price List for Special Effects:"
+                        - link "Price List" [ref=e915] [cursor=pointer]:
+                          - /url: /document-api/video-effect-price
+                    - 'cell "Price List for Special Effects: Price List" [ref=e916]':
+                      - paragraph [ref=e917]:
+                        - text: "Price List for Special Effects:"
+                        - link "Price List" [ref=e918] [cursor=pointer]:
+                          - /url: /document-api/video-effect-price
+                  - row "【Kling video-to-audio】 3~20s video duration Deduct 0.25 unit from total $0.035" [ref=e919]:
+                    - cell "【Kling video-to-audio】 3~20s video duration" [ref=e920]:
+                      - paragraph [ref=e921]: 【Kling video-to-audio】 3~20s video duration
+                    - cell "Deduct 0.25 unit from total" [ref=e922]:
+                      - paragraph [ref=e923]: Deduct 0.25 unit from total
+                    - cell "$0.035" [ref=e924]:
+                      - paragraph [ref=e925]: $0.035
+                  - row "【Kling text-to-audio】 3~10s audio duration Deduct 0.25 unit from total $0.035" [ref=e926]:
+                    - cell "【Kling text-to-audio】 3~10s audio duration" [ref=e927]:
+                      - paragraph [ref=e928]: 【Kling text-to-audio】 3~10s audio duration
+                    - cell "Deduct 0.25 unit from total" [ref=e929]:
+                      - paragraph [ref=e930]: Deduct 0.25 unit from total
+                    - cell "$0.035" [ref=e931]:
+                      - paragraph [ref=e932]: $0.035
+                  - row "【Identify Face】Deduct based on the times of service access Deduct 0.05 units from total $0.007" [ref=e933]:
+                    - cell "【Identify Face】Deduct based on the times of service access" [ref=e934]:
+                      - paragraph [ref=e935]: 【Identify Face】Deduct based on the times of service access
+                    - cell "Deduct 0.05 units from total" [ref=e936]:
+                      - paragraph [ref=e937]: Deduct 0.05 units from total
+                    - cell "$0.007" [ref=e938]:
+                      - paragraph [ref=e939]: $0.007
+                  - row "【TTS】Deduct based on the times of service access Deduct 0.05 units from total $0.007" [ref=e940]:
+                    - cell "【TTS】Deduct based on the times of service access" [ref=e941]:
+                      - paragraph [ref=e942]: 【TTS】Deduct based on the times of service access
+                    - cell "Deduct 0.05 units from total" [ref=e943]:
+                      - paragraph [ref=e944]: Deduct 0.05 units from total
+                    - cell "$0.007" [ref=e945]:
+                      - paragraph [ref=e946]: $0.007
+                  - row "【Image Recognize】Deduct based on the times of service access, include all sets of results Deduct 0.1 units from total $0.014" [ref=e947]:
+                    - cell "【Image Recognize】Deduct based on the times of service access, include all sets of results" [ref=e948]:
+                      - paragraph [ref=e949]: 【Image Recognize】Deduct based on the times of service access, include all sets of results
+                    - cell "Deduct 0.1 units from total" [ref=e950]:
+                      - paragraph [ref=e951]: Deduct 0.1 units from total
+                    - cell "$0.014" [ref=e952]:
+                      - paragraph [ref=e953]: $0.014
+                  - row "【Custom Voice】Deduct based on the times of service access Deduct 0.05 units from total $0.007" [ref=e954]:
+                    - cell "【Custom Voice】Deduct based on the times of service access" [ref=e955]:
+                      - paragraph [ref=e956]: 【Custom Voice】Deduct based on the times of service access
+                    - cell "Deduct 0.05 units from total" [ref=e957]:
+                      - paragraph [ref=e958]: Deduct 0.05 units from total
+                    - cell "$0.007" [ref=e959]:
+                      - paragraph [ref=e960]: $0.007
+              - heading "Virtual Try-on Resource Package" [level=4] [ref=e961]
+              - blockquote [ref=e962]:
+                - paragraph [ref=e963]: Credit Deduction Details
+              - table [ref=e964]:
+                - rowgroup [ref=e969]:
+                  - row "Single Image Specification Resource Package Deduction Count Pricing (Original)" [ref=e970]:
+                    - columnheader "Single Image Specification" [ref=e971]:
+                      - paragraph [ref=e972]: Single Image Specification
+                    - columnheader "Resource Package Deduction Count" [ref=e973]:
+                      - paragraph [ref=e974]: Resource Package Deduction Count
+                    - columnheader "Pricing (Original)" [ref=e975]:
+                      - paragraph [ref=e976]: Pricing (Original)
+                  - row "【Kolors-Virtual-Try-on V1.0】 Deduct 1 count from total $0.07" [ref=e977]:
+                    - cell "【Kolors-Virtual-Try-on V1.0】" [ref=e978]:
+                      - paragraph [ref=e979]: 【Kolors-Virtual-Try-on V1.0】
+                    - cell "Deduct 1 count from total" [ref=e980]:
+                      - paragraph [ref=e981]: Deduct 1 count from total
+                    - cell "$0.07" [ref=e982]:
+                      - paragraph [ref=e983]: $0.07
+                  - row "【Kolors-Virtual-Try-on V1.5】 Deduct 1 count from total $0.07" [ref=e984]:
+                    - cell "【Kolors-Virtual-Try-on V1.5】" [ref=e985]:
+                      - paragraph [ref=e986]: 【Kolors-Virtual-Try-on V1.5】
+                    - cell "Deduct 1 count from total" [ref=e987]:
+                      - paragraph [ref=e988]: Deduct 1 count from total
+                    - cell "$0.07" [ref=e989]:
+                      - paragraph [ref=e990]: $0.07
+            - generic [ref=e993]:
+              - generic [ref=e994] [cursor=pointer]:
+                - img [ref=e995]
+                - text: Previous chapter：Billing Info
+              - generic [ref=e997] [cursor=pointer]:
+                - text: Next chapter：Privacy Policy of API Service
+                - img [ref=e998]
+    - dialog [ref=e1001]:
+      - generic [active] [ref=e1002]:
+        - banner:
+          - heading [level=2]
+        - generic [ref=e1003]:
+          - generic [ref=e1004]:
+            - text: 🎉 Kling AI Native 4K + Stripe Payment Now Available 🎉
+            - img [ref=e1005] [cursor=pointer]
+          - generic [ref=e1008]:
+            - paragraph [ref=e1009]: "We’re excited to announce two major updates on the Kling API platform:"
+            - paragraph [ref=e1010]: 🚀 Kling Native 4K (Kling VIDEO 3.0)
+            - paragraph [ref=e1011]:
+              - text: Kling now supports
+              - strong [ref=e1012]: one-click native 4K video generation
+              - text: ", enabling high-quality outputs for"
+              - strong [ref=e1013]: advertising, film production, and commercial content
+              - text: .
+            - list [ref=e1014]:
+              - listitem [ref=e1015]:
+                - strong [ref=e1016]: "Industry-grade quality:"
+                - text: Native 4K with no upscaling loss, meeting commercial delivery standards
+              - listitem [ref=e1017]:
+                - strong [ref=e1018]: "Efficient workflow:"
+                - text: One-click generation with fast response, no technical expertise required
+              - listitem [ref=e1019]:
+                - strong [ref=e1020]: "Cost-effective:"
+                - text: High-quality 4K without expensive third-party tools
+            - paragraph [ref=e1021]:
+              - strong [ref=e1022]: Native 4K, One-Click Output
+              - text: "- built for professional commercial production."
+            - paragraph [ref=e1023]:
+              - text: 🔗
+              - strong [ref=e1024]: "Start now:"
+              - link "Specification Documentation" [ref=e1025] [cursor=pointer]:
+                - /url: /document-api/apiReference/updateNotice
+            - separator [ref=e1026]
+            - paragraph [ref=e1027]:
+              - text: 💳
+              - strong [ref=e1028]: "Payment Update: Now Supporting Stripe"
+            - paragraph [ref=e1029]: We’ve upgraded our payment method from Checkout to Stripe for a faster and more secure experience.
+            - paragraph [ref=e1030]:
+              - text: ⚠️ If you are making a business purchase and need an invoice, please select
+              - strong [ref=e1031]: “I’m purchasing as a business”
+              - text: and enter your tax ID during payment.
+            - paragraph [ref=e1032]: "Otherwise, the order will be treated as a personal purchase, and:"
+            - list [ref=e1033]:
+              - listitem [ref=e1034]: Additional taxes may apply
+              - listitem [ref=e1035]: Invoice details cannot be changed
+              - listitem [ref=e1036]: The order is non-refundable
+        - contentinfo [ref=e1037]:
+          - button "I Got It" [ref=e1038] [cursor=pointer]:
+            - generic [ref=e1040]: I Got It
+  - img

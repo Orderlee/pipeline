@@ -52,7 +52,11 @@ services:
       WEBHOOK_PORT: ${LS_WEBHOOK_PORT:-8003}
       SLACK_WEBHOOK_URL: ${SLACK_WEBHOOK_URL:-}
       SLACK_SIGNING_SECRET: ${SLACK_SIGNING_SECRET:-}
-      DATAOPS_DUCKDB_PATH: ${DATAOPS_DUCKDB_PATH:-/data/pipeline.duckdb}
+      # ls_sync / ls_webhook 는 PG-only (2026-05-13 cutover). LS 스택은 별도 compose
+      # 프로젝트라 `postgres` 가 고아 DB 로 풀리므로, 실제 prod PG 컨테이너명을 직접 박는다
+      # (docker-postgres-1 을 공유 pipeline-network 에 연결해 둠). staging 은 .env.test 의
+      # DATAOPS_POSTGRES_DSN(@pipeline-test-postgres-1/vlm_pipeline_staging)로 override.
+      DATAOPS_POSTGRES_DSN: ${DATAOPS_POSTGRES_DSN:-postgresql://airflow:airflow@docker-postgres-1:5432/vlm_pipeline}
       MINIO_ENDPOINT: ${MINIO_ENDPOINT:-http://10.0.0.51:9000}
       LS_MINIO_ENDPOINT: ${LS_MINIO_ENDPOINT:-${MINIO_ENDPOINT:-http://10.0.0.51:9000}}
       MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}

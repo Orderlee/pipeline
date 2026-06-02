@@ -148,3 +148,62 @@ VIDEO_EVENT_SCHEMA = {
         "required": ["category", "duration", "timestamp", "ko_caption", "en_caption"],
     },
 }
+
+
+# --------------------------------------------------------------------------
+# Category-aware Gemini prompt builder
+# --------------------------------------------------------------------------
+# VIDEO_EVENT_PROMPT 의 카테고리 예시 줄(L106)을 사용자 입력으로 교체하기 위한 sentinel.
+# VIDEO_EVENT_PROMPT 가 수정되면 이 상수도 같이 업데이트 필요 (silent no-op 방지 위해
+# 단위 테스트 권장 — replace 1 fail 시 description 만 append 되고 example bullet 유지).
+_VIDEO_EVENT_CATEGORY_LINE = (
+    '- "category": A short English category label (e.g. "fire", "smoke", "fall", '
+    '"intrusion", "fight", "vehicle_accident", "loitering", "vandalism", "abandoned_object")'
+)
+
+
+def _video_event_category_line(categories: list[str]) -> str:
+    """example bullet 자리에 들어갈 focused 카테고리 줄."""
+    formatted = ", ".join(f'"{category}"' for category in categories)
+    return f'- "category": one of: {formatted}'
+
+
+def build_video_event_prompt(
+    categories: list[str] | None = None,
+    descriptions: dict[str, str] | None = None,
+) -> str:
+    """Category-aware Gemini event prompt.
+
+    - categories=None + descriptions=None → 기존 VIDEO_EVENT_PROMPT 그대로 (backward compat)
+    - categories 만 → example bullet 만 사용자 카테고리로 교체
+    - descriptions dict → example bullet 교체 + 끝에 IMPORTANT section append
+      (각 category 의 semantic guidance — empty description 은 카테고리 명만)
+    descriptions 가 categories 보다 우선 (descriptions 의 key 가 곧 categories).
+    """
+    normalized_categories = [c.strip() for c in (categories or []) if c.strip()]
+    normalized_descriptions = {
+        k.strip(): (v.strip() if isinstance(v, str) else "")
+        for k, v in (descriptions or {}).items()
+        if isinstance(k, str) and k.strip()
+    }
+
+    if normalized_descriptions:
+        prompt = VIDEO_EVENT_PROMPT.replace(
+            _VIDEO_EVENT_CATEGORY_LINE,
+            _video_event_category_line(list(normalized_descriptions)),
+            1,
+        )
+        guidance_lines = [
+            "IMPORTANT: Use ONLY these category names, with the following semantic guidance:"
+        ]
+        for cat, desc in normalized_descriptions.items():
+            guidance_lines.append(f"- {cat}: {desc}" if desc else f"- {cat}")
+        return f"{prompt}\n\n" + "\n".join(guidance_lines)
+
+    if normalized_categories:
+        return VIDEO_EVENT_PROMPT.replace(
+            _VIDEO_EVENT_CATEGORY_LINE,
+            _video_event_category_line(normalized_categories),
+            1,
+        )
+    return VIDEO_EVENT_PROMPT

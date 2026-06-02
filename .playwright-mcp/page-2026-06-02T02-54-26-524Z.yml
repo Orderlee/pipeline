@@ -1,0 +1,277 @@
+- generic [ref=e2]:
+  - banner [ref=e3]:
+    - generic [ref=e4]:
+      - img [ref=e6]
+      - generic [ref=e8]: GenAI Studio
+      - generic [ref=e9]: / workspace
+    - navigation [ref=e10]:
+      - link "Submit" [ref=e11] [cursor=pointer]:
+        - /url: /
+      - link "Bulk" [ref=e12] [cursor=pointer]:
+        - /url: /genai/bulk
+      - link "Batches" [ref=e13] [cursor=pointer]:
+        - /url: /genai/batches
+      - link "Costs" [ref=e14] [cursor=pointer]:
+        - /url: /genai/costs
+    - generic [ref=e15]:
+      - img [ref=e16]
+      - generic [ref=e19]: staging · dev
+    - generic [ref=e20]: PI
+  - main [ref=e21]:
+    - generic [ref=e22]:
+      - heading "Batches" [level=1] [ref=e23]
+      - link "새 batch" [ref=e24] [cursor=pointer]:
+        - /url: /
+        - img [ref=e25]
+        - text: 새 batch
+    - generic [ref=e27]:
+      - generic [ref=e28]:
+        - generic [ref=e29]: engine
+        - link "all" [ref=e30] [cursor=pointer]:
+          - /url: /genai/batches
+        - link "veo" [ref=e31] [cursor=pointer]:
+          - /url: /genai/batches?engine=veo
+        - link "kling" [ref=e32] [cursor=pointer]:
+          - /url: /genai/batches?engine=kling
+      - generic [ref=e33]:
+        - generic [ref=e34]: status
+        - link "all" [ref=e35] [cursor=pointer]:
+          - /url: /genai/batches
+        - link "running" [ref=e36] [cursor=pointer]:
+          - /url: /genai/batches?status=running
+        - link "succeeded" [ref=e37] [cursor=pointer]:
+          - /url: /genai/batches?status=succeeded
+        - link "partial" [ref=e38] [cursor=pointer]:
+          - /url: /genai/batches?status=partial_success
+        - link "failed" [ref=e39] [cursor=pointer]:
+          - /url: /genai/batches?status=failed
+      - generic [ref=e40]:
+        - generic [ref=e41]: group
+        - link "all" [ref=e42] [cursor=pointer]:
+          - /url: /genai/batches
+        - link "bgi-d411944daea8" [ref=e43] [cursor=pointer]:
+          - /url: /genai/batches?bulk_group_id=bgi-d411944daea8
+        - link "bgi-d20dfff6d684" [ref=e44] [cursor=pointer]:
+          - /url: /genai/batches?bulk_group_id=bgi-d20dfff6d684
+    - table [ref=e46]:
+      - rowgroup [ref=e47]:
+        - row "batch_id engine media status jobs (✓/✗/total) group submitted" [ref=e48]:
+          - columnheader "batch_id" [ref=e49]
+          - columnheader "engine" [ref=e50]
+          - columnheader "media" [ref=e51]
+          - columnheader "status" [ref=e52]
+          - columnheader "jobs (✓/✗/total)" [ref=e53]
+          - columnheader "group" [ref=e54]
+          - columnheader "submitted" [ref=e55]
+          - columnheader [ref=e56]
+      - rowgroup [ref=e57]:
+        - row "592eecdc-e09 veo video succeeded 1 / 0 / 1 bgi-d411944daea8 2026-06-02 00:54:08.732801 상세 →" [ref=e58]:
+          - cell "592eecdc-e09" [ref=e59]:
+            - code [ref=e60]: 592eecdc-e09
+          - cell "veo" [ref=e61]
+          - cell "video" [ref=e62]
+          - cell "succeeded" [ref=e63]
+          - cell "1 / 0 / 1" [ref=e64]
+          - cell "bgi-d411944daea8" [ref=e65]:
+            - link "bgi-d411944daea8" [ref=e66] [cursor=pointer]:
+              - /url: /genai/batches?bulk_group_id=bgi-d411944daea8
+          - cell "2026-06-02 00:54:08.732801" [ref=e67]
+          - cell "상세 →" [ref=e68]:
+            - link "상세 →" [ref=e69] [cursor=pointer]:
+              - /url: /genai/batches/592eecdc-e09
+        - row "20012098-bca veo video succeeded 1 / 0 / 1 bgi-d411944daea8 2026-06-02 00:54:06.555159 상세 →" [ref=e70]:
+          - cell "20012098-bca" [ref=e71]:
+            - code [ref=e72]: 20012098-bca
+          - cell "veo" [ref=e73]
+          - cell "video" [ref=e74]
+          - cell "succeeded" [ref=e75]
+          - cell "1 / 0 / 1" [ref=e76]
+          - cell "bgi-d411944daea8" [ref=e77]:
+            - link "bgi-d411944daea8" [ref=e78] [cursor=pointer]:
+              - /url: /genai/batches?bulk_group_id=bgi-d411944daea8
+          - cell "2026-06-02 00:54:06.555159" [ref=e79]
+          - cell "상세 →" [ref=e80]:
+            - link "상세 →" [ref=e81] [cursor=pointer]:
+              - /url: /genai/batches/20012098-bca
+        - row "2fad56d3-11a veo video succeeded 1 / 0 / 1 bgi-d411944daea8 2026-06-02 00:54:05.117127 상세 →" [ref=e82]:
+          - cell "2fad56d3-11a" [ref=e83]:
+            - code [ref=e84]: 2fad56d3-11a
+          - cell "veo" [ref=e85]
+          - cell "video" [ref=e86]
+          - cell "succeeded" [ref=e87]
+          - cell "1 / 0 / 1" [ref=e88]
+          - cell "bgi-d411944daea8" [ref=e89]:
+            - link "bgi-d411944daea8" [ref=e90] [cursor=pointer]:
+              - /url: /genai/batches?bulk_group_id=bgi-d411944daea8
+          - cell "2026-06-02 00:54:05.117127" [ref=e91]
+          - cell "상세 →" [ref=e92]:
+            - link "상세 →" [ref=e93] [cursor=pointer]:
+              - /url: /genai/batches/2fad56d3-11a
+        - row "def0d639-991 veo video succeeded 1 / 0 / 1 bgi-d411944daea8 2026-06-02 00:54:02.046645 상세 →" [ref=e94]:
+          - cell "def0d639-991" [ref=e95]:
+            - code [ref=e96]: def0d639-991
+          - cell "veo" [ref=e97]
+          - cell "video" [ref=e98]
+          - cell "succeeded" [ref=e99]
+          - cell "1 / 0 / 1" [ref=e100]
+          - cell "bgi-d411944daea8" [ref=e101]:
+            - link "bgi-d411944daea8" [ref=e102] [cursor=pointer]:
+              - /url: /genai/batches?bulk_group_id=bgi-d411944daea8
+          - cell "2026-06-02 00:54:02.046645" [ref=e103]
+          - cell "상세 →" [ref=e104]:
+            - link "상세 →" [ref=e105] [cursor=pointer]:
+              - /url: /genai/batches/def0d639-991
+        - row "2ae6b39e-9ab veo video succeeded 1 / 0 / 1 bgi-d411944daea8 2026-06-02 00:53:59.782532 상세 →" [ref=e106]:
+          - cell "2ae6b39e-9ab" [ref=e107]:
+            - code [ref=e108]: 2ae6b39e-9ab
+          - cell "veo" [ref=e109]
+          - cell "video" [ref=e110]
+          - cell "succeeded" [ref=e111]
+          - cell "1 / 0 / 1" [ref=e112]
+          - cell "bgi-d411944daea8" [ref=e113]:
+            - link "bgi-d411944daea8" [ref=e114] [cursor=pointer]:
+              - /url: /genai/batches?bulk_group_id=bgi-d411944daea8
+          - cell "2026-06-02 00:53:59.782532" [ref=e115]
+          - cell "상세 →" [ref=e116]:
+            - link "상세 →" [ref=e117] [cursor=pointer]:
+              - /url: /genai/batches/2ae6b39e-9ab
+        - row "a7cc3d88-836 veo video succeeded 1 / 0 / 1 bgi-d411944daea8 2026-06-02 00:53:57.479685 상세 →" [ref=e118]:
+          - cell "a7cc3d88-836" [ref=e119]:
+            - code [ref=e120]: a7cc3d88-836
+          - cell "veo" [ref=e121]
+          - cell "video" [ref=e122]
+          - cell "succeeded" [ref=e123]
+          - cell "1 / 0 / 1" [ref=e124]
+          - cell "bgi-d411944daea8" [ref=e125]:
+            - link "bgi-d411944daea8" [ref=e126] [cursor=pointer]:
+              - /url: /genai/batches?bulk_group_id=bgi-d411944daea8
+          - cell "2026-06-02 00:53:57.479685" [ref=e127]
+          - cell "상세 →" [ref=e128]:
+            - link "상세 →" [ref=e129] [cursor=pointer]:
+              - /url: /genai/batches/a7cc3d88-836
+        - row "96852d6a-e83 veo video succeeded 1 / 0 / 1 bgi-d411944daea8 2026-06-02 00:53:55.146115 상세 →" [ref=e130]:
+          - cell "96852d6a-e83" [ref=e131]:
+            - code [ref=e132]: 96852d6a-e83
+          - cell "veo" [ref=e133]
+          - cell "video" [ref=e134]
+          - cell "succeeded" [ref=e135]
+          - cell "1 / 0 / 1" [ref=e136]
+          - cell "bgi-d411944daea8" [ref=e137]:
+            - link "bgi-d411944daea8" [ref=e138] [cursor=pointer]:
+              - /url: /genai/batches?bulk_group_id=bgi-d411944daea8
+          - cell "2026-06-02 00:53:55.146115" [ref=e139]
+          - cell "상세 →" [ref=e140]:
+            - link "상세 →" [ref=e141] [cursor=pointer]:
+              - /url: /genai/batches/96852d6a-e83
+        - row "031d52ee-8e4 veo video succeeded 1 / 0 / 1 bgi-d411944daea8 2026-06-02 00:53:52.913523 상세 →" [ref=e142]:
+          - cell "031d52ee-8e4" [ref=e143]:
+            - code [ref=e144]: 031d52ee-8e4
+          - cell "veo" [ref=e145]
+          - cell "video" [ref=e146]
+          - cell "succeeded" [ref=e147]
+          - cell "1 / 0 / 1" [ref=e148]
+          - cell "bgi-d411944daea8" [ref=e149]:
+            - link "bgi-d411944daea8" [ref=e150] [cursor=pointer]:
+              - /url: /genai/batches?bulk_group_id=bgi-d411944daea8
+          - cell "2026-06-02 00:53:52.913523" [ref=e151]
+          - cell "상세 →" [ref=e152]:
+            - link "상세 →" [ref=e153] [cursor=pointer]:
+              - /url: /genai/batches/031d52ee-8e4
+        - row "a55b12b3-6ca veo video succeeded 1 / 0 / 1 bgi-d411944daea8 2026-06-02 00:53:50.689816 상세 →" [ref=e154]:
+          - cell "a55b12b3-6ca" [ref=e155]:
+            - code [ref=e156]: a55b12b3-6ca
+          - cell "veo" [ref=e157]
+          - cell "video" [ref=e158]
+          - cell "succeeded" [ref=e159]
+          - cell "1 / 0 / 1" [ref=e160]
+          - cell "bgi-d411944daea8" [ref=e161]:
+            - link "bgi-d411944daea8" [ref=e162] [cursor=pointer]:
+              - /url: /genai/batches?bulk_group_id=bgi-d411944daea8
+          - cell "2026-06-02 00:53:50.689816" [ref=e163]
+          - cell "상세 →" [ref=e164]:
+            - link "상세 →" [ref=e165] [cursor=pointer]:
+              - /url: /genai/batches/a55b12b3-6ca
+        - row "093f1a3d-398 veo video succeeded 1 / 0 / 1 bgi-d411944daea8 2026-06-02 00:53:47.834200 상세 →" [ref=e166]:
+          - cell "093f1a3d-398" [ref=e167]:
+            - code [ref=e168]: 093f1a3d-398
+          - cell "veo" [ref=e169]
+          - cell "video" [ref=e170]
+          - cell "succeeded" [ref=e171]
+          - cell "1 / 0 / 1" [ref=e172]
+          - cell "bgi-d411944daea8" [ref=e173]:
+            - link "bgi-d411944daea8" [ref=e174] [cursor=pointer]:
+              - /url: /genai/batches?bulk_group_id=bgi-d411944daea8
+          - cell "2026-06-02 00:53:47.834200" [ref=e175]
+          - cell "상세 →" [ref=e176]:
+            - link "상세 →" [ref=e177] [cursor=pointer]:
+              - /url: /genai/batches/093f1a3d-398
+        - row "12070d3a-f96 kling video failed 0 / 1 / 1 bgi-d20dfff6d684 2026-06-01 06:18:50.198188 상세 →" [ref=e178]:
+          - cell "12070d3a-f96" [ref=e179]:
+            - code [ref=e180]: 12070d3a-f96
+          - cell "kling" [ref=e181]
+          - cell "video" [ref=e182]
+          - cell "failed" [ref=e183]
+          - cell "0 / 1 / 1" [ref=e184]
+          - cell "bgi-d20dfff6d684" [ref=e185]:
+            - link "bgi-d20dfff6d684" [ref=e186] [cursor=pointer]:
+              - /url: /genai/batches?bulk_group_id=bgi-d20dfff6d684
+          - cell "2026-06-01 06:18:50.198188" [ref=e187]
+          - cell "상세 →" [ref=e188]:
+            - link "상세 →" [ref=e189] [cursor=pointer]:
+              - /url: /genai/batches/12070d3a-f96
+        - row "6c6c2271-0dc kling video succeeded 1 / 0 / 1 bgi-d20dfff6d684 2026-06-01 06:18:48.171114 상세 →" [ref=e190]:
+          - cell "6c6c2271-0dc" [ref=e191]:
+            - code [ref=e192]: 6c6c2271-0dc
+          - cell "kling" [ref=e193]
+          - cell "video" [ref=e194]
+          - cell "succeeded" [ref=e195]
+          - cell "1 / 0 / 1" [ref=e196]
+          - cell "bgi-d20dfff6d684" [ref=e197]:
+            - link "bgi-d20dfff6d684" [ref=e198] [cursor=pointer]:
+              - /url: /genai/batches?bulk_group_id=bgi-d20dfff6d684
+          - cell "2026-06-01 06:18:48.171114" [ref=e199]
+          - cell "상세 →" [ref=e200]:
+            - link "상세 →" [ref=e201] [cursor=pointer]:
+              - /url: /genai/batches/6c6c2271-0dc
+        - row "5b097d87-7da kling video succeeded 1 / 0 / 1 bgi-d20dfff6d684 2026-06-01 06:18:46.059477 상세 →" [ref=e202]:
+          - cell "5b097d87-7da" [ref=e203]:
+            - code [ref=e204]: 5b097d87-7da
+          - cell "kling" [ref=e205]
+          - cell "video" [ref=e206]
+          - cell "succeeded" [ref=e207]
+          - cell "1 / 0 / 1" [ref=e208]
+          - cell "bgi-d20dfff6d684" [ref=e209]:
+            - link "bgi-d20dfff6d684" [ref=e210] [cursor=pointer]:
+              - /url: /genai/batches?bulk_group_id=bgi-d20dfff6d684
+          - cell "2026-06-01 06:18:46.059477" [ref=e211]
+          - cell "상세 →" [ref=e212]:
+            - link "상세 →" [ref=e213] [cursor=pointer]:
+              - /url: /genai/batches/5b097d87-7da
+        - row "3715a83f-0da kling video succeeded 1 / 0 / 1 bgi-d20dfff6d684 2026-06-01 06:18:44.462768 상세 →" [ref=e214]:
+          - cell "3715a83f-0da" [ref=e215]:
+            - code [ref=e216]: 3715a83f-0da
+          - cell "kling" [ref=e217]
+          - cell "video" [ref=e218]
+          - cell "succeeded" [ref=e219]
+          - cell "1 / 0 / 1" [ref=e220]
+          - cell "bgi-d20dfff6d684" [ref=e221]:
+            - link "bgi-d20dfff6d684" [ref=e222] [cursor=pointer]:
+              - /url: /genai/batches?bulk_group_id=bgi-d20dfff6d684
+          - cell "2026-06-01 06:18:44.462768" [ref=e223]
+          - cell "상세 →" [ref=e224]:
+            - link "상세 →" [ref=e225] [cursor=pointer]:
+              - /url: /genai/batches/3715a83f-0da
+        - row "b394262f-741 kling video succeeded 1 / 0 / 1 bgi-d20dfff6d684 2026-06-01 06:18:10.0.0.1002320 상세 →" [ref=e226]:
+          - cell "b394262f-741" [ref=e227]:
+            - code [ref=e228]: b394262f-741
+          - cell "kling" [ref=e229]
+          - cell "video" [ref=e230]
+          - cell "succeeded" [ref=e231]
+          - cell "1 / 0 / 1" [ref=e232]
+          - cell "bgi-d20dfff6d684" [ref=e233]:
+            - link "bgi-d20dfff6d684" [ref=e234] [cursor=pointer]:
+              - /url: /genai/batches?bulk_group_id=bgi-d20dfff6d684
+          - cell "2026-06-01 06:18:10.0.0.1002320" [ref=e235]
+          - cell "상세 →" [ref=e236]:
+            - link "상세 →" [ref=e237] [cursor=pointer]:
+              - /url: /genai/batches/b394262f-741

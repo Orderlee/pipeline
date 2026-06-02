@@ -20,7 +20,7 @@ your-gcp-project-credentials.json
 configs/global.yaml
 !configs/config.sample.yaml
 
-# Node — frequently dropped in by tooling (pyright, pyright-internal, etc.); never commit
+# Node — frequently dropped in by tooling (pyright); never commit
 node_modules/
 
 # Python
@@ -98,8 +98,6 @@ pyproject.toml
 .agent/skill/**/*.py[cod]
 # Sanitizer rule map — lists real internal values, must never be published
 .agent/skill/sanitize_repo/rules.local.txt
-# Sync helper local config — real prod host/user, never publish
-scripts/sync_from_prod.env
 
 # .claude/ — track team-shared agent config, ignore per-user state and runtime data
 .claude/*

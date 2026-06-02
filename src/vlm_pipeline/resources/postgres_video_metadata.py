@@ -62,38 +62,28 @@ class PostgresVideoMetadataMixin:
                         meta.get("reencode_preset"),
                     ),
                 )
-            columns = self._table_columns(conn, "video_metadata")
-            reencode_cols = {
-                "original_codec",
-                "original_profile",
-                "original_has_b_frames",
-                "original_level_int",
-                "reencode_required",
-                "reencode_reason",
-            }
-            if reencode_cols.issubset(columns):
-                with conn.cursor() as cur:
-                    cur.execute(
-                        """
-                        UPDATE video_metadata SET
-                            original_codec        = %s,
-                            original_profile      = %s,
-                            original_has_b_frames = %s,
-                            original_level_int    = %s,
-                            reencode_required     = %s,
-                            reencode_reason       = %s
-                        WHERE asset_id = %s
-                        """,
-                        (
-                            meta.get("original_codec"),
-                            meta.get("original_profile"),
-                            meta.get("original_has_b_frames", False),
-                            meta.get("original_level_int"),
-                            meta.get("reencode_required", False),
-                            meta.get("reencode_reason"),
-                            asset_id,
-                        ),
-                    )
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE video_metadata SET
+                        original_codec        = %s,
+                        original_profile      = %s,
+                        original_has_b_frames = %s,
+                        original_level_int    = %s,
+                        reencode_required     = %s,
+                        reencode_reason       = %s
+                    WHERE asset_id = %s
+                    """,
+                    (
+                        meta.get("original_codec"),
+                        meta.get("original_profile"),
+                        meta.get("original_has_b_frames", False),
+                        meta.get("original_level_int"),
+                        meta.get("reencode_required", False),
+                        meta.get("reencode_reason"),
+                        asset_id,
+                    ),
+                )
 
     def update_video_reencode_applied(
         self,
@@ -106,24 +96,17 @@ class PostgresVideoMetadataMixin:
         if not normalized_id:
             return
         with self.connect() as conn:
-            columns = self._table_columns(conn, "video_metadata")
             with conn.cursor() as cur:
-                if {"reencode_applied", "reencode_preset"}.issubset(columns):
-                    cur.execute(
-                        """
-                        UPDATE video_metadata
-                        SET codec            = %s,
-                            reencode_applied = TRUE,
-                            reencode_preset  = %s
-                        WHERE asset_id = %s
-                        """,
-                        (codec, reencode_preset, normalized_id),
-                    )
-                else:
-                    cur.execute(
-                        "UPDATE video_metadata SET codec = %s WHERE asset_id = %s",
-                        (codec, normalized_id),
-                    )
+                cur.execute(
+                    """
+                    UPDATE video_metadata
+                    SET codec            = %s,
+                        reencode_applied = TRUE,
+                        reencode_preset  = %s
+                    WHERE asset_id = %s
+                    """,
+                    (codec, reencode_preset, normalized_id),
+                )
 
     def update_video_reencode_reason(self, asset_id: str, reason: str) -> None:
         """reencode_reason 컬럼만 갱신 (fallback 기록용)."""

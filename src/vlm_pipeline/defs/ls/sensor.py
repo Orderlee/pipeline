@@ -73,7 +73,7 @@ def _fetch_pending_dispatch_requests() -> list[dict]:
         with conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT request_id, folder_name, labeling_method, categories,
+                SELECT request_id, folder_name, labeling_method, categories, classes,
                        COALESCE(requested_at, completed_at, created_at) AS batch_ts
                 FROM dispatch_requests
                 WHERE status = 'completed'
@@ -88,7 +88,10 @@ def _fetch_pending_dispatch_requests() -> list[dict]:
                 "folder_name": r[1],
                 "labeling_method": r[2],
                 "categories": r[3],
-                "batch_ts": r[4],
+                # 2026-06-01: image mode (bbox) 에서 categories 비어있으면 classes 로
+                # fallback. UI 사용자가 둘 중 어느 쪽에 넣어도 LS task 생성되게.
+                "classes": r[4],
+                "batch_ts": r[5],
             }
             for r in rows
             if r[1]
@@ -169,7 +172,14 @@ def create_ls_tasks(context) -> None:
 
         methods = set(parse_tag_list(req.get("labeling_method")))
         categories = parse_tag_list(req.get("categories"))
+        # 2026-06-01: image mode (bbox) 의 LS label config 는 categories 가 필수.
+        # categories 비어있으면 classes 로 fallback — 사용자가 promote 폼에서 어느 쪽에
+        # 입력해도 LS task 생성. 두 필드 의미상 같은 "라벨링 클래스" 라 union OK.
+        classes_list = parse_tag_list(req.get("classes"))
         cat_csv = ",".join(categories)
+        # image label set: categories 우선, 비면 classes
+        image_label_set = categories if categories else classes_list
+        image_label_csv = ",".join(image_label_set)
         batch_suffix = _format_batch_suffix(req.get("batch_ts"))
         run_video = bool(methods & _VIDEO_METHODS)
         run_image = bool(methods & _IMAGE_METHODS)
@@ -179,7 +189,9 @@ def create_ls_tasks(context) -> None:
 
         context.log.info(
             f"ls task 생성 시작: request_id={request_id}, folder={raw_folder}, "
-            f"prefix={raw_prefix}, methods={sorted(methods)}, categories={categories}, "
+            f"prefix={raw_prefix}, methods={sorted(methods)}, "
+            f"categories={categories}, classes={classes_list}, "
+            f"image_label_set={image_label_set}, "
             f"batch_suffix={batch_suffix or '(none)'}, video={run_video}, image={run_image}"
         )
 
@@ -211,8 +223,11 @@ def create_ls_tasks(context) -> None:
                     "--prefix",
                     raw_prefix,
                 ]
-                if cat_csv:
-                    argv += ["--categories", cat_csv]
+                # 2026-06-01: image mode 에선 image_label_csv (= categories or classes fallback),
+                # video mode 는 cat_csv (Gemini event 카테고리) 사용.
+                effective_csv = image_label_csv if mode == "image" else cat_csv
+                if effective_csv:
+                    argv += ["--categories", effective_csv]
                 if batch_suffix:
                     argv += ["--project-suffix", batch_suffix]
                 # 2026-05-20 finding: part1 bbox 1249 → 12,532 image LS 등록 시 600s 부족 → 5번 retry 모두 timeout.
@@ -235,9 +250,19 @@ def create_ls_tasks(context) -> None:
             if run_video:
                 _run_create("video")
             if run_image:
-                if not categories:
-                    context.log.warning(f"image mode 요청됐지만 categories 비어있음 — skip: request_id={request_id}")
+                # 2026-06-01: categories 가 비어도 classes 로 fallback (image_label_set).
+                # 둘 다 비어있을 때만 skip. fallback 사실은 INFO 로그로 표시.
+                if not image_label_set:
+                    context.log.warning(
+                        f"image mode 요청됐지만 categories/classes 둘 다 비어있음 — skip: "
+                        f"request_id={request_id}"
+                    )
                 else:
+                    if not categories and classes_list:
+                        context.log.info(
+                            f"image mode label_config: categories 비어있음 → classes 로 fallback "
+                            f"({classes_list}). request_id={request_id}"
+                        )
                     _run_create("image")
 
             failed_modes = [m for m, rc, _ in statuses if rc != 0]
