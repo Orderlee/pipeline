@@ -1,4 +1,10 @@
-"""Hard-coded YOLO per-class confidence threshold helpers."""
+"""Hard-coded per-class confidence threshold helpers.
+
+NOTE: 파일명에 "yolo" 가 들어가지만 SAM3 도 같은 dict 를 공유한다
+(src/vlm_pipeline/defs/sam/detection_assets.py:227 의 prompt_score_thresholds).
+class 이름이 YOLO/SAM3 모델에 따라 다를 수 있어 둘 다의 prompt 변형을 dict 에 등록한다.
+예: YOLO 는 "person_fallen", SAM3 는 자연어 "fallen person" — 별도 키로 관리.
+"""
 
 from __future__ import annotations
 
@@ -68,6 +74,9 @@ YOLO_CLASS_CONFIDENCE_THRESHOLDS: dict[str, float] = {
     "dog": 0.25,
     "cat": 0.25,
     "person_fallen": 0.79,
+    # SAM3 자연어 prompt 변형 — 2026-06-02 등록.
+    # 사용자가 promote 폼 classes 칸에 "fallen person" 으로 입력했을 때 적용.
+    "fallen person": 0.81,
     "weapon": 0.25,
     "violence": 0.25,
     "fight": 0.25,
