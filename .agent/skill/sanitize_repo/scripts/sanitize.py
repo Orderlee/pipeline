@@ -11,7 +11,10 @@ Rule format (one per line):
   regex:<pattern>==><to>   Python regex; <to> may use \\1, \\g<name>, etc.
 
 What it does (in order):
-  0. self-check    — warn loudly if rules.local.txt is not gitignored or is staged.
+  0a. self-check   — warn loudly if rules.local.txt is not gitignored or is staged.
+  0b. purge        — delete prod-only artifacts (CI/CD workflows under
+                     `.github/workflows/`, `.pre-commit-config.yaml`) that rsync from
+                     prod drags in even though sync_from_prod.sh --excludes them.
   1. content pass  — replace every `from`->`to` in all git-tracked + untracked-not-ignored
                      text files, PLUS local `.env*` files (typically gitignored, but
                      hold real secret values we want scrubbed for defense-in-depth).
@@ -34,6 +37,7 @@ from __future__ import annotations
 import argparse
 import os
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -44,6 +48,15 @@ RULES_FILE = SCRIPT_DIR.parent / "rules.local.txt"
 # Local files that often hold real secrets (typically gitignored, never published) but
 # should still be scrubbed before sharing the working tree.
 EXTRA_FILE_GLOBS = (".env*",)
+
+# Paths that should never live in this published copy — deleted at the start of every
+# run. They belong to the prod origin (CI/CD, deploy automation, lint hooks) and rsync
+# tends to drag them in. The sync wrapper already --excludes these, but listing them
+# here defends against ad-hoc rsync invocations or manual restoration.
+PURGE_PATHS = (
+    ".github/workflows",
+    ".pre-commit-config.yaml",
+)
 
 # how many sample lines to show per (file, risky-token) in the review section
 REVIEW_SAMPLES_PER_HIT = 3
@@ -180,6 +193,25 @@ def apply_to_path(path: str, rules: list[tuple[str, str, bool]]) -> str:
     return path
 
 
+def purge_unwanted_paths(root: Path, dry_run: bool) -> list[str]:
+    """Delete prod-only artifacts that should never live in this copy
+    (CI/CD workflows, pre-commit hooks). Returns the list of paths that
+    were (or would be) removed."""
+    purged: list[str] = []
+    for rel in PURGE_PATHS:
+        path = root / rel
+        if not path.exists():
+            continue
+        purged.append(rel)
+        if dry_run:
+            continue
+        if path.is_dir() and not path.is_symlink():
+            shutil.rmtree(path)
+        else:
+            path.unlink()
+    return purged
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="Sanitize the working tree using rules.local.txt")
     ap.add_argument("--dry-run", action="store_true", help="report changes, write nothing")
@@ -196,6 +228,11 @@ def main() -> int:
         for w in safety:
             print(f"    - {w}")
         print()
+
+    # 0b) purge prod-only artifacts that should never live in this copy
+    #     (CI/CD workflows, pre-commit hooks) — rsync from prod tends to drag
+    #     them in even though sync_from_prod.sh --excludes them.
+    purged = purge_unwanted_paths(root, args.dry_run if not args.verify_only else True)
 
     files = list_files(root)
     changed_content: list[tuple[str, dict[str, int]]] = []
@@ -274,6 +311,10 @@ def main() -> int:
     # ---- report ----
     tag = "[DRY-RUN] " if args.dry_run else ""
     if not args.verify_only:
+        if purged:
+            print(f"{tag}purge: {len(purged)} CI/CD path(s) removed (these belong to prod, not this copy):")
+            for p in purged:
+                print(f"  - {p}")
         print(f"{tag}content: {len(changed_content)} files changed, {skipped_binary} binary skipped")
         for rel, hits in changed_content:
             print(f"  ~ {rel}  [{', '.join(f'{k}:{v}' for k, v in hits.items())}]")
