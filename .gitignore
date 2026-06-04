@@ -20,7 +20,7 @@ your-gcp-project-credentials.json
 configs/global.yaml
 !configs/config.sample.yaml
 
-# Node — frequently dropped in by tooling (pyright); never commit
+# Node — tooling drops in node_modules, never commit
 node_modules/
 
 # Python

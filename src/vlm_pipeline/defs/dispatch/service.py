@@ -215,6 +215,7 @@ def prepare_dispatch_request(req_data: Mapping[str, Any], *, incoming_dir: Path)
     arch_path: str | None = None
     if raw_arch_path:
         from pathlib import PurePosixPath
+
         pp = PurePosixPath(raw_arch_path)
         bad_parts = [p for p in pp.parts if p in ("", ".", "..")]
         if pp.is_absolute() or bad_parts or "\\" in raw_arch_path:
@@ -528,9 +529,7 @@ def build_dispatch_run_request(
     if prepared.classes:
         common_tags["classes"] = json.dumps(prepared.classes, ensure_ascii=False)
     if prepared.gemini_descriptions:
-        common_tags["gemini_descriptions"] = json.dumps(
-            prepared.gemini_descriptions, ensure_ascii=False
-        )
+        common_tags["gemini_descriptions"] = json.dumps(prepared.gemini_descriptions, ensure_ascii=False)
 
     if prepared.archive_only:
         return RunRequest(
