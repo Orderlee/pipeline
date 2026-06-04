@@ -490,4 +490,3 @@ class PostgresLabelingMixin(PostgresDetectionMixin):
                 "raw_key",
             ]
             return [dict(zip(columns, row)) for row in rows]
-

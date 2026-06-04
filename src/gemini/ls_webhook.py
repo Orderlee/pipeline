@@ -645,7 +645,9 @@ def finalize_project(project_id: int, response_url: str = "") -> None:
     )
 
     if auto_recovered:
-        db_msg = f"→ PostgreSQL {total_finalized}건 반영 (state 매칭 {primary} + folder prefix 자동 보정 {auto_recovered})"
+        db_msg = (
+            f"→ PostgreSQL {total_finalized}건 반영 (state 매칭 {primary} + folder prefix 자동 보정 {auto_recovered})"
+        )
     else:
         db_msg = f"→ PostgreSQL {total_finalized}건 반영"
 

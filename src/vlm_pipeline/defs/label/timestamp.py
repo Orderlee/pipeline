@@ -324,14 +324,13 @@ def clip_timestamp_routed_impl(
         try:
             parsed = json.loads(str(raw))
         except json.JSONDecodeError:
-            context.log.warning(
-                "clip_timestamp: invalid JSON for tag %s — ignored", tag_name
-            )
+            context.log.warning("clip_timestamp: invalid JSON for tag %s — ignored", tag_name)
             return None
         if not isinstance(parsed, expected_type):
             context.log.warning(
                 "clip_timestamp: tag %s wrong type (expected %s) — ignored",
-                tag_name, expected_type.__name__,
+                tag_name,
+                expected_type.__name__,
             )
             return None
         return parsed

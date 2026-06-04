@@ -304,14 +304,52 @@ CATEGORY_SYNONYMS: dict[str, set[str]] = {
         "deliberate_recovery",
         # smart-city 에서 바닥에 쓰러진 사람 묘사 — 낙상 의미.
         "person_lying_on_ground",
+        # 2026-06-04: promote 폼 hybrid preset SAM3 자연어 phrase.
+        # promote.html JS 의 PRESETS["falldown"].classes 와 sync 필요.
+        # 사용자 e00879ff-b04 batch 에서 SAM3 가 40 boxes 잡았는데 LS prediction
+        # 으로 import 안 되던 issue 의 원인 — normalizer drop.
+        "fallen person",
+        "person lying down",
+        "person on the ground",
     },
     "person": {"person"},
-    "fire": {"fire", "flame", "explosion"},
-    "smoke": {"smoke", "smoking", "cigarette"},
+    "fire": {
+        "fire",
+        "flame",
+        "explosion",
+        # 2026-06-04 hybrid preset SAM3 phrase — PRESETS["fire"].classes sync.
+        "open flame",
+    },
+    "smoke": {
+        "smoke",
+        "smoking",
+        "cigarette",
+        # 2026-06-04 hybrid preset SAM3 phrase — PRESETS["smoke"].classes sync.
+        "smoke cloud",
+        # NOTE: 'flame' 은 fire 의 synonym 으로만 유지 (test_ls_category_synonyms
+        # 의 test_existing_fire_smoke_person_mappings_intact 호환). 영상에 fire+smoke
+        # 공출현 시 사용자가 두 preset 모두 선택해야 함 (의도된 정책).
+    },
     # 2026-05-29: vanguardhealthcarevhc_v2 dispatch 카테고리 매핑 추가.
     # 운영 진단으로 normalizer drop 폭주 발견 (515 events 중 18건만 매핑됨).
     # 보수적으로 의미 직접 일치 케이스만 등록. 추가 동의어는 운영자 검토 후 별도 PR.
-    "violence": {"violence", "fight"},
+    "violence": {
+        "violence",
+        "fight",
+        # 2026-06-04 hybrid preset SAM3 phrase — PRESETS["violence"].classes sync.
+        "fighting people",
+        "punching person",
+        "person hitting person",
+    },
+    "weapon": {
+        # 2026-06-04 hybrid preset 신규 canonical. PRESETS["weapon"].classes sync.
+        "weapon",
+        "gun",
+        "knife",
+        "baseball bat",
+        "bat",
+        "sword",
+    },
     "climbing up": {"climbing up", "climbing_up", "unsafe_climbing_activity"},
 }
 
@@ -534,6 +572,7 @@ def sam3_coco_to_ls_rectangles(
     to_name: str,
     label_map: dict[str, str] | None = None,
     normalizer: dict[str, str] | None = None,
+    class_thresholds: dict[str, float] | None = None,
 ) -> list[dict]:
     """SAM3 COCO per-image JSON → LS RectangleLabels result (percentage).
 
@@ -541,6 +580,11 @@ def sam3_coco_to_ls_rectangles(
     normalizer 가 주어지면 매핑 안 되는 카테고리는 drop (dispatch 범위 밖 탐지 결과는 리뷰에서 제외).
     normalizer=None 이면 allowed_labels 필터만 적용 (legacy).
     이미지 크기는 coco['images'][0]의 width/height 사용.
+
+    class_thresholds (2026-06-04): SAM3 raw phrase → 최소 score. SAM3 server-side
+    threshold 가 일부 phrase 에만 적용된 경우(미등록 phrase 는 base 0.25 만 적용) 후처리
+    에서 한 번 더 filter. attach-predictions 가 기존 COCO 의 노이즈 박스 제거하는 데
+    사용. None 이면 score-based filtering 없음.
     """
     images = coco.get("images") or []
     annotations = coco.get("annotations") or []
@@ -557,6 +601,7 @@ def sam3_coco_to_ls_rectangles(
     cat_by_id = {int(c["id"]): str(c.get("name") or "") for c in categories}
 
     lmap = label_map or {}
+    cls_thr = class_thresholds or {}
     result: list[dict] = []
     for ann in annotations:
         bbox = ann.get("bbox")
@@ -564,6 +609,12 @@ def sam3_coco_to_ls_rectangles(
             continue
         raw = cat_by_id.get(int(ann.get("category_id", -1)), "")
         label = lmap.get(raw, raw).strip().lower()
+        # post-hoc per-phrase threshold filter (raw 기준, normalize 전).
+        score = float(ann.get("score") or 0.0)
+        if cls_thr:
+            phrase_threshold = cls_thr.get(raw.lower(), cls_thr.get("__default__", 0.0))
+            if score < phrase_threshold:
+                continue
         if normalizer is not None:
             canonical = normalizer.get(label)
             if not canonical:
@@ -572,7 +623,6 @@ def sam3_coco_to_ls_rectangles(
         elif label not in allowed_labels:
             continue
         x, y, w, h = (float(v) for v in bbox[:4])
-        score = float(ann.get("score") or 0.0)
         result.append(
             {
                 "value": {
@@ -851,6 +901,19 @@ def _create_image(args, minio, auth_headers: dict) -> None:
     allowed_labels = set(normalizer.values())
     print(f"[INFO] synonym normalizer: {len(normalizer)}개 매핑 → {sorted(allowed_labels)}\n")
 
+    # 2026-06-04: per-phrase score threshold filter (yolo_thresholds dict 의 값 사용).
+    # SAM3 server 가 미등록 phrase 에 base 0.25 만 적용해서 노이즈 박스 통과한 경우
+    # client-side 추가 filter. attach-predictions 와 동일 동작.
+    try:
+        import sys as _sys
+        _sys.path.insert(0, "/src")
+        from vlm_pipeline.lib.yolo_thresholds import YOLO_CLASS_CONFIDENCE_THRESHOLDS
+        class_thresholds = dict(YOLO_CLASS_CONFIDENCE_THRESHOLDS)
+        print(f"[INFO] class_thresholds: {len(class_thresholds)} entries (per-phrase score filter)")
+    except Exception as exc:
+        class_thresholds = None
+        print(f"[WARN] class_thresholds 로드 실패 — score filter skip: {exc}")
+
     processed_bucket = getattr(args, "processed_bucket", None) or "vlm-processed"
     created = skipped = error = dropped_no_image = 0
 
@@ -890,6 +953,7 @@ def _create_image(args, minio, auth_headers: dict) -> None:
                 "image",
                 label_map=None,
                 normalizer=normalizer,
+                class_thresholds=class_thresholds,
             )
             pred_count = 0
             if ls_result:
@@ -1056,6 +1120,26 @@ def _attach_sam3_images(args, minio, auth_headers: dict, project_id: int) -> Non
     if label_map:
         print(f"[INFO] label_map: {label_map}")
 
+    # 2026-06-04 fix: SAM3 자연어 prompt (예: "fallen person") → canonical label
+    # (예: "falldown") 정규화. allowed_labels (LS label_config) 만 필터하면 SAM3 phrase
+    # 가 그대로 drop 됨. build_label_normalizer 가 CATEGORY_SYNONYMS dict 로
+    # synonym → canonical 매핑 생성 → sam3_coco_to_ls_rectangles 가 매핑 후 박스 keep.
+    normalizer = build_label_normalizer(list(allowed))
+    print(f"[INFO] normalizer entries: {len(normalizer)}")
+
+    # post-hoc per-phrase threshold filter — SAM3 server 가 미등록 phrase 에 base 0.25
+    # 만 적용해서 노이즈 박스가 통과한 경우 attach 시 한 번 더 거름.
+    # 사용자 batch e00879ff-b04 케이스: "person on the ground" 30+ boxes (0.5-0.7) → drop.
+    try:
+        import sys
+        sys.path.insert(0, "/src")
+        from vlm_pipeline.lib.yolo_thresholds import YOLO_CLASS_CONFIDENCE_THRESHOLDS
+        class_thresholds = dict(YOLO_CLASS_CONFIDENCE_THRESHOLDS)
+        print(f"[INFO] class_thresholds loaded: {len(class_thresholds)} entries")
+    except Exception as exc:
+        class_thresholds = None
+        print(f"[WARN] class_thresholds import 실패 — score filter skip: {exc}")
+
     existing = fetch_existing_task_image_stems(args.ls_url, auth_headers, project_id)
     print(f"[INFO] 기존 image task {len(existing)}개")
 
@@ -1076,7 +1160,12 @@ def _attach_sam3_images(args, minio, auth_headers: dict, project_id: int) -> Non
 
         try:
             coco = read_json_from_minio(minio, args.label_bucket, json_key)
-            ls_result = sam3_coco_to_ls_rectangles(coco, allowed, from_name, to_name, label_map)
+            ls_result = sam3_coco_to_ls_rectangles(
+                coco, allowed, from_name, to_name,
+                label_map=label_map,
+                normalizer=normalizer,
+                class_thresholds=class_thresholds,
+            )
             if not ls_result:
                 skipped_empty += 1
                 continue
