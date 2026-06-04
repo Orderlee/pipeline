@@ -1,5 +1,5 @@
 ---
-description: Strip private values (internal IPs, host paths, host username, org/service identifiers, GCP project id, customer bucket/source names, secret-pattern API keys/tokens) from the working tree — including local `.env*` files — after syncing fresh code from the prod host, then commit and push. Use after an rsync from prod, or on any "sanitize / scrub before publishing" request.
+description: Strip private values (internal IPs, host paths, host username, org/service identifiers, GCP project id, customer bucket/source names, secret-pattern API keys/tokens) from the working tree — including local `.env*` files — AND delete prod-only artifacts that should not live in this copy (CI/CD workflows, pre-commit hooks). Use after an rsync from prod, or on any "sanitize / scrub before publishing" request.
 ---
 
 # 🎯 Skill Purpose (Trigger)
@@ -20,6 +20,7 @@ description: Strip private values (internal IPs, host paths, host username, org/
     - `regex:<pattern>==><to>` — Python regex; use for value-pattern matches (e.g. API-key prefixes). Put regex rules **early** so partial-token literal rules cannot corrupt the value before it is redacted.
   - This file is **never committed** (`.gitignore`) — it is the only place the real internal values live. If it is missing the script aborts; restore it from your local backup.
 - **File scope:** tracked + untracked-not-ignored files, **plus local `.env*` files** even if gitignored (so real secret values get scrubbed for defense-in-depth — the script prints an explicit notice when an env file is modified).
+- **Purge scope (deleted, not scrubbed):** prod-only artifacts that should never live in this copy — currently `.github/workflows/` (auto CI/CD) and `.pre-commit-config.yaml` (pre-commit hook). The list is the `PURGE_PATHS` constant in `sanitize.py`; extend it if more prod-only paths start leaking in. The companion `scripts/sync_from_prod.sh` already `--exclude`s these, so the purge is defense-in-depth against ad-hoc rsync invocations.
 - Run from inside the git repo.
 
 # 📝 Action Steps
