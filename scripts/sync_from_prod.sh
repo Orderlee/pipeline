@@ -70,6 +70,8 @@ rsync "${RSYNC_OPTS[@]}" \
   --exclude='docker/data/' \
   --exclude='docker/app/dagster_home/' \
   --exclude='credentials/' \
+  --exclude='.github/workflows/' \
+  --exclude='.pre-commit-config.yaml' \
   "${PROD_USER}@${PROD_HOST}:${PROD_REPO}/" \
   "${REPO_ROOT}/"
 
