@@ -254,8 +254,7 @@ def create_ls_tasks(context) -> None:
                 # 둘 다 비어있을 때만 skip. fallback 사실은 INFO 로그로 표시.
                 if not image_label_set:
                     context.log.warning(
-                        f"image mode 요청됐지만 categories/classes 둘 다 비어있음 — skip: "
-                        f"request_id={request_id}"
+                        f"image mode 요청됐지만 categories/classes 둘 다 비어있음 — skip: " f"request_id={request_id}"
                     )
                 else:
                     if not categories and classes_list:

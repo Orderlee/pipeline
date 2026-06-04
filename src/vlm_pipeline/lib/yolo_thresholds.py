@@ -52,9 +52,13 @@ YOLO_CLASS_CONFIDENCE_THRESHOLDS: dict[str, float] = {
     "bus": 0.25,
     "motorcycle": 0.25,
     "bicycle": 0.25,
-    "fire": 0.25,
-    "smoke": 0.25,
-    "flame": 0.25,
+    # 2026-06-04: Kling/Veo 생성 영상 기준 사용자 검증 후 조정.
+    # fire 그룹 (fire, flame, open flame) — preset Fire 클릭 시 SAM3 prompt 로 보냄.
+    # smoke 그룹 (smoke, smoke cloud) — preset Smoke 클릭 시 SAM3 prompt 로 보냄.
+    # cigarette/smoking 은 Gemini event 카테고리만 (SAM3 prompt 안 쓰임) — base 0.25 유지.
+    "fire": 0.74,
+    "smoke": 0.56,
+    "flame": 0.74,
     "cigarette": 0.25,
     "smoking": 0.25,
     "knife": 0.25,
@@ -74,12 +78,22 @@ YOLO_CLASS_CONFIDENCE_THRESHOLDS: dict[str, float] = {
     "dog": 0.25,
     "cat": 0.25,
     "person_fallen": 0.79,
-    # SAM3 자연어 prompt 변형 — 2026-06-02 등록.
-    # 사용자가 promote 폼 classes 칸에 "fallen person" 으로 입력했을 때 적용.
+    # SAM3 자연어 prompt 변형 — 2026-06-02 + 2026-06-04 확장.
+    # hybrid preset Falldown 의 모든 SAM3 phrase 가 동일 threshold 공유.
+    # 이전엔 "fallen person" 만 등록되어서 다른 phrase 는 base 0.25 적용 → 노이즈 박스 폭주.
+    # 사용자 batch e00879ff-b04 검증: "person on the ground" 만 30+ boxes (0.51-0.90).
     "fallen person": 0.81,
+    "person lying down": 0.81,
+    "person on the ground": 0.81,
     "weapon": 0.25,
     "violence": 0.25,
     "fight": 0.25,
+    # hybrid preset 의 SAM3 phrase — fire/smoke 그룹은 위에서 조정된 값과 sync.
+    "open flame": 0.74,
+    "smoke cloud": 0.56,
+    "fighting people": 0.25,
+    "punching person": 0.25,
+    "person hitting person": 0.25,
 }
 
 

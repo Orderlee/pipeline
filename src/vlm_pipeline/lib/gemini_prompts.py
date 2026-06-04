@@ -193,9 +193,7 @@ def build_video_event_prompt(
             _video_event_category_line(list(normalized_descriptions)),
             1,
         )
-        guidance_lines = [
-            "IMPORTANT: Use ONLY these category names, with the following semantic guidance:"
-        ]
+        guidance_lines = ["IMPORTANT: Use ONLY these category names, with the following semantic guidance:"]
         for cat, desc in normalized_descriptions.items():
             guidance_lines.append(f"- {cat}: {desc}" if desc else f"- {cat}")
         return f"{prompt}\n\n" + "\n".join(guidance_lines)
