@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# ruff: noqa: E402
 """tmp_data_2 영상으로 이미지 추출 + (선택) YOLO 벤치 — 용량·시간·검출 수 측정.
 
 이미지 추출 및 YOLO-World만 범위. 프리셋별 추출 프레임 수·총 용량·소요 시간을 측정하고,
@@ -31,6 +32,7 @@ if str(REPO) not in sys.path:
 if str(REPO / "src") not in sys.path:
     sys.path.insert(0, str(REPO / "src"))
 
+from vlm_pipeline.lib.video_loader import probe_duration_sec
 from vlm_pipeline.lib.video_frames import (
     extract_frame_jpeg_bytes,
     plan_frame_timestamps,
@@ -58,10 +60,11 @@ PRESETS = [
 def get_video_meta(video_path: Path) -> tuple[float, float]:
     """ffprobe로 duration_sec, fps 반환. 실패 시 (0.0, 0.0)."""
     try:
+        duration = probe_duration_sec(video_path) or 0.0
         out = subprocess.run(
             [
                 "ffprobe", "-v", "error", "-select_streams", "v:0",
-                "-show_entries", "format=duration:stream=r_frame_rate",
+                "-show_entries", "stream=r_frame_rate",
                 "-of", "default=noprint_wrappers=1",
                 str(video_path),
             ],
@@ -69,20 +72,16 @@ def get_video_meta(video_path: Path) -> tuple[float, float]:
             text=True,
             timeout=30,
         )
-        if out.returncode != 0:
-            return 0.0, 0.0
-        duration = 0.0
         fps = 0.0
-        for line in out.stdout.strip().splitlines():
-            if line.startswith("duration="):
-                duration = float(line.split("=", 1)[1].strip())
-            elif line.startswith("r_frame_rate="):
-                r = line.split("=", 1)[1].strip()
-                if "/" in r:
-                    a, b = r.split("/", 1)
-                    fps = float(a) / float(b) if float(b) else 0.0
-                else:
-                    fps = float(r)
+        if out.returncode == 0:
+            for line in out.stdout.strip().splitlines():
+                if line.startswith("r_frame_rate="):
+                    r = line.split("=", 1)[1].strip()
+                    if "/" in r:
+                        a, b = r.split("/", 1)
+                        fps = float(a) / float(b) if float(b) else 0.0
+                    else:
+                        fps = float(r)
         return duration, fps
     except Exception:
         return 0.0, 0.0

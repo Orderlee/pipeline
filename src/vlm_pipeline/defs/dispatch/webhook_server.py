@@ -24,7 +24,9 @@ from uuid import uuid4
 from fastapi import FastAPI, Request, Response
 from fastapi.responses import JSONResponse
 
-DISPATCH_WEBHOOK_PORT = int(os.getenv("DISPATCH_WEBHOOK_PORT", "8090"))
+from vlm_pipeline.lib.env_utils import int_env
+
+DISPATCH_WEBHOOK_PORT = int_env("DISPATCH_WEBHOOK_PORT", 8090)
 DISPATCH_WEBHOOK_SECRET = os.getenv("DISPATCH_WEBHOOK_SECRET", "").strip()
 INCOMING_DIR = os.getenv("INCOMING_DIR", "/nas/incoming")
 

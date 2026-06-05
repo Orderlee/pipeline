@@ -12,7 +12,6 @@
 
 from __future__ import annotations
 
-import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
@@ -22,6 +21,7 @@ from vlm_pipeline.lib.video_reencode import (
     needs_reencode,
     reencode_with_fallback,
 )
+from vlm_pipeline.lib.env_utils import int_env
 from vlm_pipeline.resources.postgres import PostgresResource
 from vlm_pipeline.resources.minio import MinIOResource
 
@@ -51,24 +51,9 @@ def upload_archived_files(
         context.log.info("upload_archived: empty files list")
         return {"uploaded": 0, "failed": 0, "skipped": 0, "asset_ids": [], "total": 0}
 
-    try:
-        max_workers = int(os.getenv("INGEST_UPLOAD_WORKERS", str(DEFAULT_UPLOAD_WORKERS)))
-    except ValueError:
-        max_workers = DEFAULT_UPLOAD_WORKERS
-    max_workers = max(1, min(MAX_UPLOAD_WORKERS, max_workers))
-
-    try:
-        reencode_workers = max(
-            1,
-            min(
-                MAX_UPLOAD_WORKERS,
-                int(os.getenv("INGEST_REENCODE_WORKERS", str(DEFAULT_REENCODE_WORKERS))),
-            ),
-        )
-        reencode_threads = max(1, int(os.getenv("INGEST_REENCODE_THREADS", str(DEFAULT_REENCODE_THREADS))))
-    except ValueError:
-        reencode_workers = DEFAULT_REENCODE_WORKERS
-        reencode_threads = DEFAULT_REENCODE_THREADS
+    max_workers = min(MAX_UPLOAD_WORKERS, int_env("INGEST_UPLOAD_WORKERS", DEFAULT_UPLOAD_WORKERS, minimum=1))
+    reencode_workers = min(MAX_UPLOAD_WORKERS, int_env("INGEST_REENCODE_WORKERS", DEFAULT_REENCODE_WORKERS, minimum=1))
+    reencode_threads = int_env("INGEST_REENCODE_THREADS", DEFAULT_REENCODE_THREADS, minimum=1)
 
     def _upload_one(entry: dict[str, Any]) -> dict[str, Any]:
         archive_path = str(entry.get("path") or "").strip()

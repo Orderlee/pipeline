@@ -196,4 +196,4 @@ class PostgresVideoMetadataMixin:
                 "fps",
                 "frame_count",
             ]
-            return [dict(zip(columns, row)) for row in rows]
+            return self._rows_to_dicts(rows, columns)

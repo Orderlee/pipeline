@@ -232,7 +232,7 @@ def create_ls_tasks(context) -> None:
                     argv += ["--project-suffix", batch_suffix]
                 # 2026-05-20 finding: part1 bbox 1249 → 12,532 image LS 등록 시 600s 부족 → 5번 retry 모두 timeout.
                 # image mode 일 때 timeout 충분히 크게 (default 1800s = 30분). env var 로 override 가능.
-                timeout_sec = int(os.environ.get("LS_TASKS_CREATE_TIMEOUT_SEC", "1800"))
+                timeout_sec = int_env("LS_TASKS_CREATE_TIMEOUT_SEC", 1800)
                 try:
                     result = subprocess.run(argv, capture_output=True, text=True, timeout=timeout_sec)
                 except subprocess.TimeoutExpired as exc:

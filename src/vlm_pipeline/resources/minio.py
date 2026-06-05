@@ -14,6 +14,8 @@ from boto3.s3.transfer import TransferConfig
 from botocore.config import Config as BotoConfig
 from dagster import ConfigurableResource, InitResourceContext
 
+from vlm_pipeline.lib.env_utils import int_env
+
 FIXED_BUCKETS: tuple[str, ...] = (
     "vlm-raw",
     "vlm-labels",
@@ -49,9 +51,9 @@ class MinIOResource(ConfigurableResource):
         legacy) 가 너무 길어 컨테이너가 분 단위로 매달림. adaptive retry + 짧은 timeout
         으로 transient blip 빠르게 흡수. env 로 override 가능.
         """
-        connect_timeout = int(os.getenv("MINIO_CONNECT_TIMEOUT_SEC", "10"))
-        read_timeout = int(os.getenv("MINIO_READ_TIMEOUT_SEC", "30"))
-        max_attempts = int(os.getenv("MINIO_RETRY_MAX_ATTEMPTS", "5"))
+        connect_timeout = int_env("MINIO_CONNECT_TIMEOUT_SEC", 10, minimum=1)
+        read_timeout = int_env("MINIO_READ_TIMEOUT_SEC", 30, minimum=1)
+        max_attempts = int_env("MINIO_RETRY_MAX_ATTEMPTS", 5, minimum=1)
         return boto3.client(
             "s3",
             endpoint_url=self._normalize_endpoint(self.endpoint),

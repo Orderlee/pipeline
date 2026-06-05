@@ -35,7 +35,7 @@ except Exception:  # pragma: no cover - optional dependency
     T = None  # type: ignore[assignment]
 
 
-from vlm_pipeline.lib.env_utils import bool_env
+from vlm_pipeline.lib.env_utils import bool_env, float_env, int_env
 
 
 def _sample_timestamps(duration_sec: float, sample_count: int) -> list[float]:
@@ -245,9 +245,9 @@ def _places_outdoor_score(frame_rgb: Image.Image, top_k: int) -> float | None:
 def classify_video_environment(video_path: str | Path, duration_sec: float) -> dict[str, Any]:
     """비디오 환경 메타데이터 추출 (ingest 실패 방지용 안전 fallback 포함)."""
     path = Path(video_path)
-    sample_count = max(1, int(os.getenv("VIDEO_ENV_SAMPLE_COUNT", "3")))
-    day_night_threshold = float(os.getenv("VIDEO_DAY_NIGHT_THRESHOLD", "90"))
-    places_top_k = max(1, int(os.getenv("VIDEO_ENV_TOP_K", "10")))
+    sample_count = int_env("VIDEO_ENV_SAMPLE_COUNT", 3, minimum=1)
+    day_night_threshold = float_env("VIDEO_DAY_NIGHT_THRESHOLD", 90.0)
+    places_top_k = int_env("VIDEO_ENV_TOP_K", 10, minimum=1)
 
     timestamps = _sample_timestamps(duration_sec, sample_count)
     frames = [f for ts in timestamps if (f := _extract_frame(path, ts)) is not None]

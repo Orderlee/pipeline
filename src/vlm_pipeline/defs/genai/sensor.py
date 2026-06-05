@@ -21,11 +21,12 @@ import os
 import requests
 from dagster import DefaultSensorStatus, SkipReason, sensor
 
+from vlm_pipeline.lib.env_utils import int_env
 
-_POLL_INTERVAL = int(os.getenv("GENAI_POLL_INTERVAL_SECONDS", "30"))
-_POLL_BATCH = int(os.getenv("GENAI_POLL_BATCH", "20"))
+_POLL_INTERVAL = int_env("GENAI_POLL_INTERVAL_SECONDS", 30)
+_POLL_BATCH = int_env("GENAI_POLL_BATCH", 20)
 _GENAI_INTERNAL_BASE = os.getenv("GENAI_INTERNAL_BASE", "http://genai:8088").rstrip("/")
-_GENAI_INTERNAL_TIMEOUT = int(os.getenv("GENAI_INTERNAL_TIMEOUT", "60"))
+_GENAI_INTERNAL_TIMEOUT = int_env("GENAI_INTERNAL_TIMEOUT", 60)
 
 
 def _internal_token() -> str | None:

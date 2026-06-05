@@ -45,7 +45,7 @@ class PostgresDedupMixin(PostgresProcessMixin, PostgresBuildMixin):
                 )
                 rows = cur.fetchall()
             columns = ["asset_id", "raw_bucket", "raw_key", "archive_path", "source_path"]
-            return [dict(zip(columns, row)) for row in rows]
+            return self._rows_to_dicts(rows, columns)
 
     def find_inline_dedup_targets(
         self,
@@ -78,7 +78,7 @@ class PostgresDedupMixin(PostgresProcessMixin, PostgresBuildMixin):
                         """,
                         tuple(prioritized_set),
                     )
-                    prioritized_targets = [dict(zip(columns, row)) for row in cur.fetchall()]
+                    prioritized_targets = self._rows_to_dicts(cur.fetchall(), columns)
 
                 remaining_limit = max(0, normalized_limit - len(prioritized_targets))
                 if remaining_limit <= 0:
@@ -105,7 +105,7 @@ class PostgresDedupMixin(PostgresProcessMixin, PostgresBuildMixin):
                     """,
                     tuple(params),
                 )
-                backlog_targets = [dict(zip(columns, row)) for row in cur.fetchall()]
+                backlog_targets = self._rows_to_dicts(cur.fetchall(), columns)
 
         return prioritized_targets + backlog_targets
 

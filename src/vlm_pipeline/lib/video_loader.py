@@ -11,26 +11,17 @@ from datetime import datetime
 from pathlib import Path
 from tempfile import SpooledTemporaryFile
 
-from vlm_pipeline.lib.env_utils import int_env
+from vlm_pipeline.lib.env_utils import float_env, int_env
 
 from .checksum import sha256sum
 from .video_env import classify_video_environment
-
-
-def _float_env(name: str, default: float, minimum: float) -> float:
-    raw = os.getenv(name, str(default))
-    try:
-        value = float(raw)
-    except (TypeError, ValueError):
-        value = float(default)
-    return max(minimum, value)
 
 
 def _run_ffprobe_with_retry(cmd: list[str], timeout_sec: int) -> subprocess.CompletedProcess:
     """ffprobe 실행 (timeout/OSError는 재시도)."""
     retry_count = int_env("VIDEO_FFPROBE_RETRY_COUNT", 1, 0)
     retry_delay_ms = int_env("VIDEO_FFPROBE_RETRY_DELAY_MS", 250, 0)
-    timeout_backoff = _float_env("VIDEO_FFPROBE_TIMEOUT_BACKOFF", 2.0, 1.0)
+    timeout_backoff = float_env("VIDEO_FFPROBE_TIMEOUT_BACKOFF", 2.0, 1.0)
     current_timeout = max(1, int(timeout_sec))
 
     for attempt in range(retry_count + 1):
@@ -119,6 +110,26 @@ def _probe_frame_count_fallback(file_path: Path) -> int:
         if frame_count > 0:
             return frame_count
     return 0
+
+
+def probe_duration_sec(file_path: Path | str, *, timeout_sec: int = 30) -> float | None:
+    """ffprobe 로 영상 길이(초)를 빠르게 조회. 실패 시 None.
+
+    경량 단발 호출 — 전체 메타데이터가 필요한 경우엔 `load_video_once` 사용.
+    """
+    cmd = [
+        "ffprobe", "-v", "error",
+        "-show_entries", "format=duration",
+        "-of", "default=noprint_wrappers=1:nokey=1",
+        str(file_path),
+    ]
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_sec)
+        if proc.returncode == 0 and proc.stdout.strip():
+            return float(proc.stdout.strip())
+    except (subprocess.TimeoutExpired, OSError, ValueError):
+        pass
+    return None
 
 
 def load_video_once(

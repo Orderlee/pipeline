@@ -12,7 +12,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from .env_utils import int_env as _int_env_impl
+from .env_utils import float_env, int_env as _int_env_impl
 from .gemini_prompts import IMAGE_PROMPT, VIDEO_PROMPT
 
 TEMP_GEMINI_CREDENTIALS_PATH = Path("/tmp/gemini-service-account.json")
@@ -217,15 +217,6 @@ def _load_generation_config_cls() -> Any:
 _int_env = _int_env_impl
 
 
-def _float_env(name: str, default: float, minimum: float = 0.0) -> float:
-    raw_value = os.getenv(name)
-    try:
-        parsed = float(raw_value) if raw_value is not None else float(default)
-    except (TypeError, ValueError):
-        parsed = float(default)
-    return max(minimum, parsed)
-
-
 def is_vertex_rate_limit_error(exc: BaseException) -> bool:
     message = str(exc).lower()
     return "429" in message or "resource exhausted" in message
@@ -303,15 +294,15 @@ class GeminiAnalyzer:
         self.credentials_path = credentials_value
         self._part_cls = part_cls
         self._rate_limit_max_retries = _int_env("GEMINI_RATE_LIMIT_MAX_RETRIES", 2, 0)
-        self._rate_limit_base_delay_sec = _float_env("GEMINI_RATE_LIMIT_BASE_DELAY_SEC", 2.0, 0.0)
-        self._rate_limit_backoff = _float_env("GEMINI_RATE_LIMIT_BACKOFF", 2.0, 1.0)
-        self._rate_limit_max_delay_sec = _float_env("GEMINI_RATE_LIMIT_MAX_DELAY_SEC", 15.0, 0.0)
+        self._rate_limit_base_delay_sec = float_env("GEMINI_RATE_LIMIT_BASE_DELAY_SEC", 2.0, 0.0)
+        self._rate_limit_backoff = float_env("GEMINI_RATE_LIMIT_BACKOFF", 2.0, 1.0)
+        self._rate_limit_max_delay_sec = float_env("GEMINI_RATE_LIMIT_MAX_DELAY_SEC", 15.0, 0.0)
         # Phase 4-A (#10) — 503/deadline 별도 backoff. 일반적으로 server error 는 rate-limit
         # 보다 회복 시간이 길어 base delay 가 더 크다 (10s default, max 60s).
         self._server_error_max_retries = _int_env("GEMINI_SERVER_ERROR_MAX_RETRIES", 3, 0)
-        self._server_error_base_delay_sec = _float_env("GEMINI_SERVER_ERROR_BASE_DELAY_SEC", 10.0, 0.0)
-        self._server_error_backoff = _float_env("GEMINI_SERVER_ERROR_BACKOFF", 2.0, 1.0)
-        self._server_error_max_delay_sec = _float_env("GEMINI_SERVER_ERROR_MAX_DELAY_SEC", 60.0, 0.0)
+        self._server_error_base_delay_sec = float_env("GEMINI_SERVER_ERROR_BASE_DELAY_SEC", 10.0, 0.0)
+        self._server_error_backoff = float_env("GEMINI_SERVER_ERROR_BACKOFF", 2.0, 1.0)
+        self._server_error_max_delay_sec = float_env("GEMINI_SERVER_ERROR_MAX_DELAY_SEC", 60.0, 0.0)
         # in-process usage metering — Vertex 청구 분석 + 회귀 탐지용.
         # response.usage_metadata 가 노출하는 prompt/candidates/total token 누적.
         self._call_count = 0
