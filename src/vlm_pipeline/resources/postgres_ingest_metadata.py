@@ -84,11 +84,7 @@ class PostgresIngestMetadataMixin(PostgresVideoMetadataMixin):
                     """,
                     (normalized_key,),
                 )
-                row = cur.fetchone()
-                if row is None:
-                    return None
-                columns = [desc[0] for desc in cur.description]
-            return dict(zip(columns, row))
+                return self._cursor_to_dict(cur)
 
     def find_image_metadata_by_image_id(self, image_id: str) -> dict[str, Any] | None:
         normalized_id = str(image_id or "").strip()
@@ -105,11 +101,7 @@ class PostgresIngestMetadataMixin(PostgresVideoMetadataMixin):
                     """,
                     (normalized_id,),
                 )
-                row = cur.fetchone()
-                if row is None:
-                    return None
-                columns = [desc[0] for desc in cur.description]
-            return dict(zip(columns, row))
+                return self._cursor_to_dict(cur)
 
     def find_image_metadata_by_stem(
         self,
@@ -135,11 +127,7 @@ class PostgresIngestMetadataMixin(PostgresVideoMetadataMixin):
             query += " ORDER BY im.extracted_at DESC LIMIT 1"
             with conn.cursor() as cur:
                 cur.execute(query, params)
-                row = cur.fetchone()
-                if row is None:
-                    return None
-                columns = [desc[0] for desc in cur.description]
-            return dict(zip(columns, row))
+                return self._cursor_to_dict(cur)
 
     def upsert_image_metadata_rows(self, rows: list[dict[str, Any]]) -> int:
         if not rows:

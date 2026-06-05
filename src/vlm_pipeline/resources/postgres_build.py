@@ -151,7 +151,7 @@ class PostgresBuildMixin:
                 "source_raw_key",
                 "source_raw_bucket",
             ]
-            return [dict(zip(columns, row)) for row in rows]
+            return self._rows_to_dicts(rows, columns)
 
     def find_project_genai_pairs(self, folder: str) -> list[dict]:
         # GenAI label-free pair candidates: (input image, output video|image) per job.
@@ -204,7 +204,7 @@ class PostgresBuildMixin:
                 "output_raw_key",
                 "output_media_type",
             ]
-            return [dict(zip(columns, row)) for row in rows]
+            return self._rows_to_dicts(rows, columns)
 
     def insert_dataset(self, dataset: dict) -> None:
         with self.connect() as conn:
@@ -304,7 +304,7 @@ class PostgresBuildMixin:
                 )
                 rows = cur.fetchall()
             columns = ["folder_name", "labeling_method", "categories", "classes", "latest_at"]
-            return [dict(zip(columns, row)) for row in rows]
+            return self._rows_to_dicts(rows, columns)
 
     def find_project_classification_videos(self, folder: str, require_ls_finalized: bool = False) -> list[dict]:
         """video 후보 + labels_key 리스트.
@@ -334,7 +334,7 @@ class PostgresBuildMixin:
                 )
                 rows = cur.fetchall()
             columns = ["asset_id", "raw_bucket", "raw_key", "labels_key_list"]
-            return [dict(zip(columns, row)) for row in rows]
+            return self._rows_to_dicts(rows, columns)
 
     def find_project_classification_images(self, folder: str, require_ls_finalized: bool = False) -> list[dict]:
         finalized_filter = "AND il.review_status = 'finalized'" if require_ls_finalized else ""
@@ -365,7 +365,7 @@ class PostgresBuildMixin:
                 "source_asset_id",
                 "labels_key_list",
             ]
-            return [dict(zip(columns, row)) for row in rows]
+            return self._rows_to_dicts(rows, columns)
 
     def find_latest_dispatch_for_folder(self, folder: str) -> dict | None:
         """최신 dispatch_requests row (labeling_method, categories, classes)."""
@@ -417,7 +417,7 @@ class PostgresBuildMixin:
                 "fps",
                 "frame_count",
             ]
-            return [dict(zip(columns, row)) for row in rows]
+            return self._rows_to_dicts(rows, columns)
 
     def insert_classification_dataset(self, row: dict) -> None:
         with self.connect() as conn:

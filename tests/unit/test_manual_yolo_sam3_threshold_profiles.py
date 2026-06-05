@@ -81,14 +81,21 @@ def test_load_threshold_profile_maps_falldown_to_person_fallen_for_baseline_and_
         requested_classes=requested_classes,
     )
 
+    # 2026-06-05: CATEGORY_TO_CLASSES 에서 falldown 매핑이 SAM3 자연어 phrase 로 교체됨
+    # (person_fallen → fallen person/person lying down/person on the ground).
+    # category_override 모드는 모든 매핑된 phrase 에 동일 threshold 적용.
+    falldown_phrases = ("fallen person", "person lying down", "person on the ground")
+
     assert baseline_profile.mode == "category_override"
-    assert baseline_profile.yolo_class_thresholds["person_fallen"] == 0.20
-    assert baseline_profile.sam3_prompt_thresholds["person_fallen"] == 0.20
+    for phrase in falldown_phrases:
+        assert baseline_profile.yolo_class_thresholds[phrase] == 0.20
+        assert baseline_profile.sam3_prompt_thresholds[phrase] == 0.20
     assert baseline_profile.yolo_effective_request_confidence_threshold == 0.15
 
     assert final_profile.profile_name == "05_experiment_final"
-    assert final_profile.yolo_class_thresholds["person_fallen"] == 0.79
-    assert final_profile.sam3_prompt_thresholds["person_fallen"] == 0.79
+    for phrase in falldown_phrases:
+        assert final_profile.yolo_class_thresholds[phrase] == 0.79
+        assert final_profile.sam3_prompt_thresholds[phrase] == 0.79
     assert final_profile.yolo_class_thresholds["fire"] == 0.25
     assert final_profile.yolo_class_thresholds["bat"] == 0.15
     assert final_profile.yolo_effective_request_confidence_threshold == 0.15

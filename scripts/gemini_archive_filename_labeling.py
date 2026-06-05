@@ -24,6 +24,7 @@ from typing import Any
 from uuid import uuid4
 
 from vlm_pipeline.lib.gemini import GeminiAnalyzer, extract_clean_json_text
+from vlm_pipeline.lib.video_loader import probe_duration_sec
 
 VIDEO_EXTENSIONS = {".mp4", ".mov", ".avi", ".mkv", ".webm"}
 REQUEST_SLEEP_SEC = 1.0
@@ -123,24 +124,7 @@ def _target_preview_bitrate_kbps(*, duration_sec: float | int | None, target_byt
 
 
 def ffprobe_duration(video_path: Path) -> float | None:
-    cmd = [
-        "ffprobe",
-        "-v",
-        "error",
-        "-show_entries",
-        "format=duration",
-        "-of",
-        "default=noprint_wrappers=1:nokey=1",
-        str(video_path),
-    ]
-    try:
-        result = subprocess.run(cmd, capture_output=True, text=True, check=False, timeout=30)
-        if result.returncode != 0:
-            return None
-        value = (result.stdout or "").strip()
-        return float(value) if value else None
-    except Exception:
-        return None
+    return probe_duration_sec(video_path)
 
 
 def prepare_gemini_video_for_request(video_path: Path) -> tuple[Path, Path | None]:

@@ -110,7 +110,7 @@ class PostgresIngestRawMixin:
                 if result is None:
                     return None
                 columns = [desc[0] for desc in cur.description]
-            return dict(zip(columns, result))
+            return self._row_to_dict(result, columns)
 
     def find_any_by_checksum(self, checksum: str) -> dict[str, Any] | None:
         return self.find_by_checksum(checksum, completed_only=False)
@@ -465,9 +465,7 @@ class PostgresIngestRawMixin:
                     """,
                     (normalized_name,),
                 )
-                rows = cur.fetchall()
-                result_columns = [desc[0] for desc in cur.description]
-            return [dict(zip(result_columns, row)) for row in rows]
+                return self._cursor_to_dicts(cur)
 
     def list_archived_raw_files_for_folder(self, folder_name: str) -> list[dict[str, Any]]:
         """Phase 2b: archive 에 이미 옮겨진 raw_files 조회.
@@ -616,4 +614,4 @@ class PostgresIngestRawMixin:
                 if result is None:
                     return None
                 columns = [desc[0] for desc in cur.description]
-            return dict(zip(columns, result))
+            return self._row_to_dict(result, columns)

@@ -112,7 +112,7 @@ class PostgresDetectionMixin:
                 "frame_index",
                 "frame_sec",
             ]
-            return [dict(zip(columns, row)) for row in rows]
+            return self._rows_to_dicts(rows, columns)
 
     def find_yolo_pending_images(
         self,
@@ -187,7 +187,7 @@ class PostgresDetectionMixin:
             "fps",
             "frame_count",
         ]
-        return [dict(zip(columns, row)) for row in rows]
+        return self._rows_to_dicts(rows, columns)
 
     def find_sam3_shadow_candidates(
         self,
@@ -291,7 +291,7 @@ class PostgresDetectionMixin:
                 "yolo_labels_bucket",
                 "yolo_labels_key",
             ]
-            return [dict(zip(columns, row)) for row in rows]
+            return self._rows_to_dicts(rows, columns)
 
     def batch_insert_image_labels(self, labels: list[dict]) -> int:
         """image_labels 배치 INSERT (PK 충돌 시 UPDATE)."""

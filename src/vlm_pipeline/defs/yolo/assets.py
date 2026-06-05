@@ -15,10 +15,10 @@ from datetime import datetime
 
 from dagster import Field, asset
 
+from vlm_pipeline.defs.spec.target_classes import resolve_target_classes
 from vlm_pipeline.lib.detection_common import (
     flush_image_labels,
     normalize_classes,
-    resolve_target_classes,
     stable_image_label_id,
 )
 from vlm_pipeline.lib.env_utils import (

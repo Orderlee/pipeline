@@ -148,7 +148,7 @@ class PostgresProcessMixin:
                 "video_height",
                 "video_codec",
             ]
-            return [dict(zip(columns, row)) for row in rows]
+            return self._rows_to_dicts(rows, columns)
 
     def insert_processed_clip(self, clip: dict) -> None:
         with self.connect() as conn:
@@ -273,4 +273,4 @@ class PostgresProcessMixin:
                 "clip_key",
                 "process_status",
             ]
-            return dict(zip(columns, row))
+            return self._row_to_dict(row, columns)
