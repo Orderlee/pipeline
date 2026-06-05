@@ -25,6 +25,7 @@ from pathlib import Path
 from tempfile import NamedTemporaryFile
 
 from vlm_pipeline.lib.env_utils import int_env
+from vlm_pipeline.lib.video_loader import probe_duration_sec
 
 logger = logging.getLogger(__name__)
 
@@ -272,26 +273,7 @@ def needs_reencode(video_meta: dict, file_path: Path) -> tuple[bool, str | None]
     return False, None
 
 
-def _probe_duration_sec(file_path: Path) -> float | None:
-    """ffprobe로 영상 길이(초)를 빠르게 조회. 실패 시 None."""
-    cmd = [
-        "ffprobe",
-        "-v",
-        "error",
-        "-show_entries",
-        "format=duration",
-        "-of",
-        "default=noprint_wrappers=1:nokey=1",
-        str(file_path),
-    ]
-    try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
-        if proc.returncode == 0 and proc.stdout.strip():
-            return float(proc.stdout.strip())
-    except (subprocess.TimeoutExpired, OSError, ValueError):
-        pass
-    return None
-
+_probe_duration_sec = probe_duration_sec
 
 # 타임아웃 = max(기본값, 영상길이 × 배수) — 긴 영상도 안전하게 처리
 _REENCODE_TIMEOUT_MULTIPLIER = 3.0

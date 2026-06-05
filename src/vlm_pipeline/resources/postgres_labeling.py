@@ -62,7 +62,7 @@ class PostgresLabelingMixin(PostgresDetectionMixin):
                 "fps",
                 "frame_count",
             ]
-            return [dict(zip(columns, row)) for row in rows]
+            return self._rows_to_dicts(rows, columns)
 
     _VALID_STAGES = frozenset({"timestamp", "caption", "frame", "bbox", "auto_label"})
 
@@ -195,7 +195,7 @@ class PostgresLabelingMixin(PostgresDetectionMixin):
                 "fps",
                 "frame_count",
             ]
-            return [dict(zip(columns, row)) for row in rows]
+            return self._rows_to_dicts(rows, columns)
 
     def find_timestamp_pending_by_folder(self, folder_name: str, limit: int = 50) -> list[dict]:
         """Dispatch flow: folder_name(source_unit_name) 기준 timestamp 미완료 비디오."""
@@ -228,7 +228,7 @@ class PostgresLabelingMixin(PostgresDetectionMixin):
                 "fps",
                 "frame_count",
             ]
-            return [dict(zip(columns, row)) for row in rows]
+            return self._rows_to_dicts(rows, columns)
 
     def find_ready_for_labeling_caption_backlog(self, spec_id: str, limit: int = 100) -> list[dict]:
         with self.connect() as conn:
@@ -256,7 +256,7 @@ class PostgresLabelingMixin(PostgresDetectionMixin):
                 )
                 rows = cur.fetchall()
             columns = ["asset_id", "raw_bucket", "raw_key", "timestamp_label_key", "duration_sec"]
-            return [dict(zip(columns, row)) for row in rows]
+            return self._rows_to_dicts(rows, columns)
 
     def find_caption_pending_by_folder(self, folder_name: str, limit: int = 100) -> list[dict]:
         with self.connect() as conn:
@@ -284,7 +284,7 @@ class PostgresLabelingMixin(PostgresDetectionMixin):
                 )
                 rows = cur.fetchall()
             columns = ["asset_id", "raw_bucket", "raw_key", "timestamp_label_key", "duration_sec"]
-            return [dict(zip(columns, row)) for row in rows]
+            return self._rows_to_dicts(rows, columns)
 
     def find_captioning_pending_videos(self, limit: int = 100, folder_name: str | None = None) -> list[dict]:
         """Gemini JSON 생성 완료(generated) 후 아직 DB 정규화가 안 된 video."""
@@ -324,7 +324,7 @@ class PostgresLabelingMixin(PostgresDetectionMixin):
                 )
                 rows = cur.fetchall()
             columns = ["asset_id", "raw_bucket", "raw_key", "auto_label_key", "duration_sec"]
-            return [dict(zip(columns, row)) for row in rows]
+            return self._rows_to_dicts(rows, columns)
 
     def replace_gemini_labels(
         self,
@@ -489,4 +489,4 @@ class PostgresLabelingMixin(PostgresDetectionMixin):
                 "clip_end_sec",
                 "raw_key",
             ]
-            return [dict(zip(columns, row)) for row in rows]
+            return self._rows_to_dicts(rows, columns)

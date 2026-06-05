@@ -228,7 +228,7 @@ class PostgresGenAIMixin:
                     "submitted_at",
                     "completed_at",
                 ]
-                return dict(zip(cols, row))
+                return self._row_to_dict(row, cols)
 
     def list_genai_batches(
         self,
@@ -262,7 +262,7 @@ class PostgresGenAIMixin:
                 "submitted_at",
                 "completed_at",
             ]
-            return [dict(zip(cols, row)) for row in rows]
+            return self._rows_to_dicts(rows, cols)
 
     def list_genai_jobs(self, batch_id: str) -> list[dict]:
         with self.connect() as conn:
@@ -293,7 +293,7 @@ class PostgresGenAIMixin:
                 "submitted_at",
                 "completed_at",
             ]
-            return [dict(zip(cols, row)) for row in rows]
+            return self._rows_to_dicts(rows, cols)
 
     def find_pending_genai_jobs(
         self,
@@ -329,4 +329,4 @@ class PostgresGenAIMixin:
                 "engine",
                 "output_media",
             ]
-            return [dict(zip(cols, row)) for row in rows]
+            return self._rows_to_dicts(rows, cols)

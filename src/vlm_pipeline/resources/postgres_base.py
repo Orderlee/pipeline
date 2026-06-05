@@ -17,6 +17,8 @@ import time
 from contextlib import contextmanager
 from typing import ClassVar, Optional
 
+from vlm_pipeline.lib.env_utils import int_env
+
 import psycopg2
 import psycopg2.extensions
 import psycopg2.pool
@@ -91,6 +93,37 @@ class PostgresBaseMixin(PostgresPhashMixin, PostgresMigrationMixin):
     def _is_transient_error(exc: BaseException) -> bool:
         return _is_transient_pg_error(exc)
 
+    @staticmethod
+    def _rows_to_dicts(rows, columns: list[str]) -> list[dict]:
+        """[(v1, v2, ...), ...] + columns 리스트 → [{c1: v1, c2: v2}, ...]."""
+        return [dict(zip(columns, row)) for row in rows]
+
+    @staticmethod
+    def _row_to_dict(row, columns: list[str]) -> dict | None:
+        """단일 row tuple → dict, None passthrough."""
+        if row is None:
+            return None
+        return dict(zip(columns, row))
+
+    @staticmethod
+    def _cursor_to_dicts(cur) -> list[dict]:
+        """cursor.description 기반 동적 컬럼 — SELECT * 류에 사용."""
+        if cur.description is None:
+            return []
+        columns = [desc[0] for desc in cur.description]
+        return [dict(zip(columns, row)) for row in cur.fetchall()]
+
+    @staticmethod
+    def _cursor_to_dict(cur) -> dict | None:
+        """단일 row + 동적 컬럼."""
+        if cur.description is None:
+            return None
+        columns = [desc[0] for desc in cur.description]
+        row = cur.fetchone()
+        if row is None:
+            return None
+        return dict(zip(columns, row))
+
     @contextmanager
     def connect(self):
         """psycopg2 커넥션 컨텍스트 매니저.
@@ -101,11 +134,11 @@ class PostgresBaseMixin(PostgresPhashMixin, PostgresMigrationMixin):
         DuckDB ctxmgr와 인터페이스가 (yield 1개) 동일하므로 도메인 mixin은
         그대로 작동한다.
         """
-        retry_count = max(0, int(os.getenv("POSTGRES_TRANSIENT_RETRY_COUNT", "5")))
-        base_delay_ms = max(10, int(os.getenv("POSTGRES_TRANSIENT_RETRY_DELAY_MS", "100")))
+        retry_count = int_env("POSTGRES_TRANSIENT_RETRY_COUNT", 5, minimum=0)
+        base_delay_ms = int_env("POSTGRES_TRANSIENT_RETRY_DELAY_MS", 100, minimum=10)
         max_delay_ms = max(
             base_delay_ms,
-            int(os.getenv("POSTGRES_TRANSIENT_RETRY_MAX_DELAY_MS", "2000")),
+            int_env("POSTGRES_TRANSIENT_RETRY_MAX_DELAY_MS", 2000, minimum=10),
         )
 
         pool = self._get_pool(self.dsn, minconn=self.pool_min, maxconn=self.pool_max)

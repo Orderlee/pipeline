@@ -222,4 +222,4 @@ class PostgresSpecMixin:
                 )
                 rows = cur.fetchall()
             cols = ["map_id", "requester_id", "team_id", "scope", "config_id", "is_active"]
-            return [dict(zip(cols, row)) for row in rows]
+            return self._rows_to_dicts(rows, cols)
