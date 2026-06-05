@@ -28,6 +28,16 @@ def int_env(name: str, default: int, minimum: int = 0) -> int:
     return max(minimum, value)
 
 
+def float_env(name: str, default: float, minimum: float = 0.0) -> float:
+    """환경변수를 float로 읽되, minimum 이상을 보장."""
+    raw = os.getenv(name, str(default))
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        value = float(default)
+    return max(minimum, value)
+
+
 def coerce_float(value: object, default: float = 0.0) -> float:
     """값을 float로 변환, 실패 시 default 반환."""
     if value in (None, ""):
@@ -182,12 +192,19 @@ _OUTPUT_DEPENDENCIES: dict[str, list[str]] = {
 
 # categories → classes 파생 (auto_labeling_unified_spec, staging spec flow)
 CATEGORY_TO_CLASSES: dict[str, list[str]] = {
-    "smoke": ["smoke"],
-    "smoking": ["cigarette", "smoking"],
-    "fire": ["fire", "flame"],
-    "falldown": ["person_fallen"],
-    "weapon": ["knife", "gun", "bat", "baseball bat", "sword", "dagger"],
-    "violence": ["violence", "fight"],
+    # 2026-06-05: agent / spec 등 외부 dispatch 가 categories 만 보낼 때 SAM3 자연어 prompt
+    # 로 expansion. SAM3.1 은 text-prompted segmentation 이라 합성어 / 추상어
+    # (예: "person_fallen", "violence") 매칭 못함 → 자연어 명사구 필수.
+    # 동기화 (3곳):
+    #   1) yolo_thresholds.YOLO_CLASS_CONFIDENCE_THRESHOLDS — phrase 별 score threshold
+    #   2) docker/genai/templates/promote.html JS PRESETS — Studio UI preset
+    #   3) src/gemini/ls_tasks.py CATEGORY_SYNONYMS — LS normalizer canonical 매핑
+    "smoke": ["smoke", "smoke cloud"],
+    "smoking": ["cigarette", "smoking"],  # Gemini event 용 — SAM3 prompt 비대상
+    "fire": ["fire", "flame", "open flame"],
+    "falldown": ["fallen person", "person lying down", "person on the ground"],
+    "weapon": ["gun", "knife", "baseball bat", "sword", "bat", "dagger"],
+    "violence": ["fighting people", "punching person", "person hitting person"],
 }
 
 

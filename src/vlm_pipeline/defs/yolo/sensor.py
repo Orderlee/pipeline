@@ -8,7 +8,7 @@
 
 from __future__ import annotations
 
-from vlm_pipeline.lib.detection_sensor_factory import build_detection_backlog_sensor
+from vlm_pipeline.defs.shared.detection_sensor_factory import build_detection_backlog_sensor
 
 YOLO_TARGET_JOBS = {"yolo_detection_job", "mvp_stage_job"}
 

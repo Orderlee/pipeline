@@ -7,7 +7,6 @@ Phase C: MinIO 병렬 업로드 (재인코딩 필요 시 reencode→upload).
 
 from __future__ import annotations
 
-import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
@@ -19,6 +18,7 @@ from vlm_pipeline.lib.video_reencode import (
     needs_reencode,
     reencode_with_fallback,
 )
+from vlm_pipeline.lib.env_utils import int_env
 from vlm_pipeline.resources.postgres import PostgresResource
 from vlm_pipeline.resources.minio import MinIOResource
 
@@ -94,21 +94,9 @@ def normalize_and_archive(
     """
     uploaded: list[dict] = []
     upload_tasks: list[dict[str, Any]] = []
-    max_workers_raw = os.getenv("INGEST_UPLOAD_WORKERS", str(DEFAULT_UPLOAD_WORKERS))
-    try:
-        max_workers = int(max_workers_raw)
-    except ValueError:
-        max_workers = DEFAULT_UPLOAD_WORKERS
-    max_workers = max(1, min(MAX_UPLOAD_WORKERS, max_workers))
-
-    try:
-        reencode_workers = max(
-            1, min(MAX_UPLOAD_WORKERS, int(os.getenv("INGEST_REENCODE_WORKERS", str(DEFAULT_REENCODE_WORKERS))))
-        )
-        reencode_threads = max(1, int(os.getenv("INGEST_REENCODE_THREADS", str(DEFAULT_REENCODE_THREADS))))
-    except ValueError:
-        reencode_workers = DEFAULT_REENCODE_WORKERS
-        reencode_threads = DEFAULT_REENCODE_THREADS
+    max_workers = min(MAX_UPLOAD_WORKERS, int_env("INGEST_UPLOAD_WORKERS", DEFAULT_UPLOAD_WORKERS, minimum=1))
+    reencode_workers = min(MAX_UPLOAD_WORKERS, int_env("INGEST_REENCODE_WORKERS", DEFAULT_REENCODE_WORKERS, minimum=1))
+    reencode_threads = int_env("INGEST_REENCODE_THREADS", DEFAULT_REENCODE_THREADS, minimum=1)
     raw_insert_batch_size = 50
     candidate_records = [rec for rec in records if rec.get("status") == "registered"]
     total_candidates = len(candidate_records)
@@ -278,12 +266,7 @@ def normalize_and_archive(
         except Exception as exc:
             return {"rec": rec, "meta": None, "error": exc}
 
-    meta_workers_raw = os.getenv("INGEST_META_WORKERS", str(DEFAULT_META_WORKERS))
-    try:
-        meta_workers = int(meta_workers_raw)
-    except ValueError:
-        meta_workers = DEFAULT_META_WORKERS
-    meta_workers = max(1, min(MAX_META_WORKERS, meta_workers))
+    meta_workers = min(MAX_META_WORKERS, int_env("INGEST_META_WORKERS", DEFAULT_META_WORKERS, minimum=1))
 
     meta_results: list[dict] = []
     if total_candidates > 1 and meta_workers > 1:

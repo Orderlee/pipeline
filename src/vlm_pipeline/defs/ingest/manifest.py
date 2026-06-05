@@ -10,7 +10,7 @@ import os
 from datetime import datetime, timezone
 from pathlib import Path
 
-from vlm_pipeline.lib.env_utils import as_int
+from vlm_pipeline.lib.env_utils import as_int, int_env
 from vlm_pipeline.resources.config import PipelineConfig
 from vlm_pipeline.resources.postgres import PostgresResource
 from vlm_pipeline.defs.ingest.archive import resolve_archive_source_unit_name
@@ -192,7 +192,7 @@ def build_retry_manifest(
     if not retry_candidates:
         return None
 
-    max_attempt = max(1, int(os.getenv("INGEST_TRANSIENT_RETRY_MAX_ATTEMPTS", "3")))
+    max_attempt = int_env("INGEST_TRANSIENT_RETRY_MAX_ATTEMPTS", 3, minimum=1)
     try:
         current_attempt = int(manifest.get("retry_attempt") or 0)
     except (TypeError, ValueError):

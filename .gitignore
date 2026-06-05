@@ -20,9 +20,6 @@ your-gcp-project-credentials.json
 configs/global.yaml
 !configs/config.sample.yaml
 
-# Node — tooling drops in node_modules, never commit
-node_modules/
-
 # Python
 __pycache__/
 *.py[cod]
@@ -64,6 +61,12 @@ tests/integration/*
 .idea/
 .cursor/
 .codex/
+# bare-file variants (e.g. docker/.codex) — `.codex/` only matches dirs
+.codex
+
+# Node / MCP / browser-automation tooling artifacts
+node_modules/
+.playwright-mcp/
 *.swp
 .DS_Store
 ._.DS_Store

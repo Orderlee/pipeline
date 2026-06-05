@@ -13,7 +13,7 @@ from typing import IO, Callable
 
 from dagster import AssetKey, Field, asset
 
-from vlm_pipeline.lib.env_utils import as_int
+from vlm_pipeline.lib.env_utils import as_int, int_env
 
 DEFAULT_GCP_SCRIPT_PATH = "/gcp/download_from_gcs_rclone.py"
 # incoming 마운트 경로를 INCOMING_DIR env 기준으로 따라간다 — compose 가 incoming 을
@@ -76,15 +76,15 @@ def _terminate_process(proc: subprocess.Popen[str]) -> None:
         "extra_args": Field(str, default_value=os.getenv("RCLONE_EXTRA_ARGS", "")),
         "stall_seconds": Field(
             int,
-            default_value=as_int(os.getenv("GCS_STALL_SECONDS"), 300),
+            default_value=int_env("GCS_STALL_SECONDS", 300),
         ),
         "max_restarts": Field(
             int,
-            default_value=as_int(os.getenv("GCS_MAX_RESTARTS"), 3),
+            default_value=int_env("GCS_MAX_RESTARTS", 3),
         ),
         "zero_byte_retries": Field(
             int,
-            default_value=as_int(os.getenv("GCS_ZERO_BYTE_RETRIES"), 2),
+            default_value=int_env("GCS_ZERO_BYTE_RETRIES", 2),
         ),
         "timeout_sec": Field(int, default_value=60 * 60 * 6),
     },
