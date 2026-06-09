@@ -10,6 +10,8 @@ from datetime import datetime
 from typing import Any
 from uuid import uuid4
 
+from vlm_pipeline.resources.postgres_base import PostgresBaseMixin
+
 
 _IMAGE_LABELS_INSERT_SQL = """
 INSERT INTO image_labels (
@@ -54,9 +56,11 @@ class PostgresDetectionMixin:
             if spec_id:
                 query_filters.append("AND r.spec_id = %s")
                 params.append(spec_id)
-            elif folder_name:
-                query_filters.append("AND r.raw_key LIKE %s")
-                params.append(f"{folder_name}/%")
+            else:
+                clause, folder_params = PostgresBaseMixin._folder_filter(folder_name)
+                if clause:
+                    query_filters.append(clause)
+                    params.extend(folder_params)
             query_cond = "\n".join(query_filters)
             params.append(max(1, int(limit)))
 

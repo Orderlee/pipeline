@@ -47,6 +47,9 @@ tests/unit/*
 # 2026-05-29: LS category synonyms 회귀 (vanguardhealthcarevhc_v2 prediction 0건 fix).
 # ls_tasks.py 의 CATEGORY_SYNONYMS / build_label_normalizer 만 import.
 !tests/unit/test_ls_category_synonyms.py
+# Follow-up #4 회귀 방지 — FinalizedLabelsSkip / FinalizedImageSkip 가드 패스.
+# ls_sync_db 만 import (psycopg2 importorskip), dagster 의존 없음.
+!tests/unit/test_ls_sync_finalized_skip.py
 # Phase 4-B integration tests (#12) — self-contained conftest, sidecar PG 의존
 # (DATAOPS_TEST_POSTGRES_DSN 미설정 시 자동 skip).
 !tests/integration/

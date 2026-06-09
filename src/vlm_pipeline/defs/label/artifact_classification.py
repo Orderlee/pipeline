@@ -140,12 +140,7 @@ def _import_image_classification_json_files(
             "class_source": str(payload.get("class_source") or "manual_import").strip() or "manual_import",
             "generated_at": generated_at.isoformat(),
         }
-        minio.upload(
-            "vlm-labels",
-            classification_key,
-            json.dumps(normalized_payload, ensure_ascii=False).encode("utf-8"),
-            "application/json",
-        )
+        minio.upload_json("vlm-labels", classification_key, normalized_payload)
         db.insert_image_label(
             {
                 "image_label_id": _stable_id(str(image_row["image_id"]), classification_key),

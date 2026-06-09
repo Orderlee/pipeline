@@ -26,15 +26,12 @@ from .ops_common import (
     DEFAULT_IMAGE_CODEC,
     DEFAULT_META_WORKERS,
     DEFAULT_RAW_BUCKET,
-    DEFAULT_REENCODE_THREADS,
-    DEFAULT_REENCODE_WORKERS,
-    DEFAULT_UPLOAD_WORKERS,
     DEFAULT_VIDEO_CONTENT_TYPE,
     MAX_META_WORKERS,
-    MAX_UPLOAD_WORKERS,
     _append_ingest_rejection,
     _is_retryable_failed_record,
     _is_transient_error,
+    read_ingest_worker_config,
 )
 
 
@@ -94,9 +91,8 @@ def normalize_and_archive(
     """
     uploaded: list[dict] = []
     upload_tasks: list[dict[str, Any]] = []
-    max_workers = min(MAX_UPLOAD_WORKERS, int_env("INGEST_UPLOAD_WORKERS", DEFAULT_UPLOAD_WORKERS, minimum=1))
-    reencode_workers = min(MAX_UPLOAD_WORKERS, int_env("INGEST_REENCODE_WORKERS", DEFAULT_REENCODE_WORKERS, minimum=1))
-    reencode_threads = int_env("INGEST_REENCODE_THREADS", DEFAULT_REENCODE_THREADS, minimum=1)
+    _wcfg = read_ingest_worker_config()
+    max_workers, reencode_workers, reencode_threads = _wcfg.max_workers, _wcfg.reencode_workers, _wcfg.reencode_threads
     raw_insert_batch_size = 50
     candidate_records = [rec for rec in records if rec.get("status") == "registered"]
     total_candidates = len(candidate_records)

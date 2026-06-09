@@ -91,12 +91,7 @@ def _import_bbox_json_files(
         )
         annotation_count = len(coco_payload.get("annotations") or [])
         labels_key = _build_yolo_label_key(str(image_row["image_key"]))
-        minio.upload(
-            "vlm-labels",
-            labels_key,
-            json.dumps(coco_payload, ensure_ascii=False).encode("utf-8"),
-            "application/json",
-        )
+        minio.upload_json("vlm-labels", labels_key, coco_payload)
         db.insert_image_label(
             {
                 "image_label_id": _stable_id(str(image_row["image_id"]), labels_key),

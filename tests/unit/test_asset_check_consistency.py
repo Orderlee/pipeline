@@ -18,16 +18,16 @@ from typing import Any
 from unittest.mock import MagicMock
 
 
-def _load_postgres_ingest_raw_module():
-    """Force-load postgres_ingest_raw.py from the workspace source (not site-packages cache).
+def _load_postgres_ingest_audit_module():
+    """Force-load postgres_ingest_audit.py from the workspace source (not site-packages cache).
 
     CI runner 의 stale editable install 회피 — 워크스페이스의 실제 파일을 spec_from_file
     로 직접 import. 로컬 환경에서도 동일 경로라 부작용 없음.
     """
     workspace_root = Path(__file__).resolve().parents[2]
-    source_path = workspace_root / "src" / "vlm_pipeline" / "resources" / "postgres_ingest_raw.py"
+    source_path = workspace_root / "src" / "vlm_pipeline" / "resources" / "postgres_ingest_audit.py"
     spec = importlib.util.spec_from_file_location(
-        "vlm_pipeline_resources_postgres_ingest_raw_fresh",
+        "vlm_pipeline_resources_postgres_ingest_audit_fresh_c",
         source_path,
     )
     if spec is None or spec.loader is None:
@@ -37,8 +37,8 @@ def _load_postgres_ingest_raw_module():
     return module
 
 
-_fresh_module = _load_postgres_ingest_raw_module()
-PostgresIngestRawMixin = _fresh_module.PostgresIngestRawMixin
+_fresh_module = _load_postgres_ingest_audit_module()
+PostgresIngestAuditMixin = _fresh_module.PostgresIngestAuditMixin
 
 
 class _StubConnection:
@@ -61,7 +61,7 @@ class _StubConnection:
         yield cur
 
 
-class _Harness(PostgresIngestRawMixin):
+class _Harness(PostgresIngestAuditMixin):
     def __init__(self, fetchone_results: list[Any]) -> None:
         self.stub_conn = _StubConnection(fetchone_results)
 

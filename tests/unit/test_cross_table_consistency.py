@@ -18,7 +18,7 @@ from typing import Any
 from unittest.mock import MagicMock
 
 
-def _load_postgres_ingest_raw_module():
+def _load_postgres_ingest_audit_module():
     """Force-load source file (avoid CI runner stale editable-install cache).
 
     Phase 3-C 회귀에서 발견 — self-hosted runner 의 ``pip install -e ".[dev]"`` 가
@@ -26,9 +26,9 @@ def _load_postgres_ingest_raw_module():
     뜸. ``spec_from_file_location`` 으로 직접 로드해 회피.
     """
     workspace_root = Path(__file__).resolve().parents[2]
-    source_path = workspace_root / "src" / "vlm_pipeline" / "resources" / "postgres_ingest_raw.py"
+    source_path = workspace_root / "src" / "vlm_pipeline" / "resources" / "postgres_ingest_audit.py"
     spec = importlib.util.spec_from_file_location(
-        "vlm_pipeline_resources_postgres_ingest_raw_fresh_b",
+        "vlm_pipeline_resources_postgres_ingest_audit_fresh",
         source_path,
     )
     if spec is None or spec.loader is None:
@@ -38,8 +38,8 @@ def _load_postgres_ingest_raw_module():
     return module
 
 
-_fresh_module = _load_postgres_ingest_raw_module()
-PostgresIngestRawMixin = _fresh_module.PostgresIngestRawMixin
+_fresh_module = _load_postgres_ingest_audit_module()
+PostgresIngestAuditMixin = _fresh_module.PostgresIngestAuditMixin
 
 
 class _StubConnection:
@@ -67,7 +67,7 @@ class _StubConnection:
         yield cur
 
 
-class _MixinHarness(PostgresIngestRawMixin):
+class _MixinHarness(PostgresIngestAuditMixin):
     """Mixin 단독 테스트용 minimum wrapper — ``connect()`` 만 stub."""
 
     def __init__(self, fetchone_results: list[Any]) -> None:
