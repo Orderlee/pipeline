@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import time
 from datetime import datetime
 from pathlib import Path
@@ -346,12 +345,7 @@ def _extract_clip_frames(
                             event_caption_text=image_caption_event_caption_text,
                             parent_label_key=image_caption_parent_label_key,
                         )
-                        minio.upload(
-                            "vlm-labels",
-                            caption_key,
-                            json.dumps(caption_payload, ensure_ascii=False, indent=2).encode("utf-8"),
-                            "application/json",
-                        )
+                        minio.upload_json("vlm-labels", caption_key, caption_payload, indent=2)
                         uploaded_caption_keys.append(caption_key)
                         selected_row["image_caption_bucket"] = "vlm-labels"
                         selected_row["image_caption_key"] = caption_key

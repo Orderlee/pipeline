@@ -258,8 +258,7 @@ def _run_yolo_image_detection(
                 annotation_count = len(label_json.get("annotations") or [])
 
                 labels_key = _build_yolo_label_key(image_key)
-                label_bytes = json.dumps(label_json, ensure_ascii=False).encode("utf-8")
-                minio.upload("vlm-labels", labels_key, label_bytes, "application/json")
+                minio.upload_json("vlm-labels", labels_key, label_json)
 
                 label_rows_buffer.append(
                     {
@@ -291,12 +290,7 @@ def _run_yolo_image_detection(
                         resolved_config_id=resolved_config_id,
                         detected_at=detected_at,
                     )
-                    minio.upload(
-                        "vlm-labels",
-                        classification_key,
-                        json.dumps(classification_payload, ensure_ascii=False).encode("utf-8"),
-                        "application/json",
-                    )
+                    minio.upload_json("vlm-labels", classification_key, classification_payload)
                     label_rows_buffer.append(
                         {
                             "image_label_id": stable_image_label_id(str(image_id), classification_key),

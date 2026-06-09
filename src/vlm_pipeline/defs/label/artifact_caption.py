@@ -84,12 +84,7 @@ def _import_image_caption_json_files(
             continue
 
         caption_key = _build_image_caption_key(str(image_row["image_key"]))
-        minio.upload(
-            "vlm-labels",
-            caption_key,
-            json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-            "application/json",
-        )
+        minio.upload_json("vlm-labels", caption_key, payload)
         generated_at_raw = str(payload.get("generated_at") or "").strip()
         try:
             generated_at = datetime.fromisoformat(generated_at_raw) if generated_at_raw else _now()

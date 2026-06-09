@@ -12,7 +12,6 @@ CLAUDE.md 의 L1-2 → L4 import 금지 규칙 준수를 위해 ``MinIOResource`
 
 from __future__ import annotations
 
-import json
 from datetime import datetime
 from pathlib import PurePosixPath
 from typing import TYPE_CHECKING, Any
@@ -102,8 +101,7 @@ def run_sam3_and_build_label_row(
     annotation_count = len(coco_payload.get("annotations") or [])
 
     sam3_labels_key = build_sam3_detection_key(image_key)
-    label_bytes = json.dumps(coco_payload, ensure_ascii=False).encode("utf-8")
-    minio.upload(labels_bucket, sam3_labels_key, label_bytes, "application/json")
+    minio.upload_json(labels_bucket, sam3_labels_key, coco_payload)
 
     label_row = {
         "image_label_id": stable_image_label_id(image_id, sam3_labels_key),

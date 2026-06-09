@@ -9,7 +9,6 @@ video_metadata.auto_label_* 상태 갱신.
 
 from __future__ import annotations
 
-import json
 from datetime import datetime
 from pathlib import Path
 
@@ -132,12 +131,7 @@ def classification_video(
                 "generated_at": generated_at.isoformat(),
             }
             minio.ensure_bucket("vlm-labels")
-            minio.upload(
-                "vlm-labels",
-                label_key,
-                json.dumps(artifact_payload, ensure_ascii=False).encode("utf-8"),
-                "application/json",
-            )
+            minio.upload_json("vlm-labels", label_key, artifact_payload)
             db.insert_label(
                 {
                     "label_id": stable_video_classification_label_id(asset_id, label_key, payload["predicted_class"]),

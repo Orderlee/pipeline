@@ -21,17 +21,13 @@ from vlm_pipeline.lib.video_reencode import (
     needs_reencode,
     reencode_with_fallback,
 )
-from vlm_pipeline.lib.env_utils import int_env
 from vlm_pipeline.resources.postgres import PostgresResource
 from vlm_pipeline.resources.minio import MinIOResource
 
 from .ops_common import (
     DEFAULT_RAW_BUCKET,
-    DEFAULT_REENCODE_THREADS,
-    DEFAULT_REENCODE_WORKERS,
-    DEFAULT_UPLOAD_WORKERS,
     DEFAULT_VIDEO_CONTENT_TYPE,
-    MAX_UPLOAD_WORKERS,
+    read_ingest_worker_config,
 )
 
 
@@ -51,9 +47,8 @@ def upload_archived_files(
         context.log.info("upload_archived: empty files list")
         return {"uploaded": 0, "failed": 0, "skipped": 0, "asset_ids": [], "total": 0}
 
-    max_workers = min(MAX_UPLOAD_WORKERS, int_env("INGEST_UPLOAD_WORKERS", DEFAULT_UPLOAD_WORKERS, minimum=1))
-    reencode_workers = min(MAX_UPLOAD_WORKERS, int_env("INGEST_REENCODE_WORKERS", DEFAULT_REENCODE_WORKERS, minimum=1))
-    reencode_threads = int_env("INGEST_REENCODE_THREADS", DEFAULT_REENCODE_THREADS, minimum=1)
+    _wcfg = read_ingest_worker_config()
+    max_workers, reencode_workers, reencode_threads = _wcfg.max_workers, _wcfg.reencode_workers, _wcfg.reencode_threads
 
     def _upload_one(entry: dict[str, Any]) -> dict[str, Any]:
         archive_path = str(entry.get("path") or "").strip()

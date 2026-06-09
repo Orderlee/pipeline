@@ -8,6 +8,7 @@ from hashlib import sha1
 from dagster import DefaultSensorStatus, RunRequest, SkipReason, sensor
 from dagster._core.storage.dagster_run import DagsterRunStatus, RunsFilter
 
+from vlm_pipeline.defs.shared.sensor_cursor_utils import write_dict_cursor
 from vlm_pipeline.lib.env_utils import int_env
 from vlm_pipeline.lib.sensor_db import open_sensor_read_connection
 
@@ -149,18 +150,18 @@ def auto_labeling_sensor(context):
     }
 
     if current_count <= 0:
-        context.update_cursor(json.dumps(next_cursor, sort_keys=True))
+        write_dict_cursor(context, next_cursor)
         yield SkipReason("auto_labeling backlog 없음")
         return
 
     if prev_count is not None and current_count == prev_count and current_state_token == (prev_state_token or ""):
-        context.update_cursor(json.dumps(next_cursor, sort_keys=True))
+        write_dict_cursor(context, next_cursor)
         yield SkipReason(f"auto_labeling backlog unchanged: count={current_count}")
         return
 
     event_seq = prev_seq + 1
     next_cursor["event_seq"] = event_seq
-    context.update_cursor(json.dumps(next_cursor, sort_keys=True))
+    write_dict_cursor(context, next_cursor)
     update_token = sha1(current_state_token.encode("utf-8")).hexdigest()[:10]
 
     yield RunRequest(

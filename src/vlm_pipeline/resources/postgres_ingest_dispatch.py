@@ -19,7 +19,7 @@ class PostgresIngestDispatchMixin:
     _TERMINAL_DISPATCH_STATUSES: ClassVar[frozenset[str]] = frozenset({"completed", "failed", "canceled"})
 
     def get_in_flight_dispatch_requests(self, folder_name: str) -> list[dict[str, Any]]:
-        normalized_folder = str(folder_name or "").strip()
+        normalized_folder = self._norm_str(folder_name)
         if not normalized_folder:
             return []
         with self.connect() as conn:
@@ -40,7 +40,7 @@ class PostgresIngestDispatchMixin:
         return [{"request_id": str(row[0]), "status": str(row[1]) if row[1] is not None else ""} for row in rows]
 
     def get_dispatch_request_status(self, request_id: str) -> str | None:
-        normalized_request_id = str(request_id or "").strip()
+        normalized_request_id = self._norm_str(request_id)
         if not normalized_request_id:
             return None
         with self.connect() as conn:
@@ -203,7 +203,7 @@ class PostgresIngestDispatchMixin:
         completed_at: datetime | None = None,
         processed_at: datetime | None = None,
     ) -> None:
-        normalized_request_id = str(request_id or "").strip()
+        normalized_request_id = self._norm_str(request_id)
         if not normalized_request_id:
             return
         now = datetime.now()
@@ -253,8 +253,8 @@ class PostgresIngestDispatchMixin:
         started_at: datetime | None = None,
         completed_at: datetime | None = None,
     ) -> None:
-        normalized_request_id = str(request_id or "").strip()
-        normalized_step_name = str(step_name or "").strip()
+        normalized_request_id = self._norm_str(request_id)
+        normalized_step_name = self._norm_str(step_name)
         if not normalized_request_id or not normalized_step_name:
             return
         with self.connect() as conn:
@@ -288,7 +288,7 @@ class PostgresIngestDispatchMixin:
         status: str,
         error_message: str | None = None,
     ) -> None:
-        normalized_request_id = str(request_id or "").strip()
+        normalized_request_id = self._norm_str(request_id)
         if not normalized_request_id:
             return
 

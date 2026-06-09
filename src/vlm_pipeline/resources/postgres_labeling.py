@@ -24,10 +24,8 @@ class PostgresLabelingMixin(PostgresDetectionMixin):
 
     def find_auto_label_pending_videos(self, limit: int = 50, folder_name: str | None = None) -> list[dict]:
         with self.connect() as conn:
-            query_cond = "AND r.raw_key LIKE %s" if folder_name else ""
-            params: list[Any] = [max(1, int(limit))]
-            if folder_name:
-                params.insert(0, f"{folder_name}/%")
+            query_cond, folder_params = self._folder_filter(folder_name)
+            params: list[Any] = folder_params + [max(1, int(limit))]
             with conn.cursor() as cur:
                 cur.execute(
                     f"""
@@ -289,10 +287,8 @@ class PostgresLabelingMixin(PostgresDetectionMixin):
     def find_captioning_pending_videos(self, limit: int = 100, folder_name: str | None = None) -> list[dict]:
         """Gemini JSON 생성 완료(generated) 후 아직 DB 정규화가 안 된 video."""
         with self.connect() as conn:
-            query_cond = "AND r.raw_key LIKE %s" if folder_name else ""
-            params: list[Any] = [max(1, int(limit))]
-            if folder_name:
-                params.insert(0, f"{folder_name}/%")
+            query_cond, folder_params = self._folder_filter(folder_name)
+            params: list[Any] = folder_params + [max(1, int(limit))]
 
             with conn.cursor() as cur:
                 cur.execute(
@@ -332,8 +328,8 @@ class PostgresLabelingMixin(PostgresDetectionMixin):
         labels_key: str,
         rows: list[dict[str, Any]],
     ) -> int:
-        normalized_asset_id = str(asset_id or "").strip()
-        normalized_labels_key = str(labels_key or "").strip()
+        normalized_asset_id = self._norm_str(asset_id)
+        normalized_labels_key = self._norm_str(labels_key)
         if not normalized_asset_id or not normalized_labels_key:
             return 0
 
@@ -446,10 +442,8 @@ class PostgresLabelingMixin(PostgresDetectionMixin):
     def find_clip_image_extract_pending(self, limit: int = 200, folder_name: str | None = None) -> list[dict[str, Any]]:
         """processed_clips에서 image_extract_status = 'pending'인 video clip 조회."""
         with self.connect() as conn:
-            query_cond = "AND r.raw_key LIKE %s" if folder_name else ""
-            params: list[Any] = [max(1, int(limit))]
-            if folder_name:
-                params.insert(0, f"{folder_name}/%")
+            query_cond, folder_params = self._folder_filter(folder_name)
+            params: list[Any] = folder_params + [max(1, int(limit))]
 
             with conn.cursor() as cur:
                 cur.execute(

@@ -106,3 +106,30 @@ docker rm -f pg-validate
 향후 추가 예정(plan 본문 참조):
 - 002: `staging_model_configs` 시드 (output_type별 기본 모델 매핑)
 - 003+: 운영 중 발견되는 컬럼/인덱스 증분
+
+---
+
+## Post-apply 검증 (`-- @ASSERT_AFTER:`)
+
+2026-06-09 005_labels_unique.sql 적용 시 ALTER ADD CONSTRAINT 가 silent fail 한 사고를 계기로, **migration 파일 안에 `-- @ASSERT_AFTER: <sql>` 주석으로 적용 직후 + 매 부팅 시 schema 상태를 검증**할 수 있게 했다.
+
+### 사용 예 (005 의 경우)
+
+```sql
+-- @ASSERT_AFTER: SELECT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'labels_key_event_idx_unique' AND conrelid = 'labels'::regclass)
+-- @ASSERT_AFTER: SELECT NOT EXISTS (SELECT 1 FROM (SELECT labels_key, event_index FROM labels GROUP BY labels_key, event_index HAVING COUNT(*) > 1) t)
+```
+
+### 동작
+
+1. `ensure_schema()` 가 migration 적용 (또는 이미 적용된 경우 skip).
+2. 그 직후 `_verify_assertions(conn, path)` 호출.
+3. 파일 안의 모든 `-- @ASSERT_AFTER` 주석 SQL 을 실행.
+4. 첫 컬럼이 falsy (false / 0 / NULL / empty) 면 `PostgresSchemaBaselineError` 발생 → dagster 부팅 차단.
+
+### 작성 권장
+
+- `IF EXISTS ... THEN ... END IF;` 형태 (DO block) 가 multi-statement runner 에서 silent skip 될 가능성이 있는 경우 반드시 `ASSERT_AFTER` 로 검증한다.
+- assert SQL 은 read-only (`SELECT EXISTS(...)` 등) 만 사용.
+- 한 파일에 여러 줄 가능.
+- 부팅 시마다 실행되므로 drift detection (누군가 수동 schema 변경) 도 자동.
