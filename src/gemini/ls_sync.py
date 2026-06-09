@@ -32,18 +32,53 @@ import base64
 import concurrent.futures as cf
 import json
 import os
-import re
 import threading
-from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
-from urllib.parse import urlparse, parse_qs
-
-# 클립 파일명 패턴: {base}_{8자리ms}_{8자리ms}
-_CLIP_PATTERN = re.compile(r"^(.+)_(\d{8})_(\d{8})$")
 
 import boto3  # noqa: E402
 import requests  # noqa: E402
 from botocore.config import Config as BotoConfig  # noqa: E402
+
+try:
+    from gemini.ls_sync_db import (
+        _connect_postgres_with_retry,
+        lookup_asset_id_by_raw_key,
+        upsert_video_labels,
+        update_image_labels_in_db,
+        FinalizedLabelsSkip,
+        FinalizedImageSkip,
+        ConcurrentLabelsRace,
+    )
+    from gemini.ls_sync_converters import (
+        _CLIP_PATTERN,
+        _extract_raw_key_from_video_url,
+        _resolve_labels_key_for_video,
+        annotation_to_events,
+        _parse_image_url_to_key,
+        _sam3_key_from_image_key,
+        annotation_to_rectangles,
+        build_reviewed_coco_json,
+    )
+except ModuleNotFoundError:
+    from ls_sync_db import (  # type: ignore[no-redef]
+        _connect_postgres_with_retry,
+        lookup_asset_id_by_raw_key,
+        upsert_video_labels,
+        update_image_labels_in_db,
+        FinalizedLabelsSkip,
+        FinalizedImageSkip,
+        ConcurrentLabelsRace,
+    )
+    from ls_sync_converters import (  # type: ignore[no-redef]
+        _CLIP_PATTERN,
+        _extract_raw_key_from_video_url,
+        _resolve_labels_key_for_video,
+        annotation_to_events,
+        _parse_image_url_to_key,
+        _sam3_key_from_image_key,
+        annotation_to_rectangles,
+        build_reviewed_coco_json,
+    )
 
 DEFAULT_LS_URL = "http://localhost:8080"
 DEFAULT_MINIO_ENDPOINT = "10.0.0.51:9000"
@@ -95,43 +130,6 @@ def write_json(client, bucket: str, key: str, data: list | dict) -> None:
     client.put_object(Bucket=bucket, Key=key, Body=body, ContentType="application/json")
 
 
-def _extract_raw_key_from_video_url(video_url: str, raw_bucket: str = "vlm-raw") -> str | None:
-    """LS task data.video presigned URL → raw_files.raw_key 형태.
-
-    예: 'http://10.0.0.51:9000/vlm-raw/smart-city/normal_case/cam6.mp4?X-Amz-...'
-        → 'smart-city/normal_case/cam6.mp4'
-
-    fileuri 쿼리 파라미터(legacy)가 있으면 그걸 우선 사용하고,
-    없으면 URL path 에서 첫 segment(bucket) 를 떼어 raw_key 로 본다.
-    """
-    fileuri = _decode_fileuri(video_url)
-    if fileuri:
-        if fileuri.startswith(f"{raw_bucket}/"):
-            return fileuri[len(raw_bucket) + 1 :]
-        return fileuri or None
-    try:
-        path = (urlparse(video_url).path or "").lstrip("/")
-        if "/" not in path:
-            return None
-        bucket, key = path.split("/", 1)
-        if bucket != raw_bucket:
-            # 다른 버킷이면 안전상 None — caller 에서 ERROR 처리
-            return None
-        return key or None
-    except Exception:
-        return None
-
-
-def _resolve_labels_key_for_video(raw_key: str, stem: str) -> str:
-    """raw_key 의 events/<stem>.json 형태로 변환.
-
-    예: 'smart-city/normal_case/camera6_vending.mp4'
-        → 'smart-city/normal_case/events/camera6_vending.json'
-    """
-    p = PurePosixPath(raw_key)
-    return str(p.parent / "events" / f"{stem}.json")
-
-
 # ---------------------------------------------------------------------------
 # Label Studio
 # ---------------------------------------------------------------------------
@@ -179,17 +177,6 @@ def _ls_get(auth: _LSAuth, url: str, params: dict | None = None):
     return resp
 
 
-def _decode_fileuri(video_url: str) -> str | None:
-    try:
-        qs = parse_qs(urlparse(video_url).query)
-        encoded = qs.get("fileuri", [None])[0]
-        if encoded:
-            return base64.b64decode(encoded).decode("utf-8")
-    except Exception:
-        pass
-    return None
-
-
 def fetch_annotated_tasks(ls_url: str, auth: _LSAuth, project_id: int) -> list[dict]:
     """annotation이 1개 이상 있는 task만 반환."""
     annotated = []
@@ -215,404 +202,6 @@ def fetch_annotated_tasks(ls_url: str, auth: _LSAuth, project_id: int) -> list[d
 
 def fetch_task_detail(ls_url: str, auth: _LSAuth, task_id: int) -> dict:
     return _ls_get(auth, f"{ls_url}/api/tasks/{task_id}/").json()
-
-
-# ---------------------------------------------------------------------------
-# PostgreSQL
-# ---------------------------------------------------------------------------
-
-
-def _connect_postgres_with_retry(
-    dsn: str,
-    *,
-    max_retries: int = 5,
-    base_delay: float = 1.0,
-    max_delay: float = 30.0,
-    readonly: bool = False,
-):
-    """PostgreSQL 연결. transient 오류 시 exponential backoff로 재시도.
-
-    DuckDB 의 단일 파일 write-lock 재시도와 달리, PG 는 lock 경합이 아니라
-    일시적 연결 오류(서버 재기동/네트워크)에 대해서만 재시도한다
-    (psycopg2.OperationalError / InterfaceError).
-    """
-    import psycopg2
-    import time as _time
-    import random as _random
-
-    last_exc: Exception | None = None
-    for attempt in range(max_retries + 1):
-        try:
-            conn = psycopg2.connect(dsn)
-            if readonly:
-                # read-only path 는 트랜잭션 잔존 없이 즉시 자동 커밋.
-                conn.set_session(readonly=True, autocommit=True)
-            return conn
-        except (psycopg2.OperationalError, psycopg2.InterfaceError) as exc:
-            last_exc = exc
-            if attempt >= max_retries:
-                raise
-            delay = min(base_delay * (2**attempt) + _random.uniform(0, 1), max_delay)
-            print(f"[RETRY] PostgreSQL 연결 실패, {delay:.1f}s 후 재시도 ({attempt + 1}/{max_retries}): {exc}")
-            _time.sleep(delay)
-    raise RuntimeError(f"PostgreSQL 연결 재시도 초과: {last_exc}")
-
-
-def lookup_asset_id_by_raw_key(dsn: str, raw_key: str, conn=None) -> str | None:
-    """raw_files.raw_key 단독 조회로 asset_id 반환. 없으면 None.
-
-    note:
-      - source_unit_name 은 dispatch 시 입력한 원본 표기(대소문자/특수문자
-        보존)이고 raw_key 는 sanitize 된 MinIO key 라 둘이 다를 수 있다.
-        조회 키로는 raw_key 단독을 쓴다 (raw_key 는 사실상 unique).
-      - conn 이 주어지면 재사용. 없으면 read-only 로 새 연결.
-    """
-    if not raw_key:
-        return None
-    if conn is None:
-        if not dsn:
-            return None
-        c = _connect_postgres_with_retry(dsn, readonly=True)
-        try:
-            with c.cursor() as cur:
-                cur.execute(
-                    "SELECT asset_id FROM raw_files WHERE raw_key = %s LIMIT 1",
-                    (raw_key,),
-                )
-                row = cur.fetchone()
-        finally:
-            c.close()
-    else:
-        with conn.cursor() as cur:
-            cur.execute(
-                "SELECT asset_id FROM raw_files WHERE raw_key = %s LIMIT 1",
-                (raw_key,),
-            )
-            row = cur.fetchone()
-    return row[0] if row else None
-
-
-def upsert_video_labels(
-    dsn: str,
-    labels_bucket: str,
-    labels_key: str,
-    asset_id: str,
-    new_events: list[dict],
-    conn=None,
-) -> tuple[int, int]:
-    """labels_key 기준으로 기존 row 전부 DELETE → 사람 submit 결과로 INSERT.
-
-    SOT = 사람 submit. 3-way merge / removed_by_reviewer 상태 없음.
-    new_events=[] 이면 DELETE 만 (INSERT 없음).
-    guard SELECT + DELETE + INSERT 를 한 트랜잭션으로 묶어 원자성 보장
-    (psycopg2 autocommit=False → 마지막에 conn.commit()).
-
-    finalized 보호 가드: 이미 review_status='finalized' 인 row 가 하나라도 있으면
-    upsert 자체를 skip. /sync-approve 로 확정된 라벨이 사람 재 Submit 또는
-    debounce 잔존 webhook 에 의해 'reviewed' 로 회귀하던 사고 (운영 1회 발생) 방지.
-    재검수가 필요하면 state.json status 를 운영자가 명시 리셋 후 sync 재실행해야 한다.
-
-    반환값: (deleted_count, inserted_count)
-    """
-    import hashlib
-
-    owns_conn = conn is None
-    if owns_conn:
-        conn = _connect_postgres_with_retry(dsn)
-    try:
-        with conn.cursor() as cur:
-            cur.execute(
-                "SELECT COUNT(*) FROM labels WHERE labels_key = %s AND review_status = 'finalized'",
-                (labels_key,),
-            )
-            finalized_row = cur.fetchone()
-            if finalized_row and int(finalized_row[0]) > 0:
-                print(
-                    f"[GUARD] {labels_key} 는 이미 finalized 라벨 보유 → upsert_video_labels skip "
-                    f"(SOT 회귀 방지). 재검수 필요 시 state.json status 리셋 후 재실행."
-                )
-                # guard SELECT 가 연 read 트랜잭션 정리 (공유 conn idle-in-transaction 방지).
-                conn.rollback()
-                return (0, 0)
-
-            cur.execute(
-                "SELECT COUNT(*) FROM labels WHERE labels_key = %s",
-                (labels_key,),
-            )
-            deleted_row = cur.fetchone()
-            deleted = int(deleted_row[0]) if deleted_row else 0
-
-            cur.execute("DELETE FROM labels WHERE labels_key = %s", (labels_key,))
-
-            inserted = 0
-            event_count = len(new_events)
-            for i, ev in enumerate(new_events):
-                start_sec = ev["timestamp"][0]
-                end_sec = ev["timestamp"][1]
-                token = f"{asset_id}|manual_review|{i}|{start_sec}|{end_sec}"
-                label_id = hashlib.sha1(token.encode()).hexdigest()
-                cur.execute(
-                    """
-                    INSERT INTO labels (
-                        label_id, asset_id, labels_bucket, labels_key,
-                        label_format, label_tool, label_source,
-                        review_status, event_index, event_count,
-                        timestamp_start_sec, timestamp_end_sec,
-                        label_status, created_at
-                    ) VALUES (%s, %s, %s, %s, 'json', 'label_studio', 'manual_review',
-                              'reviewed', %s, %s, %s, %s, 'completed', NOW())
-                    """,
-                    (
-                        label_id,
-                        asset_id,
-                        labels_bucket,
-                        labels_key,
-                        i,
-                        event_count,
-                        start_sec,
-                        end_sec,
-                    ),
-                )
-                inserted += 1
-
-        conn.commit()
-        return deleted, inserted
-    except Exception:
-        try:
-            conn.rollback()
-        except Exception:
-            pass
-        raise
-    finally:
-        if owns_conn:
-            conn.close()
-
-
-# ---------------------------------------------------------------------------
-# 변환 로직
-# ---------------------------------------------------------------------------
-
-
-def annotation_to_events(annotation: dict, fps: int) -> list[dict]:
-    """LS annotation result → Gemini 이벤트 포맷 변환."""
-    events = []
-    for item in annotation.get("result", []):
-        if item.get("type") != "timelinelabels":
-            continue
-        value = item.get("value", {})
-        for r in value.get("ranges", []):
-            start_sec = r["start"] / fps
-            end_sec = r["end"] / fps
-            labels = value.get("timelinelabels", [])
-            category = labels[0] if labels else "unknown"
-            events.append(
-                {
-                    "category": category,
-                    "duration": round(end_sec - start_sec, 3),
-                    "timestamp": [round(start_sec, 3), round(end_sec, 3)],
-                }
-            )
-    return events
-
-
-def find_matching_event_index(json_data: list, clip_start_sec: float, clip_end_sec: float) -> int | None:
-    """clip 구간과 겹치는 이벤트 인덱스 반환. 없으면 None."""
-    for i, ev in enumerate(json_data):
-        ts = ev.get("timestamp")
-        if not ts or len(ts) < 2:
-            continue
-        ev_start, ev_end = float(ts[0]), float(ts[1])
-        if ev_end > clip_start_sec and ev_start < clip_end_sec:
-            return i
-    return None
-
-
-# ---------------------------------------------------------------------------
-# Image mode helpers (RectangleLabels → SAM3 COCO)
-# ---------------------------------------------------------------------------
-
-
-def _parse_image_url_to_key(image_url: str) -> str | None:
-    """presigned URL → MinIO object key.
-
-    형태: http://<endpoint>/<bucket>/<key>?X-Amz-...
-    bucket 구분 없이 첫 path segment 제거하고 나머지를 key로 사용.
-    """
-    try:
-        parsed = urlparse(image_url)
-        path = (parsed.path or "").lstrip("/")
-        if "/" not in path:
-            return None
-        # 첫 segment = bucket, 나머지 = key
-        return path.split("/", 1)[1] or None
-    except Exception:
-        return None
-
-
-def _sam3_key_from_image_key(image_key: str) -> str:
-    """build_sam3_detection_key()와 동일 규약 — cross-package import 회피 위해 인라인."""
-    p = PurePosixPath(str(image_key or ""))
-    stem = p.stem or "image"
-    parent = p.parent
-    raw_parent = parent.parent if parent.name == "image" else parent
-    if str(raw_parent) and str(raw_parent) != ".":
-        return f"{raw_parent}/sam3_segmentations/{stem}.json"
-    return f"sam3_segmentations/{stem}.json"
-
-
-def annotation_to_rectangles(annotation: dict) -> list[dict]:
-    """LS RectangleLabels annotation → 절대 픽셀 bbox 리스트.
-
-    반환 항목:
-      {"label": str, "bbox": [x, y, w, h], "score": float | None,
-       "rotation": float, "image_width": int, "image_height": int}
-    """
-    rects: list[dict] = []
-    for item in annotation.get("result", []):
-        if item.get("type") != "rectanglelabels":
-            continue
-        v = item.get("value", {}) or {}
-        W = int(item.get("original_width") or 0)
-        H = int(item.get("original_height") or 0)
-        if W <= 0 or H <= 0:
-            continue
-        x = float(v.get("x", 0)) * W / 100.0
-        y = float(v.get("y", 0)) * H / 100.0
-        w = float(v.get("width", 0)) * W / 100.0
-        h = float(v.get("height", 0)) * H / 100.0
-        labels = v.get("rectanglelabels") or []
-        label_name = str(labels[0]).strip() if labels else "unknown"
-        rects.append(
-            {
-                "label": label_name,
-                "bbox": [round(x, 2), round(y, 2), round(w, 2), round(h, 2)],
-                "score": item.get("score"),
-                "rotation": float(v.get("rotation", 0) or 0),
-                "image_width": W,
-                "image_height": H,
-            }
-        )
-    return rects
-
-
-def _merge_categories(existing: list[dict], new_names: list[str]) -> tuple[list[dict], dict[str, int]]:
-    """기존 categories 보존 + 신규 label 확장. (updated_list, name_to_id) 반환."""
-    name_to_id = {str(c.get("name", "")).strip(): int(c["id"]) for c in existing if "id" in c and "name" in c}
-    max_id = max(name_to_id.values(), default=0)
-    merged = list(existing)
-    for name in new_names:
-        name_s = name.strip()
-        if not name_s or name_s in name_to_id:
-            continue
-        max_id += 1
-        merged.append({"id": max_id, "name": name_s, "supercategory": "object"})
-        name_to_id[name_s] = max_id
-    return merged, name_to_id
-
-
-def build_reviewed_coco_json(
-    existing: dict,
-    rectangles: list[dict],
-    image_key: str,
-) -> dict:
-    """기존 SAM3 COCO JSON에 검수 결과를 반영해 새 JSON 생성."""
-    out = dict(existing) if isinstance(existing, dict) else {}
-
-    # images 보존 (또는 rectangles의 W/H로 보강)
-    images = out.get("images") or []
-    if not images and rectangles:
-        r0 = rectangles[0]
-        images = [
-            {
-                "id": 1,
-                "file_name": image_key,
-                "width": r0.get("image_width"),
-                "height": r0.get("image_height"),
-            }
-        ]
-    image_id = int(images[0]["id"]) if images else 1
-
-    categories_in = out.get("categories") or []
-    label_names = [r["label"] for r in rectangles]
-    categories_out, name_to_id = _merge_categories(categories_in, label_names)
-
-    new_annotations: list[dict] = []
-    for i, r in enumerate(rectangles, start=1):
-        bbox = r["bbox"]
-        ann = {
-            "id": i,
-            "image_id": image_id,
-            "category_id": name_to_id[r["label"]],
-            "bbox": bbox,
-            "area": round(float(bbox[2]) * float(bbox[3]), 2),
-            "iscrowd": 0,
-            "segmentation": [],
-        }
-        if r.get("score") is not None:
-            ann["score"] = float(r["score"])
-        if r.get("rotation"):
-            ann["rotation"] = r["rotation"]
-        new_annotations.append(ann)
-
-    meta = dict(out.get("meta") or {})
-    meta["review_source"] = "manual_review"
-    meta["reviewed_at"] = datetime.now(timezone.utc).isoformat()
-    meta["reviewed_object_count"] = len(new_annotations)
-
-    out["info"] = out.get("info") or {}
-    out["licenses"] = out.get("licenses") or []
-    out["images"] = images
-    out["annotations"] = new_annotations
-    out["categories"] = categories_out
-    out["meta"] = meta
-    return out
-
-
-def update_image_labels_in_db(dsn: str, labels_key: str, object_count: int, conn=None) -> int:
-    """image_labels 테이블의 review_status/label_source/object_count 전이.
-    conn이 주어지면 재사용 (커넥션 open/close 오버헤드 감소).
-
-    finalized 보호 가드: WHERE 절에 review_status<>'finalized' 추가. /sync-approve 로
-    확정된 image_labels 가 사람 재 Submit 또는 debounce 잔존 webhook 에 의해 'reviewed'
-    로 회귀하던 사고 방지. 재검수는 state.json status 리셋 후 재 sync 가 정식 절차.
-
-    psycopg2 autocommit=False → UPDATE 후 conn.commit() (공유 conn 이라도 자기 변경만
-    커밋). 예외 시 rollback 으로 in-flight 변경만 폐기.
-    """
-    if not labels_key or (not dsn and conn is None):
-        return 0
-    owns_conn = conn is None
-    if owns_conn:
-        conn = _connect_postgres_with_retry(dsn)
-    try:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                UPDATE image_labels
-                SET review_status = 'reviewed',
-                    label_source  = 'manual_review',
-                    object_count  = %s
-                WHERE labels_key = %s
-                  AND review_status <> 'finalized'
-                """,
-                (int(object_count), labels_key),
-            )
-            cur.execute(
-                "SELECT COUNT(*) FROM image_labels WHERE labels_key = %s AND review_status IN ('reviewed','finalized')",
-                (labels_key,),
-            )
-            row = cur.fetchone()
-        conn.commit()
-        return int(row[0]) if row else 0
-    except Exception:
-        try:
-            conn.rollback()
-        except Exception:
-            pass
-        raise
-    finally:
-        if owns_conn:
-            conn.close()
 
 
 # ---------------------------------------------------------------------------
@@ -680,7 +269,7 @@ def run(
                     print(f"[ERROR]    task {tid} detail fetch 실패: {exc}")
                     detail_cache[tid] = None
 
-    updated = empty_save = skipped = no_match = error = 0
+    updated = empty_save = skipped = no_match = error = skipped_finalized = 0
     # 이번 sync 에서 처리한 labels_key 들 (video events + image sam3).
     # 호출자(ls_webhook)가 받아 ls_review_state.json 의 label_keys 에 union merge.
     processed_label_keys: set[str] = set()
@@ -744,14 +333,20 @@ def run(
                 if dry_run:
                     tag = "[DRY-RUN]" if rectangles else "[DRY-EMPTY]"
                     print(f"{tag}  task {task_id} → {sam3_key} ({len(rectangles)}개 bbox)")
+                    processed_label_keys.add(sam3_key)
                 else:
+                    try:
+                        db_updated = update_image_labels_in_db(dsn, sam3_key, len(rectangles), conn=db_conn)
+                    except FinalizedImageSkip:
+                        print(f"[SKIP-FIN] task {task_id} → {sam3_key} finalized, MinIO overwrite 방지")
+                        skipped_finalized += 1
+                        continue
                     # 빈 검수는 기존 JSON이 있을 때만 annotations를 비워서 덮어씀 (없으면 생성 안 함)
                     if rectangles or existing:
                         write_json(minio, bucket, sam3_key, reviewed_json)
-                    db_updated = update_image_labels_in_db(dsn, sam3_key, len(rectangles), conn=db_conn)
                     tag = "[UPDATED]" if rectangles else "[EMPTY]   "
                     print(f"{tag}  task {task_id} → {sam3_key} (bbox {len(rectangles)}, DB {db_updated}건)")
-                processed_label_keys.add(sam3_key)
+                    processed_label_keys.add(sam3_key)
                 updated += 1
                 continue
 
@@ -785,23 +380,38 @@ def run(
             if dry_run:
                 tag = "[DRY-EMPTY]" if ev_count == 0 else "[DRY-RUN]  "
                 print(f"{tag}  task {task_id} → {json_key} ({ev_count}건)")
+                processed_label_keys.add(json_key)
+                if ev_count == 0:
+                    empty_save += 1
+                else:
+                    updated += 1
             else:
+                try:
+                    deleted, inserted = upsert_video_labels(
+                        dsn,
+                        bucket,
+                        json_key,
+                        asset_id,
+                        new_events,
+                        conn=db_conn,
+                    )
+                except FinalizedLabelsSkip:
+                    print(f"[SKIP-FIN] task {task_id} → {json_key} finalized, MinIO overwrite 방지")
+                    skipped_finalized += 1
+                    continue
+                except ConcurrentLabelsRace:
+                    # (labels_key, event_index) UNIQUE 위반 — 동시 webhook 또는 retry.
+                    # log + skip — 다음 sync tick 이 재처리. MinIO 도 안 건드림.
+                    print(f"[SKIP-RACE] task {task_id} → {json_key} concurrent race, 다음 tick 재처리")
+                    error += 1
+                    continue
                 write_json(minio, bucket, json_key, new_events)
-                deleted, inserted = upsert_video_labels(
-                    dsn,
-                    bucket,
-                    json_key,
-                    asset_id,
-                    new_events,
-                    conn=db_conn,
-                )
                 print(f"[UPDATED]  task {task_id} → {json_key} (MinIO {ev_count}건, DB del={deleted} ins={inserted})")
-            processed_label_keys.add(json_key)
-
-            if ev_count == 0:
-                empty_save += 1
-            else:
-                updated += 1
+                processed_label_keys.add(json_key)
+                if ev_count == 0:
+                    empty_save += 1
+                else:
+                    updated += 1
 
         except Exception as exc:
             print(f"[ERROR]    task {task_id}: {exc}")
@@ -815,39 +425,18 @@ def run(
 
     suffix = " (dry-run)" if dry_run else ""
     print(
-        f"\n[DONE] 업데이트 {updated} / 빈저장 {empty_save} / 스킵 {skipped} / 미매칭 {no_match} / 오류 {error}{suffix}"
+        f"\n[DONE] 업데이트 {updated} / 빈저장 {empty_save} / 스킵 {skipped} / "
+        f"finalized_skip {skipped_finalized} / 미매칭 {no_match} / 오류 {error}{suffix}"
     )
     return {
         "processed_label_keys": sorted(processed_label_keys),
         "updated": updated,
         "empty_save": empty_save,
         "skipped": skipped,
+        "skipped_finalized": skipped_finalized,
         "no_match": no_match,
         "error": error,
     }
-
-
-def _parse_clip_times(stem: str) -> tuple[float, float]:
-    """stem 끝에서 시작/종료 시간 파싱.
-    - 8자리 ms: _00222000_00226000 → (222.0, 226.0)
-    - 4자리 MMSS: _0435_0455 → (275.0, 295.0)
-    fallback: (0.0, inf)
-    """
-    import re
-
-    m8 = re.search(r"_(\d{8})_(\d{8})$", stem)
-    if m8:
-        return int(m8.group(1)) / 1000.0, int(m8.group(2)) / 1000.0
-
-    m4 = re.search(r"_(\d{4})_(\d{4})$", stem)
-    if m4:
-
-        def mmss_to_sec(s: str) -> float:
-            return int(s[:2]) * 60 + int(s[2:])
-
-        return mmss_to_sec(m4.group(1)), mmss_to_sec(m4.group(2))
-
-    return 0.0, float("inf")
 
 
 def main() -> int:

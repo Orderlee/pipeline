@@ -11,6 +11,8 @@ from datetime import datetime
 from typing import Any
 from uuid import uuid4
 
+from vlm_pipeline.resources.postgres_base import PostgresBaseMixin
+
 
 _LABELS_INSERT_SQL = """
 INSERT INTO labels (
@@ -86,9 +88,10 @@ class PostgresProcessMixin:
                 """.strip(),
             ]
             params: list[Any] = []
-            if folder_name:
-                where_clauses.append("r.raw_key LIKE %s")
-                params.append(f"{folder_name}/%")
+            folder_clause, folder_params = PostgresBaseMixin._folder_filter(folder_name)
+            if folder_clause:
+                where_clauses.append(folder_clause.removeprefix("AND ").strip())
+                params.extend(folder_params)
             if spec_id:
                 where_clauses.append("r.spec_id = %s")
                 params.append(str(spec_id))

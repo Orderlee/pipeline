@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 from functools import cached_property
 from io import BytesIO
@@ -141,6 +142,24 @@ class MinIOResource(ConfigurableResource):
             ContentLength=len(payload),
             ContentType=content_type,
         )
+
+    def upload_json(
+        self,
+        bucket: str,
+        key: str,
+        payload,
+        *,
+        ensure_ascii: bool = False,
+        indent: int | None = None,
+    ) -> None:
+        """payload → JSON 직렬화 → vlm-* 버킷으로 업로드. Content-Type=application/json."""
+        body = json.dumps(payload, ensure_ascii=ensure_ascii, indent=indent).encode("utf-8")
+        self.upload(bucket, key, body, "application/json")
+
+    def download_json(self, bucket: str, key: str):
+        """vlm-* 버킷에서 JSON 다운로드 → 파싱된 객체 반환."""
+        raw = self.download(bucket, key)
+        return json.loads(raw.decode("utf-8"))
 
     def upload_fileobj(
         self,

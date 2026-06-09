@@ -9,8 +9,6 @@ Layer 4: Dagster sensor + job.
 
 from __future__ import annotations
 
-import json
-
 from dagster import (
     AssetSelection,
     DagsterRunStatus,
@@ -23,6 +21,7 @@ from dagster import (
 )
 
 from vlm_pipeline.defs.build.assets import build_dataset
+from vlm_pipeline.defs.shared.sensor_cursor_utils import read_dict_cursor, write_dict_cursor
 from vlm_pipeline.lib.env_utils import int_env
 from vlm_pipeline.lib.sensor_db import open_sensor_read_connection
 
@@ -156,12 +155,7 @@ def build_dataset_on_finalize_sensor(context):
     # run_key 가 unique 해지도록 → Dagster 의 영구 dedup 회피.
     # SUCCESS 후엔 _fetch SQL 의 NOT EXISTS datasets.completed 가드로 후보에서 빠져
     # 무한 재시도 위험 없음.
-    try:
-        cursor = json.loads(context.cursor) if context.cursor else {}
-        if not isinstance(cursor, dict):
-            cursor = {}
-    except Exception:
-        cursor = {}
+    cursor = read_dict_cursor(context)
 
     for folder in folders:
         attempt = int(cursor.get(folder, 0))
@@ -182,4 +176,4 @@ def build_dataset_on_finalize_sensor(context):
             },
         )
 
-    context.update_cursor(json.dumps(cursor, sort_keys=True))
+    write_dict_cursor(context, cursor)

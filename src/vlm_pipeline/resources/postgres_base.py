@@ -11,7 +11,6 @@ DuckDB era의 ``DuckDBBaseMixin`` 과 동일한 인터페이스를 제공하기 
 
 from __future__ import annotations
 
-import os
 import threading
 import time
 from contextlib import contextmanager
@@ -123,6 +122,33 @@ class PostgresBaseMixin(PostgresPhashMixin, PostgresMigrationMixin):
         if row is None:
             return None
         return dict(zip(columns, row))
+
+    @staticmethod
+    def _norm_str(value, *, default: str = "") -> str:
+        """str(value or "").strip(). value None/empty → default.
+
+        str ID/이름 정규화 통합 헬퍼 — resources/ 의 `normalized_X = str(X or "").strip()` 패턴 통합.
+        """
+        if value is None:
+            return default
+        s = str(value).strip()
+        return s if s else default
+
+    @staticmethod
+    def _folder_filter(folder_name: str | None, *, column: str = "r.raw_key") -> tuple[str, list]:
+        """raw_key LIKE 'folder_name/%' SQL fragment 와 param list 생성.
+
+        Args:
+            folder_name: 폴더명. None 이면 빈 fragment + 빈 list 반환.
+            column: 컬럼 prefix (기본 "r.raw_key"). 다른 alias 가 필요한 곳에서 override.
+
+        Returns:
+            (clause, params) — clause 는 "AND {column} LIKE %s" 또는 "" (folder_name 없음).
+                              params 는 ["{folder_name}/%"] 또는 [].
+        """
+        if not folder_name:
+            return "", []
+        return f"AND {column} LIKE %s", [f"{folder_name}/%"]
 
     @contextmanager
     def connect(self):

@@ -286,8 +286,7 @@ def import_event_label_files(
                 review_status,
                 label_format=label_format,
             )
-            label_bytes = json.dumps(label_data, ensure_ascii=False).encode("utf-8")
-            minio.upload("vlm-labels", label_key, label_bytes, "application/json")
+            minio.upload_json("vlm-labels", label_key, label_data)
             label_tool = detect_label_tool(label_data, label_source)
             for event_index, event in enumerate(events):
                 db.insert_label(

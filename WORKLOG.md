@@ -43,6 +43,53 @@
 
 
 
+
+
+## 2026-06-08
+
+- (당일 커밋/파일 변경 없음)
+## 2026-06-05
+
+### 1. 프레임 추출 안정화 및 이미지 캡션 메타 확장
+- **문제**: 영상 말단 구간에서 프레임 추출이 비거나 불안정할 수 있었고, 이미지 캡션 결과도 텍스트만 남아 후속 추적에 필요한 저장 메타가 부족했음.
+- **원인**: ffmpeg 프레임 추출은 요청 시점이 영상 끝에 가까우면 empty output이 날 수 있었고, image caption 저장은 bucket/key/generated_at 같은 정본 추적 필드가 충분하지 않았음.
+- **조치**:
+    - ffmpeg frame extract에 fallback seek 후보와 retry 흐름을 넣어 말단 구간 empty output 상황을 완화함.
+    - image caption JSON을 별도 key로 저장하고 bucket, key, 생성 시각 메타를 image/process 경로에 함께 기록하도록 확장함.
+    - process 중 실패 시 업로드한 frame/image caption JSON을 함께 정리하도록 rollback 경로도 보강함.
+    - 관련 파일:
+      - `src/vlm_pipeline/lib/video_frames.py`
+
+### 2. 수동 / 사전 라벨 import 경로 정리
+- **문제**: 수동 라벨 import와 사전 라벨링 데이터 적재가 서로 다른 코드 경로에서 중복 구현되어 있었고, staging에서 기존 라벨 결과를 재적재하는 전용 진입점도 부족했음.
+- **원인**: event label JSON 파싱, raw asset 매칭, label key 생성 로직이 manual import 안에 묶여 있었고, prelabeled 데이터는 raw ingest 이후 bbox/image caption까지 연결하는 공통 흐름이 정리되지 않았음.
+- **조치**:
+    - manual label import에서 공통 helper를 분리해 label 파일 순회, asset 매칭, event 추출, label 저장 규칙을 재사용 가능하게 정리함.
+    - staging 전용 prelabeled import job을 추가해 raw ingest 후 event / bbox / image caption artifact import까지 한 경로에서 처리하게 구성함.
+    - 사전 라벨링 이미지명에서 원본 raw stem을 찾는 정규식 패턴을 보강해 stem 추론 누락 케이스를 보완함.
+    - 관련 파일:
+      - `src/vlm_pipeline/defs/label/import_support.py`
+
+### 3. Staging dispatch 서비스 분리 및 흐름 정리
+- **문제**: staging dispatch 처리 로직이 sensor 안에 몰려 있어 중복 요청 체크, 실패 기록, manifest 작성, run 상태 연동을 한 번에 파악하기 어려웠음.
+- **원인**: dispatch request 준비, archive/manifest 경로 계산, DB 기록, in-flight run 검사 로직이 sensor 본문과 run status 처리 코드에 분산되어 유지보수성이 떨어졌음.
+- **조치**:
+    - dispatch request 준비, manifest 작성, DB 기록, run request 생성 로직을 service 레이어로 분리해 sensor 책임을 줄임.
+    - 중복 request_id, 같은 folder의 진행 중 run, 실패 request upsert 흐름을 DB helper와 공통 함수로 정리함.
+    - dispatch run status와 archive 판단 경로가 같은 tag 해석 함수를 사용하도록 맞춰 상태 전파를 일관되게 정리함.
+
+### 4. 당일 정리
+- **변경 통계**:
+    - 변경 파일 **57개**, +4953/-4390줄.
+- **관련 커밋**:
+    - `f4e9ee5d`: Merge pull request #211 from Orderlee/refactor/ls-tasks-split
+    - `d112519e`: refactor(gemini): ls_tasks.py (1351 LoC) → 3 도메인 모듈 분할 (minio/label_config/create) (#5)
+    - `6719b4e4`: Merge pull request #210 from Orderlee/refactor/slack-notify-lib
+    - `deae4d55`: refactor(lib): _send_slack_alert → lib/slack_notify.py (2곳 동일 함수) (#3)
+    - `ddedfe99`: Merge pull request #209 from Orderlee/refactor/minio-upload-json-helper
+- **서비스 상태**: 파이프라인 서비스 13개 컨테이너 중 13개 정상 가동.
+- **작업 환경**: VSCode
+
 ## 2026-06-04
 
 ### 1. Staging dispatch 서비스 분리 및 흐름 정리
