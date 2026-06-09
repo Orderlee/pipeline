@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import io
 import logging
-import os
 import subprocess
 import time
 from collections.abc import Iterable
@@ -17,6 +16,8 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
 from PIL import Image
+
+from vlm_pipeline.lib.env_utils import int_env
 
 logger = logging.getLogger(__name__)
 
@@ -320,9 +321,8 @@ def extract_frame_jpeg_bytes(
         max_retries: 타임아웃/실패 시 재시도 횟수. 기본 2회.
                      환경변수 VIDEO_FRAME_EXTRACT_RETRIES로 오버라이드 가능.
     """
-    timeout = timeout_sec or int(os.getenv("VIDEO_FRAME_EXTRACT_TIMEOUT_SEC", "120"))
-    retries = max_retries if max_retries is not None else int(os.getenv("VIDEO_FRAME_EXTRACT_RETRIES", "2"))
-    retries = max(0, retries)
+    timeout = timeout_sec or int_env("VIDEO_FRAME_EXTRACT_TIMEOUT_SEC", 120, minimum=1)
+    retries = max(0, max_retries if max_retries is not None else int_env("VIDEO_FRAME_EXTRACT_RETRIES", 2))
     # ffmpeg mjpeg -q:v 2~31 (lower = better). PIL quality 90 → -q:v 4 근사.
     q_v = max(2, min(31, round(2 + (100 - max(1, min(100, int(jpeg_quality)))) * 29 / 100)))
     requested_sec = round(float(sec), 3)

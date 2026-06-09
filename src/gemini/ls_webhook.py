@@ -491,13 +491,19 @@ def _run_sync_and_notify_inner(project_id: int, project_title: str) -> None:
         added = sorted(processed_keys - existing_keys)
         print(f"[INFO] state.json label_keys 에 {len(added)}건 신규 추가: {added}")
 
+    # FinalizedLabelsSkip / FinalizedImageSkip 으로 인해 skip 된 항목 — 운영자 인지.
+    skipped_finalized = int(sync_result.get("skipped_finalized", 0) or 0)
+    skip_suffix = f"  (finalized skip {skipped_finalized}건)" if skipped_finalized else ""
+    if skipped_finalized:
+        print(f"[INFO] sync 중 finalized 보호 가드로 {skipped_finalized}건 skip (MinIO/PG 보존)")
+
     if is_first:
         send_slack(
-            f"[동기화 완료] *{project_title}* (id={project_id}) — 검수 반영됨\n"
+            f"[동기화 완료] *{project_title}* (id={project_id}) — 검수 반영됨{skip_suffix}\n"
             f"최종 확정이 필요합니다. `/sync-list` 로 확인하세요."
         )
     else:
-        send_slack(f"[재동기화] *{project_title}* (id={project_id}) — 수정사항 반영됨, 확정 대기 중")
+        send_slack(f"[재동기화] *{project_title}* (id={project_id}) — 수정사항 반영됨, 확정 대기 중{skip_suffix}")
 
 
 # ---------------------------------------------------------------------------

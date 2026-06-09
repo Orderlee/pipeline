@@ -63,14 +63,19 @@ class PostgresMigrationMixin:
         구현 노트: 마이그레이션 파일이 자체적으로 ``BEGIN/COMMIT`` 을 포함하므로
         ``connect()`` ctxmgr 의 outer transaction 과 충돌하지 않도록 dedicated
         AUTOCOMMIT 커넥션을 직접 열어 사용한다 (pool 우회).
+
+        파일 안에 ``-- @ASSERT_AFTER: <sql>`` 주석이 있으면 적용 직후 + 매 부팅 시
+        해당 SQL 을 실행해 결과가 truthy 인지 검증한다. drift detection 역할.
+        2026-06-09 005 적용 시 ALTER ADD CONSTRAINT 가 silent fail 한 사고
+        ([[project_postgres_migration_runner_quirk]]) 재발 방지.
         """
         with self._autocommit_conn() as conn:
             self._ensure_migrations_table(conn)
             applied = self._fetch_applied(conn)
             for path in self._discover_migrations():
-                if path.name in applied:
-                    continue
-                self._apply_one(conn, path)
+                if path.name not in applied:
+                    self._apply_one(conn, path)
+                self._verify_assertions(conn, path)
 
     _REQUIRED_MIGRATIONS: ClassVar[frozenset[str]] = frozenset(
         {
@@ -78,6 +83,7 @@ class PostgresMigrationMixin:
             "002_genai.sql",
             "003_genai_veo.sql",
             "004_dataset_lineage.sql",
+            "005_labels_unique.sql",
         }
     )
 
@@ -177,4 +183,43 @@ class PostgresMigrationMixin:
             cur.execute(
                 "INSERT INTO _pg_migrations (name) VALUES (%s) ON CONFLICT (name) DO NOTHING",
                 (path.name,),
+            )
+
+    @classmethod
+    def _verify_assertions(
+        cls,
+        conn: psycopg2.extensions.connection,
+        path: Path,
+    ) -> None:
+        """파일 안 ``-- @ASSERT_AFTER: <sql>`` 주석을 모두 검증.
+
+        각 SQL 의 첫 컬럼이 truthy (boolean true / non-zero / non-empty) 여야 한다.
+        실패 시 ``PostgresSchemaBaselineError`` 를 발생시켜 drift 를 표면화한다.
+
+        매 부팅 시 호출되므로 (already-applied migration 도 검증):
+          - migration 적용이 silent fail 한 경우 (005 사례) 즉시 fail-fast
+          - 누군가 수동으로 schema 객체를 삭제한 경우도 drift 감지
+        """
+        import re
+
+        sql_text = path.read_text(encoding="utf-8")
+        pattern = re.compile(r"--\s*@ASSERT_AFTER:\s*(.+)$", re.MULTILINE)
+        asserts = [m.group(1).strip().rstrip(";") for m in pattern.finditer(sql_text)]
+        if not asserts:
+            return
+        failures: list[str] = []
+        with conn.cursor() as cur:
+            for assert_sql in asserts:
+                try:
+                    cur.execute(assert_sql)
+                    row = cur.fetchone()
+                except psycopg2.Error as exc:
+                    failures.append(f"  {assert_sql} → query error: {exc}")
+                    continue
+                value = row[0] if row else None
+                if not value:
+                    failures.append(f"  {assert_sql} → returned {value!r} (expected truthy)")
+        if failures:
+            raise PostgresSchemaBaselineError(
+                f"Migration {path.name}: post-apply assertion(s) failed:\n" + "\n".join(failures)
             )

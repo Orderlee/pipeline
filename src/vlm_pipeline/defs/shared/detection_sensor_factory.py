@@ -6,12 +6,12 @@ vlm_pipeline.lib.detection_sensor_utils 에 위치.
 
 from __future__ import annotations
 
-import json
 from hashlib import sha1
 
 from dagster import DefaultSensorStatus, RunRequest, SensorDefinition, SkipReason, sensor
 from dagster._core.storage.dagster_run import DagsterRunStatus, RunsFilter
 
+from vlm_pipeline.defs.shared.sensor_cursor_utils import write_dict_cursor
 from vlm_pipeline.lib.detection_sensor_utils import parse_sensor_cursor, read_backlog_snapshot
 from vlm_pipeline.lib.env_utils import bool_env, int_env
 
@@ -94,18 +94,18 @@ def build_detection_backlog_sensor(
         }
 
         if current_count <= 0:
-            context.update_cursor(json.dumps(next_cursor, sort_keys=True))
+            write_dict_cursor(context, next_cursor)
             yield SkipReason(f"{label_tool} backlog 없음")
             return
 
         if prev_count is not None and current_count == prev_count and current_state_token == (prev_state_token or ""):
-            context.update_cursor(json.dumps(next_cursor, sort_keys=True))
+            write_dict_cursor(context, next_cursor)
             yield SkipReason(f"{label_tool} backlog unchanged: count={current_count}")
             return
 
         event_seq = prev_seq + 1
         next_cursor["event_seq"] = event_seq
-        context.update_cursor(json.dumps(next_cursor, sort_keys=True))
+        write_dict_cursor(context, next_cursor)
         update_token = sha1(current_state_token.encode("utf-8")).hexdigest()[:10]
 
         yield RunRequest(

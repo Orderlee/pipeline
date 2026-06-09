@@ -5,6 +5,10 @@ Layer 3: 다른 ingest submodule에서 import 가능. 외부 직접 import는 �
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
+from vlm_pipeline.lib.env_utils import int_env
+
 from .duplicate import error_code_from_message as _derive_error_code
 
 # ── 업로드 / 재인코딩 / 메타 추출 워커 상수 ──────────────────────
@@ -19,6 +23,24 @@ MAX_META_WORKERS: int = 8
 DEFAULT_VIDEO_CONTENT_TYPE: str = "video/mp4"
 DEFAULT_IMAGE_CODEC: str = "jpeg"
 DEFAULT_RAW_BUCKET: str = "vlm-raw"
+
+@dataclass(frozen=True)
+class IngestWorkerConfig:
+    """ingest stage 의 worker / thread 수."""
+
+    max_workers: int
+    reencode_workers: int
+    reencode_threads: int
+
+
+def read_ingest_worker_config() -> IngestWorkerConfig:
+    """환경 변수 INGEST_UPLOAD_WORKERS / INGEST_REENCODE_WORKERS / INGEST_REENCODE_THREADS 에서 worker config 추출."""
+    return IngestWorkerConfig(
+        max_workers=min(MAX_UPLOAD_WORKERS, int_env("INGEST_UPLOAD_WORKERS", DEFAULT_UPLOAD_WORKERS, minimum=1)),
+        reencode_workers=min(MAX_UPLOAD_WORKERS, int_env("INGEST_REENCODE_WORKERS", DEFAULT_REENCODE_WORKERS, minimum=1)),
+        reencode_threads=int_env("INGEST_REENCODE_THREADS", DEFAULT_REENCODE_THREADS, minimum=1),
+    )
+
 
 TRANSIENT_ERROR_MARKERS = (
     "ffprobe_timeout",

@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-import json
 import time
 from pathlib import Path
 
 from dagster import DefaultSensorStatus, RunRequest, SkipReason, sensor
 
+from vlm_pipeline.defs.shared.sensor_cursor_utils import write_dict_cursor
 from vlm_pipeline.lib.env_utils import int_env
 from vlm_pipeline.lib.runtime_profile import resolve_runtime_profile
 from vlm_pipeline.resources.config import PipelineConfig
@@ -162,7 +162,7 @@ def incoming_manifest_sensor(context):
             context.log.info(f"이미 처리된 manifest: {manifest_path.name} (mtime={mtime_ns}, prev={prev_mtime})")
 
     if not new_entries:
-        context.update_cursor(json.dumps(current_state, sort_keys=True))
+        write_dict_cursor(context, current_state)
         if superseded_count > 0:
             yield SkipReason(f"새로운 pending manifest 없음 (중복 manifest 정리={superseded_count})")
         else:
@@ -170,7 +170,7 @@ def incoming_manifest_sensor(context):
         return
 
     if in_flight_run_count >= max_in_flight_runs:
-        context.update_cursor(json.dumps(current_state, sort_keys=True))
+        write_dict_cursor(context, current_state)
         yield SkipReason(
             f"backpressure: ingest manifest job in-flight run이 임계치 이상임 "
             f"(in_flight={in_flight_run_count}, limit={max_in_flight_runs})"
@@ -255,7 +255,7 @@ def incoming_manifest_sensor(context):
         if key in launched_manifest_keys:
             current_state[key] = int(entry["mtime_ns"])
 
-    context.update_cursor(json.dumps(current_state, sort_keys=True))
+    write_dict_cursor(context, current_state)
 
     if not run_requests:
         details = [

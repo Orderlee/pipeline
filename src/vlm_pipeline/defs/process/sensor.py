@@ -8,6 +8,7 @@ from hashlib import sha1
 from dagster import DefaultSensorStatus, RunRequest, SkipReason, sensor
 from dagster._core.storage.dagster_run import DagsterRunStatus, RunsFilter
 
+from vlm_pipeline.defs.shared.sensor_cursor_utils import write_dict_cursor
 from vlm_pipeline.lib.env_utils import bool_env, int_env
 from vlm_pipeline.lib.sensor_db import open_sensor_read_connection
 
@@ -223,12 +224,12 @@ def _read_video_frame_backlog_snapshot() -> dict[str, int | str | None]:
 #     }
 #
 #     if current_count <= 0:
-#         context.update_cursor(json.dumps(next_cursor, sort_keys=True))
+#         write_dict_cursor(context, next_cursor)
 #         yield SkipReason("processed clip frame backlog 없음")
 #         return
 #
 #     if previous_count is not None and current_count == previous_count and current_state_token == (previous_state_token or ""):
-#         context.update_cursor(json.dumps(next_cursor, sort_keys=True))
+#         write_dict_cursor(context, next_cursor)
 #         yield SkipReason(f"processed clip frame backlog unchanged: count={current_count}")
 #         return
 #
@@ -311,13 +312,13 @@ def video_frame_extract_sensor(context):
 
     if previous_count is None:
         if current_count <= 0:
-            context.update_cursor(json.dumps(next_cursor, sort_keys=True))
+            write_dict_cursor(context, next_cursor)
             yield SkipReason("video frame backlog baseline initialized: 0")
             return
 
         event_seq = previous_event_seq + 1
         next_cursor["event_seq"] = event_seq
-        context.update_cursor(json.dumps(next_cursor, sort_keys=True))
+        write_dict_cursor(context, next_cursor)
         update_token = sha1(current_state_token.encode("utf-8")).hexdigest()[:10]
         yield RunRequest(
             run_key=f"video-frame-extract-e{event_seq}-c{current_count}-{update_token}",
@@ -347,12 +348,12 @@ def video_frame_extract_sensor(context):
     state_changed = current_state_token != (previous_state_token or "")
 
     if current_count <= 0:
-        context.update_cursor(json.dumps(next_cursor, sort_keys=True))
+        write_dict_cursor(context, next_cursor)
         yield SkipReason("video frame backlog 없음")
         return
 
     if not backlog_changed and not state_changed:
-        context.update_cursor(json.dumps(next_cursor, sort_keys=True))
+        write_dict_cursor(context, next_cursor)
         yield SkipReason(
             "video frame backlog unchanged: "
             f"count={current_count}, pending={current_pending}, processing={current_processing}"
@@ -361,7 +362,7 @@ def video_frame_extract_sensor(context):
 
     event_seq = previous_event_seq + 1
     next_cursor["event_seq"] = event_seq
-    context.update_cursor(json.dumps(next_cursor, sort_keys=True))
+    write_dict_cursor(context, next_cursor)
     update_token = sha1(current_state_token.encode("utf-8")).hexdigest()[:10]
 
     yield RunRequest(

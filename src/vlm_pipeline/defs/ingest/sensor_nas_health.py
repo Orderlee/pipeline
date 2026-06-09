@@ -6,16 +6,14 @@
 
 from __future__ import annotations
 
-import json
-import os
 import time
-import urllib.request
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from pathlib import Path
 
 from dagster import DefaultSensorStatus, SkipReason, sensor
 
 from vlm_pipeline.lib.env_utils import int_env
+from vlm_pipeline.lib.slack_notify import send_slack_alert
 from vlm_pipeline.resources.config import PipelineConfig
 
 NAS_PROBE_TIMEOUT_SEC: int = 5
@@ -44,25 +42,6 @@ def _probe_path(path: str, timeout_sec: int = NAS_PROBE_TIMEOUT_SEC) -> tuple[bo
         return False, str(exc)
 
 
-def _send_slack_alert(message: str) -> bool:
-    webhook_url = os.getenv("SLACK_WEBHOOK_URL", "").strip()
-    if not webhook_url:
-        return False
-    try:
-        payload = json.dumps({"text": message}).encode("utf-8")
-        req = urllib.request.Request(
-            webhook_url,
-            data=payload,
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
-        with urllib.request.urlopen(req, timeout=10):
-            pass
-        return True
-    except Exception:  # noqa: BLE001
-        return False
-
-
 @sensor(
     minimum_interval_seconds=int_env("NAS_HEALTH_INTERVAL_SEC", 60, 30),
     default_status=DefaultSensorStatus.RUNNING,
@@ -88,7 +67,7 @@ def nas_health_sensor(context):
         if _consecutive_failures > 0:
             context.log.info(f"nas_health: NAS 복구 확인 (연속 실패 {_consecutive_failures}회 후 정상)")
             if _consecutive_failures >= NAS_HEALTH_CONSECUTIVE_FAIL_ALERT:
-                _send_slack_alert(f"[NAS 복구] incoming/archive 접근 정상화 (연속 {_consecutive_failures}회 실패 후)")
+                send_slack_alert(f"[NAS 복구] incoming/archive 접근 정상화 (연속 {_consecutive_failures}회 실패 후)")
         _consecutive_failures = 0
         return SkipReason("nas_health: 정상")
 
@@ -98,7 +77,7 @@ def nas_health_sensor(context):
 
     now = time.time()
     if _consecutive_failures >= NAS_HEALTH_CONSECUTIVE_FAIL_ALERT and (now - _last_alert_ts) > NAS_ALERT_COOLDOWN_SEC:
-        alert_sent = _send_slack_alert(
+        alert_sent = send_slack_alert(
             f"[NAS 경고] 연속 {_consecutive_failures}회 접근 실패\n"
             f"상세: {failure_detail}\n"
             f"조치: NAS 서버 상태 확인 또는 `sudo umount -l && sudo mount -a` 필요"

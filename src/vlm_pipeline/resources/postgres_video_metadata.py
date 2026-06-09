@@ -92,7 +92,7 @@ class PostgresVideoMetadataMixin:
         codec: str = "h264",
         reencode_preset: str = "standard",
     ) -> None:
-        normalized_id = str(asset_id or "").strip()
+        normalized_id = self._norm_str(asset_id)
         if not normalized_id:
             return
         with self.connect() as conn:
@@ -110,7 +110,7 @@ class PostgresVideoMetadataMixin:
 
     def update_video_reencode_reason(self, asset_id: str, reason: str) -> None:
         """reencode_reason 컬럼만 갱신 (fallback 기록용)."""
-        normalized_id = str(asset_id or "").strip()
+        normalized_id = self._norm_str(asset_id)
         if not normalized_id:
             return
         with self.connect() as conn:
@@ -129,7 +129,7 @@ class PostgresVideoMetadataMixin:
         error_message: str | None = None,
         extracted_at: datetime | None = None,
     ) -> None:
-        normalized_id = str(asset_id or "").strip()
+        normalized_id = self._norm_str(asset_id)
         if not normalized_id:
             return
 
@@ -159,10 +159,8 @@ class PostgresVideoMetadataMixin:
     def find_raw_video_extract_pending(self, limit: int = 500, folder_name: str | None = None) -> list[dict[str, Any]]:
         """라벨(event) 없이 처리할 raw video 후보를 반환."""
         with self.connect() as conn:
-            query_cond = "AND r.raw_key LIKE %s" if folder_name else ""
-            params: list[Any] = [max(1, int(limit))]
-            if folder_name:
-                params.insert(0, f"{folder_name}/%")
+            query_cond, folder_params = self._folder_filter(folder_name)
+            params: list[Any] = folder_params + [max(1, int(limit))]
 
             with conn.cursor() as cur:
                 cur.execute(

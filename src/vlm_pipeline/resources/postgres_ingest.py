@@ -7,5 +7,9 @@ from vlm_pipeline.resources.postgres_ingest_metadata import PostgresIngestMetada
 from vlm_pipeline.resources.postgres_ingest_raw import PostgresIngestRawMixin
 
 
-class PostgresIngestMixin(PostgresIngestDispatchMixin, PostgresIngestRawMixin, PostgresIngestMetadataMixin):
+class PostgresIngestMixin(
+    PostgresIngestDispatchMixin,
+    PostgresIngestRawMixin,
+    PostgresIngestMetadataMixin,
+):
     """INGEST 관련 PostgreSQL 메서드 mixin."""

@@ -70,7 +70,7 @@ class PostgresIngestMetadataMixin(PostgresVideoMetadataMixin):
                 )
 
     def find_image_metadata_by_image_key(self, image_key: str) -> dict[str, Any] | None:
-        normalized_key = str(image_key or "").strip()
+        normalized_key = self._norm_str(image_key)
         if not normalized_key:
             return None
         with self.connect() as conn:
@@ -87,7 +87,7 @@ class PostgresIngestMetadataMixin(PostgresVideoMetadataMixin):
                 return self._cursor_to_dict(cur)
 
     def find_image_metadata_by_image_id(self, image_id: str) -> dict[str, Any] | None:
-        normalized_id = str(image_id or "").strip()
+        normalized_id = self._norm_str(image_id)
         if not normalized_id:
             return None
         with self.connect() as conn:
@@ -109,7 +109,7 @@ class PostgresIngestMetadataMixin(PostgresVideoMetadataMixin):
         *,
         source_unit_name: str | None = None,
     ) -> dict[str, Any] | None:
-        normalized_stem = str(stem or "").strip()
+        normalized_stem = self._norm_str(stem)
         if not normalized_stem:
             return None
         with self.connect() as conn:
@@ -220,7 +220,7 @@ class PostgresIngestMetadataMixin(PostgresVideoMetadataMixin):
         caption_key: str,
         generated_at: datetime | None,
     ) -> None:
-        normalized_id = str(image_id or "").strip()
+        normalized_id = self._norm_str(image_id)
         if not normalized_id:
             return
         with self.connect() as conn:
@@ -281,10 +281,10 @@ class PostgresIngestMetadataMixin(PostgresVideoMetadataMixin):
         image_role: str,
         frames: list[dict[str, Any]],
     ) -> int:
-        normalized_id = str(source_asset_id or "").strip()
+        normalized_id = self._norm_str(source_asset_id)
         if not normalized_id:
             return 0
-        normalized_clip_id = str(source_clip_id or "").strip() or None
+        normalized_clip_id = self._norm_str(source_clip_id) or None
 
         rows: list[tuple] = []
         for frame in frames:

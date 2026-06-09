@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import csv
 import io
-import json
 from collections.abc import Mapping
 from datetime import datetime
 from pathlib import PurePosixPath
@@ -111,7 +110,7 @@ def _run_sam3_shadow_compare(context, db: PostgresResource, minio: MinIOResource
             yolo_key = str(candidate.get("yolo_labels_key") or "")
 
             image_bytes = minio.download(image_bucket, image_key)
-            yolo_payload = json.loads(minio.download(yolo_bucket, yolo_key).decode("utf-8"))
+            yolo_payload = minio.download_json(yolo_bucket, yolo_key)
             yolo_boxes_by_class = parse_yolo_coco_payload(yolo_payload)
             prompts = _resolve_prompt_classes(yolo_payload, yolo_boxes_by_class)
             if not prompts:
@@ -170,12 +169,7 @@ def _run_sam3_shadow_compare(context, db: PostgresResource, minio: MinIOResource
             coco_payload["meta"]["sam3_device"] = sam_result.get("device")
             coco_payload["meta"]["gpu_memory_peak_gb"] = sam_result.get("gpu_memory_peak_gb")
             annotation_count = len(coco_payload.get("annotations") or [])
-            minio.upload(
-                "vlm-labels",
-                sam3_labels_key,
-                json.dumps(coco_payload, ensure_ascii=False).encode("utf-8"),
-                "application/json",
-            )
+            minio.upload_json("vlm-labels", sam3_labels_key, coco_payload)
 
             label_rows.append(
                 {
@@ -251,12 +245,7 @@ def _run_sam3_shadow_compare(context, db: PostgresResource, minio: MinIOResource
     )
 
     benchmark_root = _build_sam3_benchmark_root(benchmark_id)
-    minio.upload(
-        "vlm-labels",
-        f"{benchmark_root}/summary.json",
-        json.dumps(summary, ensure_ascii=False).encode("utf-8"),
-        "application/json",
-    )
+    minio.upload_json("vlm-labels", f"{benchmark_root}/summary.json", summary)
     minio.upload(
         "vlm-labels",
         f"{benchmark_root}/pairs.csv",
