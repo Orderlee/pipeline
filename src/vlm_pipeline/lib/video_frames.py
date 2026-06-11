@@ -13,7 +13,7 @@ import subprocess
 import time
 from collections.abc import Iterable
 from dataclasses import dataclass
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 
 from PIL import Image
 
@@ -253,15 +253,6 @@ def _downsample_timestamps_evenly(timestamps: list[float], target_count: int) ->
         previous_index = next_index
 
     return [timestamps[index] for index in selected_indices]
-
-
-def build_frame_key(raw_key: str, frame_index: int, frame_sec: float) -> str:
-    key_path = PurePosixPath(str(raw_key or "").strip())
-    stem = key_path.stem or "video"
-    parent = key_path.parent
-    _ = frame_sec
-    frame_name = f"{stem}_{int(frame_index):08d}.jpg"
-    return str(parent / stem / frame_name) if str(parent) != "." else str(PurePosixPath(stem) / frame_name)
 
 
 def _build_extract_frame_cmd(video_path: str | Path, sec: float, q_v: int) -> list[str]:

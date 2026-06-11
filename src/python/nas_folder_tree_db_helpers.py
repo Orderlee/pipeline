@@ -10,26 +10,108 @@ import them without creating a circular dependency.
 from __future__ import annotations
 
 import os
+import re
 import sys
+from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
 
 import psycopg2
+from psycopg2 import sql
 from psycopg2.extras import execute_values
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
-try:
-    from nas_folder_tree_to_postgres import calculate_tree_prefixes, ensure_database_exists  # type: ignore
-except Exception:  # pragma: no cover - fallback if sibling script unavailable
-    def ensure_database_exists(host, port, database, user, password):  # type: ignore
-        raise RuntimeError("ensure_database_exists not available; keep nas_folder_tree_to_postgres.py importable.")
+_DEFAULT_PG_ADMIN_DB = "postgres"
 
-    def calculate_tree_prefixes(items: List[Dict]) -> List[Dict]:  # type: ignore
-        return items
+
+def ensure_database_exists(
+    host: str,
+    port: int,
+    database: str,
+    user: str,
+    password: str,
+    admin_db: str = _DEFAULT_PG_ADMIN_DB,
+) -> None:
+    if not database or database == admin_db:
+        return
+
+    admin_conn = psycopg2.connect(
+        host=host,
+        port=port,
+        database=admin_db,
+        user=user,
+        password=password,
+    )
+    admin_conn.autocommit = True
+    try:
+        with admin_conn.cursor() as cur:
+            cur.execute("SELECT 1 FROM pg_database WHERE datname = %s", (database,))
+            exists = cur.fetchone() is not None
+            if not exists:
+                cur.execute(sql.SQL("CREATE DATABASE {}").format(sql.Identifier(database)))
+                print(f"PostgreSQL DB 생성 완료: {database}")
+    finally:
+        admin_conn.close()
+
+
+def calculate_tree_prefixes(folder_tree: List[Dict]) -> List[Dict]:
+    if not folder_tree:
+        return folder_tree
+
+    sorted_tree = sorted(folder_tree, key=lambda x: x["path"])
+
+    children_by_parent: Dict[str, List[str]] = defaultdict(list)
+    for item in sorted_tree:
+        parent = item["parent_path"] or ""
+        children_by_parent[parent].append(item["path"])
+
+    is_last_child: Dict[str, bool] = {}
+    for parent, children in children_by_parent.items():
+        sorted_children = sorted(children)
+        for i, child in enumerate(sorted_children):
+            is_last_child[child] = i == len(sorted_children) - 1
+
+    path_to_item = {item["path"]: item for item in sorted_tree}
+
+    for item in sorted_tree:
+        path = item["path"]
+        depth = item["depth"]
+
+        if depth == 0:
+            item["tree_prefix"] = ""
+            item["sort_key"] = "0"
+            continue
+
+        if is_last_child.get(path, False):
+            current_prefix = "└── "
+        else:
+            current_prefix = "├── "
+
+        current_path = item["parent_path"]
+        ancestors = []
+        while current_path and current_path in path_to_item:
+            parent_item = path_to_item[current_path]
+            if parent_item["depth"] > 0:
+                if is_last_child.get(current_path, False):
+                    ancestors.append("    ")
+                else:
+                    ancestors.append("│   ")
+            current_path = parent_item["parent_path"]
+
+        ancestor_prefix = "".join(reversed(ancestors))
+        item["tree_prefix"] = ancestor_prefix + current_prefix
+
+        sort_parts = []
+        for part in path.split("/"):
+            padded = re.sub(r"(\d+)", lambda m: m.group(1).zfill(10), part)
+            sort_parts.append(padded)
+        item["sort_key"] = "/".join(sort_parts)
+
+    return sorted_tree
 
 
 # ---------------------------------------------------------------------------

@@ -1,4 +1,8 @@
 #!/bin/bash
+echo "ERROR: DuckDB legacy script. PG cutover (2026-05-13) 이후 사용 금지." >&2
+echo "       강제 실행이 필요하면 ALLOW_LEGACY_DUCKDB_SCRIPT=1 환경변수 set." >&2
+[ "${ALLOW_LEGACY_DUCKDB_SCRIPT}" != "1" ] && exit 1
+
 set -euo pipefail
 
 # reset_test_docker.sh

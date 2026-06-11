@@ -45,6 +45,35 @@
 
 
 
+
+
+## 2026-06-10
+
+- (당일 커밋/파일 변경 없음)
+## 2026-06-09
+
+### 1. Staging dispatch 서비스 분리 및 흐름 정리
+- **문제**: staging dispatch 처리 로직이 sensor 안에 몰려 있어 중복 요청 체크, 실패 기록, manifest 작성, run 상태 연동을 한 번에 파악하기 어려웠음.
+- **원인**: dispatch request 준비, archive/manifest 경로 계산, DB 기록, in-flight run 검사 로직이 sensor 본문과 run status 처리 코드에 분산되어 유지보수성이 떨어졌음.
+- **조치**:
+    - dispatch request 준비, manifest 작성, DB 기록, run request 생성 로직을 service 레이어로 분리해 sensor 책임을 줄임.
+    - 중복 request_id, 같은 folder의 진행 중 run, 실패 request upsert 흐름을 DB helper와 공통 함수로 정리함.
+    - dispatch run status와 archive 판단 경로가 같은 tag 해석 함수를 사용하도록 맞춰 상태 전파를 일관되게 정리함.
+    - 관련 파일:
+      - `src/vlm_pipeline/defs/dispatch/service.py`
+
+### 2. 당일 정리
+- **변경 통계**:
+    - 변경 파일 **21개**, +1939/-361줄.
+- **관련 커밋**:
+    - `97a00139`: Merge pull request #233 from Orderlee/dev
+    - `3b162a85`: Merge pull request #232 from Orderlee/fix/postgres-migration-runner-do-block
+    - `1622c12b`: fix(resources): migration runner — post-apply ASSERT_AFTER 검증 추가
+    - `07869aaf`: Merge pull request #231 from Orderlee/dev
+    - `036b8f12`: Merge pull request #230 from Orderlee/chore/labels-unique-constraint-005
+- **서비스 상태**: 파이프라인 서비스 13개 컨테이너 중 13개 정상 가동.
+- **작업 환경**: VSCode
+
 ## 2026-06-08
 
 - (당일 커밋/파일 변경 없음)

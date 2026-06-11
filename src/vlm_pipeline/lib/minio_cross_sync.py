@@ -27,9 +27,35 @@ _SYNC_TARGETS = [
 ]
 
 
+_MINIO_DEFAULT_VALUES = {"minioadmin", "admin", ""}
+
+
+def _insecure_creds_allowed() -> bool:
+    """ALLOW_INSECURE_DEFAULT_CREDS env truthy 면 default 자격 허용 (자격 회전 전 임시)."""
+    return os.environ.get("ALLOW_INSECURE_DEFAULT_CREDS", "").strip().lower() in {"1", "true", "yes"}
+
+
 def _build_s3_client(endpoint: str) -> "boto3.client":
-    ak = os.environ.get("MINIO_ACCESS_KEY", "minioadmin")
-    sk = os.environ.get("MINIO_SECRET_KEY", "minioadmin")
+    ak = os.environ.get("MINIO_ACCESS_KEY")
+    sk = os.environ.get("MINIO_SECRET_KEY")
+    insecure_ok = _insecure_creds_allowed()
+    if (not ak or ak in _MINIO_DEFAULT_VALUES) and not insecure_ok:
+        raise RuntimeError(
+            "MINIO_ACCESS_KEY is not set or is a well-known default. "
+            "Set a non-default value before using minio_cross_sync. "
+            "임시 우회: ALLOW_INSECURE_DEFAULT_CREDS=1."
+        )
+    if (not sk or sk in _MINIO_DEFAULT_VALUES) and not insecure_ok:
+        raise RuntimeError(
+            "MINIO_SECRET_KEY is not set or is a well-known default. "
+            "Set a non-default value before using minio_cross_sync. "
+            "임시 우회: ALLOW_INSECURE_DEFAULT_CREDS=1."
+        )
+    # escape hatch path: ak/sk 가 None 이면 minioadmin 으로 fallback (legacy 호환)
+    if not ak:
+        ak = "minioadmin"
+    if not sk:
+        sk = "minioadmin"
     url = endpoint if endpoint.startswith("http") else f"http://{endpoint}"
     return boto3.client(
         "s3",

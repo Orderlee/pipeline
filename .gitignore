@@ -13,9 +13,13 @@ catalog/snapshots/
 # Environment & Configs
 .env
 .env.dev
+# docker/.env* 패턴은 .env, .env.bak.*, .env.test 등 모든 env 백업/변형을 차단.
+# 예외 — *.example / *.template 만 추적 (sample 값 / 셋업 가이드).
+docker/.env*
+!docker/.env.test.example
+!docker/.env.test.template
 # .env.test 은 staging 호스트의 secrets/override 보관 — git untracked.
 # 새 환경 셋업 시 docker/.env.test.example 을 cp 해서 시작.
-docker/.env.test
 your-gcp-project-credentials.json
 configs/global.yaml
 !configs/config.sample.yaml
@@ -50,6 +54,12 @@ tests/unit/*
 # Follow-up #4 회귀 방지 — FinalizedLabelsSkip / FinalizedImageSkip 가드 패스.
 # ls_sync_db 만 import (psycopg2 importorskip), dagster 의존 없음.
 !tests/unit/test_ls_sync_finalized_skip.py
+# SEC-WEBHOOK-AUTH codex follow-up — compose env + idempotency + token path + TypeError guard.
+# fastapi.testclient + requests.mock 만 의존, dagster import 없음.
+!tests/unit/test_ls_webhook_security.py
+# Phase E #14 STRUCT-BOOTSTRAP-POLICY — BootstrapPolicy / decide_unit_ready 순수 로직.
+# sensor_bootstrap_policy 만 import, dagster 의존 없음.
+!tests/unit/test_bootstrap_policy.py
 # Phase 4-B integration tests (#12) — self-contained conftest, sidecar PG 의존
 # (DATAOPS_TEST_POSTGRES_DSN 미설정 시 자동 skip).
 !tests/integration/

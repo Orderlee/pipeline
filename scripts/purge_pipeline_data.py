@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Purge pipeline data across local DuckDB, MotherDuck, and MinIO in one command.
+Purge pipeline data across PostgreSQL and MinIO in one command.
 
 Safety:
 - Dry-run by default.
@@ -24,18 +24,15 @@ from __future__ import annotations
 
 import argparse
 import os
-import time
-from pathlib import Path
-from typing import TYPE_CHECKING, Any, Iterable, Optional, Sequence
-
 import sys
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, Iterable, Sequence
 
-import duckdb
+import psycopg2
+import psycopg2.extensions
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(REPO_ROOT / "src" / "python"))
-
-from common.motherduck import connect_motherduck, load_env_for_motherduck  # noqa: E402
+sys.path.insert(0, str(REPO_ROOT / "src" / "vlm_pipeline"))
 
 if TYPE_CHECKING:
     from minio import Minio
@@ -56,7 +53,7 @@ DEFAULT_BUCKETS = ["vlm-raw", "vlm-labels", "vlm-processed", "vlm-dataset"]
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Delete pipeline data from local DuckDB + MotherDuck + MinIO."
+        description="Delete pipeline data from PostgreSQL + MinIO."
     )
     parser.add_argument("--all", action="store_true", help="Delete all pipeline data.")
     parser.add_argument("--created-date", default=None, help="Filter by raw_files.created_at date (YYYY-MM-DD).")
@@ -64,24 +61,11 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--raw-key-like", default=None, help="Filter by raw_files.raw_key LIKE pattern.")
     parser.add_argument("--source-path-like", default=None, help="Filter by raw_files.source_path LIKE pattern.")
     parser.add_argument("--name-like", default=None, help="Filter by raw_files.original_name LIKE pattern.")
-    parser.add_argument("--local-db-path", default="/data/pipeline.duckdb", help="Local DuckDB path.")
     parser.add_argument(
-        "--local-lock-timeout-sec",
-        type=float,
-        default=30.0,
-        help="Local DuckDB write lock wait timeout seconds (only used with --yes).",
+        "--dsn",
+        default=None,
+        help="PostgreSQL DSN (postgresql://user:pass@host:port/dbname). Falls back to DATAOPS_POSTGRES_DSN env.",
     )
-    parser.add_argument(
-        "--local-lock-retry-interval-sec",
-        type=float,
-        default=1.0,
-        help="Local DuckDB write lock retry interval seconds (only used with --yes).",
-    )
-    parser.add_argument("--db", default="pipeline_db", help="MotherDuck database name.")
-    parser.add_argument("--token", default=None, help="MotherDuck token (or MOTHERDUCK_TOKEN env).")
-    parser.add_argument("--env-file", default=None, help="Optional .env path for MotherDuck token.")
-    parser.add_argument("--no-local", action="store_true", help="Skip local DuckDB deletion.")
-    parser.add_argument("--no-motherduck", action="store_true", help="Skip MotherDuck deletion.")
     parser.add_argument("--no-minio", action="store_true", help="Skip MinIO object deletion.")
     parser.add_argument("--buckets", nargs="+", default=DEFAULT_BUCKETS, help="MinIO buckets to purge in --all mode.")
     parser.add_argument("--yes", action="store_true", help="Actually apply deletions.")
@@ -100,20 +84,20 @@ def _selector_parts(args: argparse.Namespace) -> tuple[str, list[str]]:
     params: list[str] = []
 
     if args.created_date:
-        where.append("CAST(created_at AS DATE) = CAST(? AS DATE)")
+        where.append("CAST(created_at AS DATE) = CAST(%s AS DATE)")
         params.append(args.created_date)
     if args.raw_key_like:
-        where.append("raw_key LIKE ?")
+        where.append("raw_key LIKE %s")
         params.append(args.raw_key_like)
     if args.source_path_like:
-        where.append("source_path LIKE ?")
+        where.append("source_path LIKE %s")
         params.append(args.source_path_like)
     if args.name_like:
-        where.append("original_name LIKE ?")
+        where.append("original_name LIKE %s")
         params.append(args.name_like)
     if args.asset_id:
-        where.append("asset_id IN (" + ", ".join(["?"] * len(args.asset_id)) + ")")
-        params.extend(args.asset_id)
+        where.append("asset_id = ANY(%s)")
+        params.append(args.asset_id)  # type: ignore[arg-type]
 
     if not where:
         return "1=1", []
@@ -136,200 +120,180 @@ def _build_minio_client() -> "Minio":
     return Minio(endpoint, access_key=access_key, secret_key=secret_key, secure=secure)
 
 
-def _connect_local_duckdb(
-    db_path: str,
-    write_mode: bool,
-    lock_timeout_sec: float,
-    retry_interval_sec: float,
-) -> duckdb.DuckDBPyConnection:
-    if not write_mode:
-        return duckdb.connect(db_path, read_only=True)
-
-    timeout_sec = max(0.0, float(lock_timeout_sec))
-    interval_sec = max(0.1, float(retry_interval_sec))
-    deadline = time.monotonic() + timeout_sec
-    last_exc: Exception | None = None
-
-    while True:
-        try:
-            return duckdb.connect(db_path)
-        except Exception as exc:  # noqa: BLE001
-            last_exc = exc
-            if "Could not set lock on file" not in str(exc):
-                raise
-            if time.monotonic() >= deadline:
-                break
-            time.sleep(interval_sec)
-
-    raise RuntimeError(
-        f"Local DuckDB lock timeout after {timeout_sec:.1f}s: {db_path}\n"
-        "Stop concurrent writer jobs (e.g., Dagster ingest/sync) and retry."
-    ) from last_exc
+def _connect_pg(dsn: str) -> psycopg2.extensions.connection:
+    conn = psycopg2.connect(dsn)
+    conn.autocommit = False
+    return conn
 
 
-def _table_count(con: duckdb.DuckDBPyConnection, table: str) -> int:
-    return int(con.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
+def _table_count(conn: psycopg2.extensions.connection, table: str) -> int:
+    with conn.cursor() as cur:
+        cur.execute(f"SELECT COUNT(*) FROM {table}")
+        row = cur.fetchone()
+    return int(row[0]) if row else 0
 
 
 def _collect_asset_ids(
-    con: duckdb.DuckDBPyConnection,
+    conn: psycopg2.extensions.connection,
     where_sql: str,
-    params: Sequence[str],
+    params: Sequence[Any],
 ) -> list[str]:
-    rows = con.execute(
-        f"""
-        SELECT asset_id
-        FROM raw_files
-        WHERE {where_sql}
-        ORDER BY created_at
-        """,
-        list(params),
-    ).fetchall()
+    with conn.cursor() as cur:
+        cur.execute(
+            f"""
+            SELECT asset_id
+            FROM raw_files
+            WHERE {where_sql}
+            ORDER BY created_at
+            """,
+            list(params),
+        )
+        rows = cur.fetchall()
     return [str(row[0]) for row in rows]
 
 
 def _collect_object_refs_for_assets(
-    con: duckdb.DuckDBPyConnection,
+    conn: psycopg2.extensions.connection,
     asset_ids: Sequence[str],
 ) -> set[tuple[str, str]]:
     refs: set[tuple[str, str]] = set()
     if not asset_ids:
         return refs
 
-    placeholders = ", ".join(["?"] * len(asset_ids))
-    params = list(asset_ids)
-    clip_ids = [
-        str(row[0])
-        for row in con.execute(
-            f"""
-            SELECT clip_id
-            FROM processed_clips
-            WHERE source_asset_id IN ({placeholders})
+    ids_list = list(asset_ids)
+
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT clip_id FROM processed_clips WHERE source_asset_id = ANY(%s)",
+            (ids_list,),
+        )
+        clip_ids = [str(row[0]) for row in cur.fetchall() if row[0]]
+
+        cur.execute(
+            """
+            SELECT COALESCE(NULLIF(raw_bucket, ''), 'vlm-raw') AS bucket, raw_key
+            FROM raw_files
+            WHERE asset_id = ANY(%s)
+              AND raw_key IS NOT NULL
+              AND raw_key <> ''
             """,
-            params,
-        ).fetchall()
-        if row[0]
-    ]
+            (ids_list,),
+        )
+        for bucket, key in cur.fetchall():
+            refs.add((str(bucket), str(key)))
 
-    for bucket, key in con.execute(
-        f"""
-        SELECT COALESCE(NULLIF(raw_bucket, ''), 'vlm-raw') AS bucket, raw_key
-        FROM raw_files
-        WHERE asset_id IN ({placeholders})
-          AND raw_key IS NOT NULL
-          AND raw_key <> ''
-        """,
-        params,
-    ).fetchall():
-        refs.add((str(bucket), str(key)))
+        if clip_ids:
+            cur.execute(
+                """
+                SELECT COALESCE(NULLIF(image_bucket, ''), 'vlm-raw') AS bucket, image_key
+                FROM image_metadata
+                WHERE (source_asset_id = ANY(%s) OR source_clip_id = ANY(%s))
+                  AND image_key IS NOT NULL
+                  AND image_key <> ''
+                """,
+                (ids_list, clip_ids),
+            )
+        else:
+            cur.execute(
+                """
+                SELECT COALESCE(NULLIF(image_bucket, ''), 'vlm-raw') AS bucket, image_key
+                FROM image_metadata
+                WHERE source_asset_id = ANY(%s)
+                  AND image_key IS NOT NULL
+                  AND image_key <> ''
+                """,
+                (ids_list,),
+            )
+        for bucket, key in cur.fetchall():
+            refs.add((str(bucket), str(key)))
 
-    image_filters = [f"source_asset_id IN ({placeholders})"]
-    image_params: list[str] = list(params)
-    if clip_ids:
-        clip_placeholders = ", ".join(["?"] * len(clip_ids))
-        image_filters.append(f"source_clip_id IN ({clip_placeholders})")
-        image_params.extend(clip_ids)
+        cur.execute(
+            """
+            SELECT COALESCE(NULLIF(labels_bucket, ''), 'vlm-labels') AS bucket, labels_key
+            FROM labels
+            WHERE asset_id = ANY(%s)
+              AND labels_key IS NOT NULL
+              AND labels_key <> ''
+            """,
+            (ids_list,),
+        )
+        for bucket, key in cur.fetchall():
+            refs.add((str(bucket), str(key)))
 
-    for bucket, key in con.execute(
-        f"""
-        SELECT COALESCE(NULLIF(image_bucket, ''), 'vlm-raw') AS bucket, image_key
-        FROM image_metadata
-        WHERE ({' OR '.join(image_filters)})
-          AND image_key IS NOT NULL
-          AND image_key <> ''
-        """,
-        image_params,
-    ).fetchall():
-        refs.add((str(bucket), str(key)))
+        cur.execute(
+            """
+            SELECT COALESCE(NULLIF(processed_bucket, ''), 'vlm-processed') AS bucket, clip_key, label_key
+            FROM processed_clips
+            WHERE source_asset_id = ANY(%s)
+            """,
+            (ids_list,),
+        )
+        for bucket, clip_key, label_key in cur.fetchall():
+            bucket_name = str(bucket)
+            if clip_key:
+                refs.add((bucket_name, str(clip_key)))
+            if label_key:
+                refs.add((bucket_name, str(label_key)))
 
-    for bucket, key in con.execute(
-        f"""
-        SELECT COALESCE(NULLIF(labels_bucket, ''), 'vlm-labels') AS bucket, labels_key
-        FROM labels
-        WHERE asset_id IN ({placeholders})
-          AND labels_key IS NOT NULL
-          AND labels_key <> ''
-        """,
-        params,
-    ).fetchall():
-        refs.add((str(bucket), str(key)))
-
-    for bucket, clip_key, label_key in con.execute(
-        f"""
-        SELECT COALESCE(NULLIF(processed_bucket, ''), 'vlm-processed') AS bucket, clip_key, label_key
-        FROM processed_clips
-        WHERE source_asset_id IN ({placeholders})
-        """,
-        params,
-    ).fetchall():
-        bucket_name = str(bucket)
-        if clip_key:
-            refs.add((bucket_name, str(clip_key)))
-        if label_key:
-            refs.add((bucket_name, str(label_key)))
-
-    for bucket, dataset_key in con.execute(
-        f"""
-        SELECT COALESCE(NULLIF(d.dataset_bucket, ''), 'vlm-dataset') AS bucket, dc.dataset_key
-        FROM dataset_clips dc
-        JOIN processed_clips pc ON dc.clip_id = pc.clip_id
-        JOIN datasets d ON dc.dataset_id = d.dataset_id
-        WHERE pc.source_asset_id IN ({placeholders})
-          AND dc.dataset_key IS NOT NULL
-          AND dc.dataset_key <> ''
-        """,
-        params,
-    ).fetchall():
-        refs.add((str(bucket), str(dataset_key)))
+        cur.execute(
+            """
+            SELECT COALESCE(NULLIF(d.dataset_bucket, ''), 'vlm-dataset') AS bucket, dc.dataset_key
+            FROM dataset_clips dc
+            JOIN processed_clips pc ON dc.clip_id = pc.clip_id
+            JOIN datasets d ON dc.dataset_id = d.dataset_id
+            WHERE pc.source_asset_id = ANY(%s)
+              AND dc.dataset_key IS NOT NULL
+              AND dc.dataset_key <> ''
+            """,
+            (ids_list,),
+        )
+        for bucket, dataset_key in cur.fetchall():
+            refs.add((str(bucket), str(dataset_key)))
 
     return refs
 
 
-def _delete_assets_from_db(con: duckdb.DuckDBPyConnection, asset_ids: Sequence[str]) -> None:
+def _delete_assets_from_db(conn: psycopg2.extensions.connection, asset_ids: Sequence[str]) -> None:
     if not asset_ids:
         return
-    placeholders = ", ".join(["?"] * len(asset_ids))
-    params = list(asset_ids)
-    clip_ids = [
-        str(row[0])
-        for row in con.execute(
-            f"""
-            SELECT clip_id
-            FROM processed_clips
-            WHERE source_asset_id IN ({placeholders})
-            """,
-            params,
-        ).fetchall()
-        if row[0]
-    ]
+    ids_list = list(asset_ids)
 
-    con.execute(
-        f"""
-        DELETE FROM dataset_clips
-        WHERE clip_id IN (
-            SELECT clip_id FROM processed_clips
-            WHERE source_asset_id IN ({placeholders})
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT clip_id FROM processed_clips WHERE source_asset_id = ANY(%s)",
+            (ids_list,),
         )
-        """,
-        params,
-    )
-    image_filters = [f"source_asset_id IN ({placeholders})"]
-    image_params: list[str] = list(params)
-    if clip_ids:
-        clip_placeholders = ", ".join(["?"] * len(clip_ids))
-        image_filters.append(f"source_clip_id IN ({clip_placeholders})")
-        image_params.extend(clip_ids)
+        clip_ids = [str(row[0]) for row in cur.fetchall() if row[0]]
 
-    con.execute(f"DELETE FROM image_metadata WHERE {' OR '.join(image_filters)}", image_params)
-    con.execute(f"DELETE FROM processed_clips WHERE source_asset_id IN ({placeholders})", params)
-    con.execute(f"DELETE FROM labels WHERE asset_id IN ({placeholders})", params)
-    con.execute(f"DELETE FROM video_metadata WHERE asset_id IN ({placeholders})", params)
-    con.execute(f"DELETE FROM raw_files WHERE asset_id IN ({placeholders})", params)
+        cur.execute(
+            """
+            DELETE FROM dataset_clips
+            WHERE clip_id IN (
+                SELECT clip_id FROM processed_clips
+                WHERE source_asset_id = ANY(%s)
+            )
+            """,
+            (ids_list,),
+        )
+
+        if clip_ids:
+            cur.execute(
+                "DELETE FROM image_metadata WHERE source_asset_id = ANY(%s) OR source_clip_id = ANY(%s)",
+                (ids_list, clip_ids),
+            )
+        else:
+            cur.execute("DELETE FROM image_metadata WHERE source_asset_id = ANY(%s)", (ids_list,))
+
+        cur.execute("DELETE FROM processed_clips WHERE source_asset_id = ANY(%s)", (ids_list,))
+        cur.execute("DELETE FROM labels WHERE asset_id = ANY(%s)", (ids_list,))
+        cur.execute("DELETE FROM video_metadata WHERE asset_id = ANY(%s)", (ids_list,))
+        cur.execute("DELETE FROM raw_files WHERE asset_id = ANY(%s)", (ids_list,))
 
 
-def _delete_all_from_db(con: duckdb.DuckDBPyConnection) -> None:
-    for table in FULL_DELETE_TABLE_ORDER:
-        con.execute(f"DELETE FROM {table}")
+def _delete_all_from_db(conn: psycopg2.extensions.connection) -> None:
+    with conn.cursor() as cur:
+        for table in FULL_DELETE_TABLE_ORDER:
+            cur.execute(f"DELETE FROM {table}")
 
 
 def _collect_all_minio_refs(minio_client: "Minio", buckets: Iterable[str]) -> set[tuple[str, str]]:
@@ -376,8 +340,8 @@ def _delete_minio_refs(
     return deleted, missing, failed
 
 
-def _print_table_counts(con: duckdb.DuckDBPyConnection, label: str) -> None:
-    counts = {table: _table_count(con, table) for table in FULL_DELETE_TABLE_ORDER}
+def _print_table_counts(conn: psycopg2.extensions.connection, label: str) -> None:
+    counts = {table: _table_count(conn, table) for table in FULL_DELETE_TABLE_ORDER}
     print(f"[{label}] {counts}")
 
 
@@ -397,25 +361,20 @@ def main() -> int:
         )
         return 1
 
-    local_con: duckdb.DuckDBPyConnection | None = None
-    md_con: duckdb.DuckDBPyConnection | None = None
+    dsn = args.dsn or os.getenv("DATAOPS_POSTGRES_DSN", "").strip() or None
+    if not dsn:
+        print("[ERROR] PostgreSQL DSN required. Set DATAOPS_POSTGRES_DSN env or pass --dsn.")
+        return 1
+
+    conn: psycopg2.extensions.connection | None = None
     minio_client: Any = None
 
     try:
-        if not args.no_local:
-            if not Path(args.local_db_path).exists():
-                print(f"[ERROR] Local DuckDB not found: {args.local_db_path}")
-                return 1
-            local_con = _connect_local_duckdb(
-                db_path=args.local_db_path,
-                write_mode=bool(args.yes),
-                lock_timeout_sec=args.local_lock_timeout_sec,
-                retry_interval_sec=args.local_lock_retry_interval_sec,
-            )
-
-        if not args.no_motherduck:
-            load_env_for_motherduck(repo_root=REPO_ROOT, env_file=args.env_file)
-            md_con = connect_motherduck(args.db, args.token)
+        try:
+            conn = _connect_pg(dsn)
+        except psycopg2.Error as exc:
+            print(f"[ERROR] PostgreSQL connection failed: {exc}")
+            return 1
 
         if not args.no_minio:
             try:
@@ -429,16 +388,9 @@ def main() -> int:
         target_asset_ids: list[str] = []
 
         if not args.all:
-            if local_con:
-                ids = _collect_asset_ids(local_con, where_sql, where_params)
-                print(f"[TARGET][LOCAL] assets={len(ids)}")
-                target_asset_ids.extend(ids)
-            if md_con:
-                ids = _collect_asset_ids(md_con, where_sql, where_params)
-                print(f"[TARGET][MD] assets={len(ids)}")
-                target_asset_ids.extend(ids)
-            target_asset_ids = sorted(set(target_asset_ids))
-            print(f"[TARGET][UNION] assets={len(target_asset_ids)}")
+            ids = _collect_asset_ids(conn, where_sql, where_params)
+            print(f"[TARGET] assets={len(ids)}")
+            target_asset_ids = sorted(set(ids))
             if not target_asset_ids:
                 print("[INFO] No matching assets found. Nothing to delete.")
                 return 0
@@ -448,44 +400,24 @@ def main() -> int:
             if args.all:
                 object_refs = _collect_all_minio_refs(minio_client, args.buckets)
             else:
-                if local_con:
-                    object_refs |= _collect_object_refs_for_assets(local_con, target_asset_ids)
-                if md_con:
-                    object_refs |= _collect_object_refs_for_assets(md_con, target_asset_ids)
+                object_refs = _collect_object_refs_for_assets(conn, target_asset_ids)
             print(f"[TARGET][MINIO] objects={len(object_refs)}")
 
-        if local_con:
-            _print_table_counts(local_con, "BEFORE_LOCAL")
-        if md_con:
-            _print_table_counts(md_con, "BEFORE_MD")
+        _print_table_counts(conn, "BEFORE")
 
         if not args.yes:
             print("[DRY-RUN] Use --yes to apply deletion.")
             return 0
 
-        if local_con:
-            local_con.execute("BEGIN")
-            try:
-                if args.all:
-                    _delete_all_from_db(local_con)
-                else:
-                    _delete_assets_from_db(local_con, target_asset_ids)
-                local_con.execute("COMMIT")
-            except Exception:
-                local_con.execute("ROLLBACK")
-                raise
-
-        if md_con:
-            md_con.execute("BEGIN")
-            try:
-                if args.all:
-                    _delete_all_from_db(md_con)
-                else:
-                    _delete_assets_from_db(md_con, target_asset_ids)
-                md_con.execute("COMMIT")
-            except Exception:
-                md_con.execute("ROLLBACK")
-                raise
+        try:
+            if args.all:
+                _delete_all_from_db(conn)
+            else:
+                _delete_assets_from_db(conn, target_asset_ids)
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
 
         minio_deleted = 0
         minio_missing = 0
@@ -497,10 +429,7 @@ def main() -> int:
                 apply=True,
             )
 
-        if local_con:
-            _print_table_counts(local_con, "AFTER_LOCAL")
-        if md_con:
-            _print_table_counts(md_con, "AFTER_MD")
+        _print_table_counts(conn, "AFTER")
         if minio_client:
             print(
                 f"[AFTER_MINIO] deleted={minio_deleted} missing={minio_missing} failed={minio_failed}"
@@ -510,10 +439,8 @@ def main() -> int:
             return 2
         return 0
     finally:
-        if local_con:
-            local_con.close()
-        if md_con:
-            md_con.close()
+        if conn:
+            conn.close()
 
 
 if __name__ == "__main__":

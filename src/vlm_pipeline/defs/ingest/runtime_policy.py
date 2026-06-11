@@ -19,7 +19,6 @@ class IngestRuntimePolicy:
     runtime_profile: RuntimeProfile
     is_staging: bool
     defer_video_env_classification: bool
-    premove_archive_enabled: bool
 
 
 def resolve_ingest_runtime_policy(
@@ -34,7 +33,6 @@ def resolve_ingest_runtime_policy(
         runtime_profile=profile,
         is_staging=is_staging,
         defer_video_env_classification=(not is_staging and settings.defer_video_env_classification),
-        premove_archive_enabled=settings.premove_archive_enabled,
     )
 
 

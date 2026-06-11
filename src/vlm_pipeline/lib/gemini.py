@@ -2,198 +2,21 @@
 
 from __future__ import annotations
 
-import json
 import logging
 import mimetypes
 import os
-import re
-import stat
 import time
 from pathlib import Path
 from typing import Any
 
 from .env_utils import float_env, int_env as _int_env_impl
+from .gemini_credentials import resolve_gemini_credentials_path  # noqa: F401
+from .gemini_json import _extract_response_text, extract_clean_json_text, load_clean_json  # noqa: F401
 from .gemini_prompts import IMAGE_PROMPT, VIDEO_PROMPT
-
-TEMP_GEMINI_CREDENTIALS_PATH = Path("/tmp/gemini-service-account.json")
-REQUIRED_GEMINI_SERVICE_ACCOUNT_FIELDS = (
-    "type",
-    "project_id",
-    "private_key",
-    "client_email",
-    "token_uri",
-)
 
 logger = logging.getLogger(__name__)
 
-
-def _collect_text_from_parts(parts: Any) -> list[str]:
-    collected: list[str] = []
-    for part in parts or []:
-        text_value = None
-        if isinstance(part, dict):
-            text_value = part.get("text")
-        else:
-            try:
-                text_value = getattr(part, "text", None)
-            except Exception:
-                text_value = None
-        rendered = str(text_value or "").strip()
-        if rendered:
-            collected.append(rendered)
-    return collected
-
-
-def _extract_response_text(response: Any) -> str:
-    try:
-        text_value = getattr(response, "text", None)
-    except Exception:
-        text_value = None
-
-    rendered = str(text_value or "").strip()
-    if rendered:
-        return rendered
-
-    collected: list[str] = []
-    candidates = getattr(response, "candidates", None) or []
-    for candidate in candidates:
-        content = None
-        if isinstance(candidate, dict):
-            content = candidate.get("content")
-        else:
-            try:
-                content = getattr(candidate, "content", None)
-            except Exception:
-                content = None
-
-        if isinstance(content, dict):
-            parts = content.get("parts")
-        else:
-            try:
-                parts = getattr(content, "parts", None)
-            except Exception:
-                parts = None
-        collected.extend(_collect_text_from_parts(parts))
-
-    joined = "\n".join(part for part in collected if part).strip()
-    if joined:
-        return joined
-
-    raise RuntimeError("Gemini response did not contain readable text parts")
-
-
-def _validate_credentials_file(path_value: str | Path, source_name: str) -> Path:
-    candidate = Path(path_value).expanduser()
-    if not candidate.exists():
-        raise FileNotFoundError(f"Gemini credentials invalid: {source_name} points to a missing file: {candidate}")
-    if not candidate.is_file():
-        raise FileNotFoundError(f"Gemini credentials invalid: {source_name} is not a file: {candidate}")
-    return candidate
-
-
-def _write_service_account_json(raw_json: str) -> Path:
-    try:
-        payload = json.loads(raw_json)
-    except json.JSONDecodeError as exc:
-        raise ValueError("Gemini credentials invalid: GEMINI_SERVICE_ACCOUNT_JSON is not valid JSON") from exc
-
-    if not isinstance(payload, dict):
-        raise ValueError("Gemini credentials invalid: GEMINI_SERVICE_ACCOUNT_JSON must decode to an object")
-
-    missing = [
-        field_name
-        for field_name in REQUIRED_GEMINI_SERVICE_ACCOUNT_FIELDS
-        if not str(payload.get(field_name) or "").strip()
-    ]
-    if missing:
-        joined = ", ".join(missing)
-        raise ValueError(f"Gemini credentials invalid: missing or empty required field(s): {joined}")
-
-    if str(payload.get("type")).strip() != "service_account":
-        raise ValueError("Gemini credentials invalid: type must be 'service_account'")
-
-    rendered = json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
-    temp_path = TEMP_GEMINI_CREDENTIALS_PATH
-    temp_path.parent.mkdir(parents=True, exist_ok=True)
-
-    existing = None
-    if temp_path.exists():
-        try:
-            existing = temp_path.read_text(encoding="utf-8")
-        except OSError:
-            existing = None
-
-    if existing != rendered:
-        temp_path.write_text(rendered, encoding="utf-8")
-
-    os.chmod(temp_path, stat.S_IRUSR | stat.S_IWUSR)
-    return temp_path
-
-
-def _default_credentials_path() -> tuple[Path | None, list[str]]:
-    tried: list[str] = []
-    for env_name in (
-        "GEMINI_GOOGLE_APPLICATION_CREDENTIALS",
-        "GOOGLE_APPLICATION_CREDENTIALS",
-    ):
-        raw_value = (os.getenv(env_name) or "").strip()
-        if not raw_value:
-            tried.append(f"{env_name}: not set")
-            continue
-        try:
-            resolved = _validate_credentials_file(raw_value, env_name)
-        except FileNotFoundError as exc:
-            # env는 설정됐지만 실제 파일이 없음 — 다음 fallback으로 진행
-            logger.warning(
-                "Gemini credentials: %s set but file invalid, trying next source (%s)",
-                env_name,
-                exc,
-            )
-            tried.append(f"{env_name}={raw_value}: {exc}")
-            continue
-        return resolved, tried
-
-    raw_json = (os.getenv("GEMINI_SERVICE_ACCOUNT_JSON") or "").strip()
-    if raw_json:
-        try:
-            return _write_service_account_json(raw_json), tried
-        except ValueError as exc:
-            logger.warning(
-                "Gemini credentials: GEMINI_SERVICE_ACCOUNT_JSON invalid, trying bundled (%s)",
-                exc,
-            )
-            tried.append(f"GEMINI_SERVICE_ACCOUNT_JSON: {exc}")
-    else:
-        tried.append("GEMINI_SERVICE_ACCOUNT_JSON: not set")
-
-    bundled = Path(__file__).resolve().parents[2] / "gemini" / "assets" / "your-gcp-project-credentials.json"
-    if bundled.exists():
-        return bundled, tried
-    tried.append(f"bundled file: not found at {bundled}")
-    return None, tried
-
-
-def resolve_gemini_credentials_path(credentials_path: str | None = None) -> str:
-    if credentials_path and str(credentials_path).strip():
-        try:
-            return str(_validate_credentials_file(credentials_path, "credentials_path"))
-        except FileNotFoundError as exc:
-            # 명시 인자는 엄격 유지(보안/과금 footgun 방지) — 다만 메시지를 풍부하게
-            raise FileNotFoundError(
-                f"{exc}. Explicit credentials_path arguments do not fall back to "
-                "environment-based sources; fix the path or drop the argument to use "
-                "GEMINI_GOOGLE_APPLICATION_CREDENTIALS / GEMINI_SERVICE_ACCOUNT_JSON."
-            ) from exc
-
-    credentials, tried = _default_credentials_path()
-    if credentials is None:
-        reasons = "\n  - ".join(tried) if tried else "(no sources configured)"
-        raise FileNotFoundError(
-            "Gemini credentials not found. All sources exhausted:\n  - "
-            f"{reasons}\nConfigure one of: GEMINI_GOOGLE_APPLICATION_CREDENTIALS, "
-            "GOOGLE_APPLICATION_CREDENTIALS, GEMINI_SERVICE_ACCOUNT_JSON."
-        )
-    return str(credentials)
+_int_env = _int_env_impl
 
 
 def _load_vertex_ai() -> tuple[Any, Any, Any]:
@@ -212,9 +35,6 @@ def _load_generation_config_cls() -> Any:
     from vertexai.preview.generative_models import GenerationConfig
 
     return GenerationConfig
-
-
-_int_env = _int_env_impl
 
 
 def is_vertex_rate_limit_error(exc: BaseException) -> bool:
@@ -475,110 +295,6 @@ class GeminiAnalyzer:
         _, generative_model_cls, _ = _load_vertex_ai()
         self.model = generative_model_cls(model_name=model_name)
         self.model_name = model_name
-
-
-def extract_clean_json_text(text: str) -> str:
-    cleaned = str(text or "").strip()
-    if cleaned.startswith("```"):
-        cleaned = re.sub(r"^```[a-zA-Z]*\s*", "", cleaned, flags=re.IGNORECASE)
-        cleaned = re.sub(r"\s*```$", "", cleaned)
-
-    cleaned = re.sub(r"^(?i:json)\s*\n", "", cleaned)
-    start_candidates = [pos for pos in (cleaned.find("["), cleaned.find("{")) if pos != -1]
-    if start_candidates:
-        cleaned = cleaned[min(start_candidates) :]
-
-    end = max(cleaned.rfind("]"), cleaned.rfind("}"))
-    if end != -1:
-        cleaned = cleaned[: end + 1]
-    return cleaned.strip()
-
-
-def _repair_clean_json_strings(text: str) -> str:
-    """Best-effort repair of common Gemini JSON string glitches.
-
-    Inside string values, replaces raw LF/CR/TAB with `\\n`/`\\r`/`\\t`
-    and escapes an internal `"` whose next non-whitespace char is not a
-    JSON structural delimiter (`,`, `:`, `]`, `}`, EOF).
-    """
-    out: list[str] = []
-    in_string = False
-    escape = False
-    i = 0
-    n = len(text)
-    while i < n:
-        ch = text[i]
-        if escape:
-            out.append(ch)
-            escape = False
-            i += 1
-            continue
-        if ch == "\\":
-            out.append(ch)
-            escape = True
-            i += 1
-            continue
-        if in_string:
-            if ch == '"':
-                j = i + 1
-                while j < n and text[j] in " \t\r\n":
-                    j += 1
-                next_ch = text[j] if j < n else ""
-                if next_ch in (",", ":", "]", "}", ""):
-                    in_string = False
-                    out.append(ch)
-                else:
-                    out.append('\\"')
-                i += 1
-                continue
-            if ch == "\n":
-                out.append("\\n")
-                i += 1
-                continue
-            if ch == "\r":
-                out.append("\\r")
-                i += 1
-                continue
-            if ch == "\t":
-                out.append("\\t")
-                i += 1
-                continue
-            out.append(ch)
-            i += 1
-        else:
-            if ch == '"':
-                in_string = True
-            out.append(ch)
-            i += 1
-    return "".join(out)
-
-
-def load_clean_json(text: str) -> Any:
-    cleaned = extract_clean_json_text(text)
-    decoder = json.JSONDecoder()
-    try:
-        return decoder.decode(cleaned)
-    except json.JSONDecodeError as exc:
-        if exc.msg == "Extra data":
-            payload, _ = decoder.raw_decode(cleaned)
-            return payload
-        repaired = _repair_clean_json_strings(cleaned)
-        if repaired != cleaned:
-            try:
-                payload = decoder.decode(repaired)
-                logger.warning("load_clean_json: repaired malformed JSON (orig_err=%s)", exc)
-                return payload
-            except json.JSONDecodeError:
-                try:
-                    payload, _ = decoder.raw_decode(repaired)
-                    logger.warning(
-                        "load_clean_json: repaired malformed JSON via raw_decode (orig_err=%s)",
-                        exc,
-                    )
-                    return payload
-                except json.JSONDecodeError:
-                    pass
-        raise
 
 
 from .gemini_script_utils import (  # noqa: F401, E402  # backward-compat re-exports

@@ -42,8 +42,8 @@ import requests
 
 DEFAULT_LS_URL = "http://localhost:8080"
 DEFAULT_MINIO_ENDPOINT = "10.0.0.51:9000"
-DEFAULT_MINIO_ACCESS_KEY = "minioadmin"
-DEFAULT_MINIO_SECRET_KEY = "minioadmin"
+DEFAULT_MINIO_ACCESS_KEY = ""
+DEFAULT_MINIO_SECRET_KEY = ""
 # raw bucket: Gemini 초벌이 끝난 원본 영상이 들어있는 곳. LS task는 원본 영상을 가리킴.
 # clip 분할은 LS 검수 확정 후 post_review_clip_job에서 vlm-processed/{folder}/clips/*.mp4 로 생성.
 DEFAULT_RAW_BUCKET = "vlm-raw"
@@ -319,6 +319,12 @@ def main() -> int:
 
     if not args.api_key:
         parser.error("--api-key 또는 LS_API_KEY 환경변수가 필요합니다.")
+
+    _MINIO_DEFAULTS = {"minioadmin", "admin", ""}
+    if not args.minio_access_key or args.minio_access_key in _MINIO_DEFAULTS:
+        parser.error("--minio-access-key 또는 MINIO_ACCESS_KEY 에 유효한 자격증명이 필요합니다.")
+    if not args.minio_secret_key or args.minio_secret_key in _MINIO_DEFAULTS:
+        parser.error("--minio-secret-key 또는 MINIO_SECRET_KEY 에 유효한 자격증명이 필요합니다.")
 
     minio = build_minio_client(args.minio_endpoint, args.minio_access_key, args.minio_secret_key)
     auth_headers = resolve_auth_headers(args.ls_url, args.api_key)

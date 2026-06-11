@@ -8,6 +8,7 @@ Phase C: MinIO 병렬 업로드 (재인코딩 필요 시 reencode→upload).
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -33,6 +34,16 @@ from .ops_common import (
     _is_transient_error,
     read_ingest_worker_config,
 )
+
+
+# ── Phase B 상태 컨테이너 ─────────────────────────────────────────
+@dataclass
+class _PhaseBState:
+    """Phase B 순차 처리 중 누적되는 가변 상태."""
+
+    pending_db_rows: list[dict[str, Any]] = field(default_factory=list)
+    pending_checksums: dict[str, str] = field(default_factory=dict)
+    upload_tasks: list[dict[str, Any]] = field(default_factory=list)
 
 
 def _link_genai_asset_if_any(db, entry: dict, context) -> None:
@@ -70,170 +81,175 @@ def _link_genai_asset_if_any(db, entry: dict, context) -> None:
         context.log.warning(f"update_genai_job_assets 실패 batch={batch_id} seq={seq} role={role}: {exc}")
 
 
-def normalize_and_archive(
+def _close_video_stream(meta: dict) -> None:
+    stream = meta.get("file_stream")
+    if stream is None:
+        return
+    try:
+        stream.close()
+    except Exception:
+        pass
+
+
+def _mark_duplicate_skip(
+    source_path: str,
+    duplicate_asset_id: str,
+    db_record: dict[str, Any],
+    rec: dict[str, Any],
     context,
-    db: PostgresResource,
-    minio: MinIOResource,
-    records: list[dict],
-    archive_dir: str,
-    ingest_rejections: list[dict] | None = None,
-    retry_candidates: list[dict] | None = None,
-    defer_video_env_classification: bool = False,
-    upload_enabled: bool = True,
-) -> list[dict]:
-    """1-pass 로딩 → checksum → verify → image/video_metadata → MinIO 업로드.
+) -> None:
+    """중복 파일은 raw_files에 신규 row를 남기지 않고 스킵 처리."""
+    db_record["ingest_status"] = "skipped"
+    db_record["error_message"] = f"duplicate_of:{duplicate_asset_id}"
+    rec["status"] = "skipped"
+    context.log.info(f"중복 파일 스킵(raw_files insert 생략): {source_path} -> {duplicate_asset_id}")
 
-    archive 이동은 assets 레이어에서 source unit 정책으로 처리한다.
-    ★ NFS에서 파일 1회만 읽어 모든 메타 추출 (3회→1회 최적화).
 
-    upload_enabled=False 면 Phase C(MinIO 업로드)를 스킵하고 "ready" 리스트만 반환.
-    archive 이동과 'archived' 상태 마크는 호출자(orchestrator)가 별도 함수로 수행.
-    """
-    uploaded: list[dict] = []
-    upload_tasks: list[dict[str, Any]] = []
-    _wcfg = read_ingest_worker_config()
-    max_workers, reencode_workers, reencode_threads = _wcfg.max_workers, _wcfg.reencode_workers, _wcfg.reencode_threads
-    raw_insert_batch_size = 50
-    candidate_records = [rec for rec in records if rec.get("status") == "registered"]
-    total_candidates = len(candidate_records)
-    processed_candidates = 0
+def _stage_upload_task(
+    entry: dict[str, Any],
+    state: _PhaseBState,
+    db,
+    reencode_threads: int,
+) -> None:
+    asset_id = entry["asset_id"]
+    media_type = entry["media_type"]
+    raw_key = entry["raw_key"]
+    meta = entry["meta"]
 
-    def _close_video_stream(meta: dict) -> None:
-        stream = meta.get("file_stream")
-        if stream is None:
-            return
-        try:
-            stream.close()
-        except Exception:
-            pass
-
-    def _mark_duplicate_skip(
-        source_path: str,
-        duplicate_asset_id: str,
-        db_record: dict[str, Any],
-        rec: dict[str, Any],
-    ) -> None:
-        """중복 파일은 raw_files에 신규 row를 남기지 않고 스킵 처리."""
-        db_record["ingest_status"] = "skipped"
-        db_record["error_message"] = f"duplicate_of:{duplicate_asset_id}"
-        rec["status"] = "skipped"
-        context.log.info(f"중복 파일 스킵(raw_files insert 생략): {source_path} -> {duplicate_asset_id}")
-
-    pending_db_rows: list[dict[str, Any]] = []
-    pending_checksums: dict[str, str] = {}
-
-    def _stage_upload_task(entry: dict[str, Any]) -> None:
-        asset_id = entry["asset_id"]
-        media_type = entry["media_type"]
-        raw_key = entry["raw_key"]
-        meta = entry["meta"]
-
-        if media_type == "image" and "image_metadata" in meta:
-            image_meta = dict(meta["image_metadata"])
-            image_meta.update(
-                {
-                    "image_bucket": DEFAULT_RAW_BUCKET,
-                    "image_key": raw_key,
-                    "image_role": "source_image",
-                    "checksum": meta.get("checksum"),
-                    "file_size": meta.get("file_size"),
-                }
-            )
-            db.insert_image_metadata(asset_id, image_meta)
-        elif media_type == "video" and "video_metadata" in meta:
-            db.insert_video_metadata(asset_id, meta["video_metadata"])
-
-        upload_tasks.append(
+    if media_type == "image" and "image_metadata" in meta:
+        image_meta = dict(meta["image_metadata"])
+        image_meta.update(
             {
-                "filepath": entry["filepath"],
-                "source_path": entry["filepath"],
-                "asset_id": asset_id,
+                "image_bucket": DEFAULT_RAW_BUCKET,
+                "image_key": raw_key,
+                "image_role": "source_image",
+                "checksum": meta.get("checksum"),
+                "file_size": meta.get("file_size"),
+            }
+        )
+        db.insert_image_metadata(asset_id, image_meta)
+    elif media_type == "video" and "video_metadata" in meta:
+        db.insert_video_metadata(asset_id, meta["video_metadata"])
+
+    state.upload_tasks.append(
+        {
+            "filepath": entry["filepath"],
+            "source_path": entry["filepath"],
+            "asset_id": asset_id,
+            "media_type": media_type,
+            "raw_key": raw_key,
+            "db_record": entry["db_record"],
+            "meta": meta,
+            "reencode_required": (
+                meta["video_metadata"].get("reencode_required", False) if media_type == "video" else False
+            ),
+            "reencode_threads": reencode_threads,
+        }
+    )
+
+
+def _handle_pending_db_error(
+    entry: dict[str, Any],
+    exc: Exception,
+    db,
+    context,
+    retry_candidates: list[dict] | None,
+    ingest_rejections: list[dict] | None,
+) -> None:
+    filepath = entry["filepath"]
+    asset_id = entry["asset_id"]
+    media_type = entry["media_type"]
+    rel_path = entry.get("rel_path", "")
+    meta = entry.get("meta")
+    error_message = str(exc)
+    is_transient = _is_transient_error(exc)
+
+    context.log.error(f"normalize 실패: {filepath}: {exc}")
+    entry["record_ref"]["status"] = "failed"
+    if meta is not None:
+        _close_video_stream(meta)
+    if is_transient and retry_candidates is not None:
+        retry_candidates.append(
+            {
+                "source_path": filepath,
+                "rel_path": str(rel_path or Path(filepath).name),
                 "media_type": media_type,
-                "raw_key": raw_key,
-                "db_record": entry["db_record"],
-                "meta": meta,
-                "reencode_required": (
-                    meta["video_metadata"].get("reencode_required", False) if media_type == "video" else False
-                ),
-                "reencode_threads": reencode_threads,
             }
         )
 
-    def _handle_pending_db_error(entry: dict[str, Any], exc: Exception) -> None:
-        filepath = entry["filepath"]
-        asset_id = entry["asset_id"]
-        media_type = entry["media_type"]
-        rel_path = entry.get("rel_path", "")
-        meta = entry.get("meta")
-        error_message = str(exc)
-        is_transient = _is_transient_error(exc)
+    cleanup_error: Exception | None = None
+    try:
+        if db.has_raw_file(asset_id):
+            db.delete_asset_for_reingest(asset_id)
+    except Exception as cleanup_exc:  # noqa: BLE001
+        cleanup_error = cleanup_exc
 
-        context.log.error(f"normalize 실패: {filepath}: {exc}")
-        entry["record_ref"]["status"] = "failed"
-        if meta is not None:
-            _close_video_stream(meta)
-        if is_transient and retry_candidates is not None:
-            retry_candidates.append(
-                {
-                    "source_path": filepath,
-                    "rel_path": str(rel_path or Path(filepath).name),
-                    "media_type": media_type,
-                }
-            )
+    if cleanup_error is not None:
+        context.log.warning(f"ingest 실패 레코드 정리 중 추가 오류: asset_id={asset_id}, err={cleanup_error}")
 
-        cleanup_error: Exception | None = None
-        try:
-            if db.has_raw_file(asset_id):
-                db.delete_asset_for_reingest(asset_id)
-        except Exception as cleanup_exc:  # noqa: BLE001
-            cleanup_error = cleanup_exc
+    _append_ingest_rejection(
+        ingest_rejections,
+        source_path=filepath,
+        rel_path=rel_path,
+        media_type=media_type,
+        stage="db",
+        error_message=error_message,
+        retryable=is_transient,
+        error_code="duckdb_lock_conflict" if is_transient else None,
+    )
 
-        if cleanup_error is not None:
-            context.log.warning(f"ingest 실패 레코드 정리 중 추가 오류: asset_id={asset_id}, err={cleanup_error}")
 
-        _append_ingest_rejection(
-            ingest_rejections,
-            source_path=filepath,
-            rel_path=rel_path,
-            media_type=media_type,
-            stage="db",
-            error_message=error_message,
-            retryable=is_transient,
-            error_code="duckdb_lock_conflict" if is_transient else None,
+def _flush_pending_db_rows(
+    state: _PhaseBState,
+    db,
+    context,
+    retry_candidates: list[dict] | None,
+    ingest_rejections: list[dict] | None,
+    reencode_threads: int,
+) -> None:
+    if not state.pending_db_rows:
+        return
+
+    batch_entries = state.pending_db_rows
+    state.pending_db_rows = []
+    state.pending_checksums = {}
+
+    try:
+        db.insert_raw_files_batch([entry["db_record"] for entry in batch_entries])
+    except Exception as batch_exc:  # noqa: BLE001
+        context.log.warning(
+            f"raw_files batch insert 실패, 낱개 fallback: count={len(batch_entries)} err={batch_exc}"
         )
-
-    def _flush_pending_db_rows() -> None:
-        nonlocal pending_db_rows, pending_checksums
-        if not pending_db_rows:
-            return
-
-        batch_entries = pending_db_rows
-        pending_db_rows = []
-        pending_checksums = {}
-
-        try:
-            db.insert_raw_files_batch([entry["db_record"] for entry in batch_entries])
-        except Exception as batch_exc:  # noqa: BLE001
-            context.log.warning(
-                f"raw_files batch insert 실패, 낱개 fallback: count={len(batch_entries)} err={batch_exc}"
-            )
-            for entry in batch_entries:
-                try:
-                    db.insert_raw_files_batch([entry["db_record"]])
-                    _link_genai_asset_if_any(db, entry, context)
-                    _stage_upload_task(entry)
-                except Exception as single_exc:  # noqa: BLE001
-                    _handle_pending_db_error(entry, single_exc)
-            return
-
         for entry in batch_entries:
             try:
+                db.insert_raw_files_batch([entry["db_record"]])
                 _link_genai_asset_if_any(db, entry, context)
-                _stage_upload_task(entry)
-            except Exception as exc:  # noqa: BLE001
-                _handle_pending_db_error(entry, exc)
+                _stage_upload_task(entry, state, db, reencode_threads)
+            except Exception as single_exc:  # noqa: BLE001
+                _handle_pending_db_error(entry, single_exc, db, context, retry_candidates, ingest_rejections)
+        return
 
-    # ── Phase A: NAS I/O 병렬 메타 추출 (sha256 + ffprobe) ──────
+    for entry in batch_entries:
+        try:
+            _link_genai_asset_if_any(db, entry, context)
+            _stage_upload_task(entry, state, db, reencode_threads)
+        except Exception as exc:  # noqa: BLE001
+            _handle_pending_db_error(entry, exc, db, context, retry_candidates, ingest_rejections)
+
+
+# ── Phase A: NAS I/O 병렬 메타 추출 ─────────────────────────────
+def _phase_a_extract_metadata(
+    context,
+    candidate_records: list[dict],
+    meta_workers: int,
+    defer_video_env_classification: bool,
+) -> list[dict]:
+    """병렬 NAS I/O: checksum + ffprobe + reencode 판정.
+
+    반환: list of {"rec": ..., "meta": ..., "error": ...}
+    """
+    total_candidates = len(candidate_records)
+
     def _extract_meta(rec: dict) -> dict:
         """NAS I/O 집약 작업: checksum, ffprobe, reencode 판정. 스레드 안전."""
         filepath = rec["path"]
@@ -262,41 +278,54 @@ def normalize_and_archive(
         except Exception as exc:
             return {"rec": rec, "meta": None, "error": exc}
 
-    meta_workers = min(MAX_META_WORKERS, int_env("INGEST_META_WORKERS", DEFAULT_META_WORKERS, minimum=1))
+    def _log_result(result: dict, processed: int) -> None:
+        r = result["rec"]
+        context.log.info(
+            f"video_meta_extract progress={processed}/{total_candidates} "
+            f"media_type={r.get('media_type', 'image')} path={r['path']}"
+        )
+        if result["error"] is None and result["meta"] and r.get("media_type") == "video":
+            vm = result["meta"].get("video_metadata", {})
+            if vm.get("reencode_required"):
+                context.log.info(f"reencode_required: {r['path']} reason={vm.get('reencode_reason')}")
 
     meta_results: list[dict] = []
     if total_candidates > 1 and meta_workers > 1:
         context.log.info(f"meta_extract:parallel workers={meta_workers} candidates={total_candidates}")
         with ThreadPoolExecutor(max_workers=meta_workers) as meta_pool:
             futures = {meta_pool.submit(_extract_meta, rec): rec for rec in candidate_records}
+            processed_candidates = 0
             for future in as_completed(futures):
                 result = future.result()
                 meta_results.append(result)
                 processed_candidates += 1
-                r = result["rec"]
-                context.log.info(
-                    f"video_meta_extract progress={processed_candidates}/{total_candidates} "
-                    f"media_type={r.get('media_type', 'image')} path={r['path']}"
-                )
-                if result["error"] is None and result["meta"] and r.get("media_type") == "video":
-                    vm = result["meta"].get("video_metadata", {})
-                    if vm.get("reencode_required"):
-                        context.log.info(f"reencode_required: {r['path']} reason={vm.get('reencode_reason')}")
+                _log_result(result, processed_candidates)
     else:
-        for rec in candidate_records:
+        for i, rec in enumerate(candidate_records, 1):
             result = _extract_meta(rec)
             meta_results.append(result)
-            processed_candidates += 1
-            context.log.info(
-                f"video_meta_extract progress={processed_candidates}/{total_candidates} "
-                f"media_type={rec.get('media_type', 'image')} path={rec['path']}"
-            )
-            if result["error"] is None and result["meta"] and rec.get("media_type") == "video":
-                vm = result["meta"].get("video_metadata", {})
-                if vm.get("reencode_required"):
-                    context.log.info(f"reencode_required: {rec['path']} reason={vm.get('reencode_reason')}")
+            _log_result(result, i)
 
-    # ── Phase B: 순차 중복검출 + DB 등록 (DuckDB lock 최소화) ──
+    return meta_results
+
+
+# ── Phase B: 순차 중복검출 + DB 등록 ────────────────────────────
+def _phase_b_dedup_and_insert(
+    context,
+    db,
+    meta_results: list[dict],
+    upload_enabled: bool,
+    raw_insert_batch_size: int,
+    retry_candidates: list[dict] | None,
+    ingest_rejections: list[dict] | None,
+    reencode_threads: int,
+) -> _PhaseBState:
+    """순차 dedup + raw_files batch insert.
+
+    반환: _PhaseBState (upload_tasks 포함).
+    """
+    state = _PhaseBState()
+
     for mr in meta_results:
         rec = mr["rec"]
         meta = mr["meta"]
@@ -347,7 +376,7 @@ def normalize_and_archive(
             if existing:
                 _close_video_stream(meta)
                 context.log.warning(f"중복 건너뜀: {filepath} (기존: {existing['asset_id']})")
-                _mark_duplicate_skip(filepath, str(existing["asset_id"]), db_record, rec)
+                _mark_duplicate_skip(filepath, str(existing["asset_id"]), db_record, rec, context)
                 continue
 
             stale = db.find_any_by_checksum(meta["checksum"])
@@ -364,14 +393,14 @@ def normalize_and_archive(
                 elif stale_status and stale_status != "completed":
                     _close_video_stream(meta)
                     context.log.warning(f"중복 건너뜀: {filepath} (기존: {stale_asset_id})")
-                    _mark_duplicate_skip(filepath, stale_asset_id, db_record, rec)
+                    _mark_duplicate_skip(filepath, stale_asset_id, db_record, rec, context)
                     continue
 
-            pending_duplicate_asset_id = pending_checksums.get(str(meta["checksum"]))
+            pending_duplicate_asset_id = state.pending_checksums.get(str(meta["checksum"]))
             if pending_duplicate_asset_id:
                 _close_video_stream(meta)
                 context.log.warning(f"중복 건너뜀: {filepath} (동일 batch 기존: {pending_duplicate_asset_id})")
-                _mark_duplicate_skip(filepath, pending_duplicate_asset_id, db_record, rec)
+                _mark_duplicate_skip(filepath, pending_duplicate_asset_id, db_record, rec, context)
                 continue
 
             db_record["file_size"] = meta["file_size"]
@@ -379,7 +408,7 @@ def normalize_and_archive(
             # upload_enabled=False 경로에서는 raw_files 에 잠시 "pending" 으로 insert 하고,
             # archive 이동 완료 시 호출자가 "archived" 로 전환한다.
             db_record["ingest_status"] = "uploading" if upload_enabled else "pending"
-            pending_db_rows.append(
+            state.pending_db_rows.append(
                 {
                     "filepath": filepath,
                     "asset_id": asset_id,
@@ -394,9 +423,9 @@ def normalize_and_archive(
                     "_genai_seq_in_batch": rec.get("_genai_seq_in_batch"),
                 }
             )
-            pending_checksums[str(meta["checksum"])] = str(asset_id)
-            if len(pending_db_rows) >= raw_insert_batch_size:
-                _flush_pending_db_rows()
+            state.pending_checksums[str(meta["checksum"])] = str(asset_id)
+            if len(state.pending_db_rows) >= raw_insert_batch_size:
+                _flush_pending_db_rows(state, db, context, retry_candidates, ingest_rejections, reencode_threads)
         except Exception as e:
             context.log.error(f"normalize 실패: {filepath}: {e}")
             error_message = str(e)
@@ -433,32 +462,25 @@ def normalize_and_archive(
                 error_code="duckdb_lock_conflict" if is_transient else None,
             )
 
-    _flush_pending_db_rows()
+    _flush_pending_db_rows(state, db, context, retry_candidates, ingest_rejections, reencode_threads)
+    return state
 
-    if not upload_enabled:
-        # upload_enabled=False: upload_tasks 를 그대로 "ready" 리스트로 변환해 반환.
-        # 호출자가 archive 이동 후 ingest_status='archived' 로 전환한다.
-        ready: list[dict] = []
-        for task in upload_tasks:
-            _close_video_stream(task.get("meta") or {})
-            m = task.get("meta") or {}
-            ready.append(
-                {
-                    "asset_id": task["asset_id"],
-                    "source_path": task.get("source_path") or task["filepath"],
-                    "raw_key": task["raw_key"],
-                    "media_type": task["media_type"],
-                    "checksum": m.get("checksum"),
-                    "file_size": m.get("file_size"),
-                }
-            )
-        context.log.info(
-            f"upload_skip:done (upload_enabled=False) ready={len(ready)} reason='MinIO 업로드는 dispatch 단계로 연기'"
-        )
-        return ready
 
-    context.log.info(f"upload_prepare:done tasks={len(upload_tasks)}")
-    context.log.info("upload_execute:start")
+# ── Phase C: MinIO 병렬 업로드 ──────────────────────────────────
+def _phase_c_upload_to_minio(
+    context,
+    db,
+    minio: MinIOResource,
+    upload_tasks: list[dict[str, Any]],
+    max_workers: int,
+    reencode_workers: int,
+    records: list[dict],
+) -> list[dict]:
+    """MinIO 병렬 업로드 (재인코딩 필요 시 reencode → 업로드).
+
+    반환: 성공 업로드 항목 list[dict].
+    """
+    uploaded: list[dict] = []
 
     def _upload_single(task: dict[str, Any]) -> None:
         media_type = task["media_type"]
@@ -479,11 +501,6 @@ def normalize_and_archive(
 
         minio.upload_file(DEFAULT_RAW_BUCKET, raw_key, filepath, content_type=content_type)
 
-    # 재인코딩이 필요한 task가 있으면 reencode_workers 수로 제한
-    has_reencode_tasks = any(t.get("reencode_required") for t in upload_tasks)
-    effective_workers = reencode_workers if has_reencode_tasks else max_workers
-
-    # 2) MinIO 업로드 (병렬, 재인코딩 필요 시 reencode → 업로드 순서)
     def _execute_upload(task: dict) -> dict:
         """단일 업로드 실행 후 결과 dict 반환.
 
@@ -520,6 +537,9 @@ def normalize_and_archive(
             if tmp_path is not None:
                 tmp_path.unlink(missing_ok=True)
 
+    has_reencode_tasks = any(t.get("reencode_required") for t in upload_tasks)
+    effective_workers = reencode_workers if has_reencode_tasks else max_workers
+
     completed_uploads = 0
     successful_uploads = 0
     first_upload_logged = False
@@ -542,7 +562,6 @@ def normalize_and_archive(
                 if not first_upload_logged:
                     context.log.info(f"first_upload_complete raw_key={raw_key}")
                     first_upload_logged = True
-                # 재인코딩이 적용된 경우 video_metadata 업데이트
                 reencode_info = task.get("reencode_info")
                 if reencode_info and media_type == "video":
                     try:
@@ -574,6 +593,90 @@ def normalize_and_archive(
             context.log.info(f"upload progress={completed_uploads}/{len(upload_tasks)} success={successful_uploads}")
 
     return uploaded
+
+
+def normalize_and_archive(
+    context,
+    db: PostgresResource,
+    minio: MinIOResource,
+    records: list[dict],
+    archive_dir: str,
+    ingest_rejections: list[dict] | None = None,
+    retry_candidates: list[dict] | None = None,
+    defer_video_env_classification: bool = False,
+    upload_enabled: bool = True,
+) -> list[dict]:
+    """1-pass 로딩 → checksum → verify → image/video_metadata → MinIO 업로드.
+
+    archive 이동은 assets 레이어에서 source unit 정책으로 처리한다.
+    ★ NFS에서 파일 1회만 읽어 모든 메타 추출 (3회→1회 최적화).
+
+    upload_enabled=False 면 Phase C(MinIO 업로드)를 스킵하고 "ready" 리스트만 반환.
+    archive 이동과 'archived' 상태 마크는 호출자(orchestrator)가 별도 함수로 수행.
+    """
+    _wcfg = read_ingest_worker_config()
+    max_workers, reencode_workers, reencode_threads = _wcfg.max_workers, _wcfg.reencode_workers, _wcfg.reencode_threads
+    raw_insert_batch_size = 50
+    candidate_records = [rec for rec in records if rec.get("status") == "registered"]
+
+    meta_workers = min(MAX_META_WORKERS, int_env("INGEST_META_WORKERS", DEFAULT_META_WORKERS, minimum=1))
+
+    # ── Phase A ──────────────────────────────────────────────────
+    meta_results = _phase_a_extract_metadata(
+        context,
+        candidate_records,
+        meta_workers=meta_workers,
+        defer_video_env_classification=defer_video_env_classification,
+    )
+
+    # ── Phase B ──────────────────────────────────────────────────
+    phase_b = _phase_b_dedup_and_insert(
+        context,
+        db,
+        meta_results,
+        upload_enabled=upload_enabled,
+        raw_insert_batch_size=raw_insert_batch_size,
+        retry_candidates=retry_candidates,
+        ingest_rejections=ingest_rejections,
+        reencode_threads=reencode_threads,
+    )
+    upload_tasks = phase_b.upload_tasks
+
+    if not upload_enabled:
+        # upload_enabled=False: upload_tasks 를 그대로 "ready" 리스트로 변환해 반환.
+        # 호출자가 archive 이동 후 ingest_status='archived' 로 전환한다.
+        ready: list[dict] = []
+        for task in upload_tasks:
+            _close_video_stream(task.get("meta") or {})
+            m = task.get("meta") or {}
+            ready.append(
+                {
+                    "asset_id": task["asset_id"],
+                    "source_path": task.get("source_path") or task["filepath"],
+                    "raw_key": task["raw_key"],
+                    "media_type": task["media_type"],
+                    "checksum": m.get("checksum"),
+                    "file_size": m.get("file_size"),
+                }
+            )
+        context.log.info(
+            f"upload_skip:done (upload_enabled=False) ready={len(ready)} reason='MinIO 업로드는 dispatch 단계로 연기'"
+        )
+        return ready
+
+    context.log.info(f"upload_prepare:done tasks={len(upload_tasks)}")
+    context.log.info("upload_execute:start")
+
+    # ── Phase C ──────────────────────────────────────────────────
+    return _phase_c_upload_to_minio(
+        context,
+        db,
+        minio,
+        upload_tasks,
+        max_workers=max_workers,
+        reencode_workers=reencode_workers,
+        records=records,
+    )
 
 
 def ingest_summary(context, uploaded: list[dict], all_records: list[dict]) -> dict:
