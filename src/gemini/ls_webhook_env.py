@@ -1,0 +1,30 @@
+"""ls_webhook 환경변수 상수 — 모든 분할 모듈이 여기서 import."""
+
+from __future__ import annotations
+
+import os
+
+DEFAULT_LS_URL = "http://localhost:8080"
+DEFAULT_MINIO_ENDPOINT = "10.0.0.51:9000"
+DEFAULT_MINIO_ACCESS_KEY = ""
+DEFAULT_MINIO_SECRET_KEY = ""
+DEFAULT_LABEL_BUCKET = "vlm-labels"
+DEFAULT_FPS = 24
+DEFAULT_WEBHOOK_HOST = "localhost"
+DEFAULT_WEBHOOK_PORT = 8001
+DEFAULT_DAGSTER_GRAPHQL = "http://docker-dagster-1:3030/graphql"
+DEFAULT_POST_REVIEW_JOB = "post_review_clip_job"
+
+LS_URL = os.environ.get("LS_URL", DEFAULT_LS_URL).rstrip("/")
+API_KEY = os.environ.get("LS_API_KEY", "")
+WEBHOOK_HOST = os.environ.get("WEBHOOK_HOST", DEFAULT_WEBHOOK_HOST)
+WEBHOOK_PORT = int(os.environ.get("WEBHOOK_PORT", DEFAULT_WEBHOOK_PORT))
+LS_WEBHOOK_SECRET = os.environ.get("LS_WEBHOOK_SECRET", "")
+SLACK_WEBHOOK_URL = os.environ.get("SLACK_WEBHOOK_URL", "")
+SLACK_SIGNING_SECRET = os.environ.get("SLACK_SIGNING_SECRET", "")
+PG_DSN = os.environ.get("DATAOPS_POSTGRES_DSN", "")
+MINIO_ENDPOINT = os.environ.get("MINIO_ENDPOINT", DEFAULT_MINIO_ENDPOINT)
+MINIO_ACCESS_KEY = os.environ.get("MINIO_ACCESS_KEY", DEFAULT_MINIO_ACCESS_KEY)
+MINIO_SECRET_KEY = os.environ.get("MINIO_SECRET_KEY", DEFAULT_MINIO_SECRET_KEY)
+DAGSTER_GRAPHQL_URL = os.environ.get("DAGSTER_GRAPHQL_URL", DEFAULT_DAGSTER_GRAPHQL)
+POST_REVIEW_JOB_NAME = os.environ.get("POST_REVIEW_JOB_NAME", DEFAULT_POST_REVIEW_JOB)

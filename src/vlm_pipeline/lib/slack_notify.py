@@ -40,3 +40,29 @@ def send_slack_alert(message: str, *, timeout: int = 10) -> bool:
         return True
     except Exception:  # noqa: BLE001
         return False
+
+
+def send_slack_response(response_url: str, message: str, *, timeout: int = 10) -> None:
+    """Slack slash command response_url 로 후속 메시지 전송 (best-effort).
+
+    Args:
+        response_url: Slack slash command 페이로드에 포함된 response_url.
+        message: text 필드로 전송할 문자열.
+        timeout: 호출 timeout (초). Default 10.
+
+    미설정·빈 URL 또는 호출 실패 시 silent return (best-effort 알림).
+    """
+    if not response_url:
+        return
+    try:
+        payload = json.dumps({"text": message}).encode("utf-8")
+        req = urllib.request.Request(
+            response_url,
+            data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=timeout):
+            pass
+    except Exception:  # noqa: BLE001
+        return

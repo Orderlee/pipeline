@@ -6,5 +6,4 @@ Modules:
     captioning      clip_captioning MVP and routed implementations
     frame_extract   clip_to_frame MVP and routed implementations
     raw_frames      raw_video_to_frame implementation
-    sensor          Process-stage sensors
 """

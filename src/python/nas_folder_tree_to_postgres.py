@@ -16,15 +16,15 @@ Docker 실행:
 import os
 import argparse
 import glob
-import re
 from datetime import datetime
 from collections import defaultdict
 from typing import Dict, List, Tuple
 
 import psycopg2
-from psycopg2 import sql
 from psycopg2.extras import execute_values
 from tqdm import tqdm
+
+from nas_folder_tree_db_helpers import calculate_tree_prefixes, ensure_database_exists
 
 # 기본 설정
 DEFAULT_NAS_PATHS = [
@@ -46,37 +46,6 @@ def get_postgres_connection(host: str, port: int, database: str, user: str, pass
     """PostgreSQL 연결"""
     ensure_database_exists(host, port, database, user, password)
     return psycopg2.connect(host=host, port=port, database=database, user=user, password=password)
-
-
-def ensure_database_exists(
-    host: str,
-    port: int,
-    database: str,
-    user: str,
-    password: str,
-    admin_db: str = DEFAULT_PG_ADMIN_DB,
-):
-    """대상 DB가 없으면 생성"""
-    if not database or database == admin_db:
-        return
-
-    admin_conn = psycopg2.connect(
-        host=host,
-        port=port,
-        database=admin_db,
-        user=user,
-        password=password,
-    )
-    admin_conn.autocommit = True
-    try:
-        with admin_conn.cursor() as cur:
-            cur.execute("SELECT 1 FROM pg_database WHERE datname = %s", (database,))
-            exists = cur.fetchone() is not None
-            if not exists:
-                cur.execute(sql.SQL("CREATE DATABASE {}").format(sql.Identifier(database)))
-                print(f"✅ PostgreSQL DB 생성 완료: {database}")
-    finally:
-        admin_conn.close()
 
 
 def ensure_schema(conn):
@@ -149,65 +118,6 @@ def ensure_schema(conn):
         cur.execute(schema_sql)
     conn.commit()
     print("✅ PostgreSQL 스키마 준비 완료")
-
-
-def calculate_tree_prefixes(folder_tree: List[Dict]) -> List[Dict]:
-    """폴더 트리에 트리 구조 prefix 계산"""
-    if not folder_tree:
-        return folder_tree
-
-    sorted_tree = sorted(folder_tree, key=lambda x: x["path"])
-
-    children_by_parent = defaultdict(list)
-    for item in sorted_tree:
-        parent = item["parent_path"] or ""
-        children_by_parent[parent].append(item["path"])
-
-    is_last_child = {}
-    for parent, children in children_by_parent.items():
-        sorted_children = sorted(children)
-        for i, child in enumerate(sorted_children):
-            is_last_child[child] = i == len(sorted_children) - 1
-
-    path_to_item = {item["path"]: item for item in sorted_tree}
-
-    for item in sorted_tree:
-        path = item["path"]
-        depth = item["depth"]
-
-        if depth == 0:
-            item["tree_prefix"] = ""
-            item["sort_key"] = "0"
-            continue
-
-        if is_last_child.get(path, False):
-            current_prefix = "└── "
-        else:
-            current_prefix = "├── "
-
-        ancestor_prefix = ""
-        current_path = item["parent_path"]
-
-        ancestors = []
-        while current_path and current_path in path_to_item:
-            parent_item = path_to_item[current_path]
-            if parent_item["depth"] > 0:
-                if is_last_child.get(current_path, False):
-                    ancestors.append("    ")
-                else:
-                    ancestors.append("│   ")
-            current_path = parent_item["parent_path"]
-
-        ancestor_prefix = "".join(reversed(ancestors))
-        item["tree_prefix"] = ancestor_prefix + current_prefix
-
-        sort_parts = []
-        for part in path.split("/"):
-            padded = re.sub(r"(\d+)", lambda m: m.group(1).zfill(10), part)
-            sort_parts.append(padded)
-        item["sort_key"] = "/".join(sort_parts)
-
-    return sorted_tree
 
 
 def scan_folder_tree_fast(

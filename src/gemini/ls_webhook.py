@@ -24,8 +24,11 @@ Usage:
     LS_URL               Label Studio URL (기본: http://localhost:8080)
     WEBHOOK_HOST         이 서버의 호스트명 — LS가 접근할 주소 (기본: localhost)
     WEBHOOK_PORT         이 서버 포트 (기본: 8001)
+    LS_WEBHOOK_SECRET    /webhook 엔드포인트 공유 시크릿 (필수, 미설정 시 503 fail-closed).
+                         LS 가 X-Webhook-Token 헤더로 이 값을 전송해야 한다.
+                         register / cmd_register 실행 시 자동으로 헤더에 포함됨.
     SLACK_WEBHOOK_URL    Slack Incoming Webhook URL (미설정 시 알림 생략)
-    SLACK_SIGNING_SECRET Slack slash command 검증 시크릿 (미설정 시 검증 생략)
+    SLACK_SIGNING_SECRET Slack slash command 검증 시크릿 (필수, 미설정 시 503 fail-closed).
     DATAOPS_POSTGRES_DSN PostgreSQL DSN (필수, postgresql://user:pass@host:port/dbname)
     MINIO_ENDPOINT       (기본: 10.0.0.51:9000)
     MINIO_ACCESS_KEY     (기본: minioadmin)
@@ -40,119 +43,75 @@ import hashlib
 import hmac
 import json
 import os
-import threading
 import time
-from datetime import datetime, timezone
-from pathlib import Path
 
-# project_id별 sync 동시 실행 방지 (단일 webhook 컨테이너 가정).
-_SYNC_IN_FLIGHT: set[int] = set()
-_SYNC_GUARD_LOCK = threading.Lock()
+import requests
+import uvicorn
+from fastapi import BackgroundTasks, FastAPI, Request, Response
+from fastapi.responses import PlainTextResponse
 
-# Submit 폭주 시 debounce: 마지막 수신 후 N초 idle이면 1회만 실행. 그 전 재수신은 timer reset.
-_SYNC_DEBOUNCE_TIMERS: dict[int, threading.Timer] = {}
-_SYNC_DEBOUNCE_LOCK = threading.Lock()
-_SYNC_DEBOUNCE_SEC = float(os.getenv("LS_WEBHOOK_DEBOUNCE_SEC", "15"))
-
-
-def schedule_sync_debounced(project_id: int, project_title: str) -> None:
-    """debounce timer로 run_sync_and_notify 스케줄. 0 이하면 즉시 실행."""
-    if _SYNC_DEBOUNCE_SEC <= 0:
-        run_sync_and_notify(project_id, project_title)
-        return
-    with _SYNC_DEBOUNCE_LOCK:
-        existing = _SYNC_DEBOUNCE_TIMERS.pop(project_id, None)
-        if existing:
-            existing.cancel()
-
-        def _fire() -> None:
-            with _SYNC_DEBOUNCE_LOCK:
-                _SYNC_DEBOUNCE_TIMERS.pop(project_id, None)
-            # finalize 직전 큐잉돼 있던 RECV 가 finalize 후 _fire 되어 ls_sync 가
-            # review_status='finalized' 를 'reviewed' 로 회귀시키는 race 방어.
-            # /webhook RECV 핸들러의 가드와 동일 정책으로 _fire 시점에도 재검사.
-            current = load_state().get(str(project_id), {}).get("status")
-            if current == "finalized":
-                msg = (
-                    f"⚠️ *{project_title}* (id={project_id}) debounce timer fire 직전 "
-                    f"finalized 확인 — sync skip (회귀 방지)."
-                )
-                print(f"[DEBOUNCE-GUARD] {msg}")
-                send_slack(msg)
-                return
-            run_sync_and_notify(project_id, project_title)
-
-        timer = threading.Timer(_SYNC_DEBOUNCE_SEC, _fire)
-        timer.daemon = True
-        _SYNC_DEBOUNCE_TIMERS[project_id] = timer
-        timer.start()
-        print(f"[DEBOUNCE] project {project_id} sync {_SYNC_DEBOUNCE_SEC:.1f}초 후 예약 (중복 수신 시 리셋)")
-
-
-import requests  # noqa: E402
-import uvicorn  # noqa: E402
-from fastapi import BackgroundTasks, FastAPI, Request, Response  # noqa: E402
-from fastapi.responses import PlainTextResponse  # noqa: E402
+from vlm_pipeline.lib.slack_notify import send_slack_alert, send_slack_response  # noqa: F401
 
 # ---------------------------------------------------------------------------
-# 환경변수
+# 환경변수 — ls_webhook_env 에서 re-export (하위 호환 + 테스트 monkeypatch 대상).
 # ---------------------------------------------------------------------------
 
-DEFAULT_LS_URL = "http://localhost:8080"
-DEFAULT_MINIO_ENDPOINT = "10.0.0.51:9000"
-DEFAULT_MINIO_ACCESS_KEY = "minioadmin"
-DEFAULT_MINIO_SECRET_KEY = "minioadmin"
-DEFAULT_LABEL_BUCKET = "vlm-labels"
-DEFAULT_FPS = 24
-DEFAULT_WEBHOOK_HOST = "localhost"
-DEFAULT_WEBHOOK_PORT = 8001
-DEFAULT_DAGSTER_GRAPHQL = "http://docker-dagster-1:3030/graphql"
-DEFAULT_POST_REVIEW_JOB = "post_review_clip_job"
-
-LS_URL = os.environ.get("LS_URL", DEFAULT_LS_URL).rstrip("/")
-API_KEY = os.environ.get("LS_API_KEY", "")
-WEBHOOK_HOST = os.environ.get("WEBHOOK_HOST", DEFAULT_WEBHOOK_HOST)
-WEBHOOK_PORT = int(os.environ.get("WEBHOOK_PORT", DEFAULT_WEBHOOK_PORT))
-SLACK_WEBHOOK_URL = os.environ.get("SLACK_WEBHOOK_URL", "")
-SLACK_SIGNING_SECRET = os.environ.get("SLACK_SIGNING_SECRET", "")
-PG_DSN = os.environ.get("DATAOPS_POSTGRES_DSN", "")
-MINIO_ENDPOINT = os.environ.get("MINIO_ENDPOINT", DEFAULT_MINIO_ENDPOINT)
-MINIO_ACCESS_KEY = os.environ.get("MINIO_ACCESS_KEY", DEFAULT_MINIO_ACCESS_KEY)
-MINIO_SECRET_KEY = os.environ.get("MINIO_SECRET_KEY", DEFAULT_MINIO_SECRET_KEY)
-DAGSTER_GRAPHQL_URL = os.environ.get("DAGSTER_GRAPHQL_URL", DEFAULT_DAGSTER_GRAPHQL)
-POST_REVIEW_JOB_NAME = os.environ.get("POST_REVIEW_JOB_NAME", DEFAULT_POST_REVIEW_JOB)
-
-
-def _default_ls_state_path() -> Path:
-    # 소스 트리(`/src/vlm/gemini/`)는 read-only bind mount 이므로 쓰기 가능 경로로 폴백.
-    override = os.environ.get("LS_STATE_FILE")
-    if override:
-        return Path(override)
-    dagster_home = os.environ.get("DAGSTER_HOME")
-    if dagster_home:
-        return Path(dagster_home) / "ls_review_state.json"
-    return Path("/tmp/ls_review_state.json")
-
-
-STATE_FILE = _default_ls_state_path()
-
+from gemini.ls_webhook_env import (  # noqa: E402,F401
+    API_KEY,
+    DAGSTER_GRAPHQL_URL,
+    DEFAULT_FPS,
+    DEFAULT_LABEL_BUCKET,
+    DEFAULT_WEBHOOK_HOST,
+    DEFAULT_WEBHOOK_PORT,
+    LS_URL,
+    LS_WEBHOOK_SECRET,
+    MINIO_ACCESS_KEY,
+    MINIO_ENDPOINT,
+    MINIO_SECRET_KEY,
+    PG_DSN,
+    POST_REVIEW_JOB_NAME,
+    SLACK_SIGNING_SECRET,
+    SLACK_WEBHOOK_URL,
+    WEBHOOK_HOST,
+    WEBHOOK_PORT,
+)
 
 # ---------------------------------------------------------------------------
-# Review state 관리 (ls_tasks.py와 공유)
+# State helpers — re-export (ls_tasks.py 등 외부 호환).
 # ---------------------------------------------------------------------------
 
+from gemini.ls_webhook_state import (  # noqa: E402,F401
+    STATE_FILE,
+    _SYNC_DEBOUNCE_LOCK,
+    _SYNC_DEBOUNCE_SEC,
+    _SYNC_DEBOUNCE_TIMERS,
+    _SYNC_GUARD_LOCK,
+    _SYNC_IN_FLIGHT,
+    load_state,
+    save_state,
+    schedule_sync_debounced,
+)
 
-def load_state() -> dict:
-    if STATE_FILE.exists():
-        try:
-            return json.loads(STATE_FILE.read_text(encoding="utf-8"))
-        except Exception:
-            pass
-    return {}
+# ---------------------------------------------------------------------------
+# Finalize helpers — re-export.
+# ---------------------------------------------------------------------------
 
+from gemini.ls_webhook_finalize import (  # noqa: E402,F401
+    _extract_folder_prefixes,
+    _run_sync_and_notify_inner,
+    finalize_labels_in_db,
+    finalize_project,
+    run_sync_and_notify,
+)
 
-def save_state(state: dict) -> None:
-    STATE_FILE.write_text(json.dumps(state, indent=2, ensure_ascii=False), encoding="utf-8")
+# ---------------------------------------------------------------------------
+# Dagster trigger — re-export.
+# ---------------------------------------------------------------------------
+
+from gemini.ls_webhook_dagster import (  # noqa: E402,F401
+    _discover_repo_selector,
+    trigger_dagster_job,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -222,7 +181,7 @@ def count_incomplete_tasks(headers: dict, project_id: int) -> int:
 
 
 # ---------------------------------------------------------------------------
-# Slack 알림
+# Slack 알림 — lib/slack_notify 위임 (하위 호환 thin wrapper)
 # ---------------------------------------------------------------------------
 
 
@@ -230,437 +189,7 @@ def send_slack(message: str) -> None:
     if not SLACK_WEBHOOK_URL:
         print(f"[SLACK] (URL 미설정) {message}")
         return
-    try:
-        resp = requests.post(SLACK_WEBHOOK_URL, json={"text": message}, timeout=5)
-        resp.raise_for_status()
-    except Exception as exc:
-        print(f"[SLACK] 발송 실패: {exc}")
-
-
-def send_slack_response(response_url: str, message: str) -> None:
-    """Slack slash command response_url로 후속 메시지 전송."""
-    if not response_url:
-        return
-    try:
-        requests.post(response_url, json={"text": message}, timeout=5)
-    except Exception as exc:
-        print(f"[SLACK] response_url 발송 실패: {exc}")
-
-
-# ---------------------------------------------------------------------------
-# PostgreSQL finalize
-# ---------------------------------------------------------------------------
-
-
-def _extract_folder_prefixes(label_keys: list[str]) -> list[str]:
-    """label_keys 의 첫 path component 집합을 반환 (folder_name).
-
-    label_keys 는 보통 `<source_unit_name>/...json` 형식이라 첫 "/" 까지가 folder
-    prefix 가 된다. 같은 LS project 의 키는 일반적으로 하나의 folder 에 속하지만,
-    안전을 위해 set 으로 모은다.
-    """
-    prefixes: set[str] = set()
-    for k in label_keys or []:
-        if not k or "/" not in k:
-            continue
-        prefixes.add(k.split("/", 1)[0])
-    return sorted(prefixes)
-
-
-def finalize_labels_in_db(label_keys: list[str]) -> dict:
-    """label_status='completed', review_status='finalized' 업데이트.
-
-    labels (video-level) 와 image_labels (image-level) 양쪽에 동일 UPDATE 적용.
-    labels_key 스키마가 서로 겹치지 않으므로 각 테이블은 자신의 key 만 매칭됨.
-
-    잔존 row 자동 보정:
-      1) state.label_keys IN ({...}) 매칭 1차 UPDATE (review_status<>'finalized')
-      2) label_keys 의 folder prefix LIKE 매칭으로 review_status='reviewed' 잔존
-         row 도 자동 finalize.
-         SOT: 사람 LS submit 결과는 ls_sync.upsert_video_labels /
-         update_image_labels_in_db 가 review_status='reviewed' 로 박는다 → 같은
-         folder 의 'reviewed' 는 사람 검수 완료 의미라 finalize 안전.
-         'pending_review'/'in_review' 등은 prefix 매칭에서 제외하여 미검수 row 보호.
-
-    반환값: {"primary": int, "auto_recovered": int}
-      - primary: state.label_keys IN 매칭으로 finalize 된 row (양 테이블 합)
-      - auto_recovered: prefix LIKE 매칭으로 추가 finalize 된 row (양 테이블 합)
-    """
-    import psycopg2
-
-    if not label_keys or not PG_DSN:
-        return {"primary": 0, "auto_recovered": 0}
-    conn = None
-    for attempt in range(5):
-        try:
-            conn = psycopg2.connect(PG_DSN)
-            break
-        except (psycopg2.OperationalError, psycopg2.InterfaceError):
-            if attempt < 4:
-                time.sleep(2)
-                continue
-            raise
-    if conn is None:
-        raise RuntimeError("PostgreSQL 연결 실패 (5회 재시도 초과)")
-    # 모든 UPDATE/COUNT 를 단일 트랜잭션으로 묶고 마지막에 commit (psycopg2 autocommit=False).
-    # DuckDB 는 statement 마다 auto-commit 이었으나 PG 는 명시 commit 필요.
-    try:
-        with conn.cursor() as cur:
-            placeholders = ",".join(["%s"] * len(label_keys))
-            # Video-level labels (Gemini events) — image_labels 와 동일 정책 (review_status 기준)
-            # 기존엔 label_status='pending_review' 조건이었으나, captioning.py 등 upstream 이
-            # INSERT 시 label_status='completed' 로 박아 prod 의 모든 video labels 가 'completed'
-            # 상태였기에 UPDATE 가 0건 영향 → review_status 가 'finalized' 로 못 가서
-            # build_dataset_on_finalize_sensor 가 video 검수 프로젝트를 영구히 못 잡았던 버그.
-            cur.execute(
-                f"""
-                UPDATE labels
-                SET label_status  = 'completed',
-                    review_status = 'finalized'
-                WHERE labels_key IN ({placeholders})
-                  AND review_status <> 'finalized'
-                """,
-                label_keys,
-            )
-            # Image-level labels (SAM3 segmentations) — review_status 기준으로 전이
-            cur.execute(
-                f"""
-                UPDATE image_labels
-                SET label_status  = 'completed',
-                    review_status = 'finalized'
-                WHERE labels_key IN ({placeholders})
-                  AND review_status <> 'finalized'
-                """,
-                label_keys,
-            )
-            cur.execute(
-                f"""
-                SELECT
-                  (SELECT COUNT(*) FROM labels
-                     WHERE labels_key IN ({placeholders}) AND review_status = 'finalized')
-                  +
-                  (SELECT COUNT(*) FROM image_labels
-                     WHERE labels_key IN ({placeholders}) AND review_status = 'finalized')
-                """,
-                label_keys + label_keys,
-            )
-            primary_row = cur.fetchone()
-            primary = int(primary_row[0]) if primary_row else 0
-
-            # 2차: folder prefix 기반 잔존 자동 보정.
-            # state.label_keys 에 빠진 키가 있어도 같은 folder 의 사람 검수 완료 row 는
-            # 함께 finalize. 'reviewed' 만 매칭하여 미검수 row 는 안전하게 제외.
-            auto_recovered = 0
-            prefixes = _extract_folder_prefixes(label_keys)
-            if prefixes:
-                patterns = [p + "/%" for p in prefixes]
-                or_clauses = " OR ".join(["labels_key LIKE %s"] * len(prefixes))
-                # pre-count: 매칭 row 가 곧 UPDATE 영향 row (단일 트랜잭션 + 동시 INSERT 없음 가정).
-                cur.execute(
-                    f"SELECT COUNT(*) FROM labels WHERE ({or_clauses}) AND review_status = 'reviewed'",
-                    patterns,
-                )
-                pre_v = cur.fetchone()
-                cur.execute(
-                    f"SELECT COUNT(*) FROM image_labels WHERE ({or_clauses}) AND review_status = 'reviewed'",
-                    patterns,
-                )
-                pre_i = cur.fetchone()
-                pending_v = int(pre_v[0]) if pre_v else 0
-                pending_i = int(pre_i[0]) if pre_i else 0
-                if pending_v:
-                    cur.execute(
-                        f"""
-                        UPDATE labels
-                        SET label_status  = 'completed',
-                            review_status = 'finalized'
-                        WHERE ({or_clauses}) AND review_status = 'reviewed'
-                        """,
-                        patterns,
-                    )
-                if pending_i:
-                    cur.execute(
-                        f"""
-                        UPDATE image_labels
-                        SET label_status  = 'completed',
-                            review_status = 'finalized'
-                        WHERE ({or_clauses}) AND review_status = 'reviewed'
-                        """,
-                        patterns,
-                    )
-                auto_recovered = pending_v + pending_i
-                if auto_recovered:
-                    print(
-                        f"[FINALIZE] folder prefix 잔존 자동 보정: labels +{pending_v}, "
-                        f"image_labels +{pending_i} (prefixes={prefixes})"
-                    )
-        conn.commit()
-        return {"primary": primary, "auto_recovered": auto_recovered}
-    except Exception:
-        try:
-            conn.rollback()
-        except Exception:
-            pass
-        raise
-    finally:
-        conn.close()
-
-
-# ---------------------------------------------------------------------------
-# sync 실행 (background)
-# ---------------------------------------------------------------------------
-
-
-def run_sync_and_notify(project_id: int, project_title: str) -> None:
-    """ls_sync.run() 실행 후 Slack 알림 및 state 업데이트."""
-    # debounce: 같은 project의 sync가 이미 돌고 있으면 drop (웹훅 중복 수신 대응).
-    with _SYNC_GUARD_LOCK:
-        if project_id in _SYNC_IN_FLIGHT:
-            print(f"[DEDUP] project {project_id} sync 이미 진행 중 — skip")
-            return
-        _SYNC_IN_FLIGHT.add(project_id)
-
-    try:
-        _run_sync_and_notify_inner(project_id, project_title)
-    finally:
-        with _SYNC_GUARD_LOCK:
-            _SYNC_IN_FLIGHT.discard(project_id)
-
-
-def _run_sync_and_notify_inner(project_id: int, project_title: str) -> None:
-    state = load_state()
-    pid = str(project_id)
-    is_first = state.get(pid, {}).get("last_sync_at") is None
-
-    if not PG_DSN:
-        print("[ERROR] DATAOPS_POSTGRES_DSN 미설정 — sync 불가")
-        send_slack(f"❌ *{project_title}* sync 실패: PostgreSQL DSN 미설정")
-        return
-
-    sync_result: dict = {}
-    try:
-        import sys as _sys
-
-        _gemini_dir = str(Path(__file__).parent)
-        if _gemini_dir not in _sys.path:
-            _sys.path.insert(0, _gemini_dir)
-        from ls_sync import run as sync_run
-
-        sync_result = (
-            sync_run(
-                project_id=project_id,
-                ls_url=LS_URL,
-                api_key=API_KEY,
-                fps=DEFAULT_FPS,
-                minio_endpoint=MINIO_ENDPOINT,
-                minio_access_key=MINIO_ACCESS_KEY,
-                minio_secret_key=MINIO_SECRET_KEY,
-                bucket=DEFAULT_LABEL_BUCKET,
-                prefix="",
-                dry_run=False,
-                dsn=PG_DSN,
-            )
-            or {}
-        )
-    except Exception as exc:
-        print(f"[ERROR] sync 실패: {exc}")
-        send_slack(f"❌ *{project_title}* (id={project_id}) sync 실패: {exc}")
-        return
-
-    # state 업데이트.
-    # ls_tasks.py create 시점에 박힌 label_keys 외에, ls_sync 가 신규 생성한 events
-    # / sam3 JSON (예: Gemini auto 누락이었던 영상에 사람이 라벨 작성한 케이스) 도
-    # union merge 해서 finalize 누락 방지.
-    now = datetime.now(timezone.utc).isoformat()
-    entry = state.get(pid, {})
-    existing_keys = set(entry.get("label_keys", []))
-    processed_keys = set(sync_result.get("processed_label_keys", []))
-    merged_keys = sorted(existing_keys | processed_keys)
-    entry.update(
-        {
-            "project_id": project_id,
-            "title": project_title,
-            "last_sync_at": now,
-            "status": "pending_finalize",
-            "label_keys": merged_keys,
-        }
-    )
-    state[pid] = entry
-    save_state(state)
-    if processed_keys - existing_keys:
-        added = sorted(processed_keys - existing_keys)
-        print(f"[INFO] state.json label_keys 에 {len(added)}건 신규 추가: {added}")
-
-    # FinalizedLabelsSkip / FinalizedImageSkip 으로 인해 skip 된 항목 — 운영자 인지.
-    skipped_finalized = int(sync_result.get("skipped_finalized", 0) or 0)
-    skip_suffix = f"  (finalized skip {skipped_finalized}건)" if skipped_finalized else ""
-    if skipped_finalized:
-        print(f"[INFO] sync 중 finalized 보호 가드로 {skipped_finalized}건 skip (MinIO/PG 보존)")
-
-    if is_first:
-        send_slack(
-            f"[동기화 완료] *{project_title}* (id={project_id}) — 검수 반영됨{skip_suffix}\n"
-            f"최종 확정이 필요합니다. `/sync-list` 로 확인하세요."
-        )
-    else:
-        send_slack(f"[재동기화] *{project_title}* (id={project_id}) — 수정사항 반영됨, 확정 대기 중{skip_suffix}")
-
-
-# ---------------------------------------------------------------------------
-# Dagster GraphQL 트리거
-# ---------------------------------------------------------------------------
-
-
-def _discover_repo_selector(graphql_url: str, job_name: str) -> dict | None:
-    """repositoryLocations에서 job_name 보유 repo를 찾아 selector dict 반환."""
-    query = """
-    query { workspaceOrError { __typename ... on Workspace {
-      locationEntries { locationOrLoadError { __typename
-        ... on RepositoryLocation { name repositories { name pipelines { name } } }
-      } }
-    } } }
-    """
-    resp = requests.post(graphql_url, json={"query": query}, timeout=10)
-    resp.raise_for_status()
-    entries = resp.json().get("data", {}).get("workspaceOrError", {}).get("locationEntries", []) or []
-    for entry in entries:
-        loc = entry.get("locationOrLoadError") or {}
-        if loc.get("__typename") != "RepositoryLocation":
-            continue
-        for repo in loc.get("repositories", []) or []:
-            pipelines = [p.get("name") for p in repo.get("pipelines", []) or []]
-            if job_name in pipelines:
-                return {
-                    "repositoryLocationName": loc.get("name"),
-                    "repositoryName": repo.get("name"),
-                    "jobName": job_name,
-                }
-    return None
-
-
-def trigger_dagster_job(job_name: str, tags: dict[str, str]) -> tuple[bool, str]:
-    """Dagster GraphQL launchPipelineExecution 트리거. (성공여부, 메시지) 반환."""
-    try:
-        selector = _discover_repo_selector(DAGSTER_GRAPHQL_URL, job_name)
-    except Exception as exc:
-        return False, f"repo discovery 실패: {exc}"
-    if not selector:
-        return False, f"job '{job_name}'을 포함한 repository를 찾지 못함"
-
-    mutation = """
-    mutation Launch($executionParams: ExecutionParams!) {
-      launchPipelineExecution(executionParams: $executionParams) {
-        __typename
-        ... on LaunchRunSuccess { run { runId } }
-        ... on PythonError { message }
-        ... on PipelineNotFoundError { message }
-        ... on RunConfigValidationInvalid { errors { message } }
-        ... on InvalidSubsetError { message }
-        ... on ConflictingExecutionParamsError { message }
-      }
-    }
-    """
-    variables = {
-        "executionParams": {
-            "selector": selector,
-            "runConfigData": "{}",
-            "mode": "default",
-            "executionMetadata": {
-                "tags": [{"key": k, "value": str(v)} for k, v in tags.items()],
-            },
-        }
-    }
-    try:
-        resp = requests.post(
-            DAGSTER_GRAPHQL_URL,
-            json={"query": mutation, "variables": variables},
-            timeout=15,
-        )
-        resp.raise_for_status()
-        payload = resp.json()
-    except Exception as exc:
-        return False, f"GraphQL 요청 실패: {exc}"
-
-    result = (payload.get("data") or {}).get("launchPipelineExecution") or {}
-    typename = result.get("__typename", "")
-    if typename == "LaunchRunSuccess":
-        run_id = (result.get("run") or {}).get("runId", "")
-        return True, run_id
-    return False, f"{typename}: {result.get('message', '') or result.get('errors', '')}"
-
-
-# ---------------------------------------------------------------------------
-# finalize 실행 (background)
-# ---------------------------------------------------------------------------
-
-
-def finalize_project(project_id: int, response_url: str = "") -> None:
-    """최종 확정: PostgreSQL label_status='completed' → downstream 활성화."""
-    state = load_state()
-    pid = str(project_id)
-    info = state.get(pid)
-
-    if not info:
-        msg = f"❌ project {project_id} state 정보 없음 (ls_tasks.py create가 먼저 실행되어야 합니다)"
-        send_slack(msg)
-        send_slack_response(response_url, msg)
-        return
-
-    if info.get("status") == "finalized":
-        msg = f"ℹ️ *{info['title']}* (id={project_id}) 이미 확정된 project입니다."
-        send_slack_response(response_url, msg)
-        return
-
-    title = info.get("title", str(project_id))
-    label_keys = info.get("label_keys", [])
-
-    if not label_keys:
-        msg = f"❌ *{title}* label_keys 없음 — state 파일 확인 필요"
-        send_slack(msg)
-        send_slack_response(response_url, msg)
-        return
-
-    result = finalize_labels_in_db(label_keys)
-    primary = int(result.get("primary", 0))
-    auto_recovered = int(result.get("auto_recovered", 0))
-    total_finalized = primary + auto_recovered
-
-    # state 업데이트
-    info["status"] = "finalized"
-    info["finalized_at"] = datetime.now(timezone.utc).isoformat()
-    state[pid] = info
-    save_state(state)
-
-    # Dagster post_review_clip_job 트리거 — 검수된 labels.timestamp로 clip 분할
-    ok, detail = trigger_dagster_job(
-        POST_REVIEW_JOB_NAME,
-        tags={
-            "trigger": "ls_finalize",
-            "project_id": project_id,
-            "folder_name": title,
-        },
-    )
-    clip_msg = (
-        f"→ clip 생성 job 트리거: run_id={detail}"
-        if ok
-        else (
-            f"→ ⚠️ clip 생성 트리거 실패 ({detail})\n"
-            f"   수동 재실행: `python /src/vlm/gemini/ls_webhook.py finalize --project {project_id}`\n"
-            f"   또는 Dagster UI에서 `{POST_REVIEW_JOB_NAME}` 수동 실행"
-        )
-    )
-
-    if auto_recovered:
-        db_msg = (
-            f"→ PostgreSQL {total_finalized}건 반영 (state 매칭 {primary} + folder prefix 자동 보정 {auto_recovered})"
-        )
-    else:
-        db_msg = f"→ PostgreSQL {total_finalized}건 반영"
-
-    msg = f"✅ *{title}* (id={project_id}) 최종 확정 완료\n{db_msg}\n{clip_msg}"
-    print(f"[FINALIZE] {msg}")
-    send_slack(msg)
-    send_slack_response(response_url, msg)
+    send_slack_alert(message)
 
 
 # ---------------------------------------------------------------------------
@@ -672,6 +201,17 @@ app = FastAPI()
 
 @app.post("/webhook")
 async def receive_webhook(request: Request, background_tasks: BackgroundTasks):
+    if not LS_WEBHOOK_SECRET:
+        return Response(content="Webhook secret not configured", status_code=503)
+
+    token = request.headers.get("X-Webhook-Token", "")
+    try:
+        token_match = hmac.compare_digest(LS_WEBHOOK_SECRET, token)
+    except TypeError:
+        token_match = False
+    if not token_match:
+        return Response(content="Forbidden", status_code=403)
+
     try:
         payload = await request.json()
     except Exception:
@@ -720,21 +260,26 @@ async def receive_webhook(request: Request, background_tasks: BackgroundTasks):
 @app.post("/slack/commands")
 async def slack_commands(request: Request, background_tasks: BackgroundTasks):
     """Slack slash command 수신: /sync-list, /sync-approve {project_id}"""
-    # Slack 서명 검증 (SLACK_SIGNING_SECRET 설정 시)
-    if SLACK_SIGNING_SECRET:
-        raw_body = await request.body()
-        timestamp = request.headers.get("X-Slack-Request-Timestamp", "")
-        if not timestamp:
-            return Response(content="Missing timestamp", status_code=400)
-        try:
-            if abs(time.time() - float(timestamp)) > 300:
-                return Response(content="Request too old", status_code=400)
-        except ValueError:
-            return Response(content="Invalid timestamp", status_code=400)
-        sig_base = f"v0:{timestamp}:{raw_body.decode()}"
-        expected = "v0=" + hmac.new(SLACK_SIGNING_SECRET.encode(), sig_base.encode(), hashlib.sha256).hexdigest()
-        if not hmac.compare_digest(expected, request.headers.get("X-Slack-Signature", "")):
-            return Response(content="Invalid signature", status_code=403)
+    if not SLACK_SIGNING_SECRET:
+        return Response(content="Slack signing secret not configured", status_code=503)
+
+    raw_body = await request.body()
+    timestamp = request.headers.get("X-Slack-Request-Timestamp", "")
+    if not timestamp:
+        return Response(content="Missing timestamp", status_code=400)
+    try:
+        if abs(time.time() - float(timestamp)) > 300:
+            return Response(content="Request too old", status_code=400)
+    except ValueError:
+        return Response(content="Invalid timestamp", status_code=400)
+    sig_base = f"v0:{timestamp}:{raw_body.decode()}"
+    expected = "v0=" + hmac.new(SLACK_SIGNING_SECRET.encode(), sig_base.encode(), hashlib.sha256).hexdigest()
+    try:
+        sig_match = hmac.compare_digest(expected, request.headers.get("X-Slack-Signature", ""))
+    except TypeError:
+        sig_match = False
+    if not sig_match:
+        return Response(content="Invalid signature", status_code=403)
 
     form = await request.form()
     command = str(form.get("command", ""))
@@ -784,17 +329,43 @@ def handle_sync_list() -> str:
 
 
 def cmd_register(project_id: int) -> None:
+    if not LS_WEBHOOK_SECRET:
+        print("ERROR: LS_WEBHOOK_SECRET 환경변수가 설정되지 않았습니다. webhook 등록을 거부합니다.")
+        raise SystemExit(1)
     webhook_url = f"http://{WEBHOOK_HOST}:{WEBHOOK_PORT}/webhook"
-    headers = {**resolve_auth_headers(API_KEY), "Content-Type": "application/json"}
+    auth_headers = resolve_auth_headers(API_KEY)
+    json_headers = {**auth_headers, "Content-Type": "application/json"}
+
+    existing_resp = requests.get(
+        f"{LS_URL}/api/webhooks/",
+        headers=auth_headers,
+        params={"project": project_id},
+    )
+    existing_resp.raise_for_status()
+    existing = existing_resp.json() if isinstance(existing_resp.json(), list) else []
+
+    for wh in existing:
+        if wh.get("url") != webhook_url:
+            continue
+        wh_headers = wh.get("headers") or {}
+        if wh_headers.get("X-Webhook-Token") == LS_WEBHOOK_SECRET:
+            print(f"[등록 스킵] webhook id={wh['id']} 이미 동일 URL + 동일 secret 으로 등록됨 (project={project_id})")
+            return
+        del_resp = requests.delete(f"{LS_URL}/api/webhooks/{wh['id']}/", headers=auth_headers)
+        del_resp.raise_for_status()
+        print(f"[교체] 구 webhook id={wh['id']} (headerless 또는 다른 secret) 삭제 후 재등록")
+
     resp = requests.post(
         f"{LS_URL}/api/webhooks/",
-        headers=headers,
+        headers=json_headers,
         json={
             "url": webhook_url,
             "actions": ["ANNOTATION_CREATED", "ANNOTATION_UPDATED"],
             "is_active": True,
             "send_payload": True,
+            "send_for_all_actions": False,
             "project": project_id,
+            "headers": {"X-Webhook-Token": LS_WEBHOOK_SECRET},
         },
     )
     resp.raise_for_status()
@@ -844,6 +415,17 @@ def main() -> int:
     if not API_KEY:
         print("ERROR: LS_API_KEY 환경변수가 필요합니다.")
         return 1
+
+    _MINIO_DEFAULTS = {"minioadmin", "admin", ""}
+    _insecure_ok = os.environ.get("ALLOW_INSECURE_DEFAULT_CREDS", "").strip().lower() in {"1", "true", "yes"}
+    if not MINIO_ACCESS_KEY or MINIO_ACCESS_KEY in _MINIO_DEFAULTS:
+        if not _insecure_ok:
+            print("ERROR: MINIO_ACCESS_KEY 가 설정되지 않았거나 기본값입니다. 유효한 자격증명을 설정하세요. (임시 우회: ALLOW_INSECURE_DEFAULT_CREDS=1)")
+            return 1
+    if not MINIO_SECRET_KEY or MINIO_SECRET_KEY in _MINIO_DEFAULTS:
+        if not _insecure_ok:
+            print("ERROR: MINIO_SECRET_KEY 가 설정되지 않았거나 기본값입니다. 유효한 자격증명을 설정하세요. (임시 우회: ALLOW_INSECURE_DEFAULT_CREDS=1)")
+            return 1
 
     if args.command == "serve":
         print(f"[INFO] 수신 서버 시작: http://{args.host}:{args.port}/webhook")

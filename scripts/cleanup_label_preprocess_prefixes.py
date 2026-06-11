@@ -2,8 +2,8 @@
 """Clean up production label/preprocess data for fixed source prefixes.
 
 Scope:
-- Delete only label/preprocess artifacts in local production DuckDB + production MinIO.
-- Keep raw_files, video_metadata, vlm-raw, NAS archive, staging, MotherDuck untouched.
+- Delete only label/preprocess artifacts in local production PostgreSQL + production MinIO.
+- Keep raw_files, video_metadata, vlm-raw, NAS archive, staging untouched.
 
 Targets are intentionally fixed to:
 - source-a-rtsp-bucket/
@@ -20,14 +20,16 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import time
+import sys
 from collections import defaultdict
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Sequence
 
 import boto3
-import duckdb
+import psycopg2
+import psycopg2.extensions
 from botocore.config import Config
 from botocore.exceptions import ClientError
 
@@ -91,7 +93,16 @@ def parse_args() -> argparse.Namespace:
         choices=[PROTECTED_SCOPE],
         help="Cleanup scope. Only label_preprocess is supported.",
     )
-    parser.add_argument("--db", default="/data/pipeline.duckdb", help="Production DuckDB path.")
+    parser.add_argument(
+        "--dsn",
+        default=os.getenv("DATAOPS_POSTGRES_DSN") or "",
+        help="PostgreSQL DSN. Defaults to DATAOPS_POSTGRES_DSN env.",
+    )
+    parser.add_argument(
+        "--db",
+        default=None,
+        help="[DEPRECATED] DuckDB path — ignored. Use --dsn instead.",
+    )
     parser.add_argument(
         "--minio-endpoint",
         default=os.getenv("MINIO_ENDPOINT") or "http://127.0.0.1:9000",
@@ -116,13 +127,13 @@ def parse_args() -> argparse.Namespace:
         "--lock-timeout-sec",
         type=float,
         default=30.0,
-        help="DuckDB write-lock wait timeout when --apply is used.",
+        help="[DEPRECATED] DuckDB lock timeout — ignored for PostgreSQL.",
     )
     parser.add_argument(
         "--lock-retry-interval-sec",
         type=float,
         default=1.0,
-        help="DuckDB write-lock retry interval when --apply is used.",
+        help="[DEPRECATED] DuckDB lock retry interval — ignored for PostgreSQL.",
     )
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--dry-run", dest="apply", action="store_false", help="Preview only (default).")
@@ -200,38 +211,14 @@ def _resolve_report_path(raw_path: str | None, *, apply: bool) -> Path:
     return path
 
 
-def _connect_duckdb(
-    db_path: str,
-    *,
-    write_mode: bool,
-    lock_timeout_sec: float,
-    retry_interval_sec: float,
-) -> duckdb.DuckDBPyConnection:
-    if not write_mode:
-        con = duckdb.connect(db_path, read_only=True)
-        con.execute("PRAGMA disable_progress_bar")
-        return con
-
-    timeout_sec = max(0.0, float(lock_timeout_sec))
-    interval_sec = max(0.1, float(retry_interval_sec))
-    deadline = time.monotonic() + timeout_sec
-    last_exc: Exception | None = None
-    while True:
-        try:
-            con = duckdb.connect(db_path)
-            con.execute("PRAGMA disable_progress_bar")
-            return con
-        except Exception as exc:  # noqa: BLE001
-            last_exc = exc
-            if "Could not set lock on file" not in str(exc):
-                raise
-            if time.monotonic() >= deadline:
-                break
-            time.sleep(interval_sec)
-    raise RuntimeError(
-        f"DuckDB write lock timeout after {timeout_sec:.1f}s: {db_path}. "
-        "Stop production writers (dispatch/label/process/yolo/sync) and retry."
-    ) from last_exc
+@contextmanager
+def _connect_pg(dsn: str):
+    """psycopg2 connection context manager. autocommit=False by default."""
+    conn = psycopg2.connect(dsn)
+    try:
+        yield conn
+    finally:
+        conn.close()
 
 
 def _build_s3_client(endpoint: str, access_key: str, secret_key: str):
@@ -245,25 +232,31 @@ def _build_s3_client(endpoint: str, access_key: str, secret_key: str):
     )
 
 
-def _table_count(con: duckdb.DuckDBPyConnection, table: str) -> int:
-    return int(con.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
+def _table_count(conn: psycopg2.extensions.connection, table: str) -> int:
+    with conn.cursor() as cur:
+        cur.execute(f"SELECT COUNT(*) FROM {table}")
+        row = cur.fetchone()
+    return int(row[0]) if row else 0
 
 
 def _placeholders(items: Sequence[str]) -> str:
-    return ", ".join(["?"] * len(items))
+    return ", ".join(["%s"] * len(items))
 
 
 def _select_scalar(
-    con: duckdb.DuckDBPyConnection,
+    conn: psycopg2.extensions.connection,
     sql: str,
     params: Sequence[Any],
 ) -> int:
-    return int(con.execute(sql, list(params)).fetchone()[0] or 0)
+    with conn.cursor() as cur:
+        cur.execute(sql, list(params))
+        row = cur.fetchone()
+    return int(row[0] or 0) if row else 0
 
 
 def _target_sql_for_prefix(prefix: str) -> tuple[str, list[str]]:
     return (
-        "COALESCE(raw_key, '') LIKE ? OR COALESCE(archive_path, '') LIKE ?",
+        "COALESCE(raw_key, '') LIKE %s OR COALESCE(archive_path, '') LIKE %s",
         [f"{prefix}%", f"/nas/archive/{prefix}%"],
     )
 
@@ -278,89 +271,99 @@ def _target_sql_for_prefixes(prefixes: Sequence[str]) -> tuple[str, list[str]]:
     return " OR ".join(clauses) if clauses else "1=0", params
 
 
-def _load_target_asset_ids(con: duckdb.DuckDBPyConnection, prefixes: Sequence[str]) -> list[str]:
+def _load_target_asset_ids(conn: psycopg2.extensions.connection, prefixes: Sequence[str]) -> list[str]:
     where_sql, params = _target_sql_for_prefixes(prefixes)
-    rows = con.execute(
-        f"""
-        SELECT asset_id
-        FROM raw_files
-        WHERE {where_sql}
-        ORDER BY created_at, asset_id
-        """,
-        params,
-    ).fetchall()
+    with conn.cursor() as cur:
+        cur.execute(
+            f"""
+            SELECT asset_id
+            FROM raw_files
+            WHERE {where_sql}
+            ORDER BY created_at, asset_id
+            """,
+            params,
+        )
+        rows = cur.fetchall()
     return [str(row[0]) for row in rows if row[0]]
 
 
-def _load_target_clip_ids(con: duckdb.DuckDBPyConnection, asset_ids: Sequence[str]) -> list[str]:
+def _load_target_clip_ids(conn: psycopg2.extensions.connection, asset_ids: Sequence[str]) -> list[str]:
     if not asset_ids:
         return []
-    rows = con.execute(
-        f"""
-        SELECT clip_id
-        FROM processed_clips
-        WHERE source_asset_id IN ({_placeholders(asset_ids)})
-        ORDER BY created_at, clip_id
-        """,
-        list(asset_ids),
-    ).fetchall()
+    with conn.cursor() as cur:
+        cur.execute(
+            f"""
+            SELECT clip_id
+            FROM processed_clips
+            WHERE source_asset_id IN ({_placeholders(asset_ids)})
+            ORDER BY created_at, clip_id
+            """,
+            list(asset_ids),
+        )
+        rows = cur.fetchall()
     return [str(row[0]) for row in rows if row[0]]
 
 
-def _load_target_label_ids(con: duckdb.DuckDBPyConnection, asset_ids: Sequence[str]) -> list[str]:
+def _load_target_label_ids(conn: psycopg2.extensions.connection, asset_ids: Sequence[str]) -> list[str]:
     if not asset_ids:
         return []
-    rows = con.execute(
-        f"""
-        SELECT label_id
-        FROM labels
-        WHERE asset_id IN ({_placeholders(asset_ids)})
-        ORDER BY created_at, label_id
-        """,
-        list(asset_ids),
-    ).fetchall()
+    with conn.cursor() as cur:
+        cur.execute(
+            f"""
+            SELECT label_id
+            FROM labels
+            WHERE asset_id IN ({_placeholders(asset_ids)})
+            ORDER BY created_at, label_id
+            """,
+            list(asset_ids),
+        )
+        rows = cur.fetchall()
     return [str(row[0]) for row in rows if row[0]]
 
 
 def _load_clip_ids_for_label_ids(
-    con: duckdb.DuckDBPyConnection,
+    conn: psycopg2.extensions.connection,
     label_ids: Sequence[str],
 ) -> list[str]:
     if not label_ids:
         return []
-    rows = con.execute(
-        f"""
-        SELECT clip_id
-        FROM processed_clips
-        WHERE source_label_id IN ({_placeholders(label_ids)})
-        ORDER BY created_at, clip_id
-        """,
-        list(label_ids),
-    ).fetchall()
+    with conn.cursor() as cur:
+        cur.execute(
+            f"""
+            SELECT clip_id
+            FROM processed_clips
+            WHERE source_label_id IN ({_placeholders(label_ids)})
+            ORDER BY created_at, clip_id
+            """,
+            list(label_ids),
+        )
+        rows = cur.fetchall()
     return [str(row[0]) for row in rows if row[0]]
 
 
 def _load_source_asset_ids_for_clip_ids(
-    con: duckdb.DuckDBPyConnection,
+    conn: psycopg2.extensions.connection,
     clip_ids: Sequence[str],
 ) -> list[str]:
     if not clip_ids:
         return []
-    rows = con.execute(
-        f"""
-        SELECT DISTINCT source_asset_id
-        FROM processed_clips
-        WHERE clip_id IN ({_placeholders(clip_ids)})
-          AND source_asset_id IS NOT NULL
-        ORDER BY source_asset_id
-        """,
-        list(clip_ids),
-    ).fetchall()
+    with conn.cursor() as cur:
+        cur.execute(
+            f"""
+            SELECT DISTINCT source_asset_id
+            FROM processed_clips
+            WHERE clip_id IN ({_placeholders(clip_ids)})
+              AND source_asset_id IS NOT NULL
+            ORDER BY source_asset_id
+            """,
+            list(clip_ids),
+        )
+        rows = cur.fetchall()
     return [str(row[0]) for row in rows if row[0]]
 
 
 def _load_target_image_ids(
-    con: duckdb.DuckDBPyConnection,
+    conn: psycopg2.extensions.connection,
     asset_ids: Sequence[str],
     clip_ids: Sequence[str],
 ) -> list[str]:
@@ -379,23 +382,25 @@ def _load_target_image_ids(
         params.extend(PROTECTED_IMAGE_ROLES)
     if not clauses:
         return []
-    rows = con.execute(
-        f"""
-        SELECT image_id
-        FROM image_metadata
-        WHERE {' OR '.join(clauses)}
-        ORDER BY extracted_at, image_id
-        """,
-        params,
-    ).fetchall()
+    with conn.cursor() as cur:
+        cur.execute(
+            f"""
+            SELECT image_id
+            FROM image_metadata
+            WHERE {' OR '.join(clauses)}
+            ORDER BY extracted_at, image_id
+            """,
+            params,
+        )
+        rows = cur.fetchall()
     return [str(row[0]) for row in rows if row[0]]
 
 
-def _count_target_video_metadata(con: duckdb.DuckDBPyConnection, asset_ids: Sequence[str]) -> int:
+def _count_target_video_metadata(conn: psycopg2.extensions.connection, asset_ids: Sequence[str]) -> int:
     if not asset_ids:
         return 0
     return _select_scalar(
-        con,
+        conn,
         f"""
         SELECT COUNT(*)
         FROM video_metadata
@@ -405,11 +410,11 @@ def _count_target_video_metadata(con: duckdb.DuckDBPyConnection, asset_ids: Sequ
     )
 
 
-def _count_target_labels(con: duckdb.DuckDBPyConnection, label_ids: Sequence[str]) -> int:
+def _count_target_labels(conn: psycopg2.extensions.connection, label_ids: Sequence[str]) -> int:
     if not label_ids:
         return 0
     return _select_scalar(
-        con,
+        conn,
         f"""
         SELECT COUNT(*)
         FROM labels
@@ -419,11 +424,11 @@ def _count_target_labels(con: duckdb.DuckDBPyConnection, label_ids: Sequence[str
     )
 
 
-def _count_target_processed_clips(con: duckdb.DuckDBPyConnection, clip_ids: Sequence[str]) -> int:
+def _count_target_processed_clips(conn: psycopg2.extensions.connection, clip_ids: Sequence[str]) -> int:
     if not clip_ids:
         return 0
     return _select_scalar(
-        con,
+        conn,
         f"""
         SELECT COUNT(*)
         FROM processed_clips
@@ -433,11 +438,11 @@ def _count_target_processed_clips(con: duckdb.DuckDBPyConnection, clip_ids: Sequ
     )
 
 
-def _count_target_image_metadata(con: duckdb.DuckDBPyConnection, image_ids: Sequence[str]) -> int:
+def _count_target_image_metadata(conn: psycopg2.extensions.connection, image_ids: Sequence[str]) -> int:
     if not image_ids:
         return 0
     return _select_scalar(
-        con,
+        conn,
         f"""
         SELECT COUNT(*)
         FROM image_metadata
@@ -448,7 +453,7 @@ def _count_target_image_metadata(con: duckdb.DuckDBPyConnection, image_ids: Sequ
 
 
 def _count_target_image_labels(
-    con: duckdb.DuckDBPyConnection,
+    conn: psycopg2.extensions.connection,
     clip_ids: Sequence[str],
     image_ids: Sequence[str],
 ) -> int:
@@ -463,7 +468,7 @@ def _count_target_image_labels(
     if not clauses:
         return 0
     return _select_scalar(
-        con,
+        conn,
         f"""
         SELECT COUNT(*)
         FROM image_labels
@@ -473,11 +478,11 @@ def _count_target_image_labels(
     )
 
 
-def _count_target_dataset_clips(con: duckdb.DuckDBPyConnection, clip_ids: Sequence[str]) -> int:
+def _count_target_dataset_clips(conn: psycopg2.extensions.connection, clip_ids: Sequence[str]) -> int:
     if not clip_ids:
         return 0
     return _select_scalar(
-        con,
+        conn,
         f"""
         SELECT COUNT(*)
         FROM dataset_clips
@@ -488,15 +493,14 @@ def _count_target_dataset_clips(con: duckdb.DuckDBPyConnection, clip_ids: Sequen
 
 
 def _collect_requested_scope_breakdown(
-    con: duckdb.DuckDBPyConnection,
+    conn: psycopg2.extensions.connection,
     prefix: str,
     *,
     scope_type: str,
 ) -> dict[str, Any]:
     where_sql, params = _target_sql_for_prefix(prefix)
-    asset_ids = [
-        str(row[0])
-        for row in con.execute(
+    with conn.cursor() as cur:
+        cur.execute(
             f"""
             SELECT asset_id
             FROM raw_files
@@ -504,37 +508,41 @@ def _collect_requested_scope_breakdown(
             ORDER BY created_at, asset_id
             """,
             params,
-        ).fetchall()
-        if row[0]
-    ]
-    label_ids = _load_target_label_ids(con, asset_ids) if scope_type == "labels" else []
-    explicit_clip_ids = _load_target_clip_ids(con, asset_ids) if scope_type == "processed" else []
-    dependent_clip_ids = _load_clip_ids_for_label_ids(con, label_ids) if scope_type == "labels" else []
+        )
+        asset_ids = [str(row[0]) for row in cur.fetchall() if row[0]]
+
+    label_ids = _load_target_label_ids(conn, asset_ids) if scope_type == "labels" else []
+    explicit_clip_ids = _load_target_clip_ids(conn, asset_ids) if scope_type == "processed" else []
+    dependent_clip_ids = _load_clip_ids_for_label_ids(conn, label_ids) if scope_type == "labels" else []
     clip_ids = sorted(set(explicit_clip_ids) | set(dependent_clip_ids))
-    image_asset_ids = sorted(set(asset_ids) | set(_load_source_asset_ids_for_clip_ids(con, clip_ids)))
-    image_ids = _load_target_image_ids(con, image_asset_ids, clip_ids)
-    sample_rows = con.execute(
-        f"""
-        SELECT asset_id, source_unit_name, raw_key, archive_path
-        FROM raw_files
-        WHERE {where_sql}
-        ORDER BY created_at, asset_id
-        LIMIT 5
-        """,
-        params,
-    ).fetchall()
+    image_asset_ids = sorted(set(asset_ids) | set(_load_source_asset_ids_for_clip_ids(conn, clip_ids)))
+    image_ids = _load_target_image_ids(conn, image_asset_ids, clip_ids)
+
+    with conn.cursor() as cur:
+        cur.execute(
+            f"""
+            SELECT asset_id, source_unit_name, raw_key, archive_path
+            FROM raw_files
+            WHERE {where_sql}
+            ORDER BY created_at, asset_id
+            LIMIT 5
+            """,
+            params,
+        )
+        sample_rows = cur.fetchall()
+
     return {
         "scope_type": scope_type,
         "target_prefix": prefix,
         "asset_count": len(asset_ids),
         "counts": {
             "raw_files": len(asset_ids),
-            "video_metadata": _count_target_video_metadata(con, asset_ids),
-            "labels": _count_target_labels(con, label_ids),
-            "processed_clips": _count_target_processed_clips(con, clip_ids),
-            "image_metadata": _count_target_image_metadata(con, image_ids),
-            "image_labels": _count_target_image_labels(con, clip_ids, image_ids),
-            "dataset_clips": _count_target_dataset_clips(con, clip_ids),
+            "video_metadata": _count_target_video_metadata(conn, asset_ids),
+            "labels": _count_target_labels(conn, label_ids),
+            "processed_clips": _count_target_processed_clips(conn, clip_ids),
+            "image_metadata": _count_target_image_metadata(conn, image_ids),
+            "image_labels": _count_target_image_labels(conn, clip_ids, image_ids),
+            "dataset_clips": _count_target_dataset_clips(conn, clip_ids),
         },
         "samples": [
             {
@@ -549,43 +557,47 @@ def _collect_requested_scope_breakdown(
 
 
 def _collect_image_role_breakdown(
-    con: duckdb.DuckDBPyConnection,
+    conn: psycopg2.extensions.connection,
     asset_ids: Sequence[str],
 ) -> list[dict[str, Any]]:
     if not asset_ids:
         return []
-    rows = con.execute(
-        f"""
-        SELECT COALESCE(image_role, '<null>') AS image_role, COUNT(*)
-        FROM image_metadata
-        WHERE source_asset_id IN ({_placeholders(asset_ids)})
-        GROUP BY 1
-        ORDER BY 2 DESC, 1 ASC
-        """,
-        list(asset_ids),
-    ).fetchall()
+    with conn.cursor() as cur:
+        cur.execute(
+            f"""
+            SELECT COALESCE(image_role, '<null>') AS image_role, COUNT(*)
+            FROM image_metadata
+            WHERE source_asset_id IN ({_placeholders(asset_ids)})
+            GROUP BY 1
+            ORDER BY 2 DESC, 1 ASC
+            """,
+            list(asset_ids),
+        )
+        rows = cur.fetchall()
     return [{"image_role": row[0], "count": int(row[1])} for row in rows]
 
 
 def _collect_minio_refs(
-    con: duckdb.DuckDBPyConnection,
+    conn: psycopg2.extensions.connection,
     label_ids: Sequence[str],
     clip_ids: Sequence[str],
     image_ids: Sequence[str],
 ) -> dict[str, set[str]]:
     refs: dict[str, set[str]] = defaultdict(set)
     if label_ids:
-        for bucket, key in con.execute(
-            f"""
-            SELECT COALESCE(NULLIF(labels_bucket, ''), 'vlm-labels') AS bucket, labels_key
-            FROM labels
-            WHERE label_id IN ({_placeholders(label_ids)})
-              AND labels_key IS NOT NULL
-              AND labels_key <> ''
-            """,
-            list(label_ids),
-        ).fetchall():
-            refs[str(bucket)].add(str(key))
+        with conn.cursor() as cur:
+            cur.execute(
+                f"""
+                SELECT COALESCE(NULLIF(labels_bucket, ''), 'vlm-labels') AS bucket, labels_key
+                FROM labels
+                WHERE label_id IN ({_placeholders(label_ids)})
+                  AND labels_key IS NOT NULL
+                  AND labels_key <> ''
+                """,
+                list(label_ids),
+            )
+            for bucket, key in cur.fetchall():
+                refs[str(bucket)].add(str(key))
 
     if clip_ids or image_ids:
         clauses: list[str] = []
@@ -596,56 +608,64 @@ def _collect_minio_refs(
         if image_ids:
             clauses.append(f"image_id IN ({_placeholders(image_ids)})")
             params.extend(image_ids)
-        for bucket, key in con.execute(
-            f"""
-            SELECT COALESCE(NULLIF(labels_bucket, ''), 'vlm-labels') AS bucket, labels_key
-            FROM image_labels
-            WHERE {' OR '.join(clauses)}
-              AND labels_key IS NOT NULL
-              AND labels_key <> ''
-            """,
-            params,
-        ).fetchall():
-            refs[str(bucket)].add(str(key))
+        with conn.cursor() as cur:
+            cur.execute(
+                f"""
+                SELECT COALESCE(NULLIF(labels_bucket, ''), 'vlm-labels') AS bucket, labels_key
+                FROM image_labels
+                WHERE {' OR '.join(clauses)}
+                  AND labels_key IS NOT NULL
+                  AND labels_key <> ''
+                """,
+                params,
+            )
+            for bucket, key in cur.fetchall():
+                refs[str(bucket)].add(str(key))
 
     if clip_ids:
-        for bucket, key in con.execute(
-            f"""
-            SELECT COALESCE(NULLIF(processed_bucket, ''), 'vlm-processed') AS bucket, clip_key
-            FROM processed_clips
-            WHERE clip_id IN ({_placeholders(clip_ids)})
-              AND clip_key IS NOT NULL
-              AND clip_key <> ''
-            """,
-            list(clip_ids),
-        ).fetchall():
-            refs[str(bucket)].add(str(key))
+        with conn.cursor() as cur:
+            cur.execute(
+                f"""
+                SELECT COALESCE(NULLIF(processed_bucket, ''), 'vlm-processed') AS bucket, clip_key
+                FROM processed_clips
+                WHERE clip_id IN ({_placeholders(clip_ids)})
+                  AND clip_key IS NOT NULL
+                  AND clip_key <> ''
+                """,
+                list(clip_ids),
+            )
+            for bucket, key in cur.fetchall():
+                refs[str(bucket)].add(str(key))
 
-        for bucket, key in con.execute(
-            f"""
-            SELECT COALESCE(NULLIF(d.dataset_bucket, ''), 'vlm-dataset') AS bucket, dc.dataset_key
-            FROM dataset_clips dc
-            JOIN datasets d ON d.dataset_id = dc.dataset_id
-            WHERE dc.clip_id IN ({_placeholders(clip_ids)})
-              AND dc.dataset_key IS NOT NULL
-              AND dc.dataset_key <> ''
-            """,
-            list(clip_ids),
-        ).fetchall():
-            refs[str(bucket)].add(str(key))
+        with conn.cursor() as cur:
+            cur.execute(
+                f"""
+                SELECT COALESCE(NULLIF(d.dataset_bucket, ''), 'vlm-dataset') AS bucket, dc.dataset_key
+                FROM dataset_clips dc
+                JOIN datasets d ON d.dataset_id = dc.dataset_id
+                WHERE dc.clip_id IN ({_placeholders(clip_ids)})
+                  AND dc.dataset_key IS NOT NULL
+                  AND dc.dataset_key <> ''
+                """,
+                list(clip_ids),
+            )
+            for bucket, key in cur.fetchall():
+                refs[str(bucket)].add(str(key))
 
     if image_ids:
-        for bucket, key in con.execute(
-            f"""
-            SELECT COALESCE(NULLIF(image_bucket, ''), 'vlm-processed') AS bucket, image_key
-            FROM image_metadata
-            WHERE image_id IN ({_placeholders(image_ids)})
-              AND image_key IS NOT NULL
-              AND image_key <> ''
-            """,
-            list(image_ids),
-        ).fetchall():
-            refs[str(bucket)].add(str(key))
+        with conn.cursor() as cur:
+            cur.execute(
+                f"""
+                SELECT COALESCE(NULLIF(image_bucket, ''), 'vlm-processed') AS bucket, image_key
+                FROM image_metadata
+                WHERE image_id IN ({_placeholders(image_ids)})
+                  AND image_key IS NOT NULL
+                  AND image_key <> ''
+                """,
+                list(image_ids),
+            )
+            for bucket, key in cur.fetchall():
+                refs[str(bucket)].add(str(key))
 
     return refs
 
@@ -692,44 +712,44 @@ def _scan_prefix_objects(
 
 
 def _collect_scope_snapshot(
-    con: duckdb.DuckDBPyConnection,
+    conn: psycopg2.extensions.connection,
     s3_client,
     scope_prefixes: dict[str, Sequence[str]],
 ) -> dict[str, Any]:
     label_prefixes = list(scope_prefixes.get("labels", []))
     processed_prefixes = list(scope_prefixes.get("processed", []))
 
-    label_asset_ids = _load_target_asset_ids(con, label_prefixes)
-    processed_asset_ids = _load_target_asset_ids(con, processed_prefixes)
-    label_ids = _load_target_label_ids(con, label_asset_ids)
-    dependent_clip_ids = _load_clip_ids_for_label_ids(con, label_ids)
-    explicit_clip_ids = _load_target_clip_ids(con, processed_asset_ids)
+    label_asset_ids = _load_target_asset_ids(conn, label_prefixes)
+    processed_asset_ids = _load_target_asset_ids(conn, processed_prefixes)
+    label_ids = _load_target_label_ids(conn, label_asset_ids)
+    dependent_clip_ids = _load_clip_ids_for_label_ids(conn, label_ids)
+    explicit_clip_ids = _load_target_clip_ids(conn, processed_asset_ids)
     clip_ids = sorted(set(explicit_clip_ids) | set(dependent_clip_ids))
-    clip_asset_ids = _load_source_asset_ids_for_clip_ids(con, clip_ids)
+    clip_asset_ids = _load_source_asset_ids_for_clip_ids(conn, clip_ids)
     relevant_asset_ids = sorted(set(label_asset_ids) | set(processed_asset_ids) | set(clip_asset_ids))
     image_asset_ids = sorted(set(processed_asset_ids) | set(clip_asset_ids))
-    image_ids = _load_target_image_ids(con, image_asset_ids, clip_ids)
-    refs = _collect_minio_refs(con, label_ids, clip_ids, image_ids)
+    image_ids = _load_target_image_ids(conn, image_asset_ids, clip_ids)
+    refs = _collect_minio_refs(conn, label_ids, clip_ids, image_ids)
     requested_scope_breakdown = {
         "labels": [
-            _collect_requested_scope_breakdown(con, prefix, scope_type="labels")
+            _collect_requested_scope_breakdown(conn, prefix, scope_type="labels")
             for prefix in label_prefixes
         ],
         "processed": [
-            _collect_requested_scope_breakdown(con, prefix, scope_type="processed")
+            _collect_requested_scope_breakdown(conn, prefix, scope_type="processed")
             for prefix in processed_prefixes
         ],
     }
     target_counts = {
         "raw_files": len(relevant_asset_ids),
-        "video_metadata": _count_target_video_metadata(con, relevant_asset_ids),
-        "labels": _count_target_labels(con, label_ids),
-        "processed_clips": _count_target_processed_clips(con, clip_ids),
-        "image_metadata": _count_target_image_metadata(con, image_ids),
-        "image_labels": _count_target_image_labels(con, clip_ids, image_ids),
-        "dataset_clips": _count_target_dataset_clips(con, clip_ids),
+        "video_metadata": _count_target_video_metadata(conn, relevant_asset_ids),
+        "labels": _count_target_labels(conn, label_ids),
+        "processed_clips": _count_target_processed_clips(conn, clip_ids),
+        "image_metadata": _count_target_image_metadata(conn, image_ids),
+        "image_labels": _count_target_image_labels(conn, clip_ids, image_ids),
+        "dataset_clips": _count_target_dataset_clips(conn, clip_ids),
     }
-    table_total_counts = {table: _table_count(con, table) for table in REPORT_TABLES}
+    table_total_counts = {table: _table_count(conn, table) for table in REPORT_TABLES}
     processed_scan_prefixes = sorted(set(label_prefixes) | set(processed_prefixes))
     scan_plan: list[tuple[str, Sequence[str]]] = []
     if label_prefixes:
@@ -755,23 +775,24 @@ def _collect_scope_snapshot(
             "image_id_count": len(image_ids),
             "bucket_candidates": _summarize_minio_refs(refs),
         },
-        "image_role_breakdown": _collect_image_role_breakdown(con, image_asset_ids),
+        "image_role_breakdown": _collect_image_role_breakdown(conn, image_asset_ids),
         "prefix_object_counts": _scan_prefix_objects(s3_client, scan_plan),
         "minio_refs": refs,
     }
 
 
-def _delete_dataset_clips(con: duckdb.DuckDBPyConnection, clip_ids: Sequence[str]) -> None:
+def _delete_dataset_clips(conn: psycopg2.extensions.connection, clip_ids: Sequence[str]) -> None:
     if not clip_ids:
         return
-    con.execute(
-        f"DELETE FROM dataset_clips WHERE clip_id IN ({_placeholders(clip_ids)})",
-        list(clip_ids),
-    )
+    with conn.cursor() as cur:
+        cur.execute(
+            f"DELETE FROM dataset_clips WHERE clip_id IN ({_placeholders(clip_ids)})",
+            list(clip_ids),
+        )
 
 
 def _delete_image_labels(
-    con: duckdb.DuckDBPyConnection,
+    conn: psycopg2.extensions.connection,
     clip_ids: Sequence[str],
     image_ids: Sequence[str],
 ) -> None:
@@ -785,50 +806,55 @@ def _delete_image_labels(
         params.extend(image_ids)
     if not clauses:
         return
-    con.execute(f"DELETE FROM image_labels WHERE {' OR '.join(clauses)}", params)
+    with conn.cursor() as cur:
+        cur.execute(f"DELETE FROM image_labels WHERE {' OR '.join(clauses)}", params)
 
 
-def _delete_image_metadata(con: duckdb.DuckDBPyConnection, image_ids: Sequence[str]) -> None:
+def _delete_image_metadata(conn: psycopg2.extensions.connection, image_ids: Sequence[str]) -> None:
     if not image_ids:
         return
-    con.execute(
-        f"DELETE FROM image_metadata WHERE image_id IN ({_placeholders(image_ids)})",
-        list(image_ids),
-    )
+    with conn.cursor() as cur:
+        cur.execute(
+            f"DELETE FROM image_metadata WHERE image_id IN ({_placeholders(image_ids)})",
+            list(image_ids),
+        )
 
 
 def _detach_image_metadata_clip_refs(
-    con: duckdb.DuckDBPyConnection,
+    conn: psycopg2.extensions.connection,
     clip_ids: Sequence[str],
 ) -> None:
     if not clip_ids:
         return
-    con.execute(
-        f"""
-        UPDATE image_metadata
-        SET source_clip_id = NULL
-        WHERE source_clip_id IN ({_placeholders(clip_ids)})
-        """,
-        list(clip_ids),
-    )
+    with conn.cursor() as cur:
+        cur.execute(
+            f"""
+            UPDATE image_metadata
+            SET source_clip_id = NULL
+            WHERE source_clip_id IN ({_placeholders(clip_ids)})
+            """,
+            list(clip_ids),
+        )
 
 
-def _delete_processed_clips(con: duckdb.DuckDBPyConnection, clip_ids: Sequence[str]) -> None:
+def _delete_processed_clips(conn: psycopg2.extensions.connection, clip_ids: Sequence[str]) -> None:
     if not clip_ids:
         return
-    con.execute(
-        f"DELETE FROM processed_clips WHERE clip_id IN ({_placeholders(clip_ids)})",
-        list(clip_ids),
-    )
+    with conn.cursor() as cur:
+        cur.execute(
+            f"DELETE FROM processed_clips WHERE clip_id IN ({_placeholders(clip_ids)})",
+            list(clip_ids),
+        )
 
 
-def _delete_labels(con: duckdb.DuckDBPyConnection, label_ids: Sequence[str]) -> None:
+def _delete_labels(conn: psycopg2.extensions.connection, label_ids: Sequence[str]) -> None:
     if not label_ids:
         return
-    con.execute(
-        f"DELETE FROM labels WHERE label_id IN ({_placeholders(label_ids)})",
-        list(label_ids),
-    )
+    with conn.cursor() as cur:
+        cur.execute(
+            f"DELETE FROM labels WHERE label_id IN ({_placeholders(label_ids)})",
+            list(label_ids),
+        )
 
 
 def _is_missing_client_error(exc: ClientError) -> bool:
@@ -887,18 +913,17 @@ def _delete_minio_refs(s3_client, refs: dict[str, set[str]]) -> dict[str, Any]:
 
 
 def _run_write_stage(
-    con: duckdb.DuckDBPyConnection,
+    conn: psycopg2.extensions.connection,
     *,
     stage_name: str,
     operations: Sequence[Any],
 ) -> None:
-    con.execute("BEGIN TRANSACTION")
     try:
         for operation in operations:
             operation()
-        con.execute("COMMIT")
+        conn.commit()
     except Exception as exc:  # noqa: BLE001
-        con.execute("ROLLBACK")
+        conn.rollback()
         raise RuntimeError(f"cleanup_stage_failed:{stage_name}") from exc
 
 
@@ -977,23 +1002,25 @@ def _print_summary(report: dict[str, Any]) -> None:
 
 def main() -> int:
     args = parse_args()
+    if args.db is not None:
+        print("[WARN] --db is deprecated and ignored. Use --dsn / DATAOPS_POSTGRES_DSN instead.", file=sys.stderr)
+
+    dsn = args.dsn.strip()
+    if not dsn:
+        print(
+            "ERROR: PostgreSQL DSN not set. Pass --dsn or set DATAOPS_POSTGRES_DSN env.",
+            file=sys.stderr,
+        )
+        return 1
+
     requested_prefixes = _resolve_scope_prefixes(args)
     report_path = _resolve_report_path(args.report_path, apply=bool(args.apply))
-    db_path = Path(args.db)
-    if not db_path.exists():
-        raise FileNotFoundError(f"db_not_found:{db_path}")
 
     s3_client = _build_s3_client(args.minio_endpoint, args.minio_access_key, args.minio_secret_key)
-    before_con = _connect_duckdb(
-        str(db_path),
-        write_mode=False,
-        lock_timeout_sec=args.lock_timeout_sec,
-        retry_interval_sec=args.lock_retry_interval_sec,
-    )
-    try:
-        before = _collect_scope_snapshot(before_con, s3_client, requested_prefixes)
-    finally:
-        before_con.close()
+
+    with _connect_pg(dsn) as before_conn:
+        before_conn.set_session(readonly=True, autocommit=True)
+        before = _collect_scope_snapshot(before_conn, s3_client, requested_prefixes)
 
     report: dict[str, Any] = {
         "generated_at": _now_iso(),
@@ -1001,7 +1028,7 @@ def main() -> int:
         "scope": args.scope,
         "requested_prefixes": requested_prefixes,
         "target_prefixes": sorted(set(requested_prefixes["labels"]) | set(requested_prefixes["processed"])),
-        "db_path": str(db_path),
+        "dsn": dsn.split("@")[-1] if "@" in dsn else "<dsn>",
         "minio_endpoint": args.minio_endpoint,
         "report_path": str(report_path),
         "before": _strip_internal_snapshot(before),
@@ -1016,66 +1043,52 @@ def main() -> int:
         _print_summary(report)
         return 0
 
-    write_con = _connect_duckdb(
-        str(db_path),
-        write_mode=True,
-        lock_timeout_sec=args.lock_timeout_sec,
-        retry_interval_sec=args.lock_retry_interval_sec,
-    )
     db_stages = [
         {
             "stage": "detach_clip_children",
-            "operations": [
-                lambda: _delete_dataset_clips(write_con, before["clip_ids"]),
-                lambda: _delete_image_labels(write_con, before["clip_ids"], before["image_ids"]),
-                lambda: _detach_image_metadata_clip_refs(write_con, before["clip_ids"]),
+            "operations_factory": lambda conn: [
+                lambda: _delete_dataset_clips(conn, before["clip_ids"]),
+                lambda: _delete_image_labels(conn, before["clip_ids"], before["image_ids"]),
+                lambda: _detach_image_metadata_clip_refs(conn, before["clip_ids"]),
             ],
         },
         {
             "stage": "delete_processed_clips",
-            "operations": [
-                lambda: _delete_processed_clips(write_con, before["clip_ids"]),
+            "operations_factory": lambda conn: [
+                lambda: _delete_processed_clips(conn, before["clip_ids"]),
             ],
         },
         {
             "stage": "delete_image_metadata",
-            "operations": [
-                lambda: _delete_image_metadata(write_con, before["image_ids"]),
+            "operations_factory": lambda conn: [
+                lambda: _delete_image_metadata(conn, before["image_ids"]),
             ],
         },
         {
             "stage": "delete_labels",
-            "operations": [
-                lambda: _delete_labels(write_con, before["label_ids"]),
+            "operations_factory": lambda conn: [
+                lambda: _delete_labels(conn, before["label_ids"]),
             ],
         },
     ]
-    try:
+
+    with _connect_pg(dsn) as write_conn:
         for stage in db_stages:
             _run_write_stage(
-                write_con,
+                write_conn,
                 stage_name=stage["stage"],
-                operations=stage["operations"],
+                operations=stage["operations_factory"](write_conn),
             )
-    finally:
-        write_con.close()
 
     minio_stats = _delete_minio_refs(s3_client, before["minio_refs"])
 
-    after_con = _connect_duckdb(
-        str(db_path),
-        write_mode=False,
-        lock_timeout_sec=args.lock_timeout_sec,
-        retry_interval_sec=args.lock_retry_interval_sec,
-    )
-    try:
-        after = _collect_scope_snapshot(after_con, s3_client, requested_prefixes)
-    finally:
-        after_con.close()
+    with _connect_pg(dsn) as after_conn:
+        after_conn.set_session(readonly=True, autocommit=True)
+        after = _collect_scope_snapshot(after_conn, s3_client, requested_prefixes)
 
     report["apply"] = {
         "db_transaction": {
-            "mode": "staged_commits_for_duckdb_fk_limitation",
+            "mode": "staged_commits_per_stage",
             "stages": [stage["stage"] for stage in db_stages],
             "detached_foreign_keys": [
                 "image_metadata.source_clip_id",
