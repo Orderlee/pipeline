@@ -64,38 +64,6 @@ def complete_uploaded_assets_without_archive(
     return completed_items
 
 
-def complete_uploaded_assets_in_archive(
-    context,
-    db: "PostgresResource",
-    manifest: dict,
-    uploaded: list[dict],
-) -> list[dict]:
-    """이미 archive로 선이동된 소스를 기준으로 업로드 완료 상태를 확정한다."""
-    completed_items: list[dict] = []
-    manifest_id = str(manifest.get("manifest_id", "")).strip() or "<unknown_manifest>"
-
-    for item in uploaded:
-        asset_id = str(item.get("asset_id", "")).strip()
-        archive_path = str(item.get("source_path", "")).strip() or None
-        if not asset_id:
-            continue
-        db.update_raw_file_status(
-            asset_id,
-            "completed",
-            archive_path=archive_path,
-            raw_bucket="vlm-raw",
-        )
-        completed_items.append({**item, "archive_path": archive_path})
-
-    context.log.info(
-        "archive 선이동 업로드 완료 확정: "
-        f"manifest_id={manifest_id}, "
-        f"transfer_tool={manifest.get('transfer_tool')}, "
-        f"uploaded={len(uploaded)}, completed={len(completed_items)}"
-    )
-    return completed_items
-
-
 def archive_uploaded_assets(
     context,
     db: "PostgresResource",

@@ -22,7 +22,7 @@ from .hydration import (
 )
 from .ingest_archive_flow import (
     _maybe_compact_completed_gcp_manifests,
-    _prepare_archive_inputs,
+    _set_archive_requested,
 )
 from .ingest_manifest_flow import (
     _hydrate_manifest,
@@ -84,7 +84,7 @@ def _step_load_and_hydrate(context, db, *, config, state):
     runtime_policy = resolve_ingest_runtime_policy(transfer_tool=state.transfer_tool)
 
     state.stage = "archive_prepare"
-    _prepare_archive_inputs(context, config=config, state=state, policy=runtime_policy)
+    _set_archive_requested(context, config=config, state=state, policy=runtime_policy)
 
     state.stage = "manifest_hydrate"
     _hydrate_manifest(context, state, db=db)
@@ -146,7 +146,7 @@ def _step_register_and_upload(context, db, minio, *, config, state, runtime_poli
     )
     context.log.info(
         f"archive_finalize:start archive_requested={state.archive_requested} "
-        f"prepared={state.archive_prepared_for_upload} uploaded={len(state.uploaded)} "
+        f"uploaded={len(state.uploaded)} "
         f"dedup_skip={duplicate_skip_count} completion_status={completion_status}"
     )
     if state.archive_requested:

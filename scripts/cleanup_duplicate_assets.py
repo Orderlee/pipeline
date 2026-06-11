@@ -8,16 +8,16 @@ Behavior:
 4. Delete duplicate rows from DB and duplicate objects from MinIO/archive.
 
 Run inside container:
-  python3 /scripts/cleanup_duplicate_assets.py --db /data/pipeline.duckdb --apply
+  python3 /scripts/cleanup_duplicate_assets.py --apply
+
+DSN via env: DATAOPS_POSTGRES_DSN=postgresql://user:pass@host:port/dbname
 """
 
 from __future__ import annotations
 
 import argparse
 import os
-import shutil
 import sys
-import time
 from collections import Counter, defaultdict
 from dataclasses import dataclass
 from datetime import datetime
@@ -25,7 +25,8 @@ from pathlib import Path
 from typing import Iterable
 
 import boto3
-import duckdb
+import psycopg2
+import psycopg2.extras
 from botocore.config import Config
 
 
@@ -44,57 +45,58 @@ class DuplicateRow:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--db", default="/data/pipeline.duckdb", help="DuckDB file path")
+    parser.add_argument("--dsn", default=None, help="PostgreSQL DSN (overrides DATAOPS_POSTGRES_DSN)")
+    parser.add_argument("--db", default=None, help="[DEPRECATED] DuckDB path — ignored, kept for CLI compat")
     parser.add_argument("--bucket", default="vlm-raw", help="MinIO bucket name")
-    parser.add_argument("--apply", action="store_true", help="Apply cleanup changes")
+    parser.add_argument("--apply", action="store_true", help="Apply cleanup changes (alias for --no-dry-run)")
+    parser.add_argument("--dry-run", dest="dry_run", action="store_true", default=False, help="Print plan only, no DB/MinIO changes")
     parser.add_argument("--log-every", type=int, default=100, help="Progress log interval")
     return parser.parse_args()
 
 
-def connect_with_retry(db_path: str, *, read_only: bool) -> duckdb.DuckDBPyConnection:
-    retry_count = max(0, int(os.getenv("DUCKDB_LOCK_RETRY_COUNT", "20")))
-    delay_ms = max(50, int(os.getenv("DUCKDB_LOCK_RETRY_DELAY_MS", "100")))
-    last_exc: Exception | None = None
-    for attempt in range(retry_count + 1):
-        try:
-            con = duckdb.connect(db_path, read_only=read_only)
-            con.execute("PRAGMA disable_progress_bar")
-            return con
-        except Exception as exc:  # noqa: BLE001
-            last_exc = exc
-            if attempt >= retry_count:
-                break
-            time.sleep(delay_ms / 1000.0)
-    if last_exc is None:
-        raise RuntimeError("DuckDB connection failed unexpectedly")
-    raise last_exc
+def resolve_dsn(args: argparse.Namespace) -> str:
+    if args.dsn:
+        return args.dsn
+    dsn = os.getenv("DATAOPS_POSTGRES_DSN", "").strip()
+    if not dsn:
+        print("[ERROR] DATAOPS_POSTGRES_DSN 미설정. --dsn 또는 환경변수 필요.", file=sys.stderr)
+        sys.exit(2)
+    return dsn
 
 
-def load_duplicate_rows(con: duckdb.DuckDBPyConnection) -> list[DuplicateRow]:
-    rows = con.execute(
-        """
-        WITH dup AS (
-            SELECT checksum
-            FROM raw_files
-            WHERE checksum IS NOT NULL AND length(trim(checksum)) > 0
-            GROUP BY checksum
-            HAVING COUNT(*) > 1
+def connect_pg(dsn: str) -> psycopg2.extensions.connection:
+    conn = psycopg2.connect(dsn)
+    conn.autocommit = False
+    return conn
+
+
+def load_duplicate_rows(conn: psycopg2.extensions.connection) -> list[DuplicateRow]:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            WITH dup AS (
+                SELECT checksum
+                FROM raw_files
+                WHERE checksum IS NOT NULL AND length(trim(checksum)) > 0
+                GROUP BY checksum
+                HAVING COUNT(*) > 1
+            )
+            SELECT
+                rf.checksum,
+                rf.asset_id,
+                COALESCE(rf.raw_key, ''),
+                COALESCE(rf.source_path, ''),
+                COALESCE(rf.archive_path, ''),
+                COALESCE(rf.original_name, ''),
+                COALESCE(rf.error_message, ''),
+                COALESCE(rf.ingest_status, ''),
+                rf.created_at
+            FROM raw_files rf
+            WHERE rf.checksum IN (SELECT checksum FROM dup)
+            ORDER BY rf.checksum, rf.created_at, rf.raw_key, rf.asset_id
+            """
         )
-        SELECT
-            rf.checksum,
-            rf.asset_id,
-            COALESCE(rf.raw_key, ''),
-            COALESCE(rf.source_path, ''),
-            COALESCE(rf.archive_path, ''),
-            COALESCE(rf.original_name, ''),
-            COALESCE(rf.error_message, ''),
-            COALESCE(rf.ingest_status, ''),
-            rf.created_at
-        FROM raw_files rf
-        WHERE rf.checksum IN (SELECT checksum FROM dup)
-        ORDER BY rf.checksum, rf.created_at, rf.raw_key, rf.asset_id
-        """
-    ).fetchall()
+        rows = cur.fetchall()
     return [DuplicateRow(*row) for row in rows]
 
 
@@ -161,32 +163,90 @@ def build_s3_client():
     )
 
 
-def schema_sql() -> str:
-    candidates = [
-        Path(__file__).resolve().parents[1] / "src" / "vlm_pipeline" / "sql" / "schema.sql",
-        Path.cwd() / "src" / "vlm_pipeline" / "sql" / "schema.sql",
-        Path("/app/src/vlm_pipeline/sql/schema.sql"),
-        Path("/src/vlm/vlm_pipeline/sql/schema.sql"),
-    ]
-    for schema_path in candidates:
-        if schema_path.exists():
-            return schema_path.read_text(encoding="utf-8")
-    raise FileNotFoundError(
-        "schema.sql not found in any known path: "
-        + ", ".join(str(path) for path in candidates)
-    )
+def delete_dependent_rows(
+    conn: psycopg2.extensions.connection,
+    remove_asset_ids: list[str],
+) -> dict[str, int]:
+    """FK 순서에 따라 remove_asset_ids 에 연결된 하위 테이블 행을 삭제.
+
+    삭제 순서: dataset_clips → image_labels → image_metadata → processed_clips → labels → video_metadata
+    raw_files 삭제는 호출자가 마지막에 수행.
+    반환: 각 테이블별 삭제 행 수 dict.
+    """
+    counts: dict[str, int] = {}
+    if not remove_asset_ids:
+        return counts
+
+    placeholders = ", ".join(["%s"] * len(remove_asset_ids))
+    params = tuple(remove_asset_ids)
+
+    with conn.cursor() as cur:
+        cur.execute(
+            f"""
+            DELETE FROM dataset_clips
+            WHERE clip_id IN (
+                SELECT clip_id FROM processed_clips
+                WHERE source_asset_id IN ({placeholders})
+            )
+            """,
+            params,
+        )
+        counts["dataset_clips"] = cur.rowcount
+
+        cur.execute(
+            f"""
+            DELETE FROM image_labels
+            WHERE image_id IN (
+                SELECT image_id FROM image_metadata
+                WHERE source_asset_id IN ({placeholders})
+            )
+            """,
+            params,
+        )
+        counts["image_labels"] = cur.rowcount
+
+        cur.execute(
+            f"DELETE FROM image_metadata WHERE source_asset_id IN ({placeholders})",
+            params,
+        )
+        counts["image_metadata"] = cur.rowcount
+
+        cur.execute(
+            f"DELETE FROM processed_clips WHERE source_asset_id IN ({placeholders})",
+            params,
+        )
+        counts["processed_clips"] = cur.rowcount
+
+        cur.execute(
+            f"DELETE FROM labels WHERE asset_id IN ({placeholders})",
+            params,
+        )
+        counts["labels"] = cur.rowcount
+
+        cur.execute(
+            f"DELETE FROM video_metadata WHERE asset_id IN ({placeholders})",
+            params,
+        )
+        counts["video_metadata"] = cur.rowcount
+
+    return counts
 
 
 def main() -> int:
     args = parse_args()
-    db_path = Path(args.db)
-    if not db_path.exists():
-        print(f"[ERROR] DB not found: {db_path}", file=sys.stderr)
-        return 2
 
-    read_con = connect_with_retry(str(db_path), read_only=True)
-    duplicate_rows = load_duplicate_rows(read_con)
-    read_con.close()
+    if args.db is not None:
+        print("[WARN] --db 는 무시됩니다. PG 포팅 이후 DSN(--dsn / DATAOPS_POSTGRES_DSN)을 사용하세요.", file=sys.stderr)
+
+    is_dry_run = args.dry_run or not args.apply
+
+    dsn = resolve_dsn(args)
+    conn = connect_pg(dsn)
+
+    try:
+        duplicate_rows = load_duplicate_rows(conn)
+    finally:
+        conn.close()
 
     by_checksum: dict[str, list[DuplicateRow]] = defaultdict(list)
     for row in duplicate_rows:
@@ -234,181 +294,39 @@ def main() -> int:
             f"asset_id={keeper.asset_id} raw_key={keeper.raw_key}"
         )
 
-    if not args.apply:
-        print("[DONE] dry-run complete")
+    if is_dry_run:
+        print("[DONE] dry-run complete (no changes applied; pass --apply to execute)")
         return 0
 
-    keeper_error_map = {asset_id: marker for marker, asset_id in keeper_updates}
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    tmp_db_path = db_path.with_name(f"{db_path.stem}.dedup_tmp{db_path.suffix}")
-    backup_db_path = db_path.with_name(f"{db_path.stem}.pre_dedup_{timestamp}{db_path.suffix}")
-    db_wal_path = Path(f"{db_path}.wal")
-    tmp_db_wal_path = Path(f"{tmp_db_path}.wal")
-    backup_db_wal_path = Path(f"{backup_db_path}.wal")
-    if tmp_db_path.exists():
-        tmp_db_path.unlink()
-    if tmp_db_wal_path.exists():
-        tmp_db_wal_path.unlink()
+    conn = connect_pg(dsn)
+    try:
+        dep_counts = delete_dependent_rows(conn, remove_asset_ids)
 
-    source_con = connect_with_retry(str(db_path), read_only=True)
-    raw_rows = source_con.execute(
-        """
-        SELECT
-            asset_id, source_path, original_name, media_type, file_size, checksum, phash, dup_group_id,
-            archive_path, raw_bucket, raw_key, ingest_batch_id, transfer_tool, ingest_status,
-            error_message, created_at, updated_at
-        FROM raw_files
-        ORDER BY created_at, asset_id
-        """
-    ).fetchall()
-    image_rows = source_con.execute(
-        """
-        SELECT
-            image_id, source_asset_id, source_clip_id, image_bucket, image_key, image_role,
-            frame_index, frame_sec, checksum, file_size,
-            width, height, color_mode, bit_depth, has_alpha, orientation, extracted_at
-        FROM image_metadata
-        """
-    ).fetchall()
-    video_rows = source_con.execute(
-        """
-        SELECT
-            asset_id, width, height, duration_sec, fps, codec, bitrate, frame_count, has_audio,
-            environment_type, daynight_type, outdoor_score, avg_brightness, env_method, extracted_at,
-            frame_extract_status, frame_extract_count, frame_extract_error, frame_extracted_at
-        FROM video_metadata
-        """
-    ).fetchall()
-    label_rows = source_con.execute(
-        """
-        SELECT asset_id, label_id, labels_bucket, labels_key, label_format, label_tool, event_count,
-               label_status, created_at
-        FROM labels
-        """
-    ).fetchall()
-    processed_rows = source_con.execute(
-        """
-        SELECT clip_id, source_asset_id, source_label_id, event_index, checksum, file_size,
-               processed_bucket, clip_key, label_key, width, height, codec, process_status, created_at
-        FROM processed_clips
-        """
-    ).fetchall()
-    dataset_rows = source_con.execute(
-        """
-        SELECT dataset_id, name, version, config, split_ratio, dataset_bucket, dataset_prefix,
-               build_status, created_at
-        FROM datasets
-        """
-    ).fetchall()
-    dataset_clip_rows = source_con.execute(
-        "SELECT dataset_id, clip_id, split, dataset_key FROM dataset_clips"
-    ).fetchall()
-    source_con.close()
+        with conn.cursor() as cur:
+            if remove_asset_ids:
+                placeholders = ", ".join(["%s"] * len(remove_asset_ids))
+                cur.execute(
+                    f"DELETE FROM raw_files WHERE asset_id IN ({placeholders})",
+                    tuple(remove_asset_ids),
+                )
+                dep_counts["raw_files"] = cur.rowcount
 
-    kept_raw_rows = []
-    for row in raw_rows:
-        asset_id = str(row[0])
-        if asset_id in remove_asset_ids:
-            continue
-        mutable = list(row)
-        if asset_id in keeper_error_map:
-            mutable[14] = keeper_error_map[asset_id]
-            mutable[16] = datetime.now()
-        kept_raw_rows.append(tuple(mutable))
+            if keeper_updates:
+                now = datetime.now()
+                psycopg2.extras.execute_batch(
+                    cur,
+                    "UPDATE raw_files SET error_message = %s, updated_at = %s WHERE asset_id = %s",
+                    [(marker, now, asset_id) for marker, asset_id in keeper_updates],
+                )
 
-    kept_asset_ids = {str(row[0]) for row in kept_raw_rows}
-    kept_label_rows = [row for row in label_rows if str(row[0]) in kept_asset_ids]
-    kept_label_ids = {str(row[1]) for row in kept_label_rows}
-    kept_processed_rows = [
-        row
-        for row in processed_rows
-        if str(row[1]) in kept_asset_ids and (not row[2] or str(row[2]) in kept_label_ids)
-    ]
-    kept_clip_ids = {str(row[0]) for row in kept_processed_rows}
-    kept_dataset_clip_rows = [row for row in dataset_clip_rows if str(row[1]) in kept_clip_ids]
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
-    target_con = duckdb.connect(str(tmp_db_path))
-    target_con.execute("PRAGMA disable_progress_bar")
-    target_con.execute(schema_sql())
-    target_con.executemany(
-        """
-        INSERT INTO raw_files (
-            asset_id, source_path, original_name, media_type, file_size, checksum, phash, dup_group_id,
-            archive_path, raw_bucket, raw_key, ingest_batch_id, transfer_tool, ingest_status,
-            error_message, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        kept_raw_rows,
-    )
-    if video_rows:
-        target_con.executemany(
-            """
-            INSERT INTO video_metadata (
-                asset_id, width, height, duration_sec, fps, codec, bitrate, frame_count, has_audio,
-                environment_type, daynight_type, outdoor_score, avg_brightness, env_method, extracted_at,
-                frame_extract_status, frame_extract_count, frame_extract_error, frame_extracted_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            [row for row in video_rows if str(row[0]) in kept_asset_ids],
-        )
-    if kept_label_rows:
-        target_con.executemany(
-            """
-            INSERT INTO labels (
-                asset_id, label_id, labels_bucket, labels_key, label_format, label_tool, event_count,
-                label_status, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            kept_label_rows,
-        )
-    if kept_processed_rows:
-        target_con.executemany(
-            """
-            INSERT INTO processed_clips (
-                clip_id, source_asset_id, source_label_id, event_index, checksum, file_size,
-                processed_bucket, clip_key, label_key, width, height, codec, process_status, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            kept_processed_rows,
-        )
-    if image_rows:
-        target_con.executemany(
-            """
-            INSERT INTO image_metadata (
-                image_id, source_asset_id, source_clip_id, image_bucket, image_key, image_role,
-                frame_index, frame_sec, checksum, file_size,
-                width, height, color_mode, bit_depth, has_alpha, orientation, extracted_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            [
-                row
-                for row in image_rows
-                if str(row[1]) in kept_asset_ids and (row[2] is None or str(row[2]) in kept_clip_ids)
-            ],
-        )
-    if dataset_rows:
-        target_con.executemany(
-            """
-            INSERT INTO datasets (
-                dataset_id, name, version, config, split_ratio, dataset_bucket, dataset_prefix,
-                build_status, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            dataset_rows,
-        )
-    if kept_dataset_clip_rows:
-        target_con.executemany(
-            "INSERT INTO dataset_clips (dataset_id, clip_id, split, dataset_key) VALUES (?, ?, ?, ?)",
-            kept_dataset_clip_rows,
-        )
-    # Flush changes into the main DB file so the temp WAL does not need to move with it.
-    target_con.execute("CHECKPOINT")
-    target_con.close()
-
-    shutil.move(str(db_path), str(backup_db_path))
-    if db_wal_path.exists():
-        shutil.move(str(db_wal_path), str(backup_db_wal_path))
-    shutil.move(str(tmp_db_path), str(db_path))
+    print(f"[INFO] DB rows deleted: {dep_counts}")
 
     s3 = build_s3_client()
     for idx, batch in enumerate(chunked(remove_raw_keys, 1000), start=1):
@@ -433,35 +351,41 @@ def main() -> int:
         path.unlink()
         archive_deleted += 1
 
-    verify_con = connect_with_retry(str(db_path), read_only=True)
-    remaining_dup_groups = verify_con.execute(
-        """
-        SELECT COUNT(*)
-        FROM (
-            SELECT checksum
-            FROM raw_files
-            WHERE checksum IS NOT NULL AND length(trim(checksum)) > 0
-            GROUP BY checksum
-            HAVING COUNT(*) > 1
-        )
-        """
-    ).fetchone()[0]
-    marker_mismatch_groups = verify_con.execute(
-        """
-        WITH dup AS (
-            SELECT checksum
-            FROM raw_files
-            WHERE checksum IS NOT NULL AND length(trim(checksum)) > 0
-            GROUP BY checksum
-            HAVING COUNT(*) > 1
-        )
-        SELECT COUNT(*)
-        FROM raw_files
-        WHERE checksum IN (SELECT checksum FROM dup)
-          AND COALESCE(error_message, '') NOT LIKE 'duplicate_skipped_in_manifest:%'
-        """
-    ).fetchone()[0]
-    verify_con.close()
+    conn = connect_pg(dsn)
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT COUNT(*)
+                FROM (
+                    SELECT checksum
+                    FROM raw_files
+                    WHERE checksum IS NOT NULL AND length(trim(checksum)) > 0
+                    GROUP BY checksum
+                    HAVING COUNT(*) > 1
+                ) sub
+                """
+            )
+            remaining_dup_groups = cur.fetchone()[0]
+
+            cur.execute(
+                """
+                WITH dup AS (
+                    SELECT checksum
+                    FROM raw_files
+                    WHERE checksum IS NOT NULL AND length(trim(checksum)) > 0
+                    GROUP BY checksum
+                    HAVING COUNT(*) > 1
+                )
+                SELECT COUNT(*)
+                FROM raw_files
+                WHERE checksum IN (SELECT checksum FROM dup)
+                  AND COALESCE(error_message, '') NOT LIKE 'duplicate_skipped_in_manifest:%'
+                """
+            )
+            marker_mismatch_groups = cur.fetchone()[0]
+    finally:
+        conn.close()
 
     print(
         f"[DONE] removed_rows={len(remove_rows)} "

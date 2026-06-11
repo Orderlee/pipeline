@@ -17,7 +17,6 @@ class RawIngestState:
     transfer_tool: str = ""
     archive_requested: bool = False
     archive_unit_dir_hint: Path | None = None
-    archive_prepared_for_upload: bool = False
     ingest_rejections: list[dict] = field(default_factory=list)
     retry_candidates: list[dict] = field(default_factory=list)
     records: list[dict] = field(default_factory=list)

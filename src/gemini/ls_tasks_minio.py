@@ -157,9 +157,21 @@ def find_or_create_project(
 
 def register_webhook(ls_url: str, headers: dict, project_id: int) -> None:
     """신규 project에 webhook 자동 등록."""
+    import logging
+
+    _logger = logging.getLogger(__name__)
     webhook_host = os.environ.get("WEBHOOK_HOST", "localhost")
     webhook_port = os.environ.get("WEBHOOK_PORT", "8001")
     webhook_url = f"http://{webhook_host}:{webhook_port}/webhook"
+    secret = os.environ.get("LS_WEBHOOK_SECRET", "")
+    if not secret:
+        _logger.error(
+            "LS_WEBHOOK_SECRET 미설정 — webhook 자동 등록 건너뜀 (project=%s). "
+            "수동 등록: python ls_webhook.py register --project %s",
+            project_id,
+            project_id,
+        )
+        return
     resp = requests.post(
         f"{ls_url}/api/webhooks/",
         headers={**headers, "Content-Type": "application/json"},
@@ -168,7 +180,9 @@ def register_webhook(ls_url: str, headers: dict, project_id: int) -> None:
             "actions": ["ANNOTATION_CREATED", "ANNOTATION_UPDATED"],
             "is_active": True,
             "send_payload": True,
+            "send_for_all_actions": False,
             "project": project_id,
+            "headers": {"X-Webhook-Token": secret},
         },
     )
     resp.raise_for_status()

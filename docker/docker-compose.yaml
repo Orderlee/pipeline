@@ -40,7 +40,8 @@ x-common-env: &common-env
   #       dataset 후보로 사용. SOT 정책상 finalize 안 된 데이터가 vlm-dataset 에
   #       섞이지 않도록 운영 권장값.
   #   0 → 레거시 호환. 모든 raw_files 가 후보 (의도치 않은 미검수 데이터 포함 위험).
-  DATASET_REQUIRE_LS_FINALIZED: ${DATASET_REQUIRE_LS_FINALIZED:-0}
+  # 2026-06-11: default 0 → 1 (codex audit). 운영자가 명시 0 set 시에만 레거시 모드.
+  DATASET_REQUIRE_LS_FINALIZED: ${DATASET_REQUIRE_LS_FINALIZED:-1}
   PYTHONPATH: /:/src/python:/src/vlm
   DATAOPS_ASSET_PATH_PREFIX_FROM: ${DATAOPS_ASSET_PATH_PREFIX_FROM:-/home/user/mou/nas_192tb;/home/user/mou/archive;/home/user/mou/incoming}
   DATAOPS_ASSET_PATH_PREFIX_TO: /nas
@@ -206,7 +207,9 @@ services:
     environment:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
-      MINIO_PROMETHEUS_AUTH_TYPE: public
+      # 2026-06-11: prometheus metrics 무인증 노출 차단 (codex audit).
+      # jwt 사용 — Prometheus scraper 가 MinIO 의 IAM 으로 발급한 JWT 사용 필요.
+      MINIO_PROMETHEUS_AUTH_TYPE: ${MINIO_PROMETHEUS_AUTH_TYPE:-jwt}
     volumes:
       - minio_data:/data
     command: server /data --console-address ":9001"

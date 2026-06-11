@@ -246,15 +246,25 @@ git -C /home/user/work_p/Datapipeline-Data-data_pipeline_test status       # dev
 
 ## 자주 쓰는 스크립트
 
-| 스크립트 | 용도 |
-|---------|------|
-| `scripts/query_local_duckdb.py` | 로컬 DuckDB 읽기 쿼리 (lock 회피 fallback 포함) |
-| `scripts/backfill_video_metadata.py` | video_metadata 결손 백필 |
-| `scripts/cleanup_duplicate_assets.py` | checksum duplicate 정리 |
-| `scripts/recompute_archive_checksums.py` | archive 원본 재해시 |
-| `scripts/reupload_minio_from_archive.py` | archive 기준 MinIO 재업로드 |
-| `scripts/staging_test_dispatch.py` | staging dispatch 테스트 |
-| `scripts/verify_mvp.sh` | E2E 검증 |
+| 스크립트 | 용도 | 상태 |
+|---------|------|------|
+| `scripts/query_local_duckdb.py` | 로컬 DuckDB 읽기 쿼리 (lock 회피 fallback 포함) | DuckDB legacy ⚠️ |
+| `scripts/backfill_video_metadata.py` | video_metadata 결손 백필 | DuckDB legacy ⚠️ (guard 적용, `ALLOW_LEGACY_DUCKDB_SCRIPT=1` 필요) |
+| `scripts/cleanup_duplicate_assets.py` | checksum duplicate 정리 | DuckDB legacy ⚠️ (guard 적용, `ALLOW_LEGACY_DUCKDB_SCRIPT=1` 필요) |
+| `scripts/recompute_archive_checksums.py` | archive 원본 재해시 | DuckDB legacy ⚠️ (guard 적용, `ALLOW_LEGACY_DUCKDB_SCRIPT=1` 필요) |
+| `scripts/reupload_minio_from_archive.py` | archive 기준 MinIO 재업로드 | DuckDB legacy ⚠️ (guard 적용, `ALLOW_LEGACY_DUCKDB_SCRIPT=1` 필요) |
+| `scripts/staging_test_dispatch.py` | staging dispatch 테스트 | DuckDB legacy ⚠️ (guard 적용, `ALLOW_LEGACY_DUCKDB_SCRIPT=1` 필요) |
+| `scripts/verify_mvp.sh` | E2E 검증 | 사용 가능 |
+
+### Deprecated (scripts/archive/ 로 이동됨)
+
+다음 일회성 스크립트는 사용 완료로 `scripts/archive/` 로 이동됨 (OPS-STALE-DUCKDB-SCRIPTS Stage 1):
+
+- `scripts/archive/migrate_yolo_detection_json_to_coco.py` — YOLO JSON → COCO 마이그레이션 (완료)
+- `scripts/archive/migrate_gcp_raw_keys.py` — GCP raw_key prefix 마이그레이션 (완료)
+- `scripts/archive/fix_failed_status.py` — failed → completed 픽스 (완료)
+- `scripts/archive/fix_uploading_status.py` — uploading → completed 픽스 (완료)
+- `scripts/archive/recover_uploading.py` — uploading 복구 (완료)
 
 ---
 

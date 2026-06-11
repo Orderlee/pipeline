@@ -11,7 +11,6 @@ from vlm_pipeline.lib.env_utils import bool_env, int_env
 @dataclass(frozen=True)
 class IngestFeatureSettings:
     defer_video_env_classification: bool
-    premove_archive_enabled: bool
 
 
 @dataclass(frozen=True)
@@ -39,7 +38,6 @@ class ProductionAgentPollingSettings:
 def load_ingest_feature_settings() -> IngestFeatureSettings:
     return IngestFeatureSettings(
         defer_video_env_classification=bool_env("INGEST_DEFER_VIDEO_ENV_CLASSIFICATION", False),
-        premove_archive_enabled=bool_env("INGEST_PREMOVE_ARCHIVE", False),
     )
 
 

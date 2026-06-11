@@ -42,8 +42,8 @@ from botocore.config import Config as BotoConfig
 
 DEFAULT_LS_URL = "http://localhost:8080"
 DEFAULT_MINIO_ENDPOINT = "10.0.0.51:9000"
-DEFAULT_MINIO_ACCESS_KEY = "minioadmin"
-DEFAULT_MINIO_SECRET_KEY = "minioadmin"
+DEFAULT_MINIO_ACCESS_KEY = ""
+DEFAULT_MINIO_SECRET_KEY = ""
 DEFAULT_BUCKET = "vlm-labels"
 DEFAULT_FPS = 24
 FROM_NAME = "videoLabels"
@@ -350,6 +350,12 @@ def main() -> int:
 
     if not args.api_key:
         parser.error("--api-key 또는 LS_API_KEY 환경변수가 필요합니다.")
+
+    _MINIO_DEFAULTS = {"minioadmin", "admin", ""}
+    if not args.minio_access_key or args.minio_access_key in _MINIO_DEFAULTS:
+        parser.error("--minio-access-key 또는 MINIO_ACCESS_KEY 에 유효한 자격증명이 필요합니다.")
+    if not args.minio_secret_key or args.minio_secret_key in _MINIO_DEFAULTS:
+        parser.error("--minio-secret-key 또는 MINIO_SECRET_KEY 에 유효한 자격증명이 필요합니다.")
 
     run(
         project_id=args.project,

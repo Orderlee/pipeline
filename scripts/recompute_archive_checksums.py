@@ -2,7 +2,10 @@
 """Recompute `raw_files.checksum` from archived files.
 
 Run inside container:
-  python3 /scripts/recompute_archive_checksums.py --db /data/pipeline.duckdb --apply
+  python3 /scripts/recompute_archive_checksums.py --apply
+
+Env:
+  DATAOPS_POSTGRES_DSN  postgresql://user:pass@host:port/dbname
 """
 
 from __future__ import annotations
@@ -15,7 +18,7 @@ from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
-import duckdb
+import psycopg2
 
 try:
     from vlm_pipeline.lib.checksum import sha256sum
@@ -23,10 +26,20 @@ except Exception as exc:  # pragma: no cover
     print(f"[ERROR] Failed to import checksum helper: {exc}", file=sys.stderr)
     sys.exit(1)
 
+try:
+    from vlm_pipeline.lib.env_utils import default_postgres_dsn
+except Exception as exc:  # pragma: no cover
+    print(f"[ERROR] Failed to import env_utils: {exc}", file=sys.stderr)
+    sys.exit(1)
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--db", default="/data/pipeline.duckdb", help="DuckDB file path")
+    parser.add_argument(
+        "--dsn",
+        default=None,
+        help="PostgreSQL DSN. Falls back to DATAOPS_POSTGRES_DSN env var.",
+    )
     parser.add_argument(
         "--scope",
         default="all",
@@ -43,30 +56,42 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--log-every", type=int, default=100, help="Progress logging interval")
     parser.add_argument("--max-errors", type=int, default=200, help="Abort after this many errors")
     parser.add_argument("--apply", action="store_true", help="Write recomputed checksum to DB")
+    parser.add_argument("--dry-run", action="store_true", help="Alias for omitting --apply (no DB writes)")
     return parser.parse_args()
 
 
-def connect_with_retry(db_path: str, *, read_only: bool) -> duckdb.DuckDBPyConnection:
-    retry_count = max(0, int(os.getenv("DUCKDB_LOCK_RETRY_COUNT", "20")))
-    delay_ms = max(50, int(os.getenv("DUCKDB_LOCK_RETRY_DELAY_MS", "100")))
+def resolve_dsn(args: argparse.Namespace) -> str:
+    dsn = args.dsn or default_postgres_dsn()
+    if not dsn:
+        print(
+            "[ERROR] No DSN configured. Set DATAOPS_POSTGRES_DSN env var or pass --dsn.",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+    return dsn
+
+
+def connect_pg(dsn: str) -> psycopg2.extensions.connection:
+    retry_count = max(0, int(os.getenv("PG_LOCK_RETRY_COUNT", "5")))
+    delay_s = max(0.5, float(os.getenv("PG_LOCK_RETRY_DELAY_S", "1.0")))
     last_exc: Exception | None = None
     for attempt in range(retry_count + 1):
         try:
-            con = duckdb.connect(db_path, read_only=read_only)
-            con.execute("PRAGMA disable_progress_bar")
-            return con
+            conn = psycopg2.connect(dsn)
+            conn.autocommit = False
+            return conn
         except Exception as exc:  # noqa: BLE001
             last_exc = exc
             if attempt >= retry_count:
                 break
-            time.sleep(delay_ms / 1000.0)
+            time.sleep(delay_s)
     if last_exc is None:
-        raise RuntimeError("DuckDB connection failed unexpectedly")
+        raise RuntimeError("PostgreSQL connection failed unexpectedly")
     raise last_exc
 
 
 def load_targets(
-    con: duckdb.DuckDBPyConnection,
+    conn: psycopg2.extensions.connection,
     scope: str,
     statuses: set[str],
     limit: int | None,
@@ -127,7 +152,10 @@ def load_targets(
         WHERE {" AND ".join(where_clauses)}
         ORDER BY created_at, asset_id
     """
-    rows = con.execute(sql).fetchall()
+    with conn.cursor() as cur:
+        cur.execute(sql)
+        rows = cur.fetchall()
+
     filtered: list[tuple[str, str, str | None, str | None, int | None]] = []
     for asset_id, raw_key, ingest_status, archive_path, file_size, checksum in rows:
         normalized_status = str(ingest_status or "").strip()
@@ -180,19 +208,19 @@ def main() -> int:
     args = parse_args()
     statuses = {item.strip() for item in str(args.statuses or "").split(",") if item.strip()}
     workers = max(1, min(32, int(args.workers)))
+    apply = args.apply and not args.dry_run
 
-    db_path = Path(args.db)
-    if not db_path.exists():
-        print(f"[ERROR] DB not found: {db_path}", file=sys.stderr)
-        return 2
+    dsn = resolve_dsn(args)
 
-    read_con = connect_with_retry(str(db_path), read_only=True)
-    targets = load_targets(read_con, scope=args.scope, statuses=statuses, limit=args.limit)
-    read_con.close()
+    read_conn = connect_pg(dsn)
+    try:
+        targets = load_targets(read_conn, scope=args.scope, statuses=statuses, limit=args.limit)
+    finally:
+        read_conn.close()
 
     print(
         f"[INFO] scope={args.scope} targets={len(targets)} workers={workers} "
-        f"statuses={sorted(statuses) if statuses else 'ALL'} apply={args.apply}"
+        f"statuses={sorted(statuses) if statuses else 'ALL'} apply={apply}"
     )
     if not targets:
         print("[DONE] nothing to process")
@@ -288,20 +316,28 @@ def main() -> int:
             flush=True,
         )
 
-    if args.apply and updates:
+    if apply and updates:
         print(f"[INFO] applying checksum updates={len(updates)}", flush=True)
-        write_con = connect_with_retry(str(db_path), read_only=False)
-        write_con.executemany(
-            """
-            UPDATE raw_files
-            SET checksum = ?, file_size = ?, updated_at = CURRENT_TIMESTAMP
-            WHERE asset_id = ?
-            """,
-            updates,
-        )
-        write_con.close()
+        write_conn = connect_pg(dsn)
+        try:
+            with write_conn.cursor() as cur:
+                for new_checksum, new_file_size, asset_id in updates:
+                    cur.execute(
+                        """
+                        UPDATE raw_files
+                        SET checksum = %s, file_size = %s, updated_at = CURRENT_TIMESTAMP
+                        WHERE asset_id = %s
+                        """,
+                        (new_checksum, new_file_size, asset_id),
+                    )
+            write_conn.commit()
+        except Exception:
+            write_conn.rollback()
+            raise
+        finally:
+            write_conn.close()
         print(f"[DONE] applied_updates={len(updates)}", flush=True)
-    elif args.apply:
+    elif apply:
         print("[DONE] no checksum changes to apply", flush=True)
     else:
         print("[DONE] dry-run complete", flush=True)

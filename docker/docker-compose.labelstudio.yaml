@@ -56,6 +56,7 @@ services:
       WEBHOOK_PORT: ${LS_WEBHOOK_PORT:-8003}
       SLACK_WEBHOOK_URL: ${SLACK_WEBHOOK_URL:-}
       SLACK_SIGNING_SECRET: ${SLACK_SIGNING_SECRET:-}
+      LS_WEBHOOK_SECRET: ${LS_WEBHOOK_SECRET:-}
       # ls_sync / ls_webhook 는 PG-only (2026-05-13 cutover). LS 스택은 별도 compose
       # 프로젝트라 `postgres` 가 고아 DB 로 풀리므로, 실제 prod PG 컨테이너명을 직접 박는다
       # (docker-postgres-1 을 공유 pipeline-network 에 연결해 둠). staging 은 .env.test 의
@@ -65,6 +66,8 @@ services:
       LS_MINIO_ENDPOINT: ${LS_MINIO_ENDPOINT:-${MINIO_ENDPOINT:-http://10.0.0.51:9000}}
       MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
       MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin}
+      # 2026-06-11: 자격 회전 전 임시 escape hatch (PR #260). 회전 완료 후 제거.
+      ALLOW_INSECURE_DEFAULT_CREDS: ${ALLOW_INSECURE_DEFAULT_CREDS:-}
       # dagster 컨테이너의 x-common-env 와 동일 경로로 통합.
       # /data 는 양쪽 공통 mount 라 같은 호스트 파일을 보게 된다.
       LS_STATE_FILE: /data/ls_review_state.json

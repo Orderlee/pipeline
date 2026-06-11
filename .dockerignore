@@ -13,6 +13,10 @@ docker/app/dagster_home_staging/
 docker/app/credentials/
 docker/app/__pycache__/
 docker/app/.DS_Store
+# secrets — build context 에 절대 포함 금지
+docker/.env*
+!docker/.env.test.example
+!docker/.env.test.template
 docker/app/._.DS_Store
 tests/
 result/
