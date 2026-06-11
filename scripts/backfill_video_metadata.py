@@ -2,7 +2,7 @@
 """Backfill missing `video_metadata` rows from `raw_files` video records.
 
 Run inside docker container:
-  python3 /src/vlm/scripts/backfill_video_metadata.py --db /data/pipeline.duckdb
+  python3 /src/vlm/scripts/backfill_video_metadata.py
 """
 
 from __future__ import annotations
@@ -12,24 +12,26 @@ import os
 import sys
 import time
 from datetime import datetime
-from pathlib import Path
+from typing import Any
 
-import duckdb
+import psycopg2
 
 try:
+    from vlm_pipeline.lib.env_utils import default_postgres_dsn
     from vlm_pipeline.lib.video_loader import load_video_once
 except Exception as exc:  # pragma: no cover
-    print(f"[ERROR] Failed to import vlm video loader: {exc}", file=sys.stderr)
+    print(f"[ERROR] Failed to import vlm modules: {exc}", file=sys.stderr)
     sys.exit(1)
 
 
 INSERT_SQL = """
-INSERT OR IGNORE INTO video_metadata (
+INSERT INTO video_metadata (
     asset_id, width, height, duration_sec, fps,
     codec, bitrate, frame_count, has_audio,
     environment_type, daynight_type, outdoor_score,
     avg_brightness, env_method, extracted_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+ON CONFLICT (asset_id) DO NOTHING
 """
 
 
@@ -41,29 +43,33 @@ def _existing_path(archive_path: str | None, source_path: str | None) -> str | N
     return None
 
 
-def _missing_count(con: duckdb.DuckDBPyConnection) -> int:
-    return con.execute(
-        """
-        SELECT COUNT(*)
-        FROM raw_files rf
-        LEFT JOIN video_metadata vm ON rf.asset_id = vm.asset_id
-        WHERE rf.media_type = 'video' AND vm.asset_id IS NULL
-        """
-    ).fetchone()[0]
+def _missing_count(conn: Any) -> int:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT COUNT(*)
+            FROM raw_files rf
+            LEFT JOIN video_metadata vm ON rf.asset_id = vm.asset_id
+            WHERE rf.media_type = 'video' AND vm.asset_id IS NULL
+            """
+        )
+        return cur.fetchone()[0]
 
 
 def _iter_targets(
-    con: duckdb.DuckDBPyConnection, statuses: set[str], limit: int | None
+    conn: Any, statuses: set[str], limit: int | None
 ) -> list[tuple[str, str, str | None, str | None]]:
-    rows = con.execute(
-        """
-        SELECT rf.asset_id, rf.ingest_status, rf.archive_path, rf.source_path
-        FROM raw_files rf
-        LEFT JOIN video_metadata vm ON rf.asset_id = vm.asset_id
-        WHERE rf.media_type = 'video' AND vm.asset_id IS NULL
-        ORDER BY CASE WHEN rf.ingest_status = 'completed' THEN 0 ELSE 1 END, rf.created_at
-        """
-    ).fetchall()
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT rf.asset_id, rf.ingest_status, rf.archive_path, rf.source_path
+            FROM raw_files rf
+            LEFT JOIN video_metadata vm ON rf.asset_id = vm.asset_id
+            WHERE rf.media_type = 'video' AND vm.asset_id IS NULL
+            ORDER BY CASE WHEN rf.ingest_status = 'completed' THEN 0 ELSE 1 END, rf.created_at
+            """
+        )
+        rows = cur.fetchall()
     filtered = [r for r in rows if r[1] in statuses]
     if limit is not None:
         return filtered[:limit]
@@ -71,36 +77,42 @@ def _iter_targets(
 
 
 def _insert_meta(
-    con: duckdb.DuckDBPyConnection,
+    conn: Any,
     asset_id: str,
     meta: dict,
     now: datetime,
 ) -> None:
-    con.execute(
-        INSERT_SQL,
-        [
-            asset_id,
-            meta.get("width"),
-            meta.get("height"),
-            meta.get("duration_sec"),
-            meta.get("fps"),
-            meta.get("codec"),
-            meta.get("bitrate"),
-            meta.get("frame_count"),
-            meta.get("has_audio", False),
-            meta.get("environment_type"),
-            meta.get("daynight_type"),
-            meta.get("outdoor_score"),
-            meta.get("avg_brightness"),
-            meta.get("env_method"),
-            meta.get("extracted_at", now),
-        ],
-    )
+    with conn.cursor() as cur:
+        cur.execute(
+            INSERT_SQL,
+            (
+                asset_id,
+                meta.get("width"),
+                meta.get("height"),
+                meta.get("duration_sec"),
+                meta.get("fps"),
+                meta.get("codec"),
+                meta.get("bitrate"),
+                meta.get("frame_count"),
+                meta.get("has_audio", False),
+                meta.get("environment_type"),
+                meta.get("daynight_type"),
+                meta.get("outdoor_score"),
+                meta.get("avg_brightness"),
+                meta.get("env_method"),
+                meta.get("extracted_at", now),
+            ),
+        )
+    conn.commit()
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--db", default="/data/pipeline.duckdb", help="DuckDB file path")
+    parser.add_argument(
+        "--dsn",
+        default=None,
+        help="PostgreSQL DSN (default: $DATAOPS_POSTGRES_DSN)",
+    )
     parser.add_argument(
         "--statuses",
         default="completed,failed",
@@ -120,84 +132,95 @@ def main() -> int:
         print("[ERROR] --statuses produced empty set", file=sys.stderr)
         return 2
 
-    db_path = Path(args.db)
-    if not db_path.exists():
-        print(f"[ERROR] DB not found: {db_path}", file=sys.stderr)
+    dsn = args.dsn or default_postgres_dsn()
+    if not dsn:
+        print(
+            "[ERROR] No DSN: set DATAOPS_POSTGRES_DSN or pass --dsn",
+            file=sys.stderr,
+        )
         return 2
 
-    con = duckdb.connect(str(db_path))
-    con.execute("PRAGMA disable_progress_bar")
+    try:
+        conn = psycopg2.connect(dsn)
+    except Exception as exc:  # pragma: no cover
+        print(f"[ERROR] DB connection failed: {exc}", file=sys.stderr)
+        return 2
 
-    start_missing = _missing_count(con)
-    targets = _iter_targets(con, statuses=statuses, limit=args.limit)
-    total = len(targets)
-    print(
-        f"[INFO] start_missing={start_missing} targets={total} "
-        f"statuses={sorted(statuses)} dry_run={args.dry_run}"
-    )
+    try:
+        start_missing = _missing_count(conn)
+        targets = _iter_targets(conn, statuses=statuses, limit=args.limit)
+        total = len(targets)
+        print(
+            f"[INFO] start_missing={start_missing} targets={total} "
+            f"statuses={sorted(statuses)} dry_run={args.dry_run}"
+        )
 
-    no_file = 0
-    loaded = 0
-    inserted_or_ignored = 0
-    load_failed = 0
-    insert_failed = 0
-    err_samples: list[str] = []
-    started_at = time.time()
+        no_file = 0
+        loaded = 0
+        inserted_or_ignored = 0
+        load_failed = 0
+        insert_failed = 0
+        err_samples: list[str] = []
+        started_at = time.time()
 
-    for idx, (asset_id, ingest_status, archive_path, source_path) in enumerate(targets, start=1):
-        path = _existing_path(archive_path, source_path)
-        if not path:
-            no_file += 1
-            if len(err_samples) < 15:
-                err_samples.append(f"no_file asset_id={asset_id} status={ingest_status}")
-            continue
-
-        try:
-            meta = load_video_once(path, include_file_stream=False)["video_metadata"]
-            loaded += 1
-        except Exception as exc:  # pragma: no cover
-            load_failed += 1
-            if len(err_samples) < 15:
-                err_samples.append(f"load_failed asset_id={asset_id} err={type(exc).__name__}:{exc}")
-            if (load_failed + insert_failed) >= args.max_errors:
-                print("[ERROR] too many errors during load; aborting early")
-                break
-            continue
-
-        if not args.dry_run:
-            try:
-                _insert_meta(con, asset_id, meta, datetime.now())
-                inserted_or_ignored += 1
-            except Exception as exc:  # pragma: no cover
-                insert_failed += 1
+        for idx, (asset_id, ingest_status, archive_path, source_path) in enumerate(targets, start=1):
+            path = _existing_path(archive_path, source_path)
+            if not path:
+                no_file += 1
                 if len(err_samples) < 15:
-                    err_samples.append(
-                        f"insert_failed asset_id={asset_id} err={type(exc).__name__}:{exc}"
-                    )
+                    err_samples.append(f"no_file asset_id={asset_id} status={ingest_status}")
+                continue
+
+            try:
+                meta = load_video_once(path, include_file_stream=False)["video_metadata"]
+                loaded += 1
+            except Exception as exc:  # pragma: no cover
+                load_failed += 1
+                if len(err_samples) < 15:
+                    err_samples.append(f"load_failed asset_id={asset_id} err={type(exc).__name__}:{exc}")
                 if (load_failed + insert_failed) >= args.max_errors:
-                    print("[ERROR] too many errors during insert; aborting early")
+                    print("[ERROR] too many errors during load; aborting early")
                     break
                 continue
 
-        if idx % max(1, args.log_every) == 0:
-            elapsed = time.time() - started_at
-            print(
-                f"[PROGRESS] {idx}/{total} loaded={loaded} inserted_or_ignored={inserted_or_ignored} "
-                f"no_file={no_file} load_failed={load_failed} insert_failed={insert_failed} "
-                f"elapsed_sec={elapsed:.1f}"
-            )
+            if not args.dry_run:
+                try:
+                    _insert_meta(conn, asset_id, meta, datetime.now())
+                    inserted_or_ignored += 1
+                except Exception as exc:  # pragma: no cover
+                    conn.rollback()
+                    insert_failed += 1
+                    if len(err_samples) < 15:
+                        err_samples.append(
+                            f"insert_failed asset_id={asset_id} err={type(exc).__name__}:{exc}"
+                        )
+                    if (load_failed + insert_failed) >= args.max_errors:
+                        print("[ERROR] too many errors during insert; aborting early")
+                        break
+                    continue
 
-    end_missing = _missing_count(con)
-    elapsed = time.time() - started_at
-    print(
-        f"[DONE] targets={total} loaded={loaded} inserted_or_ignored={inserted_or_ignored} "
-        f"no_file={no_file} load_failed={load_failed} insert_failed={insert_failed} "
-        f"end_missing={end_missing} elapsed_sec={elapsed:.1f}"
-    )
-    if err_samples:
-        print("[SAMPLES]")
-        for line in err_samples:
-            print(f"  - {line}")
+            if idx % max(1, args.log_every) == 0:
+                elapsed = time.time() - started_at
+                print(
+                    f"[PROGRESS] {idx}/{total} loaded={loaded} inserted_or_ignored={inserted_or_ignored} "
+                    f"no_file={no_file} load_failed={load_failed} insert_failed={insert_failed} "
+                    f"elapsed_sec={elapsed:.1f}"
+                )
+
+        end_missing = _missing_count(conn)
+        elapsed = time.time() - started_at
+        print(
+            f"[DONE] targets={total} loaded={loaded} inserted_or_ignored={inserted_or_ignored} "
+            f"no_file={no_file} load_failed={load_failed} insert_failed={insert_failed} "
+            f"end_missing={end_missing} elapsed_sec={elapsed:.1f}"
+        )
+        if err_samples:
+            print("[SAMPLES]")
+            for line in err_samples:
+                print(f"  - {line}")
+    finally:
+        conn.close()
+
     return 0
 
 

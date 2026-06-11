@@ -15,7 +15,7 @@ if TYPE_CHECKING:
     from .runtime_policy import IngestRuntimePolicy
 
 
-def _prepare_archive_inputs(
+def _set_archive_requested(
     context,
     *,
     config: "PipelineConfig",
@@ -30,20 +30,7 @@ def _prepare_archive_inputs(
         config=config,
         runtime_profile=policy.runtime_profile,
     )
-    state.archive_prepared_for_upload = False
-    context.log.info("archive_prepare:start")
-    if state.archive_requested and policy.premove_archive_enabled:
-        context.log.info(
-            "archive_prepare:premove_disabled pre-move path is disabled; archive_finalize에서 uploaded 파일만 이동"
-        )
-
-    context.log.info(
-        "archive_prepare:done "
-        f"archive_requested={state.archive_requested} "
-        f"prepared={state.archive_prepared_for_upload} "
-        f"premove_enabled={policy.premove_archive_enabled} "
-        "premove_applied=False"
-    )
+    context.log.info(f"archive_prepare:done archive_requested={state.archive_requested}")
 
 
 def _maybe_compact_completed_gcp_manifests(

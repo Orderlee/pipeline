@@ -1,19 +1,22 @@
 #!/usr/bin/env python3
-"""Re-upload completed archive files to MinIO using raw_key from DuckDB."""
+"""Re-upload completed archive files to MinIO using raw_key from PostgreSQL."""
 
 from __future__ import annotations
 
+import argparse
 import os
+import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 import boto3
-import duckdb
+import psycopg2
 from botocore.config import Config
 from botocore.exceptions import ClientError
 
+from vlm_pipeline.lib.env_utils import default_postgres_dsn
 
-DB_PATH = os.getenv("DATAOPS_DUCKDB_PATH", "/data/pipeline.duckdb")
+
 BUCKET = os.getenv("MINIO_REUPLOAD_BUCKET", "vlm-raw")
 WORKERS = max(1, int(os.getenv("MINIO_REUPLOAD_WORKERS", "8")))
 PROGRESS_EVERY = max(1, int(os.getenv("MINIO_REUPLOAD_PROGRESS_EVERY", "50")))
@@ -49,21 +52,25 @@ def _list_existing_keys(s3) -> set[str]:
     return keys
 
 
-def _load_candidates(existing_keys: set[str]):
-    con = duckdb.connect(DB_PATH)
-    rows = con.execute(
-        """
-        SELECT asset_id, archive_path, raw_key, COALESCE(file_size, 0) AS file_size
-        FROM raw_files
-        WHERE ingest_status = 'completed'
-          AND archive_path IS NOT NULL
-          AND length(trim(archive_path)) > 0
-          AND raw_key IS NOT NULL
-          AND length(trim(raw_key)) > 0
-        ORDER BY created_at
-        """
-    ).fetchall()
-    con.close()
+def _load_candidates(dsn: str, existing_keys: set[str]):
+    conn = psycopg2.connect(dsn)
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT asset_id, archive_path, raw_key, COALESCE(file_size, 0) AS file_size
+                FROM raw_files
+                WHERE ingest_status = 'completed'
+                  AND archive_path IS NOT NULL
+                  AND length(trim(archive_path)) > 0
+                  AND raw_key IS NOT NULL
+                  AND length(trim(raw_key)) > 0
+                ORDER BY created_at
+                """
+            )
+            rows = cur.fetchall()
+    finally:
+        conn.close()
 
     candidates = []
     skipped_existing = 0
@@ -82,7 +89,7 @@ def _load_candidates(existing_keys: set[str]):
     return rows, candidates, skipped_existing, missing_source
 
 
-def _upload_all(s3, candidates):
+def _upload_all(s3, candidates, dry_run: bool):
     uploaded = 0
     failed = 0
     uploaded_bytes = 0
@@ -90,6 +97,8 @@ def _upload_all(s3, candidates):
 
     def _upload_one(item):
         asset_id, src, key, file_size = item
+        if dry_run:
+            return True, file_size, asset_id, key, ""
         try:
             s3.upload_file(src, BUCKET, key)
             return True, file_size, asset_id, key, ""
@@ -119,12 +128,25 @@ def _upload_all(s3, candidates):
     return uploaded, failed, uploaded_bytes, fail_samples
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Re-upload completed archive files to MinIO from PostgreSQL")
+    parser.add_argument("--dsn", default=None, help="PostgreSQL DSN (fallback: DATAOPS_POSTGRES_DSN env)")
+    parser.add_argument("--dry-run", action="store_true", help="Simulate uploads without actually writing to MinIO")
+    args = parser.parse_args(argv)
+
+    dsn = args.dsn or default_postgres_dsn()
+    if not dsn:
+        print("[ERROR] No PostgreSQL DSN. Set DATAOPS_POSTGRES_DSN or pass --dsn.", file=sys.stderr)
+        return 1
+
+    if args.dry_run:
+        print("[INFO] dry-run mode — no actual uploads will be performed", flush=True)
+
     s3 = _build_s3_client()
     _ensure_bucket(s3)
 
     existing = _list_existing_keys(s3)
-    rows, candidates, skipped_existing, missing_source = _load_candidates(existing)
+    rows, candidates, skipped_existing, missing_source = _load_candidates(dsn, existing)
 
     print(
         "[INFO] "
@@ -140,7 +162,7 @@ def main() -> int:
         print("[RESULT] nothing to upload", flush=True)
         return 0
 
-    uploaded, failed, uploaded_bytes, fail_samples = _upload_all(s3, candidates)
+    uploaded, failed, uploaded_bytes, fail_samples = _upload_all(s3, candidates, dry_run=args.dry_run)
 
     print("[RESULT] done", flush=True)
     print(
@@ -153,8 +175,9 @@ def main() -> int:
         for asset_id, key, err in fail_samples:
             print(f"  - {asset_id} {key} {err}", flush=True)
 
-    final_count = len(_list_existing_keys(s3))
-    print(f"[RESULT] bucket_object_count={final_count}", flush=True)
+    if not args.dry_run:
+        final_count = len(_list_existing_keys(s3))
+        print(f"[RESULT] bucket_object_count={final_count}", flush=True)
     return 0
 
 

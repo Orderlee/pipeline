@@ -178,22 +178,28 @@ def wait_for_dispatch_processing(request_id: str, timeout_sec: int = 300) -> str
 def check_dagster_run_status(request_id: str, timeout_sec: int = 600) -> dict:
     """Dagster run 상태를 DB에서 확인."""
     print("  [CHECK] Dagster run 상태 확인...")
-    # 컨테이너 내에서 DB 조회
     check_script = f"""
-import duckdb, json
-conn = duckdb.connect('/data/staging.duckdb', read_only=True)
-try:
-    row = conn.execute(
-        "SELECT request_id, folder_name, outputs, status, error_message FROM dispatch_requests WHERE request_id = ?",
-        ['{request_id}']
-    ).fetchone()
-    if row:
-        print(json.dumps({{"request_id": row[0], "folder_name": row[1], "outputs": row[2], "status": row[3], "error": row[4]}}))
-    else:
-        print(json.dumps({{"status": "not_found"}}))
-except Exception as e:
-    print(json.dumps({{"status": "error", "error": str(e)}}))
-conn.close()
+import os, json
+import psycopg2
+dsn = os.environ.get("DATAOPS_POSTGRES_DSN", "")
+if not dsn:
+    print(json.dumps({{"status": "error", "error": "DATAOPS_POSTGRES_DSN not set"}}))
+else:
+    try:
+        conn = psycopg2.connect(dsn)
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT request_id, folder_name, outputs, status, error_message FROM dispatch_requests WHERE request_id = %s",
+            ({repr(request_id)},),
+        )
+        row = cur.fetchone()
+        if row:
+            print(json.dumps({{"request_id": row[0], "folder_name": row[1], "outputs": row[2], "status": row[3], "error": row[4]}}))
+        else:
+            print(json.dumps({{"status": "not_found"}}))
+        conn.close()
+    except Exception as e:
+        print(json.dumps({{"status": "error", "error": str(e)}}))
 """
     try:
         result = subprocess.run(
@@ -213,29 +219,41 @@ conn.close()
 def get_db_summary() -> dict:
     """DB 전체 요약 조회."""
     script = """
-import duckdb, json
-conn = duckdb.connect('/data/staging.duckdb', read_only=True)
-summary = {}
-for table in ['raw_files', 'video_metadata', 'labels', 'processed_clips', 'image_metadata', 'image_labels', 'dispatch_requests']:
+import os, json
+import psycopg2
+dsn = os.environ.get("DATAOPS_POSTGRES_DSN", "")
+if not dsn:
+    print(json.dumps({"error": "DATAOPS_POSTGRES_DSN not set"}))
+else:
     try:
-        count = conn.execute(f'SELECT COUNT(*) FROM {table}').fetchone()[0]
-        summary[table] = count
-    except:
-        summary[table] = -1
-# pipeline_runs
-try:
-    rows = conn.execute('SELECT step_name, step_status, COUNT(*) FROM dispatch_pipeline_runs GROUP BY step_name, step_status ORDER BY step_name').fetchall()
-    summary['pipeline_runs'] = [{'step': r[0], 'status': r[1], 'count': r[2]} for r in rows]
-except:
-    summary['pipeline_runs'] = []
-# model_configs
-try:
-    rows = conn.execute('SELECT output_type, model_name, is_active FROM staging_model_configs').fetchall()
-    summary['model_configs'] = [{'output': r[0], 'model': r[1], 'active': r[2]} for r in rows]
-except:
-    summary['model_configs'] = []
-conn.close()
-print(json.dumps(summary, default=str))
+        conn = psycopg2.connect(dsn)
+        cur = conn.cursor()
+        summary = {}
+        for table in ['raw_files', 'video_metadata', 'labels', 'processed_clips', 'image_metadata', 'image_labels', 'dispatch_requests']:
+            try:
+                cur.execute(f'SELECT COUNT(*) FROM {table}')
+                summary[table] = cur.fetchone()[0]
+            except Exception:
+                conn.rollback()
+                summary[table] = -1
+        try:
+            cur.execute('SELECT step_name, step_status, COUNT(*) FROM dispatch_pipeline_runs GROUP BY step_name, step_status ORDER BY step_name')
+            rows = cur.fetchall()
+            summary['pipeline_runs'] = [{'step': r[0], 'status': r[1], 'count': r[2]} for r in rows]
+        except Exception:
+            conn.rollback()
+            summary['pipeline_runs'] = []
+        try:
+            cur.execute('SELECT output_type, model_name, is_active FROM staging_model_configs')
+            rows = cur.fetchall()
+            summary['model_configs'] = [{'output': r[0], 'model': r[1], 'active': r[2]} for r in rows]
+        except Exception:
+            conn.rollback()
+            summary['model_configs'] = []
+        conn.close()
+        print(json.dumps(summary, default=str))
+    except Exception as e:
+        print(json.dumps({"error": str(e)}))
 """
     try:
         result = subprocess.run(

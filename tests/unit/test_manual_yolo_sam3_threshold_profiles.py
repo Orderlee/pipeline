@@ -5,13 +5,13 @@ import sys
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
-for candidate in (REPO, REPO / "scripts", REPO / "src"):
+for candidate in (REPO, REPO / "src", REPO / "scripts"):
     rendered = str(candidate)
     if rendered not in sys.path:
         sys.path.insert(0, rendered)
 
-import manual_yolo_sam3_compare as compare_script  # noqa: E402
-import manual_yolo_sam3_threshold_sweep as sweep_script  # noqa: E402
+import manual_yolo_sam3.compare as compare_script  # noqa: E402
+import manual_yolo_sam3.threshold_sweep as sweep_script  # noqa: E402
 
 
 def _build_args(config_path: Path) -> argparse.Namespace:
