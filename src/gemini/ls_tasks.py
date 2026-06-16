@@ -321,10 +321,22 @@ def main() -> int:
         parser.error("--api-key 또는 LS_API_KEY 환경변수가 필요합니다.")
 
     _MINIO_DEFAULTS = {"minioadmin", "admin", ""}
-    if not args.minio_access_key or args.minio_access_key in _MINIO_DEFAULTS:
-        parser.error("--minio-access-key 또는 MINIO_ACCESS_KEY 에 유효한 자격증명이 필요합니다.")
-    if not args.minio_secret_key or args.minio_secret_key in _MINIO_DEFAULTS:
-        parser.error("--minio-secret-key 또는 MINIO_SECRET_KEY 에 유효한 자격증명이 필요합니다.")
+    # config.py(PipelineConfig) / minio_cross_sync.py 와 동일한 escape hatch.
+    # 보안 커밋(SEC-MINIO-FALLBACK)이 이 가드를 추가하면서 다른 두 곳이 존중하는
+    # ALLOW_INSECURE_DEFAULT_CREDS 우회를 누락 → prod(기본 자격 + 우회 ON)에서 LS
+    # create/renew 만 exit=2 로 실패. 일관성 회복: 우회 ON 이면 기본 자격 허용.
+    _insecure_ok = os.environ.get("ALLOW_INSECURE_DEFAULT_CREDS", "").strip().lower() in {"1", "true", "yes"}
+    if not _insecure_ok:
+        if not args.minio_access_key or args.minio_access_key in _MINIO_DEFAULTS:
+            parser.error("--minio-access-key 또는 MINIO_ACCESS_KEY 에 유효한 자격증명이 필요합니다.")
+        if not args.minio_secret_key or args.minio_secret_key in _MINIO_DEFAULTS:
+            parser.error("--minio-secret-key 또는 MINIO_SECRET_KEY 에 유효한 자격증명이 필요합니다.")
+    else:
+        # 우회 경로: 빈 값이면 minioadmin 으로 fallback (minio_cross_sync 와 동일 동작)
+        if not args.minio_access_key:
+            args.minio_access_key = "minioadmin"
+        if not args.minio_secret_key:
+            args.minio_secret_key = "minioadmin"
 
     minio = build_minio_client(args.minio_endpoint, args.minio_access_key, args.minio_secret_key)
     auth_headers = resolve_auth_headers(args.ls_url, args.api_key)
