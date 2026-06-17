@@ -73,6 +73,11 @@ class PostgresMigrationMixin:
             self._ensure_migrations_table(conn)
             applied = self._fetch_applied(conn)
             for path in self._discover_migrations():
+                if not self._optional_precondition_met(conn, path):
+                    # optional 마이그레이션의 전제조건 미충족(예: pgvector 미설치 이미지)
+                    # → 적용·검증·기록 모두 skip. 전제조건이 충족되는 환경에서만 적용되고,
+                    #   미기록이므로 나중에 충족되면 그때 적용된다.
+                    continue
                 if path.name not in applied:
                     self._apply_one(conn, path)
                 self._verify_assertions(conn, path)
@@ -86,6 +91,17 @@ class PostgresMigrationMixin:
             "005_labels_unique.sql",
         }
     )
+
+    # Optional 마이그레이션: 전제조건 SQL 이 truthy 한 환경에서만 적용한다.
+    # 전제조건 미충족 시 apply/assert/record 를 전부 skip (미기록 → 나중에 충족되면 적용).
+    # 006: pgvector(`vector`) 확장이 설치 가능한 이미지에서만. vanilla postgres:15
+    #      (CI / prod 기본) 에서 `CREATE EXTENSION vector` 가 부팅을 깨뜨리는 것을 방지.
+    # 007: 006 이 적용된 환경(image_embeddings 테이블 존재)에서만. caption 텍스트 임베딩 지원.
+    _OPTIONAL_MIGRATIONS: ClassVar[dict[str, str]] = {
+        "006_image_embeddings.sql": "SELECT 1 FROM pg_available_extensions WHERE name = 'vector'",
+        "007_caption_embeddings.sql": "SELECT 1 FROM pg_available_extensions WHERE name = 'vector'",
+        "008_embedding_partial_indexes.sql": "SELECT 1 FROM pg_available_extensions WHERE name = 'vector'",
+    }
 
     def ensure_runtime_schema(self) -> None:
         """런타임 hot path 가드 — 프로세스당 1회만 실행.
@@ -153,6 +169,18 @@ class PostgresMigrationMixin:
             raise FileNotFoundError(f"PG migrations dir missing: {directory}")
         files = sorted(p for p in directory.glob("*.sql") if p.is_file())
         return files
+
+    def _optional_precondition_met(self, conn: psycopg2.extensions.connection, path: Path) -> bool:
+        """Optional 마이그레이션 전제조건 검사. 비-optional 은 항상 True.
+
+        전제조건 SQL 이 행을 반환하면 True (적용), 아니면 False (skip).
+        """
+        precondition = self._OPTIONAL_MIGRATIONS.get(path.name)
+        if precondition is None:
+            return True
+        with conn.cursor() as cur:
+            cur.execute(precondition)
+            return cur.fetchone() is not None
 
     @staticmethod
     def _ensure_migrations_table(conn: psycopg2.extensions.connection) -> None:

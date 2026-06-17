@@ -27,6 +27,9 @@ x-common-env: &common-env
   # prod: 기본 http://sam3:8002 (= docker-sam3-1). staging: .env.test 에서
   # http://docker-sam3-1:8002 로 override 해 공유 컨테이너를 가리킨다.
   SAM3_API_URL: ${SAM3_API_URL:-http://sam3:8002}
+  # 임베딩 서비스 (PE-Core-L14-336). prod: 기본 http://embedding-service:8003.
+  # staging: 자체 컨테이너 생성(COMPOSE_PROFILES=embedding) → 기본값 그대로 도달.
+  EMBEDDING_API_URL: ${EMBEDDING_API_URL:-http://embedding-service:8003}
   VIDEO_FFPROBE_TIMEOUT_SEC: "120"
   VIDEO_FFPROBE_RETRY_COUNT: "1"
   VIDEO_FFPROBE_RETRY_DELAY_MS: "250"
@@ -233,6 +236,7 @@ services:
       - ./grafana/provisioning:/etc/grafana/provisioning:ro
       - ./grafana/minio-dashboard.json:/var/lib/grafana/dashboards/minio-dashboard.json:ro
       - ./grafana/nas-folder-tree-dashboard.json:/var/lib/grafana/dashboards/nas-folder-tree-dashboard.json:ro
+      - ./grafana/embedding-dashboard.json:/var/lib/grafana/dashboards/embedding-dashboard.json:ro
     depends_on:
       - postgres
     restart: unless-stopped
@@ -361,6 +365,47 @@ services:
       retries: 3
     restart: unless-stopped
 
+  embedding-service:
+    # PE-Core-L14-336 (open_clip) 이미지/텍스트 임베딩 → pgvector 적재용.
+    # GPU 0 (GPU 1 은 SAM3 포화). profile 로 환경별 생성 제어:
+    #   생성하려면 COMPOSE_PROFILES=embedding + ENABLE_EMBEDDING=true (dagster 자산/센서 등록).
+    # 단일 공유 컨테이너 정책(SAM3)과 달리 환경별 자체 생성 — staging-first 검증 위해.
+    profiles: ["embedding"]
+    build:
+      context: ./embedding
+      dockerfile: Dockerfile
+    image: datapipeline-embedding:gpu-cu124
+    command: ["sh", "-c", "exec python -m uvicorn app:app --host 0.0.0.0 --port 8003 --workers ${EMBEDDING_WORKERS:-1}"]
+    ports:
+      - "${EMBEDDING_PORT:-8003}:8003"
+    volumes:
+      - ./data/models:/data/models
+    environment:
+      EMBEDDING_BACKEND: ${EMBEDDING_BACKEND:-open_clip}
+      EMBEDDING_DEVICE: "cuda:0"
+      HF_HOME: /data/models/pe-core
+      CUDA_VISIBLE_DEVICES: "0"
+      NVIDIA_VISIBLE_DEVICES: "0"
+      PYTORCH_CUDA_ALLOC_CONF: "${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
+    networks:
+      - default
+      - pipeline-network
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    healthcheck:
+      # pytorch base 에 curl 없음 → python urllib (genai 패턴). 모델 로드 후 200.
+      test: ["CMD-SHELL", "python -c 'import urllib.request; urllib.request.urlopen(\"http://localhost:8003/health\").read()'"]
+      interval: 30s
+      timeout: 10s
+      start_period: 180s   # 최초 PE-Core 가중치 다운로드(~1.5GB)+로드 여유
+      retries: 3
+    restart: unless-stopped
+
   genai:
     profiles: ["genai"]
     build:
@@ -472,6 +517,50 @@ services:
       - pipeline-network
     depends_on:
       - postgres
+    restart: unless-stopped
+
+  analysis:
+    # JupyterLab + FiftyOne — 임베딩 시각화/유사검색 surface. profile 로 환경별 생성(COMPOSE_PROFILES=analysis).
+    # GPU 불필요(임베딩은 이미 pgvector 적재). FiftyOne 메타데이터 store = mongo 사이드카(fiftyone-mongo).
+    # (번들 mongod 는 slim 베이스에서 미동작 → 사이드카로 전환. 2026-06-15 staging 검증.)
+    # ⚠️ MINIO_ENDPOINT 는 presigned URL 이 사용자 브라우저에서 열려야 하므로 host-reachable 주소로
+    #    설정 (예: http://10.0.0.10:9000). 내부 docker 명(minio:9000)은 브라우저에서 미도달.
+    profiles: ["analysis"]
+    build:
+      context: ./analysis
+    image: datapipeline-analysis:latest
+    command: ["sh", "-c", "exec jupyter lab --ip=0.0.0.0 --port=8888 --no-browser --allow-root --ServerApp.token=${JUPYTER_TOKEN:-}"]
+    ports:
+      - "${JUPYTER_PORT:-8888}:8888"
+      - "${FIFTYONE_PORT:-5151}:5151"
+      - "${STREAMLIT_PORT:-8501}:8501"
+    environment:
+      DATAOPS_POSTGRES_DSN: ${DATAOPS_POSTGRES_DSN:-}
+      EMBEDDING_API_URL: ${EMBEDDING_API_URL:-http://embedding-service:8003}
+      MINIO_ENDPOINT: ${ANALYSIS_MINIO_ENDPOINT:-http://minio:9000}
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-minioadmin}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-minioadmin}
+      # FiftyOne 메타데이터 store = mongo 사이드카 (번들 mongod 미사용).
+      FIFTYONE_DATABASE_URI: ${FIFTYONE_DATABASE_URI:-mongodb://fiftyone-mongo:27017}
+      FIFTYONE_DEFAULT_APP_ADDRESS: 0.0.0.0
+    volumes:
+      - ./data/fiftyone:/data/fiftyone
+      - ./analysis/notebooks:/workspace/notebooks
+    networks:
+      - default
+      - pipeline-network
+    depends_on:
+      - fiftyone-mongo
+    restart: unless-stopped
+
+  fiftyone-mongo:
+    # FiftyOne 메타데이터 전용 MongoDB 사이드카 (analysis 와 함께 생성). 데이터는 볼륨 영속.
+    profiles: ["analysis"]
+    image: mongo:7
+    volumes:
+      - ./data/fiftyone/mongo:/data/db
+    networks:
+      - default
     restart: unless-stopped
 
 volumes:

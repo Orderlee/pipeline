@@ -118,6 +118,7 @@ def calculate_tree_prefixes(folder_tree: List[Dict]) -> List[Dict]:
 # Pure path utilities (no I/O beyond os.path)
 # ---------------------------------------------------------------------------
 
+
 def _normalize(path: str) -> str:
     return os.path.abspath(path)
 
@@ -176,6 +177,7 @@ def _sort_key(path: str) -> str:
 # ---------------------------------------------------------------------------
 # Filesystem scan
 # ---------------------------------------------------------------------------
+
 
 def _scan_root(
     root_path: str,
@@ -272,6 +274,7 @@ def _scan_root(
 # PostgreSQL connection
 # ---------------------------------------------------------------------------
 
+
 def _get_postgres_connection(host: str, port: int, database: str, user: str, password: str):
     ensure_database_exists(host, port, database, user, password)
     return psycopg2.connect(
@@ -286,6 +289,7 @@ def _get_postgres_connection(host: str, port: int, database: str, user: str, pas
 # ---------------------------------------------------------------------------
 # PostgreSQL persistence helpers
 # ---------------------------------------------------------------------------
+
 
 def _clear_root_rows(conn, root_path: str) -> None:
     with conn.cursor() as cur:

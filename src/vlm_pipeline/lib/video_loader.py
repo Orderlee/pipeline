@@ -117,9 +117,13 @@ def probe_duration_sec(file_path: Path | str, *, timeout_sec: int = 30) -> float
     경량 단발 호출 — 전체 메타데이터가 필요한 경우엔 `load_video_once` 사용.
     """
     cmd = [
-        "ffprobe", "-v", "error",
-        "-show_entries", "format=duration",
-        "-of", "default=noprint_wrappers=1:nokey=1",
+        "ffprobe",
+        "-v",
+        "error",
+        "-show_entries",
+        "format=duration",
+        "-of",
+        "default=noprint_wrappers=1:nokey=1",
         str(file_path),
     ]
     try:

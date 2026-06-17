@@ -217,9 +217,7 @@ def _flush_pending_db_rows(
     try:
         db.insert_raw_files_batch([entry["db_record"] for entry in batch_entries])
     except Exception as batch_exc:  # noqa: BLE001
-        context.log.warning(
-            f"raw_files batch insert 실패, 낱개 fallback: count={len(batch_entries)} err={batch_exc}"
-        )
+        context.log.warning(f"raw_files batch insert 실패, 낱개 fallback: count={len(batch_entries)} err={batch_exc}")
         for entry in batch_entries:
             try:
                 db.insert_raw_files_batch([entry["db_record"]])

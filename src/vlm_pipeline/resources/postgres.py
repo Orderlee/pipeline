@@ -20,6 +20,7 @@ from dagster import ConfigurableResource
 from .postgres_base import PostgresBaseMixin
 from .postgres_build import PostgresBuildMixin
 from .postgres_dedup import PostgresDedupMixin
+from .postgres_embedding import PostgresEmbeddingMixin
 from .postgres_genai import PostgresGenAIMixin
 from .postgres_ingest import PostgresIngestMixin
 from .postgres_labeling import PostgresLabelingMixin
@@ -36,6 +37,7 @@ class PostgresResource(
     PostgresLabelingMixin,
     PostgresSpecMixin,
     PostgresGenAIMixin,
+    PostgresEmbeddingMixin,
     ConfigurableResource,
 ):
     """PostgreSQL 통합 리소스 — 섹션별 CRUD 메서드 mixin 합성.
