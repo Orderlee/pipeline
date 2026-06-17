@@ -420,11 +420,15 @@ def main() -> int:
     _insecure_ok = os.environ.get("ALLOW_INSECURE_DEFAULT_CREDS", "").strip().lower() in {"1", "true", "yes"}
     if not MINIO_ACCESS_KEY or MINIO_ACCESS_KEY in _MINIO_DEFAULTS:
         if not _insecure_ok:
-            print("ERROR: MINIO_ACCESS_KEY 가 설정되지 않았거나 기본값입니다. 유효한 자격증명을 설정하세요. (임시 우회: ALLOW_INSECURE_DEFAULT_CREDS=1)")
+            print(
+                "ERROR: MINIO_ACCESS_KEY 가 설정되지 않았거나 기본값입니다. 유효한 자격증명을 설정하세요. (임시 우회: ALLOW_INSECURE_DEFAULT_CREDS=1)"
+            )
             return 1
     if not MINIO_SECRET_KEY or MINIO_SECRET_KEY in _MINIO_DEFAULTS:
         if not _insecure_ok:
-            print("ERROR: MINIO_SECRET_KEY 가 설정되지 않았거나 기본값입니다. 유효한 자격증명을 설정하세요. (임시 우회: ALLOW_INSECURE_DEFAULT_CREDS=1)")
+            print(
+                "ERROR: MINIO_SECRET_KEY 가 설정되지 않았거나 기본값입니다. 유효한 자격증명을 설정하세요. (임시 우회: ALLOW_INSECURE_DEFAULT_CREDS=1)"
+            )
             return 1
 
     if args.command == "serve":

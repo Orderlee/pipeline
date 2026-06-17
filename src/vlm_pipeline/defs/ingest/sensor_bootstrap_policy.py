@@ -168,9 +168,7 @@ def decide_eligible_units(
             waiting_done_marker_count += 1
 
         unit_path = str(unit["unit_path"])
-        has_pending_manifest = (unit_path in pending_unit_paths) or (
-            (unit_path, signature) in pending_unit_signatures
-        )
+        has_pending_manifest = (unit_path in pending_unit_paths) or ((unit_path, signature) in pending_unit_signatures)
         already_manifested = manifested_signature == signature or has_pending_manifest
 
         if is_stable and has_marker and not already_manifested:
