@@ -465,10 +465,21 @@ def main() -> int:
         parser.error("--dsn 또는 DATAOPS_POSTGRES_DSN 환경변수가 필요합니다.")
 
     _MINIO_DEFAULTS = {"minioadmin", "admin", ""}
+    # ls_webhook.py / config.py / minio_cross_sync.py 와 동일 escape-hatch: 자격 회전 전까지
+    # ALLOW_INSECURE_DEFAULT_CREDS=1 면 fail-fast 대신 경고로 강등 (1f3309f 가 이 연결을 누락).
+    _insecure_ok = os.environ.get("ALLOW_INSECURE_DEFAULT_CREDS", "").strip().lower() in {"1", "true", "yes"}
     if not args.minio_access_key or args.minio_access_key in _MINIO_DEFAULTS:
-        parser.error("--minio-access-key 또는 MINIO_ACCESS_KEY 에 유효한 자격증명이 필요합니다.")
+        if not _insecure_ok:
+            parser.error(
+                "--minio-access-key 또는 MINIO_ACCESS_KEY 에 유효한 자격증명이 필요합니다. (임시 우회: ALLOW_INSECURE_DEFAULT_CREDS=1)"
+            )
+        print("WARNING: 기본 MinIO 자격으로 진행 (ALLOW_INSECURE_DEFAULT_CREDS=1) — 자격 회전 후 해제 권장.")
     if not args.minio_secret_key or args.minio_secret_key in _MINIO_DEFAULTS:
-        parser.error("--minio-secret-key 또는 MINIO_SECRET_KEY 에 유효한 자격증명이 필요합니다.")
+        if not _insecure_ok:
+            parser.error(
+                "--minio-secret-key 또는 MINIO_SECRET_KEY 에 유효한 자격증명이 필요합니다. (임시 우회: ALLOW_INSECURE_DEFAULT_CREDS=1)"
+            )
+        print("WARNING: 기본 MinIO 자격으로 진행 (ALLOW_INSECURE_DEFAULT_CREDS=1) — 자격 회전 후 해제 권장.")
 
     run(
         project_id=args.project,

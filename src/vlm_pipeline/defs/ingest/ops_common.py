@@ -24,6 +24,7 @@ DEFAULT_VIDEO_CONTENT_TYPE: str = "video/mp4"
 DEFAULT_IMAGE_CODEC: str = "jpeg"
 DEFAULT_RAW_BUCKET: str = "vlm-raw"
 
+
 @dataclass(frozen=True)
 class IngestWorkerConfig:
     """ingest stage 의 worker / thread 수."""
@@ -37,7 +38,9 @@ def read_ingest_worker_config() -> IngestWorkerConfig:
     """환경 변수 INGEST_UPLOAD_WORKERS / INGEST_REENCODE_WORKERS / INGEST_REENCODE_THREADS 에서 worker config 추출."""
     return IngestWorkerConfig(
         max_workers=min(MAX_UPLOAD_WORKERS, int_env("INGEST_UPLOAD_WORKERS", DEFAULT_UPLOAD_WORKERS, minimum=1)),
-        reencode_workers=min(MAX_UPLOAD_WORKERS, int_env("INGEST_REENCODE_WORKERS", DEFAULT_REENCODE_WORKERS, minimum=1)),
+        reencode_workers=min(
+            MAX_UPLOAD_WORKERS, int_env("INGEST_REENCODE_WORKERS", DEFAULT_REENCODE_WORKERS, minimum=1)
+        ),
         reencode_threads=int_env("INGEST_REENCODE_THREADS", DEFAULT_REENCODE_THREADS, minimum=1),
     )
 

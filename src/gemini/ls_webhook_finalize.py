@@ -273,9 +273,7 @@ def _run_sync_and_notify_inner(project_id: int, project_title: str) -> None:
             f"최종 확정이 필요합니다. `/sync-list` 로 확인하세요."
         )
     else:
-        send_slack_alert(
-            f"[재동기화] *{project_title}* (id={project_id}) — 수정사항 반영됨, 확정 대기 중{skip_suffix}"
-        )
+        send_slack_alert(f"[재동기화] *{project_title}* (id={project_id}) — 수정사항 반영됨, 확정 대기 중{skip_suffix}")
 
 
 def finalize_project(project_id: int, response_url: str = "") -> None:

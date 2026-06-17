@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 from datetime import datetime, timezone, timedelta
@@ -20,6 +21,28 @@ except ModuleNotFoundError:
 DEFAULT_PRESIGN_EXPIRES = 3600 * 24 * 7  # 7일
 DEFAULT_RENEW_THRESHOLD = 3600 * 24 * 1  # 만료 1일 이내이면 갱신
 VIDEO_EXTENSIONS = {".mp4", ".mov", ".mkv", ".avi", ".webm"}
+
+
+# ---------------------------------------------------------------------------
+# Label Studio auth
+# cmd_renew_all 이 160 project 를 순회하는 동안 access token(JWT refresh→Bearer, ~5분 만료)이
+# 끊기지 않도록 project 마다 재발급할 때 사용. ls_tasks.py 의 동일 함수를 복사 — ls_tasks.py 가
+# cmd_renew_all 을 이 모듈에서 import 하므로 역 import 시 순환. ls_sync.py 도 자체 사본을 둔다.
+# ---------------------------------------------------------------------------
+
+
+def resolve_auth_headers(ls_url: str, token: str) -> dict[str, str]:
+    try:
+        payload_part = token.split(".")[1]
+        payload_part += "=" * (-len(payload_part) % 4)
+        payload = json.loads(base64.b64decode(payload_part).decode("utf-8"))
+        if payload.get("token_type") == "refresh":
+            resp = requests.post(f"{ls_url}/api/token/refresh/", json={"refresh": token})
+            resp.raise_for_status()
+            return {"Authorization": f"Bearer {resp.json()['access']}"}
+    except Exception:
+        pass
+    return {"Authorization": f"Token {token}"}
 
 
 # ---------------------------------------------------------------------------
@@ -295,6 +318,9 @@ def cmd_renew_all(args, minio, auth_headers: dict) -> None:
         print(f"{'=' * 60}")
 
         args.project_name = title
+        # access token(JWT refresh→Bearer, ~5분 만료)이 160개 project 순회 동안 끊기지 않도록
+        # project 마다 재발급 (static Token 이면 동일 헤더 반환 → no-op). 누적 TTL 만료 방지.
+        auth_headers = resolve_auth_headers(args.ls_url, args.api_key)
         try:
             cmd_renew(args, minio, auth_headers)
         except Exception as exc:

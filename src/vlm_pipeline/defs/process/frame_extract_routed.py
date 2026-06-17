@@ -233,11 +233,7 @@ def _extract_clip_frames_with_db(
                 codec = (img.format or "jpeg").lower()
             minio.upload("vlm-processed", clip_key, file_bytes, f"image/{codec}")
             uploaded_clip_key = clip_key
-        elif (
-            cf.event_start_sec is not None
-            and cf.event_end_sec is not None
-            and cf.event_end_sec > cf.event_start_sec
-        ):
+        elif cf.event_start_sec is not None and cf.event_end_sec is not None and cf.event_end_sec > cf.event_start_sec:
             if (
                 cf.source_video_duration_sec is not None
                 and cf.source_video_duration_sec > 0

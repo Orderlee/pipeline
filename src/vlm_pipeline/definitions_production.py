@@ -37,6 +37,8 @@ from vlm_pipeline.defs.ls.sensor import (
     ls_task_create_sensor,
 )
 from vlm_pipeline.defs.process.assets import clip_captioning, clip_to_frame, raw_video_to_frame
+from vlm_pipeline.defs.embed.assets import caption_embedding, frame_embedding
+from vlm_pipeline.defs.embed.sensor import caption_embedding_backlog_sensor, frame_embedding_backlog_sensor
 from vlm_pipeline.defs.sam.assets import sam3_shadow_compare
 from vlm_pipeline.defs.sam.detection_assets import (
     dispatch_sam3_image_detection,
@@ -168,6 +170,7 @@ def build_production_assets(
     enable_manual_label_import: bool,
     enable_yolo_detection: bool,
     enable_sam3_detection: bool = False,
+    enable_embedding: bool = False,
 ) -> list[object]:
     assets: list[object] = [
         raw_ingest,
@@ -189,6 +192,9 @@ def build_production_assets(
         assets.extend([dispatch_yolo_image_detection, yolo_image_detection])
     if enable_sam3_detection:
         assets.append(sam3_image_detection)
+    if enable_embedding:
+        assets.append(frame_embedding)
+        assets.append(caption_embedding)
     return assets
 
 
@@ -196,6 +202,7 @@ def build_production_sensors(
     *,
     dispatch_target_jobs: list[object],
     archive_dispatch_jobs: list[object] | None = None,
+    enable_embedding: bool = False,
 ) -> list[object]:
     sensors: list[object] = [
         *COMMON_INGEST_SENSORS,
@@ -211,4 +218,7 @@ def build_production_sensors(
     if archive_dispatch_jobs:
         # Phase 2b: from_archived=True dispatch JSON 만 처리
         sensors.append(build_archive_dispatch_sensor(jobs=archive_dispatch_jobs))
+    if enable_embedding:
+        sensors.append(frame_embedding_backlog_sensor)
+        sensors.append(caption_embedding_backlog_sensor)
     return sensors

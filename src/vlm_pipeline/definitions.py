@@ -28,6 +28,7 @@ from vlm_pipeline.lib.env_utils import bool_env
 _enable_manual_label_import = bool_env("ENABLE_MANUAL_LABEL_IMPORT", False)
 _enable_yolo_detection = bool_env("ENABLE_YOLO_DETECTION", False)
 _enable_sam3_detection = bool_env("ENABLE_SAM3_DETECTION", False)
+_enable_embedding = bool_env("ENABLE_EMBEDDING", False)
 
 _mvp_stage_job = build_asset_job(
     name="mvp_stage_job",
@@ -112,6 +113,24 @@ if _enable_sam3_detection:
             description="SAM3 bbox detection (clip_to_frame deps) — ENABLE_SAM3_DETECTION 시에만 등록",
         )
     )
+if _enable_embedding:
+    from vlm_pipeline.defs.embed.assets import caption_embedding as _caption_embedding_asset
+    from vlm_pipeline.defs.embed.assets import frame_embedding as _frame_embedding_asset
+
+    _jobs.append(
+        build_asset_job(
+            name="frame_embedding_job",
+            selection=[_frame_embedding_asset],
+            description="프레임 임베딩 (PE-Core-L14-336 → pgvector) — ENABLE_EMBEDDING 시에만 등록",
+        )
+    )
+    _jobs.append(
+        build_asset_job(
+            name="caption_embedding_job",
+            selection=[_caption_embedding_asset],
+            description="캡션 텍스트 임베딩 (PE-Core-L14-336 cross-modal → pgvector) — ENABLE_EMBEDDING 시에만 등록",
+        )
+    )
 
 _jobs.append(ls_presign_renew_job)
 
@@ -120,6 +139,7 @@ defs = Definitions(
         enable_manual_label_import=_enable_manual_label_import,
         enable_yolo_detection=_enable_yolo_detection,
         enable_sam3_detection=_enable_sam3_detection,
+        enable_embedding=_enable_embedding,
     ),
     asset_checks=PHASE_3C_ASSET_CHECKS,
     jobs=_jobs,
@@ -130,6 +150,7 @@ defs = Definitions(
     sensors=build_production_sensors(
         dispatch_target_jobs=[_dispatch_stage_job, _ingest_job],
         archive_dispatch_jobs=[_upload_label_job],
+        enable_embedding=_enable_embedding,
     ),
     resources=build_common_resources(),
 )

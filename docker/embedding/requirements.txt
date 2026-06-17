@@ -1,0 +1,5 @@
+fastapi
+uvicorn[standard]
+open_clip_torch>=2.24
+pillow
+python-multipart

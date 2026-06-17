@@ -438,8 +438,10 @@ def _create_image(args, minio, auth_headers: dict) -> None:
     # client-side 추가 filter. attach-predictions 와 동일 동작.
     try:
         import sys as _sys
+
         _sys.path.insert(0, "/src")
         from vlm_pipeline.lib.yolo_thresholds import YOLO_CLASS_CONFIDENCE_THRESHOLDS
+
         class_thresholds = dict(YOLO_CLASS_CONFIDENCE_THRESHOLDS)
         print(f"[INFO] class_thresholds: {len(class_thresholds)} entries (per-phrase score filter)")
     except Exception as exc:
@@ -608,8 +610,10 @@ def _attach_sam3_images(args, minio, auth_headers: dict, project_id: int) -> Non
     # 사용자 batch e00879ff-b04 케이스: "person on the ground" 30+ boxes (0.5-0.7) → drop.
     try:
         import sys
+
         sys.path.insert(0, "/src")
         from vlm_pipeline.lib.yolo_thresholds import YOLO_CLASS_CONFIDENCE_THRESHOLDS
+
         class_thresholds = dict(YOLO_CLASS_CONFIDENCE_THRESHOLDS)
         print(f"[INFO] class_thresholds loaded: {len(class_thresholds)} entries")
     except Exception as exc:
@@ -637,7 +641,10 @@ def _attach_sam3_images(args, minio, auth_headers: dict, project_id: int) -> Non
         try:
             coco = read_json_from_minio(minio, args.label_bucket, json_key)
             ls_result = sam3_coco_to_ls_rectangles(
-                coco, allowed, from_name, to_name,
+                coco,
+                allowed,
+                from_name,
+                to_name,
                 label_map=label_map,
                 normalizer=normalizer,
                 class_thresholds=class_thresholds,
