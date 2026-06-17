@@ -16,3 +16,27 @@ datasources:
       connMaxLifetime: 14400
     isDefault: true
     editable: true
+
+  # vlm_pipeline DB — prod: hostname 'postgres' (within same compose project).
+  # staging: same hostname 'postgres' resolves to pipeline-test-postgres-1.
+  # Credentials default to airflow/airflow matching compose defaults.
+  # NOTE: Grafana provisioning does not support bash ${VAR:-default} syntax.
+  # If POSTGRES_USER/PASSWORD differ from defaults, update via Grafana UI
+  # (Data Sources > PostgreSQL-VLM > Edit) or add GF_DATABASE_* env overrides.
+  # staging database = vlm_pipeline_staging; update the 'database' field in UI.
+  - name: PostgreSQL-VLM
+    type: postgres
+    uid: postgres-vlm
+    access: proxy
+    url: postgres:5432
+    database: vlm_pipeline
+    user: airflow
+    secureJsonData:
+      password: airflow
+    jsonData:
+      sslmode: disable
+      maxOpenConns: 5
+      maxIdleConns: 5
+      connMaxLifetime: 14400
+    isDefault: false
+    editable: true

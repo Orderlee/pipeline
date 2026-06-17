@@ -1,0 +1,10 @@
+jupyterlab
+fiftyone
+psycopg2-binary
+boto3
+pandas
+plotly
+umap-learn
+requests
+streamlit
+streamlit-autorefresh
