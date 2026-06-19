@@ -51,6 +51,54 @@
 
 
 
+
+
+## 2026-06-18
+
+### 1. 당일 코드 및 설정 정리
+- **문제**: 당일 변경이 여러 영역에 걸쳐 있어, 커밋 목록만 보면 실제 수정 범위와 운영 영향 지점을 파악하기 어려웠음.
+- **원인**: 자동 기록이 파일/커밋 나열 중심으로 작성되면 코드, 설정, 문서 변경이 어떤 의도로 묶였는지 드러나지 않음.
+- **조치**:
+    - 인프라/설정 변경을 정리함: `docker/analysis/embedding_dashboard.py`, `docker/analysis/fiftyone_pgvector.py`
+    - 관련 커밋: `d0441a52` feat(analysis): 이미지검색 UX — pivot(결과→유사검색) + 이미지 업로드 검색, `9f94b765` feat(analysis): image→image 유사검색(img_sim) + HDBSCAN 클러스터링, `4f14e290` feat(analysis): 능동학습 큐 + 캡션 키워드 앵커링 (모델 성능 향상 closed-loop), `6527fc2d` feat(analysis): 데이터-중심 AI 품질 분석 (모델 성능 향상용 actionable 신호)
+    - 관련 파일:
+      - `docker/analysis/embedding_dashboard.py`
+      - `docker/analysis/fiftyone_pgvector.py`
+
+### 2. 당일 정리
+- **변경 통계**:
+    - 변경 파일 **2개**, +1590/-66줄.
+- **관련 커밋**:
+    - `d0441a52`: feat(analysis): 이미지검색 UX — pivot(결과→유사검색) + 이미지 업로드 검색
+    - `9f94b765`: feat(analysis): image→image 유사검색(img_sim) + HDBSCAN 클러스터링
+    - `4f14e290`: feat(analysis): 능동학습 큐 + 캡션 키워드 앵커링 (모델 성능 향상 closed-loop)
+    - `6527fc2d`: feat(analysis): 데이터-중심 AI 품질 분석 (모델 성능 향상용 actionable 신호)
+    - `7505a134`: fix(analysis): 최근접 표 IndexError (클러스터 k<4 일 때)
+- **서비스 상태**: 파이프라인 서비스 16개 컨테이너 중 16개 정상 가동.
+- **작업 환경**: VSCode
+
+## 2026-06-17
+
+### 1. 프레임 추출 안정화 및 이미지 캡션 메타 확장
+- **문제**: 영상 말단 구간에서 프레임 추출이 비거나 불안정할 수 있었고, 이미지 캡션 결과도 텍스트만 남아 후속 추적에 필요한 저장 메타가 부족했음.
+- **원인**: ffmpeg 프레임 추출은 요청 시점이 영상 끝에 가까우면 empty output이 날 수 있었고, image caption 저장은 bucket/key/generated_at 같은 정본 추적 필드가 충분하지 않았음.
+- **조치**:
+    - ffmpeg frame extract에 fallback seek 후보와 retry 흐름을 넣어 말단 구간 empty output 상황을 완화함.
+    - image caption JSON을 별도 key로 저장하고 bucket, key, 생성 시각 메타를 image/process 경로에 함께 기록하도록 확장함.
+    - process 중 실패 시 업로드한 frame/image caption JSON을 함께 정리하도록 rollback 경로도 보강함.
+
+### 2. 당일 정리
+- **변경 통계**:
+    - 변경 파일 **20개**, +2482/-41줄.
+- **관련 커밋**:
+    - `b6586e84`: feat(analysis): Streamlit 대시보드에 텍스트→이미지/캡션 검색 탭
+    - `970d0abe`: feat(analysis): FiftyOne App 텍스트→이미지 검색 (prompt-capable similarity index)
+    - `a10418f8`: feat(analysis): FiftyOne 데이터셋 빌드에 PCA 투영(emb_viz_pca) 추가
+    - `6c30fb4e`: feat(analysis): 캡션↔이미지 cosine 정합 패널(Streamlit) + caption_img_sim 필드(FiftyOne)
+    - `937f5a0a`: feat(embed): 캡션 임베딩 영어화 (한글 캡션 → Gemini 번역 → PE-Core 임베딩)
+- **서비스 상태**: 파이프라인 서비스 16개 컨테이너 중 16개 정상 가동.
+- **작업 환경**: VSCode
+
 ## 2026-06-16
 
 ### 1. 프레임 추출 안정화 및 이미지 캡션 메타 확장
