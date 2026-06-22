@@ -156,6 +156,75 @@ class PostgresVideoMetadataMixin:
                     ),
                 )
 
+    def find_deferred_env_videos(self, limit: int = 1000) -> list[dict[str, Any]]:
+        """env_method='deferred' 이고 frame_extract_count>0 인 video 목록 반환.
+
+        archive_path IS NOT NULL 조건으로 파일 위치를 확인할 수 있는 레코드만 포함.
+        """
+        with self.connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT vm.asset_id, rf.archive_path, vm.duration_sec
+                    FROM video_metadata vm
+                    JOIN raw_files rf ON rf.asset_id = vm.asset_id
+                    WHERE vm.env_method = 'deferred'
+                      AND COALESCE(vm.frame_extract_count, 0) > 0
+                      AND rf.archive_path IS NOT NULL
+                    ORDER BY vm.asset_id
+                    LIMIT %(limit)s
+                    """,
+                    {"limit": max(1, int(limit))},
+                )
+                rows = cur.fetchall()
+        return self._rows_to_dicts(rows, ["asset_id", "archive_path", "duration_sec"])
+
+    def count_deferred_env_videos(self) -> int:
+        """find_deferred_env_videos 와 동일 조건의 레코드 수 반환."""
+        with self.connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT COUNT(*)
+                    FROM video_metadata vm
+                    JOIN raw_files rf ON rf.asset_id = vm.asset_id
+                    WHERE vm.env_method = 'deferred'
+                      AND COALESCE(vm.frame_extract_count, 0) > 0
+                      AND rf.archive_path IS NOT NULL
+                    """
+                )
+                row = cur.fetchone()
+        return int(row[0]) if row else 0
+
+    def update_video_env(
+        self,
+        asset_id: str,
+        *,
+        environment_type: str | None,
+        daynight_type: str | None,
+        outdoor_score: float | None,
+        avg_brightness: float | None,
+        env_method: str | None,
+    ) -> None:
+        """video_metadata 의 환경 분류 컬럼만 갱신."""
+        normalized_id = self._norm_str(asset_id)
+        if not normalized_id:
+            return
+        with self.connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE video_metadata
+                    SET environment_type = %s,
+                        daynight_type    = %s,
+                        outdoor_score    = %s,
+                        avg_brightness   = %s,
+                        env_method       = %s
+                    WHERE asset_id = %s
+                    """,
+                    (environment_type, daynight_type, outdoor_score, avg_brightness, env_method, normalized_id),
+                )
+
     def find_raw_video_extract_pending(self, limit: int = 500, folder_name: str | None = None) -> list[dict[str, Any]]:
         """라벨(event) 없이 처리할 raw video 후보를 반환."""
         with self.connect() as conn:

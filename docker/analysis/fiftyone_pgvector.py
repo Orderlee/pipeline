@@ -468,7 +468,14 @@ def _topk_by_vector(vec: list[float], k: int, model_name: str) -> list[dict]:
 
 
 def search_by_text(query: str, k: int = 20, model_name: str = DEFAULT_MODEL) -> list[dict]:
-    """텍스트 → embedding-service /embed_text → frame pgvector cosine top-k (cross-modal text→image)."""
+    """텍스트 → embedding-service /embed_text → frame pgvector cosine top-k (cross-modal text→image).
+
+    TODO(caption-en): caption embeddings are now English-based (PE-Core is English-centric).
+    For best cross-modal alignment pass an English query here.  If you want to search with
+    Korean text, translate it to English first via GeminiAnalyzer before calling this function.
+    The analysis container does not have direct access to the Gemini SDK/credentials, so
+    translation should be done outside and the English string passed in.
+    """
     return _topk_by_vector(_embed_text(query), k, model_name)
 
 
@@ -478,7 +485,13 @@ def search_images_by_caption(query: str, k: int = 20, model_name: str = DEFAULT_
 
 
 def search_captions_by_text(query: str, k: int = 20, model_name: str = DEFAULT_MODEL) -> list[dict]:
-    """텍스트 → caption embeddings cosine top-k."""
+    """텍스트 → caption embeddings cosine top-k.
+
+    TODO(caption-en): caption vectors are now English-based (PE-Core text encoder).
+    Pass an English query for best results.  Korean queries will still work but alignment
+    quality will be lower (PE-Core Korean text → degenerate embeddings).
+    For a Gemini-translated query, translate externally before calling this function.
+    """
     vec = _embed_text(query)
     lit = "[" + ",".join(repr(float(x)) for x in vec) + "]"
     sql = """
@@ -491,6 +504,64 @@ def search_captions_by_text(query: str, k: int = 20, model_name: str = DEFAULT_M
     """
     with _pg_conn() as conn, conn.cursor() as cur:
         cur.execute(sql, {"q": lit, "model": model_name, "k": k})
+        cols = [c.name for c in cur.description]
+        return [dict(zip(cols, row)) for row in cur.fetchall()]
+
+
+def search_videos_by_text(
+    text: str, k: int = 10, model_name: str = DEFAULT_MODEL + "/framepool"
+) -> list[dict]:
+    """텍스트 → embedding-service /embed_text → video pgvector cosine top-k.
+
+    entity_type='video' partial HNSW 인덱스(009)를 활용한다.
+    반환: [{"entity_id": source_asset_id, "asset_id": source_asset_id, "cosine_dist": float}]
+    """
+    vec = _embed_text(text)
+    lit = "[" + ",".join(repr(float(x)) for x in vec) + "]"
+    sql = """
+        SELECT e.entity_id, e.asset_id,
+               (e.embedding <=> %(q)s::vector) AS cosine_dist
+        FROM image_embeddings e
+        WHERE e.entity_type = 'video' AND e.model_name = %(model)s
+        ORDER BY e.embedding <=> %(q)s::vector
+        LIMIT %(k)s
+    """
+    with _pg_conn() as conn, conn.cursor() as cur:
+        cur.execute(sql, {"q": lit, "model": model_name, "k": k})
+        cols = [c.name for c in cur.description]
+        return [dict(zip(cols, row)) for row in cur.fetchall()]
+
+
+def search_similar_videos(
+    asset_id: str, k: int = 10, model_name: str = DEFAULT_MODEL + "/framepool"
+) -> list[dict]:
+    """주어진 video(source_asset_id) 의 임베딩 기준 cosine top-k 유사 video.
+
+    entity_type='video' partial HNSW 인덱스(009)를 활용한다.
+    반환: [{"entity_id": source_asset_id, "asset_id": source_asset_id, "cosine_dist": float}]
+    """
+    with _pg_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            "SELECT embedding FROM image_embeddings "
+            "WHERE entity_type='video' AND entity_id=%(id)s AND model_name=%(model)s LIMIT 1",
+            {"id": asset_id, "model": model_name},
+        )
+        row = cur.fetchone()
+    if not row:
+        raise ValueError(f"no video embedding for asset_id={asset_id!r} model={model_name!r}")
+    vec = _parse_vector(row[0])
+    lit = "[" + ",".join(repr(float(x)) for x in vec) + "]"
+    sql = """
+        SELECT e.entity_id, e.asset_id,
+               (e.embedding <=> %(q)s::vector) AS cosine_dist
+        FROM image_embeddings e
+        WHERE e.entity_type = 'video' AND e.model_name = %(model)s
+        AND e.entity_id <> %(query_id)s
+        ORDER BY e.embedding <=> %(q)s::vector
+        LIMIT %(k)s
+    """
+    with _pg_conn() as conn, conn.cursor() as cur:
+        cur.execute(sql, {"q": lit, "model": model_name, "k": k, "query_id": asset_id})
         cols = [c.name for c in cur.description]
         return [dict(zip(cols, row)) for row in cur.fetchall()]
 

@@ -12,7 +12,9 @@ from vlm_pipeline.definitions_production import (
     build_gcs_download_schedule,
     build_production_assets,
     build_production_sensors,
+    build_video_env_backfill_schedule,
 )
+from vlm_pipeline.defs.ingest.env_backfill import video_env_backfill_job
 from vlm_pipeline.defs.gcp.assets import gcs_download_to_incoming
 from vlm_pipeline.defs.ingest.asset_checks import PHASE_3C_ASSET_CHECKS
 from vlm_pipeline.defs.ingest.assets import raw_ingest
@@ -116,6 +118,7 @@ if _enable_sam3_detection:
 if _enable_embedding:
     from vlm_pipeline.defs.embed.assets import caption_embedding as _caption_embedding_asset
     from vlm_pipeline.defs.embed.assets import frame_embedding as _frame_embedding_asset
+    from vlm_pipeline.defs.embed.video import video_embedding as _video_embedding_asset
 
     _jobs.append(
         build_asset_job(
@@ -131,8 +134,16 @@ if _enable_embedding:
             description="캡션 텍스트 임베딩 (PE-Core-L14-336 cross-modal → pgvector) — ENABLE_EMBEDDING 시에만 등록",
         )
     )
+    _jobs.append(
+        build_asset_job(
+            name="video_embedding_job",
+            selection=[_video_embedding_asset],
+            description="비디오 임베딩 (frame_pool: L2-normalized mean of frame embeddings → pgvector) — ENABLE_EMBEDDING 시에만 등록",
+        )
+    )
 
 _jobs.append(ls_presign_renew_job)
+_jobs.append(video_env_backfill_job)
 
 defs = Definitions(
     assets=build_production_assets(
@@ -146,6 +157,7 @@ defs = Definitions(
     schedules=[
         build_gcs_download_schedule(_gcs_download_job),
         ls_presign_renew_schedule,
+        build_video_env_backfill_schedule(video_env_backfill_job),
     ],
     sensors=build_production_sensors(
         dispatch_target_jobs=[_dispatch_stage_job, _ingest_job],

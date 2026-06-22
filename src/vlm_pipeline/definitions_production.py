@@ -6,7 +6,7 @@
 
 from __future__ import annotations
 
-from dagster import EnvVar, ScheduleDefinition, define_asset_job
+from dagster import DefaultScheduleStatus, EnvVar, ScheduleDefinition, define_asset_job
 
 from vlm_pipeline.defs.build.assets import build_dataset
 from vlm_pipeline.defs.build.classification import build_classification
@@ -38,7 +38,12 @@ from vlm_pipeline.defs.ls.sensor import (
 )
 from vlm_pipeline.defs.process.assets import clip_captioning, clip_to_frame, raw_video_to_frame
 from vlm_pipeline.defs.embed.assets import caption_embedding, frame_embedding
-from vlm_pipeline.defs.embed.sensor import caption_embedding_backlog_sensor, frame_embedding_backlog_sensor
+from vlm_pipeline.defs.embed.sensor import (
+    caption_embedding_backlog_sensor,
+    frame_embedding_backlog_sensor,
+    video_embedding_backlog_sensor,
+)
+from vlm_pipeline.defs.embed.video import video_embedding
 from vlm_pipeline.defs.sam.assets import sam3_shadow_compare
 from vlm_pipeline.defs.sam.detection_assets import (
     dispatch_sam3_image_detection,
@@ -141,6 +146,30 @@ def build_asset_job(
     )
 
 
+def build_video_env_backfill_schedule(job) -> ScheduleDefinition:
+    """평일 19:00 KST Places365 환경 분류 백필 스케줄.
+
+    default_status=STOPPED — 운영자가 Dagster UI 에서 수동으로 활성화해야 한다.
+    백로그 소진 후에는 다시 STOPPED 로 복귀 권장.
+    """
+    return ScheduleDefinition(
+        name="video_env_backfill_schedule",
+        job=job,
+        cron_schedule="0 19 * * 1-5",
+        execution_timezone="Asia/Seoul",
+        default_status=DefaultScheduleStatus.STOPPED,
+        run_config={
+            "ops": {
+                "video_env_backfill": {
+                    "config": {
+                        "limit": 1000,
+                    }
+                }
+            }
+        },
+    )
+
+
 def build_gcs_download_schedule(job) -> ScheduleDefinition:
     return ScheduleDefinition(
         name="gcs_download_schedule",
@@ -195,6 +224,7 @@ def build_production_assets(
     if enable_embedding:
         assets.append(frame_embedding)
         assets.append(caption_embedding)
+        assets.append(video_embedding)
     return assets
 
 
@@ -221,4 +251,5 @@ def build_production_sensors(
     if enable_embedding:
         sensors.append(frame_embedding_backlog_sensor)
         sensors.append(caption_embedding_backlog_sensor)
+        sensors.append(video_embedding_backlog_sensor)
     return sensors

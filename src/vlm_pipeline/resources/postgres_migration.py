@@ -101,6 +101,7 @@ class PostgresMigrationMixin:
         "006_image_embeddings.sql": "SELECT 1 FROM pg_available_extensions WHERE name = 'vector'",
         "007_caption_embeddings.sql": "SELECT 1 FROM pg_available_extensions WHERE name = 'vector'",
         "008_embedding_partial_indexes.sql": "SELECT 1 FROM pg_available_extensions WHERE name = 'vector'",
+        "009_video_embeddings.sql": "SELECT 1 FROM pg_available_extensions WHERE name = 'vector'",
     }
 
     def ensure_runtime_schema(self) -> None:
