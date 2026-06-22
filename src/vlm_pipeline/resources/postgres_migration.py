@@ -102,6 +102,8 @@ class PostgresMigrationMixin:
         "007_caption_embeddings.sql": "SELECT 1 FROM pg_available_extensions WHERE name = 'vector'",
         "008_embedding_partial_indexes.sql": "SELECT 1 FROM pg_available_extensions WHERE name = 'vector'",
         "009_video_embeddings.sql": "SELECT 1 FROM pg_available_extensions WHERE name = 'vector'",
+        # 010: 캡션 lexical(키워드) 검색용 pg_trgm. pg_trgm 미가용 이미지에서 부팅 깨짐 방지.
+        "010_caption_trgm_index.sql": "SELECT 1 FROM pg_available_extensions WHERE name = 'pg_trgm'",
     }
 
     def ensure_runtime_schema(self) -> None:
