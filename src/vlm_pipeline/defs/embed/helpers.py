@@ -1,9 +1,9 @@
-"""프레임 → 임베딩 row 빌드 및 sensor 순수 헬퍼. per-file fail-forward."""
+"""프레임/video → 임베딩 row 빌드 및 sensor 순수 헬퍼. per-file fail-forward."""
 
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import Any, Callable
 
 log = logging.getLogger(__name__)
 
@@ -54,18 +54,50 @@ def build_caption_embedding_rows(
     *,
     client,
     model_name: str,
-) -> tuple[list[dict[str, Any]], list[str]]:
+    translate: Callable[[list[str]], list[str]] | None = None,
+) -> tuple[list[dict[str, Any]], list[str], int, int]:
     """pending caption 목록을 임베딩 row dict 로 변환.
 
-    각 caption 실패는 failed 리스트에 label_id 추가 후 계속 (per-item fail-forward).
-    Returns (rows, failed_label_ids).
+    translate: optional callable list[str]→list[str] that converts the batch of Korean
+    captions to English before embedding.  When provided the embedding vector is computed
+    from the English text, but text_content keeps the original Korean (for display).
+    Per-item fail-forward: a single embed failure adds to failed list and continues.
+    Returns (rows, failed_label_ids, translated_count, fallback_count).
+    translated_count = captions actually embedded from English (translate succeeded per-item).
+    fallback_count   = captions embedded from original Korean (translate disabled, batch fail,
+                       or length mismatch fallback).
     """
     rows: list[dict[str, Any]] = []
     failed: list[str] = []
-    for p in pending:
-        label_id = p["label_id"]
+    used_english = False
+
+    original_texts = [p["caption_text"] for p in pending]
+    if translate is not None:
         try:
-            vec = client.embed_text(p["caption_text"])
+            embed_texts = translate(original_texts)
+        except Exception as exc:
+            log.warning("caption batch translate failed (%s), falling back to originals", exc)
+            embed_texts = original_texts
+        if len(embed_texts) != len(original_texts):
+            log.warning(
+                "translate returned %d items for %d inputs, falling back to originals",
+                len(embed_texts),
+                len(original_texts),
+            )
+            embed_texts = original_texts
+        else:
+            used_english = True
+    else:
+        embed_texts = original_texts
+
+    translated_count = 0
+    fallback_count = 0
+
+    for p, embed_text, orig_text in zip(pending, embed_texts, original_texts):
+        label_id = p["label_id"]
+        is_english = used_english and (embed_text != orig_text)
+        try:
+            vec = client.embed_text(embed_text)
             if len(vec) != 1024:
                 raise ValueError(f"unexpected dim {len(vec)}")
             rows.append(
@@ -84,10 +116,14 @@ def build_caption_embedding_rows(
                     "text_content": p["caption_text"],
                 }
             )
+            if is_english:
+                translated_count += 1
+            else:
+                fallback_count += 1
         except Exception as exc:
             log.warning("caption embed failed label_id=%s: %s", label_id, exc)
             failed.append(label_id)
-    return rows, failed
+    return rows, failed, translated_count, fallback_count
 
 
 def _parse_seq(cursor: str | None) -> int:
@@ -137,3 +173,39 @@ def decide_frame_embedding_run(
         cfg["image_roles"] = list(image_roles)
     run_config = {"ops": {"frame_embedding": {"config": cfg}}}
     return run_config, _encode_cursor(backlog_count, seq), f"frame-embed-{seq}"
+
+
+def decide_video_embedding_run(
+    *,
+    backlog_count: int,
+    prev_cursor: str | None,
+    in_flight: bool,
+    limit: int,
+    video_model_name: str,
+    frame_model_name: str,
+    video_roles: list[str] | None = None,
+) -> tuple[dict | None, str, str | None]:
+    """Video 임베딩 sensor 결정 (순수 함수, dagster 비의존 → 단위 테스트 가능).
+
+    Returns (run_config_or_None, new_cursor, run_key_or_None):
+      - backlog<=0  → skip (seq 유지)
+      - in_flight   → skip (실행 중 → 중복 run 방지, seq 유지)
+      - 그 외       → run (seq+1, 고유 run_key)
+
+    decide_frame_embedding_run 과 동일한 monotonic-seq 전략으로 backlog 불변 시에도 재시도 보장.
+    """
+    prev_seq = _parse_seq(prev_cursor)
+    if backlog_count <= 0:
+        return None, _encode_cursor(0, prev_seq), None
+    if in_flight:
+        return None, _encode_cursor(backlog_count, prev_seq), None
+    seq = prev_seq + 1
+    cfg: dict[str, Any] = {
+        "limit": limit,
+        "video_model_name": video_model_name,
+        "frame_model_name": frame_model_name,
+    }
+    if video_roles:
+        cfg["video_roles"] = list(video_roles)
+    run_config = {"ops": {"video_embedding": {"config": cfg}}}
+    return run_config, _encode_cursor(backlog_count, seq), f"video-embed-{seq}"
