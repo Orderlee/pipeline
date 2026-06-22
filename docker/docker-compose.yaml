@@ -543,9 +543,17 @@ services:
       # FiftyOne 메타데이터 store = mongo 사이드카 (번들 mongod 미사용).
       FIFTYONE_DATABASE_URI: ${FIFTYONE_DATABASE_URI:-mongodb://fiftyone-mongo:27017}
       FIFTYONE_DEFAULT_APP_ADDRESS: 0.0.0.0
+      # Vertex Gemini 쿼리 번역(KO→EN cross-lingual) 영구화 — genai/dagster 와 동일 creds 패턴.
+      # .env 의 GEMINI_GOOGLE_APPLICATION_CREDENTIALS 미설정 시 빈 값 → 코드가 사전(dict) fallback (무해).
+      GEMINI_GOOGLE_APPLICATION_CREDENTIALS: ${GEMINI_GOOGLE_APPLICATION_CREDENTIALS:-}
+      GOOGLE_APPLICATION_CREDENTIALS: ${GEMINI_GOOGLE_APPLICATION_CREDENTIALS:-}
+      GEMINI_PROJECT: ${GEMINI_PROJECT:-your-gcp-project}
+      GEMINI_LOCATION: ${GEMINI_LOCATION:-us-central1}
+      ENABLE_VERTEX_QUERY_TRANSLATION: ${ENABLE_VERTEX_QUERY_TRANSLATION:-1}
     volumes:
       - ./data/fiftyone:/data/fiftyone
       - ./analysis/notebooks:/workspace/notebooks
+      - ./app/credentials:/app/credentials:ro
     networks:
       - default
       - pipeline-network
