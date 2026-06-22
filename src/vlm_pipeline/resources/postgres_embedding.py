@@ -57,6 +57,66 @@ AND NOT EXISTS (
 
 _ROLE_FILTER = "AND im.image_role = ANY(%(roles)s)"
 
+_VIDEO_ROLE_FILTER = "AND im.image_role = ANY(%(video_roles)s)"
+
+_PENDING_VIDEOS_SQL = """
+SELECT im.source_asset_id
+FROM image_metadata im
+LEFT JOIN image_embeddings fe
+  ON fe.entity_type = 'frame' AND fe.entity_id = im.image_id AND fe.model_name = %(frame_model_name)s
+WHERE im.source_asset_id IS NOT NULL {role_filter}
+AND NOT EXISTS (SELECT 1 FROM image_embeddings ve
+                WHERE ve.entity_type = 'video' AND ve.entity_id = im.source_asset_id AND ve.model_name = %(video_model_name)s)
+GROUP BY im.source_asset_id
+HAVING count(*) = count(fe.embedding) AND count(fe.embedding) > 0
+ORDER BY im.source_asset_id LIMIT %(limit)s
+"""
+
+_VIDEO_BACKLOG_COUNT_SQL = """
+SELECT count(*) FROM (
+    SELECT im.source_asset_id
+    FROM image_metadata im
+    LEFT JOIN image_embeddings fe
+      ON fe.entity_type = 'frame' AND fe.entity_id = im.image_id AND fe.model_name = %(frame_model_name)s
+    WHERE im.source_asset_id IS NOT NULL {role_filter}
+    AND NOT EXISTS (SELECT 1 FROM image_embeddings ve
+                    WHERE ve.entity_type = 'video' AND ve.entity_id = im.source_asset_id AND ve.model_name = %(video_model_name)s)
+    GROUP BY im.source_asset_id
+    HAVING count(*) = count(fe.embedding) AND count(fe.embedding) > 0
+) t
+"""
+
+_VIDEO_AGGREGATE_SQL = """
+INSERT INTO image_embeddings
+  (embedding_id, entity_type, entity_id, image_id, model_name, dim, embedding,
+   source_bucket, source_key, bbox, asset_id, text_content)
+SELECT
+  'video|' || im.source_asset_id || '|' || %(video_model_name)s,
+  'video',
+  im.source_asset_id,
+  NULL,
+  %(video_model_name)s,
+  1024,
+  l2_normalize(avg(fe.embedding)),
+  NULL,
+  NULL,
+  NULL,
+  im.source_asset_id,
+  NULL
+FROM image_metadata im
+JOIN image_embeddings fe
+  ON fe.entity_type = 'frame'
+ AND fe.entity_id = im.image_id
+ AND fe.model_name = %(frame_model_name)s
+WHERE im.source_asset_id = ANY(%(asset_ids)s) {role_filter}
+GROUP BY im.source_asset_id
+ON CONFLICT (entity_type, entity_id, model_name) DO UPDATE SET
+  embedding = EXCLUDED.embedding,
+  dim = EXCLUDED.dim,
+  asset_id = EXCLUDED.asset_id,
+  created_at = now()
+"""
+
 _PENDING_CAPTIONS_SQL = """
 SELECT labels.label_id, labels.asset_id, labels.caption_text
 FROM labels
@@ -77,6 +137,14 @@ AND NOT EXISTS (
     SELECT 1 FROM image_embeddings e
     WHERE e.entity_type = 'caption' AND e.entity_id = labels.label_id AND e.model_name = %(model_name)s
 )
+"""
+
+_ALL_CAPTIONS_SQL = """
+SELECT labels.label_id, labels.asset_id, labels.caption_text
+FROM labels
+WHERE labels.caption_text IS NOT NULL AND labels.caption_text <> ''
+ORDER BY labels.label_id
+LIMIT %(limit)s OFFSET %(offset)s
 """
 
 
@@ -140,12 +208,96 @@ class PostgresEmbeddingMixin:
                 cur.execute(_PENDING_CAPTIONS_SQL, {"model_name": model_name, "limit": limit})
                 return PostgresBaseMixin._cursor_to_dicts(cur)
 
+    def find_all_caption_embeddings(self, limit: int = 500, offset: int = 0) -> list[dict[str, Any]]:
+        """force_reembed 용: NOT EXISTS 가드 없이 모든 caption 을 조회 (model_name 무관).
+
+        기존 row 는 batch_insert_embeddings 의 ON CONFLICT upsert 로 덮어쓴다.
+        offset 을 사용해 호출측이 전체를 페이지 순회할 수 있다.
+        """
+        with self.connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(_ALL_CAPTIONS_SQL, {"limit": limit, "offset": offset})
+                return PostgresBaseMixin._cursor_to_dicts(cur)
+
     def count_caption_backlog(self, model_name: str) -> int:
         """미임베딩 caption 수 (sensor backlog 판단용)."""
         with self.connect() as conn:
             with conn.cursor() as cur:
                 cur.execute(_CAPTION_BACKLOG_COUNT_SQL, {"model_name": model_name})
                 return int(cur.fetchone()[0])
+
+    def find_pending_video_embeddings(
+        self,
+        video_model_name: str,
+        frame_model_name: str,
+        limit: int = 500,
+        video_roles: list[str] | None = None,
+    ) -> list[str]:
+        """frame embeddings 는 있지만 video embedding 이 없는 source_asset_id 목록 반환."""
+        params: dict[str, Any] = {
+            "video_model_name": video_model_name,
+            "frame_model_name": frame_model_name,
+            "limit": limit,
+        }
+        role_filter = ""
+        if video_roles:
+            role_filter = _VIDEO_ROLE_FILTER
+            params["video_roles"] = list(video_roles)
+        sql = _PENDING_VIDEOS_SQL.format(role_filter=role_filter)
+        with self.connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql, params)
+                return [str(row[0]) for row in cur.fetchall()]
+
+    def count_video_backlog(
+        self,
+        video_model_name: str,
+        frame_model_name: str,
+        video_roles: list[str] | None = None,
+    ) -> int:
+        """미임베딩 video 수 (sensor backlog 판단용)."""
+        params: dict[str, Any] = {
+            "video_model_name": video_model_name,
+            "frame_model_name": frame_model_name,
+        }
+        role_filter = ""
+        if video_roles:
+            role_filter = _VIDEO_ROLE_FILTER
+            params["video_roles"] = list(video_roles)
+        sql = _VIDEO_BACKLOG_COUNT_SQL.format(role_filter=role_filter)
+        with self.connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql, params)
+                return int(cur.fetchone()[0])
+
+    def aggregate_video_embeddings_framepool(
+        self,
+        video_model_name: str,
+        frame_model_name: str,
+        asset_ids: list[str],
+        video_roles: list[str] | None = None,
+    ) -> int:
+        """SQL-side L2-normalized mean of frame embeddings → video embedding upsert.
+
+        pgvector 0.8.2 avg(vector) + l2_normalize(vector) 를 활용해 Python 메모리로
+        벡터를 끌어오지 않고 집계한다. 반환값은 upsert 된 행 수.
+        """
+        if not asset_ids:
+            return 0
+        params: dict[str, Any] = {
+            "video_model_name": video_model_name,
+            "frame_model_name": frame_model_name,
+            "asset_ids": list(asset_ids),
+        }
+        role_filter = ""
+        if video_roles:
+            role_filter = _VIDEO_ROLE_FILTER
+            params["video_roles"] = list(video_roles)
+        sql = _VIDEO_AGGREGATE_SQL.format(role_filter=role_filter)
+        with self.connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql, params)
+                return cur.rowcount if cur.rowcount is not None and cur.rowcount >= 0 else 0
 
     def batch_insert_embeddings(self, rows: list[dict[str, Any]]) -> int:
         """임베딩 row 배치 upsert (executemany + ON CONFLICT). 재실행 안전."""
