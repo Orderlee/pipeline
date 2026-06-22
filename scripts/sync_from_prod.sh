@@ -72,6 +72,7 @@ rsync "${RSYNC_OPTS[@]}" \
   --exclude='credentials/' \
   --exclude='.github/workflows/' \
   --exclude='.pre-commit-config.yaml' \
+  --exclude='/README.md' \
   "${PROD_USER}@${PROD_HOST}:${PROD_REPO}/" \
   "${REPO_ROOT}/"
 
