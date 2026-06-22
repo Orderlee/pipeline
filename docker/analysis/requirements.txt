@@ -8,3 +8,5 @@ umap-learn
 requests
 streamlit
 streamlit-autorefresh
+# Vertex Gemini 쿼리 번역(KO→EN cross-lingual) — analysis 에서 genai.Client(vertexai=True). 미설치/미인증 시 코드가 사전 fallback.
+google-genai
