@@ -14,7 +14,8 @@ description: Strip private values (internal IPs, host paths, host username, org/
 
 # 🛠️ Dependencies
 - **Sanitizer:** `.agent/skill/sanitize_repo/scripts/sanitize.py` (stdlib only, Python 3.10+)
-- **Rule map (GITIGNORED — holds the real values):** `.agent/skill/sanitize_repo/rules.local.txt`
+- **Rule map (GITIGNORED — holds the real values):** `.agent/sanitize_repo_rules.local.txt`
+  - Lives directly under `.agent/` (not under `.agent/skill/`) so the repo's own `.agent/*` ignore keeps it untracked **without any `.gitignore` edit** — and that survives every rsync from prod (prod's `.gitignore` already has `.agent/*`). Do NOT move it back under `.agent/skill/`, where the `!.agent/skill/**` un-ignore would force it to be tracked.
   - Format, one per line, comments with `#`, applied **top-to-bottom**:
     - `<from>==><to>` — literal substring replacement (specific/compound entries first)
     - `regex:<pattern>==><to>` — Python regex; use for value-pattern matches (e.g. API-key prefixes). Put regex rules **early** so partial-token literal rules cannot corrupt the value before it is redacted.
