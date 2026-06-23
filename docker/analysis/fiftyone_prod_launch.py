@@ -3,14 +3,19 @@
 analysis 컨테이너 안에서 detached 실행. 미디어는 MinIO 에서 media_dir 로 내려받아 로컬 경로 사용.
 """
 
+import os
 import time
 
 import fiftyone as fo
 
 import fiftyone_pgvector as fp
 
-print("loading frame embeddings...", flush=True)
-rows = fp.load_frame_embeddings(limit=5000)
+# 'frames' 데이터셋에 적재할 프레임 수 조절 — FIFTYONE_FRAMES_LIMIT (정수 / 0 / all / none).
+#   미설정·0·all·none → 전체(LIMIT 없음). 기본 5000. 큰 값일수록 미디어 다운로드(~127KB/장)+UMAP 부하 증가.
+_lim = os.getenv("FIFTYONE_FRAMES_LIMIT", "5000").strip().lower()
+limit = None if _lim in ("0", "all", "none", "") else int(_lim)
+print(f"loading frame embeddings (limit={'ALL' if limit is None else limit})...", flush=True)
+rows = fp.load_frame_embeddings(limit=limit)
 print(f"rows={len(rows)}", flush=True)
 fp.build_fiftyone_dataset("frames", rows, umap=True, labels=True, caption_clusters=True)
 ds = fo.load_dataset("frames")
