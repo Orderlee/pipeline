@@ -43,7 +43,13 @@ import sys
 from pathlib import Path
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-RULES_FILE = SCRIPT_DIR.parent / "rules.local.txt"
+# Rule map lives directly under .agent/ (NOT under .agent/skill/) so the repo's own
+# `.agent/*` ignore rule keeps it untracked WITHOUT needing a .gitignore edit — the
+# `!.agent/skill/**` un-ignore negation does not reach it. This makes the ignore
+# survive every rsync from prod (prod's .gitignore already has `.agent/*`).
+# SCRIPT_DIR = .agent/skill/sanitize_repo/scripts → parents[2] = .agent
+AGENT_DIR = SCRIPT_DIR.parents[2]
+RULES_FILE = AGENT_DIR / "sanitize_repo_rules.local.txt"
 
 # Local files that often hold real secrets (typically gitignored, never published) but
 # should still be scrubbed before sharing the working tree.
