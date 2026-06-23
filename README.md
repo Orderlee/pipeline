@@ -1,7 +1,9 @@
 # VLM DataOps Pipeline
 
 VLM(Vision-Language Model) 학습 데이터를 구축하기 위한 데이터 파이프라인입니다.
-NAS에 있는 이미지/비디오 미디어를 수집하고, 중복을 정리한 뒤, Gemini(Vertex) 기반 이벤트 라벨링과 SAM3 segmentation 검출을 수행하고, 최종적으로 학습 데이터셋을 조립합니다. 전체 파이프라인은 **Dagster + PostgreSQL + MinIO** 기반으로 운영됩니다.
+NAS에 있는 이미지/비디오 미디어를 수집하고, 중복을 정리한 뒤, Gemini(Vertex) 기반 이벤트 라벨링과 SAM3 segmentation 검출을 수행하고, 최종적으로 학습 데이터셋을 조립합니다. 전체 파이프라인은 **Dagster + PostgreSQL(pgvector) + MinIO** 기반으로 운영됩니다.
+
+🔎 **Vector DB (pgvector)**: `ENABLE_EMBEDDING=true`이면 프레임·캡션·비디오(frame-pool) 미디어를 PE-Core-L14-336로 1024-d 임베딩하여 PostgreSQL의 `image_embeddings`(pgvector)에 적재하고, entity_type별 HNSW 인덱스로 **텍스트→이미지(cross-modal)·이미지→이미지·캡션(keyword/semantic/hybrid)·비디오 유사검색**과 near-duplicate·label-suspect·active-learning 같은 데이터 품질 분석을 지원합니다. 상세는 [Vector Search & 임베딩 분석](#vector-search--임베딩-분석-pgvector) 참고.
 
 > DuckDB는 2026-05-19 PG cutover 이후 primary store에서 제거되었습니다. 현재 메타데이터/라벨의 source of truth는 PostgreSQL이며, DuckDB는 `pg_duckdb` extension(analytics 쿼리 한정)으로만 남아 있습니다. MotherDuck sync는 폐기되어 `scripts/archive/`로 이동했습니다.
 
@@ -55,7 +57,7 @@ NAS에 있는 이미지/비디오 미디어를 수집하고, 중복을 정리한
 - **NAS**: 원본 미디어가 들어오는 파일 시스템입니다 (NAS_200tb, NFS).
 - **Dagster**: 수집, 라벨링, 전처리, 검출, 데이터셋 빌드를 오케스트레이션합니다.
 - **MinIO**: 단계별 산출물을 저장하는 S3 호환 스토리지입니다 (버킷 5개 고정).
-- **PostgreSQL**: 메타데이터와 라벨링 결과의 source of truth입니다 (prod: `docker-postgres-1/vlm_pipeline`, staging: `pipeline-test-postgres-1/vlm_pipeline_staging`).
+- **PostgreSQL / pgvector**: 메타데이터와 라벨링 결과의 source of truth입니다 (prod: `docker-postgres-1/vlm_pipeline`, staging: `pipeline-test-postgres-1/vlm_pipeline_staging`). `ENABLE_EMBEDDING=true`이면 `image_embeddings` 테이블에 `frame` / `caption` / `video`(frame-pool) 임베딩(PE-Core-L14-336, 1024-d)을 저장하고 entity_type별 partial HNSW(`vector_cosine_ops`)로 유사검색합니다 — 즉 **벡터 DB 역할을 PostgreSQL이 겸합니다**(별도 벡터 스토어 없음).
 
 ## Branch Runtime
 
@@ -144,7 +146,7 @@ test의 주요 특징:
 | YOLO | `dispatch_yolo_image_detection`, `yolo_image_detection` | YOLO-World detection (`ENABLE_YOLO_DETECTION=true`일 때만, 기본 비활성) | `vlm-labels`, `image_labels` |
 | BUILD | `build_dataset` | 학습 데이터셋 조립 | `vlm-dataset`, `datasets`, `dataset_clips` |
 | CLASSIFY(build) | `build_classification` | 카테고리별 원본 복사 (video/image) | `vlm-classification`, `classification_datasets` |
-| EMBED | `frame_embedding`, `caption_embedding` | PE-Core-L14-336 임베딩 → pgvector (`ENABLE_EMBEDDING=true`일 때만) | `image_embeddings` (pgvector) |
+| EMBED | `frame_embedding`, `caption_embedding`, `video_embedding` | PE-Core-L14-336 frame/caption 1024-d + video frame-pool(`/framepool`) 임베딩 → pgvector (`ENABLE_EMBEDDING=true`일 때만) | `image_embeddings` (pgvector) |
 | BENCHMARK | `sam3_shadow_compare` | YOLO bbox vs SAM3 segmentation agreement 비교 | `vlm-labels/benchmarks/sam3_vs_yolo/` |
 
 ## Auto Labeling 상세
@@ -215,7 +217,7 @@ test의 주요 특징:
 
 ## Vector Search & 임베딩 분석 (pgvector)
 
-`ENABLE_EMBEDDING=true`이면 `frame_embedding` / `caption_embedding` 자산이 PE-Core-L14-336 임베딩(1024-d)을 `image_embeddings`(pgvector)에 적재합니다. 이 벡터는 cosine 거리 연산자 `<=>`(또는 L2 `<->`)로 검색하며, 캡션은 추가로 pg_trgm 키워드 검색과 결합한 **하이브리드 검색**을 지원합니다.
+`ENABLE_EMBEDDING=true`이면 `frame_embedding` / `caption_embedding` / `video_embedding` 자산이 PE-Core-L14-336 임베딩(1024-d)을 `image_embeddings`(pgvector)에 적재합니다. 검색은 cosine 거리 연산자 `<=>` + entity_type별 HNSW(`vector_cosine_ops`)로 수행하며, 캡션은 추가로 pg_trgm 키워드 검색과 결합한 **하이브리드 검색**을 지원합니다.
 
 자주 쓰는 SQL은 [docker/analysis/vectordb_queries.sql](docker/analysis/vectordb_queries.sql)에 모아 두었습니다 (현황/통계 · 이미지 유사 · 메타데이터 필터+벡터 · 키워드(pg_trgm) · near-duplicate dedup · 캡션↔이미지 정합 · 인덱스 헬스).
 
@@ -246,7 +248,7 @@ test의 주요 특징:
 - **하이브리드**(`mode='hybrid'`)는 pg_trgm 키워드 결과와 pgvector semantic 결과를 **RRF(rrf_k=60)**로 융합합니다. `pg_trgm` 확장/인덱스가 없으면 keyword 절반이 빈 결과가 되어 semantic-only로 graceful 강등됩니다.
 - `search_by_text` / `search_by_uploaded_image`는 메타데이터 facet 필터를 받습니다: `source`(image_key prefix), `image_role`, `daynight_type`, `environment_type`.
 
-> **Cross-lingual (KO→EN)**: PE-Core 텍스트 인코더는 영어 중심이라, 검색 쿼리의 한국어는 `translate_query_ko_en`이 **컨테이너 내부에서** 영어로 번역한 뒤 임베딩합니다 — ① 한글 없으면 무변경 → ② 도메인 사전 완전일치(`'화재'→'fire'`, 결정적·무호출) → ③ Vertex Gemini 일반 번역(캐시) → ④ Vertex 불가 시 사전 부분치환. `ENABLE_VERTEX_QUERY_TRANSLATION=1` + `GEMINI_*` creds가 있으면 ③이 활성, 없으면 ④로 graceful 동작합니다 (DB 임베딩은 건드리지 않고 쿼리 텍스트만 번역).
+> **Cross-lingual (KO→EN)**: PE-Core 텍스트 인코더는 영어 중심이라, 텍스트→프레임(`search_by_text`)과 캡션 semantic/hybrid 검색의 한국어 쿼리는 `translate_query_ko_en`이 **컨테이너 내부에서** 영어로 번역한 뒤 임베딩합니다 (비디오 텍스트 검색·FiftyOne App 프롬프트에는 미적용) — ① 한글 없으면 무변경 → ② 도메인 사전 완전일치(`'화재'→'fire'`, 결정적·무호출) → ③ Vertex Gemini 일반 번역(캐시) → ④ Vertex 불가 시 사전 부분치환. `ENABLE_VERTEX_QUERY_TRANSLATION=1` + `GEMINI_*` creds가 있으면 ③이 활성, 없으면 ④로 graceful 동작합니다 (DB 임베딩은 건드리지 않고 쿼리 텍스트만 번역).
 
 ### 분석 surface (`analysis` profile)
 
