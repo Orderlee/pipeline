@@ -28,11 +28,12 @@ NORMALIZED_CLASS_MAP: dict[str, str] = {
     "person on the ground": "fall",
     "fallen person": "fall",
     "person lying down": "fall",
-    "patient": "fall",
+    "patient": "patient",  # 'patient' 는 쓰러짐(fall)과 별개 — 라벨이 있으므로 독립 클래스로 유지
     "fire": "fire",
     "flame": "fire",
     "open flame": "fire",
     "smoke": "smoke",
+    "smoke cloud": "smoke",
     "none": "none",
 }
 
