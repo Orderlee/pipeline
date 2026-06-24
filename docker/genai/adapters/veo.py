@@ -18,22 +18,14 @@ import os
 import time
 from typing import Any
 
-from .base import BaseGenAIAdapter, PollResult, SubmitResult
-
-
-_FAKE_MP4_PLACEHOLDER = (
-    b"\x00\x00\x00\x18ftypmp42\x00\x00\x00\x00mp42isom"
-    b"\x00\x00\x00\x08free"
-    b"\x00\x00\x00\x08mdat"
+from .base import (
+    _FAKE_MP4_PLACEHOLDER,
+    BaseGenAIAdapter,
+    PollResult,
+    SubmitResult,
+    _has_vertex_creds,
+    _image_mime,
 )
-
-
-def _has_vertex_creds() -> bool:
-    for v in ("GEMINI_GOOGLE_APPLICATION_CREDENTIALS", "GOOGLE_APPLICATION_CREDENTIALS"):
-        path = (os.getenv(v) or "").strip()
-        if path and os.path.exists(path):
-            return True
-    return False
 
 
 class VeoAdapter(BaseGenAIAdapter):
@@ -337,14 +329,3 @@ def _download_gcs(gcs_uri: str, project: str) -> bytes:
     blob_path = p.path.lstrip("/")
     client = storage.Client(project=project)
     return client.bucket(bucket).blob(blob_path).download_as_bytes()
-
-
-def _image_mime(filename: str) -> str:
-    name = (filename or "").lower()
-    if name.endswith(".png"):
-        return "image/png"
-    if name.endswith(".jpg") or name.endswith(".jpeg"):
-        return "image/jpeg"
-    if name.endswith(".webp"):
-        return "image/webp"
-    return "image/png"

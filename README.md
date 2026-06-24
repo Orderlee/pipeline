@@ -276,18 +276,20 @@ COMPOSE_PROFILES=analysis ./scripts/compose-prod.sh up -d analysis
 
 ## Database Schema
 
-주요 테이블은 `src/vlm_pipeline/sql/schema_postgres.sql`에 정의되고, 증분 변경은 `src/vlm_pipeline/sql/migrations/postgres/`(`001`~`010`)로 관리됩니다.
+주요 테이블/뷰는 `src/vlm_pipeline/sql/schema_postgres.sql`에 정의되고, 증분 변경은 `src/vlm_pipeline/sql/migrations/postgres/`(`001`~`012`)로 관리됩니다.
 
-### 운영 핵심 테이블
+### 운영 핵심 테이블/뷰
 
-| 테이블 | 설명 |
-|--------|------|
+| 테이블/뷰 | 설명 |
+|-----------|------|
 | `raw_files` | 원본 미디어 메타, checksum, MinIO raw 위치 |
 | `video_metadata` | ffprobe 기반 비디오 메타, Gemini 상태, 재인코딩 추적 |
 | `image_metadata` | 이미지/프레임 메타, `image_caption_text`, `image_caption_score` |
 | `labels` | 이벤트 단위 timestamp / caption / classification 라벨 |
 | `processed_clips` | clip 기반 전처리 산출물 |
 | `image_labels` | SAM3 / YOLO detection 결과 |
+| `image_label_annotations` | LS 확정 bbox의 박스 단위 projection (`box_index`, `category`, `bbox_x/y/w/h`, `score`; MinIO COCO JSON이 SoT, `image_labels` FK) |
+| `v_finalized_labels` (VIEW) | finalized caption / timestamp / bbox 라벨 통합 조회 (`label_type` union; grain이 달라 테이블 대신 VIEW) |
 | `datasets` / `dataset_clips` | 데이터셋 정의 및 dataset ↔ clip 연결 |
 | `classification_datasets` | classification 빌드 산출물 추적 |
 | `image_embeddings` | PE-Core 프레임/캡션 임베딩 (pgvector, `ENABLE_EMBEDDING`일 때) |
@@ -334,7 +336,7 @@ COMPOSE_PROFILES=analysis ./scripts/compose-prod.sh up -d analysis
 │       │   └── shared/                 # 공용 helper
 │       ├── lib/                        # prompts, frame planning, sam3/yolo/embedding client, key_builders, env helpers
 │       ├── resources/                  # postgres_* (base/migration/ingest/labeling/process/detection/embedding/genai) + minio + config + runtime_settings
-│       └── sql/                        # schema_postgres.sql, migrations/postgres/ (001-010)
+│       └── sql/                        # schema_postgres.sql, migrations/postgres/ (001-012)
 ├── docker/
 │   ├── docker-compose.yaml
 │   ├── docker-compose.dev.yaml         # 로컬 dev overlay

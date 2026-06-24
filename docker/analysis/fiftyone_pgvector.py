@@ -941,11 +941,6 @@ def search_by_text(
     )
 
 
-def search_images_by_caption(query: str, k: int = 20, model_name: str = DEFAULT_MODEL) -> list[dict]:
-    """Cross-modal caption/text query → frame image embeddings."""
-    return search_by_text(query, k=k, model_name=model_name)
-
-
 def search_captions_by_text(query: str, k: int = 20, model_name: str = DEFAULT_MODEL) -> list[dict]:
     """텍스트 → caption embeddings cosine top-k (한국어 도메인 용어는 영어로 치환 후 임베딩)."""
     vec = _embed_text(translate_query_ko_en(query))
@@ -1073,60 +1068,6 @@ def search_captions(
     # 알 수 없는 mode → keyword fallback
     print(f"search_captions: 알 수 없는 mode={mode!r}, keyword 로 fallback.")
     return search_captions_by_keyword(query, k=k)
-
-
-def search_videos_by_text(text: str, k: int = 10, model_name: str = DEFAULT_MODEL + "/framepool") -> list[dict]:
-    """텍스트 → embedding-service /embed_text → video pgvector cosine top-k.
-
-    entity_type='video' partial HNSW 인덱스(009)를 활용한다.
-    반환: [{"entity_id": source_asset_id, "asset_id": source_asset_id, "cosine_dist": float}]
-    """
-    vec = _embed_text(text)
-    lit = "[" + ",".join(repr(float(x)) for x in vec) + "]"
-    sql = """
-        SELECT e.entity_id, e.asset_id,
-               (e.embedding <=> %(q)s::vector) AS cosine_dist
-        FROM image_embeddings e
-        WHERE e.entity_type = 'video' AND e.model_name = %(model)s
-        ORDER BY e.embedding <=> %(q)s::vector
-        LIMIT %(k)s
-    """
-    with _pg_conn() as conn, conn.cursor() as cur:
-        cur.execute(sql, {"q": lit, "model": model_name, "k": k})
-        cols = [c.name for c in cur.description]
-        return [dict(zip(cols, row)) for row in cur.fetchall()]
-
-
-def search_similar_videos(asset_id: str, k: int = 10, model_name: str = DEFAULT_MODEL + "/framepool") -> list[dict]:
-    """주어진 video(source_asset_id) 의 임베딩 기준 cosine top-k 유사 video.
-
-    entity_type='video' partial HNSW 인덱스(009)를 활용한다.
-    반환: [{"entity_id": source_asset_id, "asset_id": source_asset_id, "cosine_dist": float}]
-    """
-    with _pg_conn() as conn, conn.cursor() as cur:
-        cur.execute(
-            "SELECT embedding FROM image_embeddings "
-            "WHERE entity_type='video' AND entity_id=%(id)s AND model_name=%(model)s LIMIT 1",
-            {"id": asset_id, "model": model_name},
-        )
-        row = cur.fetchone()
-    if not row:
-        raise ValueError(f"no video embedding for asset_id={asset_id!r} model={model_name!r}")
-    vec = _parse_vector(row[0])
-    lit = "[" + ",".join(repr(float(x)) for x in vec) + "]"
-    sql = """
-        SELECT e.entity_id, e.asset_id,
-               (e.embedding <=> %(q)s::vector) AS cosine_dist
-        FROM image_embeddings e
-        WHERE e.entity_type = 'video' AND e.model_name = %(model)s
-        AND e.entity_id <> %(query_id)s
-        ORDER BY e.embedding <=> %(q)s::vector
-        LIMIT %(k)s
-    """
-    with _pg_conn() as conn, conn.cursor() as cur:
-        cur.execute(sql, {"q": lit, "model": model_name, "k": k, "query_id": asset_id})
-        cols = [c.name for c in cur.description]
-        return [dict(zip(cols, row)) for row in cur.fetchall()]
 
 
 def search_by_image(
@@ -1388,12 +1329,6 @@ def _load_fo_metadata_for_dq(label_field: str = "normalized_class") -> dict[str,
     return result
 
 
-def _load_fo_labels_for_dq(label_field: str = "normalized_class") -> dict[str, str]:
-    """Thin wrapper over _load_fo_metadata_for_dq for label-only callers."""
-    metadata = _load_fo_metadata_for_dq(label_field)
-    return {iid: str(meta.get("label") or "none") for iid, meta in metadata.items()}
-
-
 def compute_label_suspect(
     model_name: str = DEFAULT_MODEL,
     k: int = 10,
@@ -1491,40 +1426,6 @@ def compute_label_suspect(
     except Exception as exc:  # noqa: BLE001
         print(f"compute_label_suspect: skipped: {exc}")
         return {"scores": {}, "rows": [], "n": result_n, "truncated": truncated}
-
-
-def write_label_suspect(ds=None, model_name: str = DEFAULT_MODEL) -> None:
-    """compute_label_suspect 실행 후 FiftyOne 'frames' 에 label_suspect_score 필드 bulk 설정. fail-forward."""
-    try:
-        import fiftyone as fo
-
-        result = compute_label_suspect(model_name=model_name)
-        scores = result.get("scores", {})
-        if not scores:
-            print("write_label_suspect: 스코어 없음, 스킵.")
-            return
-
-        if ds is None:
-            if not fo.dataset_exists("frames"):
-                print("write_label_suspect: 'frames' 데이터셋 없음, 스킵.")
-                return
-            ds = fo.load_dataset("frames")
-
-        scores_by_sample_id: dict[str, float] = {}
-        for sample in ds:
-            iid = str(_sample_value(sample, "image_id", ""))
-            sid = getattr(sample, "id", None)
-            if iid in scores and sid:
-                scores_by_sample_id[str(sid)] = float(scores[iid])
-
-        if not scores_by_sample_id:
-            print("write_label_suspect: 업데이트 대상 없음.")
-            return
-
-        ds.set_values("label_suspect_score", scores_by_sample_id, key_field="id")
-        print(f"write_label_suspect: {len(scores_by_sample_id)} samples updated.")
-    except Exception as exc:  # noqa: BLE001
-        print(f"write_label_suspect: skipped: {exc}")
 
 
 # ── 클래스 분리도 리포트 (데이터 품질) ──
@@ -1815,15 +1716,6 @@ def cluster_distance_heatmap(
 
 
 # ── PCA (FiftyOne 네이티브) / dendrogram / MDS / network / nearest / 투영 비교 ──
-def add_pca_visualization(ds, brain_key: str = "emb_viz_pca"):
-    """FiftyOne 데이터셋에 PCA 시각화 brain 추가 → App Embeddings 패널에서 UMAP 과 토글."""
-    import fiftyone.brain as fob
-
-    if ds.has_brain_run(brain_key):
-        ds.delete_brain_run(brain_key)
-    return fob.compute_visualization(ds, embeddings="embedding", method="pca", brain_key=brain_key)
-
-
 def cluster_dendrogram(entity_type="frame", k=12, model_name=DEFAULT_MODEL, save_html=None):
     """centroid 계층 클러스터링 dendrogram (어느 클러스터끼리 가까운지 트리)."""
     import plotly.figure_factory as ff
@@ -1912,18 +1804,6 @@ def cluster_network(entity_type="frame", k=12, threshold=0.25, model_name=DEFAUL
         fig.write_html(save_html, include_plotlyjs="cdn")
         print(f"saved: {save_html}")
     return fig
-
-
-def cluster_nearest_table(entity_type="frame", k=12, top=3, model_name=DEFAULT_MODEL):
-    """각 클러스터의 최근접 이웃 클러스터 top-N (거리 랭킹). returns list[dict] + print."""
-    names, dmat, sizes = cluster_distance_matrix(entity_type, k, model_name)
-    out = []
-    for i in range(k):
-        nn = sorted((float(dmat[i][j]), j) for j in range(k) if j != i)[:top]
-        out.append({"cluster": names[i], "n": sizes[i], "nearest": [(names[j], round(d, 3)) for d, j in nn]})
-    for r in out:
-        print(f"{r['cluster']} (n={r['n']}) → " + ", ".join(f"{nm} {ds}" for nm, ds in r["nearest"]))
-    return out
 
 
 def projection_comparison(entity_type="frame", k=12, sample=600, model_name=DEFAULT_MODEL, save_html=None):
@@ -2330,114 +2210,6 @@ def active_learning_queue(n: int = 200, model_name: str = DEFAULT_MODEL) -> dict
         return {"rows": [], "n_candidates": 0, "n": n, "reason_counts": {}, "truncated": False}
 
 
-def write_active_learning(n: int = 200, ds=None, model_name: str = DEFAULT_MODEL) -> dict:
-    """능동학습 큐 상위 n개에 send_to_labeling=True + al_score 를 bulk 기록.
-
-    send_to_labeling 은 현재 큐 membership snapshot → 전 sample 갱신.
-    al_score 는 durable ranking signal → in-queue sample 에만 기록(non-queue 기존값 보존).
-    prod 미접촉하려면 ds 에 임시 데이터셋 전달. fail-forward. Returns dict(written, errors).
-    """
-    written = 0
-    errors = 0
-    try:
-        import fiftyone as fo
-
-        if ds is None:
-            if not fo.dataset_exists("frames"):
-                print("write_active_learning: 'frames' 데이터셋 없음, 스킵.")
-                return {"written": 0, "errors": 0}
-            ds = fo.load_dataset("frames")
-
-        result = active_learning_queue(n=n, model_name=model_name)
-        top_image_ids = {r["image_id"]: r["al_score"] for r in result.get("rows", [])}
-
-        flag_ids: list[str] = []
-        flag_vals: list[bool] = []
-        score_ids: list[str] = []
-        score_vals: list[float] = []
-        for sample in ds:
-            try:
-                iid = str(_sample_value(sample, "image_id", ""))
-                sid = str(getattr(sample, "id", None) or "")
-                if not sid:
-                    continue
-                in_queue = iid in top_image_ids
-                flag_ids.append(sid)
-                flag_vals.append(in_queue)
-                if in_queue:
-                    score_ids.append(sid)
-                    score_vals.append(float(top_image_ids[iid]))
-            except Exception as exc:  # noqa: BLE001
-                errors += 1
-                print(f"write_active_learning: sample error: {exc}")
-
-        if flag_ids:
-            try:
-                ds.set_values("send_to_labeling", dict(zip(flag_ids, flag_vals)), key_field="id")
-                if score_ids:
-                    ds.set_values("al_score", dict(zip(score_ids, score_vals)), key_field="id")
-                written = sum(1 for v in flag_vals if v)
-            except Exception as exc:  # noqa: BLE001
-                print(f"write_active_learning: set_values 실패, per-sample fallback: {exc}")
-                written = 0
-                for sample in ds:
-                    try:
-                        iid = str(_sample_value(sample, "image_id", ""))
-                        in_queue = iid in top_image_ids
-                        sample["send_to_labeling"] = in_queue
-                        if in_queue:
-                            sample["al_score"] = float(top_image_ids[iid])
-                        sample.save()
-                        if in_queue:
-                            written += 1
-                    except Exception as exc2:  # noqa: BLE001
-                        errors += 1
-                        print(f"write_active_learning: fallback error: {exc2}")
-    except Exception as exc:  # noqa: BLE001
-        print(f"write_active_learning: skipped: {exc}")
-        errors += 1
-    return {"written": written, "errors": errors}
-
-
-def export_labeling_queue_csv(
-    path: str = "/data/fiftyone/labeling_queue.csv",
-    n: int = 200,
-    model_name: str = DEFAULT_MODEL,
-) -> str | None:
-    """능동학습 큐를 CSV 파일로 내보내기. columns: image_id, minio_key, al_score, reason, nearest_rare_class.
-
-    디렉토리 생성 실패 시 /tmp/labeling_queue.csv 로 fallback. 완전 실패 시 None 반환.
-    """
-    import csv
-
-    result = active_learning_queue(n=n, model_name=model_name)
-    rows = result.get("rows", [])
-    if not rows:
-        print("export_labeling_queue_csv: 큐가 비어 있음, 스킵.")
-        return None
-
-    columns = ["image_id", "minio_key", "al_score", "reason", "nearest_rare_class"]
-
-    def _write_csv(target_path: str) -> str | None:
-        try:
-            import pathlib
-            pathlib.Path(target_path).parent.mkdir(parents=True, exist_ok=True)
-            with open(target_path, "w", newline="", encoding="utf-8") as f:
-                writer = csv.DictWriter(f, fieldnames=columns, extrasaction="ignore")
-                writer.writeheader()
-                writer.writerows(rows)
-            print(f"export_labeling_queue_csv: {len(rows)} rows → {target_path}")
-            return target_path
-        except Exception as exc:  # noqa: BLE001
-            print(f"export_labeling_queue_csv: write to {target_path} failed: {exc}")
-            return None
-
-    result_path = _write_csv(path)
-    if result_path is None and path != "/tmp/labeling_queue.csv":
-        result_path = _write_csv("/tmp/labeling_queue.csv")
-    return result_path
-
-
 # ── 캡션 키워드 앵커링 분석 (Caption Keyword Anchoring) ──
 # 라벨된 프레임의 자유형 캡션이 클래스 canonical keyword를 직접 포함하는지 검사.
 # 낮은 앵커링률은 캡션 품질 점수가 아니며, 맥락적 한국어 캡션에서는 정상.
@@ -2563,115 +2335,7 @@ def build_text_search_index(
     )
 
 
-# ── FiftyOne 이미지 유사도 인덱스 빌드 (sklearn cosine, precomputed embedding) ──
-
-def build_image_similarity_index(
-    dataset_name: str = "frames",
-    brain_key: str = "img_sim",
-    model_name: str = DEFAULT_MODEL,
-) -> tuple[bool, str]:
-    """FiftyOne 데이터셋에 이미지-이미지 유사도 인덱스를 빌드한다 (sklearn cosine, precomputed).
-
-    멱등: brain_key 가 이미 있으면 skip 하고 (True, brain_key) 반환.
-    Returns (bool 성공여부, brain_key).
-    """
-    try:
-        import fiftyone as fo
-        import fiftyone.brain as fob
-
-        if not fo.dataset_exists(dataset_name):
-            print(f"build_image_similarity_index: 데이터셋 '{dataset_name}' 없음, 스킵.")
-            return False, brain_key
-        ds = fo.load_dataset(dataset_name)
-        if brain_key in ds.list_brain_runs():
-            print(f"build_image_similarity_index: '{brain_key}' 이미 존재, 스킵.")
-            return True, brain_key
-        fob.compute_similarity(
-            ds,
-            embeddings="embedding",
-            brain_key=brain_key,
-            backend="sklearn",
-            metric="cosine",
-        )
-        return True, brain_key
-    except Exception as exc:  # noqa: BLE001 — analysis surface fail-forward
-        print(f"build_image_similarity_index: 실패: {exc}")
-        return False, brain_key
-
-
 # ── HDBSCAN 클러스터링 ──
-
-def compute_hdbscan_field(
-    dataset_name: str = "frames",
-    min_cluster_size: int = 15,
-    field: str = "hdbscan_cluster",
-    model_name: str = DEFAULT_MODEL,
-) -> dict:
-    """FiftyOne 데이터셋 샘플에 HDBSCAN 클러스터 레이블 필드를 기록한다 (WRITER).
-
-    레이블: noise → 'noise', 그 외 → 'h00', 'h01', ...
-    DQ_FULL_MATRIX_MAX_N 초과 시 스킵.
-    Returns {"n_clusters": int, "noise": int, "n": int, "sizes": {label: count}}.
-    """
-    try:
-        import numpy as np
-        import fiftyone as fo
-        from sklearn.cluster import HDBSCAN
-
-        if not fo.dataset_exists(dataset_name):
-            print(f"compute_hdbscan_field: 데이터셋 '{dataset_name}' 없음, 스킵.")
-            return {}
-        ds = fo.load_dataset(dataset_name)
-        embs_raw = ds.values("embedding")
-        ids = ds.values("id")
-        n = len(embs_raw)
-        if n == 0:
-            print("compute_hdbscan_field: 임베딩 없음, 스킵.")
-            return {}
-        if n > DQ_FULL_MATRIX_MAX_N:
-            print(
-                f"compute_hdbscan_field: N={n} > DQ_FULL_MATRIX_MAX_N={DQ_FULL_MATRIX_MAX_N}, 스킵."
-            )
-            return {}
-
-        # None 임베딩 제거 및 numpy 변환
-        valid_pairs = [(iid, emb) for iid, emb in zip(ids, embs_raw) if emb is not None]
-        if not valid_pairs:
-            return {}
-        valid_ids, valid_embs = zip(*valid_pairs)
-        mat = np.array(valid_embs, dtype="float32")
-        norms = np.linalg.norm(mat, axis=1, keepdims=True)
-        norms = np.where(norms == 0, 1.0, norms)
-        embs = mat / norms
-
-        labels_arr = HDBSCAN(min_cluster_size=min_cluster_size, copy=True).fit_predict(embs)
-
-        label_map = {
-            iid: ("noise" if int(lbl) == -1 else f"h{int(lbl):02d}")
-            for iid, lbl in zip(valid_ids, labels_arr)
-        }
-
-        # bulk set_values (key_field="id")
-        try:
-            ds.set_values(field, label_map, key_field="id")
-        except Exception as exc:  # noqa: BLE001 — per-sample fallback
-            print(f"compute_hdbscan_field: set_values 실패, per-sample fallback: {exc}")
-            for sample in ds:
-                sid = str(getattr(sample, "id", None) or "")
-                if sid in label_map:
-                    sample[field] = label_map[sid]
-                    sample.save()
-
-        sizes: dict[str, int] = {}
-        for lbl in label_map.values():
-            sizes[lbl] = sizes.get(lbl, 0) + 1
-        n_clusters = len([k for k in sizes if k != "noise"])
-        noise_count = sizes.get("noise", 0)
-        return {"n_clusters": n_clusters, "noise": noise_count, "n": len(valid_ids), "sizes": sizes}
-    except Exception as exc:  # noqa: BLE001 — analysis surface fail-forward
-        print(f"compute_hdbscan_field: 실패: {exc}")
-        return {}
-
 
 def hdbscan_report(
     entity_type: str = "frame",

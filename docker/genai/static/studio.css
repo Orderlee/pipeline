@@ -94,6 +94,9 @@ body.gs-root { background: var(--gs-bg); color: var(--gs-text); overflow: hidden
 
 .gs-panel__body {
   flex: 1; overflow: auto;
+  /* 스크롤바가 생겼다 사라질 때(예: 이미지 업로드로 dropzone 확장) 콘텐츠 폭이
+     변하지 않도록 스크롤바 공간을 항상 예약 → 패널 전체 가로 점프 방지. */
+  scrollbar-gutter: stable;
   padding: 20px;
 }
 .gs-panel__footer {
@@ -230,6 +233,16 @@ body.gs-root { background: var(--gs-bg); color: var(--gs-text); overflow: hidden
 .gs-segmented input:checked + label {
   background: var(--gs-elevated); color: var(--gs-text);
   box-shadow: 0 1px 0 rgba(255,255,255,0.04);
+}
+/* 옵션이 많은 segmented (예: Kling duration 3~15s, 13개).
+   flex-wrap 은 컨테이너 폭에 따라 행 수가 바뀌는 임계점이 있어, 이미지 업로드로
+   .gs-panel__body 에 세로 스크롤바가 생겨 콘텐츠 폭이 ~15px 줄면 행이 재배치되며
+   블록이 점프했다(2026-06-22 버그). 고정 컬럼 grid 는 임계점이 없어 폭이 변해도
+   컬럼 수(=행 수=높이)가 불변 → 레이아웃 고정. (2026-06-22 fix) */
+.gs-segmented.gs-segmented--wrap {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 2px;
 }
 
 /* Info box */

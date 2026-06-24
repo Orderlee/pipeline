@@ -88,7 +88,7 @@ def engine_options(engine: str) -> dict:
             "default_model": ad.model_name,
             "modes": ["pro", "std"],
             "default_mode": ad.mode,
-            "durations": ["5", "10"],
+            "durations": [str(d) for d in ad.available_durations],
             "default_duration": ad.duration,
         }
     if engine == "veo":

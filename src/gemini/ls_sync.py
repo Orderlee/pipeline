@@ -35,11 +35,10 @@ import os
 import threading
 from pathlib import Path, PurePosixPath
 
-import boto3  # noqa: E402
 import requests  # noqa: E402
-from botocore.config import Config as BotoConfig  # noqa: E402
 
 try:
+    from gemini.ls_tasks_minio import build_minio_client
     from gemini.ls_sync_db import (
         _connect_postgres_with_retry,
         lookup_asset_id_by_raw_key,
@@ -60,6 +59,7 @@ try:
         build_reviewed_coco_json,
     )
 except ModuleNotFoundError:
+    from ls_tasks_minio import build_minio_client  # type: ignore[no-redef]
     from ls_sync_db import (  # type: ignore[no-redef]
         _connect_postgres_with_retry,
         lookup_asset_id_by_raw_key,
@@ -91,20 +91,6 @@ DEFAULT_FPS = 24
 # ---------------------------------------------------------------------------
 # MinIO
 # ---------------------------------------------------------------------------
-
-
-def build_minio_client(endpoint: str, access_key: str, secret_key: str):
-    url = endpoint if endpoint.startswith("http") else f"http://{endpoint}"
-    return boto3.client(
-        "s3",
-        endpoint_url=url,
-        aws_access_key_id=access_key,
-        aws_secret_access_key=secret_key,
-        config=BotoConfig(
-            signature_version="s3v4",
-            s3={"addressing_style": "path"},
-        ),
-    )
 
 
 def build_json_key_index(client, bucket: str, prefix: str = "") -> dict[str, str]:

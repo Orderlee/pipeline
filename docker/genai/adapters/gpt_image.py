@@ -9,14 +9,7 @@ import base64
 import io
 import os
 
-from .base import BaseGenAIAdapter, PollResult, SubmitResult
-
-
-_FAKE_PNG_PLACEHOLDER = (
-    b"\x89PNG\r\n\x1a\n"
-    b"\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15\xc4\x89"
-    b"\x00\x00\x00\rIDATx\x9cc\xfc\xff\xff?\x03\x00\x06\xff\x02\xfe\xa3\xa6T\x9d\x00\x00\x00\x00IEND\xaeB`\x82"
-)
+from .base import _FAKE_PNG_PLACEHOLDER, BaseGenAIAdapter, PollResult, SubmitResult
 
 
 class GPTImageAdapter(BaseGenAIAdapter):

@@ -12,7 +12,44 @@ Adapter 는 외부 API 호출만 책임지고, DB/NAS 쓰기는 호출자(orches
 
 from __future__ import annotations
 
+import os
 from typing import Protocol
+
+
+# 어댑터 공용 placeholder bytes (mocking 모드 / validation 통과용).
+# 최소 ftyp/mdat 박스를 가진 0-frame mp4. ffprobe 가 read 시도는 안 하니
+# archive/dataset 검증에는 충분한 placeholder.
+_FAKE_MP4_PLACEHOLDER = (
+    b"\x00\x00\x00\x18ftypmp42\x00\x00\x00\x00mp42isom"
+    b"\x00\x00\x00\x08free"
+    b"\x00\x00\x00\x08mdat"
+)
+
+# 1x1 흑색 PNG (validation 통과용 placeholder)
+_FAKE_PNG_PLACEHOLDER = (
+    b"\x89PNG\r\n\x1a\n"
+    b"\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15\xc4\x89"
+    b"\x00\x00\x00\rIDATx\x9cc\xfc\xff\xff?\x03\x00\x06\xff\x02\xfe\xa3\xa6T\x9d\x00\x00\x00\x00IEND\xaeB`\x82"
+)
+
+
+def _image_mime(filename: str) -> str:
+    name = (filename or "").lower()
+    if name.endswith(".png"):
+        return "image/png"
+    if name.endswith(".jpg") or name.endswith(".jpeg"):
+        return "image/jpeg"
+    if name.endswith(".webp"):
+        return "image/webp"
+    return "image/png"
+
+
+def _has_vertex_creds() -> bool:
+    for v in ("GEMINI_GOOGLE_APPLICATION_CREDENTIALS", "GOOGLE_APPLICATION_CREDENTIALS"):
+        path = (os.getenv(v) or "").strip()
+        if path and os.path.exists(path):
+            return True
+    return False
 
 
 class SubmitResult:

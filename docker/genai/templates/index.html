@@ -97,11 +97,14 @@
             </div>
             <div class="gs-field">
               <div class="gs-field__label gs-mono">duration (sec)</div>
-              <div class="gs-segmented">
+              <div class="gs-segmented gs-segmented--wrap">
                 {% for d in k.durations %}
                   <input type="radio" name="duration" id="kling-dur-{{ d }}" value="{{ d }}" {% if d == k.default_duration %}checked{% endif %}>
                   <label for="kling-dur-{{ d }}">{{ d }}s</label>
                 {% endfor %}
+              </div>
+              <div class="gs-hint" style="font-size:11px;margin-top:3px">
+                10초 초과는 <strong>kling-v3</strong> 만 실제 동작 (per-second 과금). 그 외 모델은 5/10초만 지원 — 더 길게 선택 시 submit 거부될 수 있음.
               </div>
             </div>
             {# 예상 비용 — JS 가 model/mode/duration 변경마다 실시간 갱신 #}

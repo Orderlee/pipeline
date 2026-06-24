@@ -36,7 +36,6 @@ tests/
 tests/*
 !tests/unit/
 tests/unit/*
-!tests/unit/test_manual_yolo_sam3_threshold_profiles.py
 # Phase 3-A inline DQ — vlm_pipeline.lib.vertex_chunking 만 의존, dagster import 없음
 # → CI host pydantic skew 영향 없음, allowlist 안전.
 !tests/unit/test_inline_dq_duration_events.py
@@ -60,6 +59,9 @@ tests/unit/*
 # Phase E #14 STRUCT-BOOTSTRAP-POLICY — BootstrapPolicy / decide_unit_ready 순수 로직.
 # sensor_bootstrap_policy 만 import, dagster 의존 없음.
 !tests/unit/test_bootstrap_policy.py
+# image_label_annotations projection (DATA bbox 추적) — 순수 파서 + mock PG, dagster 의존 없음.
+!tests/unit/test_detection_coco_boxes.py
+!tests/unit/test_image_label_annotations_projection.py
 # Phase 4-B integration tests (#12) — self-contained conftest, sidecar PG 의존
 # (DATAOPS_TEST_POSTGRES_DSN 미설정 시 자동 skip).
 !tests/integration/
@@ -112,8 +114,6 @@ pyproject.toml
 # re-ignore Python bytecode under skill scripts (caught by the .agent/skill/** unignore above)
 .agent/skill/**/__pycache__/
 .agent/skill/**/*.py[cod]
-# Sanitizer rule map — lists real internal values, must never be published
-.agent/skill/sanitize_repo/rules.local.txt
 
 # .claude/ — track team-shared agent config, ignore per-user state and runtime data
 .claude/*
