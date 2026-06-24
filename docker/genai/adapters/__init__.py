@@ -86,7 +86,13 @@ def engine_options(engine: str) -> dict:
         return {
             "models": list(ad.available_models),
             "default_model": ad.model_name,
-            "modes": ["pro", "std"],
+            # mode = 출력 해상도 (Kling docs): std=720P, pro=1080P, 4k=4K.
+            # value 는 API enum 그대로, label 만 직관적 해상도 표기. 4K 는 v3 등 일부 모델만 지원.
+            "modes": [
+                {"value": "std", "label": "720P"},
+                {"value": "pro", "label": "1080P"},
+                {"value": "4k", "label": "4K"},
+            ],
             "default_mode": ad.mode,
             "durations": [str(d) for d in ad.available_durations],
             "default_duration": ad.duration,

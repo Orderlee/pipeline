@@ -542,16 +542,13 @@ body.gs-root { background: var(--gs-bg); color: var(--gs-text); overflow: hidden
   border-radius: 6px; color: var(--gs-text); cursor: pointer;
 }
 
-.gs-range-tabs { display: inline-flex; gap: 0; margin: 4px 0 18px; }
-.gs-range-tabs a {
-  padding: 6px 14px; font-size: 12px;
-  border: 1px solid var(--gs-border); border-right: 0;
-  background: var(--gs-card); color: var(--gs-text-muted);
-  text-decoration: none;
-}
-.gs-range-tabs a:first-child { border-top-left-radius: 6px; border-bottom-left-radius: 6px; }
-.gs-range-tabs a:last-child  { border-right: 1px solid var(--gs-border); border-top-right-radius: 6px; border-bottom-right-radius: 6px; }
-.gs-range-tabs a.is-active { background: var(--gs-elevated); color: var(--gs-text); }
+/* Cost page — headline stat cards */
+.gs-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; margin: 0 0 8px; }
+.gs-stat { background: var(--gs-panel); border: 1px solid var(--gs-border); border-radius: 12px; padding: 14px 16px; }
+.gs-stat__label { font-size: 11px; color: var(--gs-text-muted); font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; }
+.gs-stat__value { font-size: 22px; font-weight: 600; color: var(--gs-text); margin-top: 6px; font-family: var(--gs-font-mono); font-feature-settings: "tnum"; }
+.gs-stat__value--accent { color: var(--gs-accent-hover); }
+.gs-stat__sub { font-size: 12px; color: var(--gs-text-dim); margin-top: 3px; }
 
 .gs-page { padding: 24px 28px; overflow: auto; min-height: 0; }
 .gs-page--narrow { max-width: 980px; margin: 0 auto; padding: 24px 28px; }
