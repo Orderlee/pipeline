@@ -89,6 +89,7 @@ class PostgresMigrationMixin:
             "003_genai_veo.sql",
             "004_dataset_lineage.sql",
             "005_labels_unique.sql",
+            "011_image_label_annotations.sql",
         }
     )
 

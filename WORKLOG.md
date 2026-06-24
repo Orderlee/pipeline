@@ -55,6 +55,41 @@
 
 
 
+
+## 2026-06-23
+
+### 1. 당일 코드 및 설정 정리
+- **문제**: 당일 변경이 여러 영역에 걸쳐 있어, 커밋 목록만 보면 실제 수정 범위와 운영 영향 지점을 파악하기 어려웠음.
+- **원인**: 자동 기록이 파일/커밋 나열 중심으로 작성되면 코드, 설정, 문서 변경이 어떤 의도로 묶였는지 드러나지 않음.
+- **조치**:
+    - 파이프라인 코드 변경을 정리함: `src/vlm_pipeline/lib/detection_coco.py`, `src/vlm_pipeline/resources/postgres_migration.py`, `src/vlm_pipeline/sql/migrations/postgres/012_finalized_label_view.sql`, `src/vlm_pipeline/sql/migrations/postgres/{010_image_label_annotations.sql => 011_image_label_annotations.sql}`, `... 외 1개`
+    - 인프라/설정 변경을 정리함: `docker/analysis/fiftyone_full_build.py`, `docker/analysis/fiftyone_pgvector.py`, `docker/analysis/fiftyone_prod_launch.py`, `docker/analysis/fiftyone_relaunch.py`, `... 외 1개`
+    - 테스트 변경을 정리함: `tests/unit/test_detection_coco_boxes.py`, `tests/unit/test_image_label_annotations_projection.py`
+    - 기타 변경을 정리함: `.gitignore`, `src/gemini/ls_sync_db.py`, `src/gemini/ls_webhook_finalize.py`
+    - 관련 커밋: `e91ca25b` feat(label): LS 확정 bbox → image_label_annotations 투영 + 3종 통합 추적 VIEW, `50451a43` feat(analysis): FiftyOne UMAP-only 재개 + 앱 relaunch(빌드없음) 스크립트, `1b7d1f75` merge: feature/embed-video → main (umap-only/relaunch scripts, local only, no deploy/restart), `9518075a` feat(analysis): FiftyOne 전체(대용량) 배치 빌드 스크립트 (OOM 방지)
+    - 관련 파일:
+      - `.gitignore`
+      - `docker/analysis/fiftyone_full_build.py`
+      - `docker/analysis/fiftyone_pgvector.py`
+      - `docker/analysis/fiftyone_prod_launch.py`
+      - `docker/analysis/fiftyone_relaunch.py`
+      - `docker/analysis/fiftyone_umap_only.py`
+      - `src/gemini/ls_sync_db.py`
+      - `src/gemini/ls_webhook_finalize.py`
+      - `... 외 7개`
+
+### 2. 당일 정리
+- **변경 통계**:
+    - 변경 파일 **15개**, +1050/-10줄.
+- **관련 커밋**:
+    - `e91ca25b`: feat(label): LS 확정 bbox → image_label_annotations 투영 + 3종 통합 추적 VIEW
+    - `50451a43`: feat(analysis): FiftyOne UMAP-only 재개 + 앱 relaunch(빌드없음) 스크립트
+    - `1b7d1f75`: merge: feature/embed-video → main (umap-only/relaunch scripts, local only, no deploy/restart)
+    - `9518075a`: feat(analysis): FiftyOne 전체(대용량) 배치 빌드 스크립트 (OOM 방지)
+    - `ab74f521`: merge: feature/embed-video → main (full-build script, local only, no deploy/restart)
+- **서비스 상태**: 파이프라인 서비스 16개 컨테이너 중 16개 정상 가동.
+- **작업 환경**: VSCode
+
 ## 2026-06-22
 
 ### 1. 프레임 추출 안정화 및 이미지 캡션 메타 확장

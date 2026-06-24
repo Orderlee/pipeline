@@ -148,20 +148,8 @@ def _iter_ancestors(path: str, root: str) -> Iterable[str]:
 
 
 def _split_digits(value: str) -> List[str]:
-    out: List[str] = []
-    buf = ""
-    last_is_digit = None
-    for ch in value:
-        is_digit = ch.isdigit()
-        if last_is_digit is None or is_digit == last_is_digit:
-            buf += ch
-        else:
-            out.append(buf)
-            buf = ch
-        last_is_digit = is_digit
-    if buf:
-        out.append(buf)
-    return out
+    # 연속 숫자런/비숫자런 분리 (자연 정렬용). re.findall 이 기존 state machine 과 동치.
+    return re.findall(r"\d+|\D+", value)
 
 
 def _sort_key(path: str) -> str:

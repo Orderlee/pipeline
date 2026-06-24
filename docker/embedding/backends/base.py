@@ -24,3 +24,13 @@ class EmbeddingBackend(ABC):
     @abstractmethod
     def embed_text(self, text: str) -> list[float]:
         """텍스트 → 동일 공간 정규화 임베딩 벡터."""
+
+    def is_loaded(self) -> bool:
+        """모델이 현재 메모리에 로드돼 있는지. idle-unload 지원 백엔드는 override.
+
+        기본값 True — unload 미지원 백엔드는 항상 로드된 것으로 간주(기존 동작 유지).
+        """
+        return True
+
+    def unload(self) -> None:
+        """VRAM 해제 (idle-unload). 미지원 백엔드는 no-op (기존 동작 유지)."""

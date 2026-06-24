@@ -18,7 +18,7 @@ import os
 import time
 from typing import Any
 
-from .base import BaseGenAIAdapter, PollResult, SubmitResult
+from .base import _FAKE_MP4_PLACEHOLDER, BaseGenAIAdapter, PollResult, SubmitResult
 
 
 class KlingError(RuntimeError):
@@ -44,15 +44,6 @@ class KlingTransientError(KlingError):
 _KLING_TRANSIENT_CODES = {1303}  # parallel task over resource pack limit
 
 
-_FAKE_MP4_PLACEHOLDER = (
-    # 최소 ftyp/mdat 박스를 가진 0-frame mp4. ffprobe 가 read 시도는 안 하니
-    # archive/dataset 검증에는 충분한 placeholder.
-    b"\x00\x00\x00\x18ftypmp42\x00\x00\x00\x00mp42isom"
-    b"\x00\x00\x00\x08free"
-    b"\x00\x00\x00\x08mdat"
-)
-
-
 class KlingAdapter(BaseGenAIAdapter):
     engine = "kling"
     output_media = "video"
@@ -65,8 +56,8 @@ class KlingAdapter(BaseGenAIAdapter):
     # mode/duration 지원은 model 버전별 상이 — 공식 Capability Map 참조.
     # env KLING_AVAILABLE_MODELS 로 override (CSV).
     DEFAULT_MODELS: tuple[str, ...] = (
-        "kling-v2-6",          # 최신 세대 — 공식 primary 예제 모델 (권장 기본)
-        "kling-v3",            # V3 — multi-shot 등 신기능 (단순 i2v 도 가능)
+        "kling-v3",            # V3 — multi-shot 등 신기능 + per-second 과금 (3~15s 전 구간 유일 지원)
+        "kling-v2-6",          # 최신 세대 — 공식 primary 예제 모델 (5/10s)
         "kling-v2-5-turbo",    # V2.5 turbo
         "kling-v2-1",          # V2.1
         "kling-v2-1-master",   # V2.1 Master — pro 전용
@@ -76,17 +67,32 @@ class KlingAdapter(BaseGenAIAdapter):
         "kling-v1",            # V1 (field 생략 시 API default)
     )
 
+    # 공식 image2video API duration enum (kling.ai API Reference, 2026-06 확인): "3".."15".
+    # ⚠️ 실지원은 model/mode 별 상이 (Capability Map). tier-priced 모델
+    #    (kling-v2-6 default, v2-5-turbo, v2-1, v1.x, *-master) 은 5/10 만 —
+    #    그 외 길이 submit 시 API 거부 가능 (code 1201 류). kling-v3 만 per-second 과금으로
+    #    3~15 전 구간 동작 (multi-shot 합계 15s 포함).
+    # env KLING_AVAILABLE_DURATIONS 로 override (CSV). lib/kling_pricing.SUPPORTED_DURATIONS 와 동기 유지.
+    DEFAULT_DURATIONS: tuple[str, ...] = (
+        "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15",
+    )
+
     def __init__(self) -> None:
         self.access_key = os.getenv("KLING_ACCESS_KEY", "").strip()
         self.secret_key = os.getenv("KLING_SECRET_KEY", "").strip()
         self.api_base = os.getenv("KLING_API_BASE", "https://api.klingai.com").rstrip("/")
-        self.model_name = os.getenv("KLING_MODEL_NAME", "kling-v2-6").strip()
+        self.model_name = os.getenv("KLING_MODEL_NAME", "kling-v3").strip()
         self.mode = os.getenv("KLING_MODE", "pro").strip()           # std | pro (Pro 요금제 → pro 권장)
-        self.duration = os.getenv("KLING_DURATION", "5").strip()      # 5 or 10
+        self.duration = os.getenv("KLING_DURATION", "5").strip()      # 3..15 (전 모델 호환 default 5)
         models_csv = os.getenv("KLING_AVAILABLE_MODELS", "").strip()
         self.available_models: tuple[str, ...] = (
             tuple(m.strip() for m in models_csv.split(",") if m.strip())
             if models_csv else self.DEFAULT_MODELS
+        )
+        durations_csv = os.getenv("KLING_AVAILABLE_DURATIONS", "").strip()
+        self.available_durations: tuple[str, ...] = (
+            tuple(d.strip() for d in durations_csv.split(",") if d.strip())
+            if durations_csv else self.DEFAULT_DURATIONS
         )
         self.submit_timeout = int(os.getenv("KLING_SUBMIT_TIMEOUT", "60"))
         self.poll_timeout = int(os.getenv("KLING_POLL_TIMEOUT", "30"))

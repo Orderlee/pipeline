@@ -166,7 +166,7 @@ git -C /home/user/work_p/Datapipeline-Data-data_pipeline_test status       # dev
 - **커밋**: conventional commits (`feat:`, `fix:`, `refactor:`, `test:`, `docs:`, `chore:`)
   - "어떻게 수정했다"보다 **"무엇과 왜 수정했는지"** (`.gitmessage.txt` 참고)
 - **에러 처리**: per-file fail-forward — 한 파일 실패해도 나머지 계속 처리
-- **테스트**: pytest, in-memory DuckDB fixture, mocked MinIO (`moto[s3]`), `tests/conftest.py` 공통 fixture
+- **테스트**: pytest, Postgres fixture, mocked MinIO (`unittest.mock`), `tests/conftest.py` 공통 fixture
 
 ---
 

@@ -67,9 +67,11 @@ class TestCmdRegisterIdempotency:
 
         mock_post = MagicMock()
 
-        with patch("gemini.ls_webhook.requests.get", mock_get), patch(
-            "gemini.ls_webhook.requests.post", mock_post
-        ), patch("gemini.ls_webhook.requests.delete", MagicMock()):
+        with (
+            patch("gemini.ls_webhook.requests.get", mock_get),
+            patch("gemini.ls_webhook.requests.post", mock_post),
+            patch("gemini.ls_webhook.requests.delete", MagicMock()),
+        ):
             lw.cmd_register(project_id=42)
 
         mock_post.assert_not_called()
@@ -94,9 +96,11 @@ class TestCmdRegisterIdempotency:
         mock_post_resp.json.return_value = {"id": 99}
         mock_post = MagicMock(return_value=mock_post_resp)
 
-        with patch("gemini.ls_webhook.requests.get", mock_get), patch(
-            "gemini.ls_webhook.requests.post", mock_post
-        ), patch("gemini.ls_webhook.requests.delete", mock_delete):
+        with (
+            patch("gemini.ls_webhook.requests.get", mock_get),
+            patch("gemini.ls_webhook.requests.post", mock_post),
+            patch("gemini.ls_webhook.requests.delete", mock_delete),
+        ):
             lw.cmd_register(project_id=42)
 
         mock_delete.assert_called_once()
@@ -120,9 +124,7 @@ class TestCmdRegisterIdempotency:
         mock_post_resp.json.return_value = {"id": 10}
         mock_post = MagicMock(return_value=mock_post_resp)
 
-        with patch("gemini.ls_webhook.requests.get", mock_get), patch(
-            "gemini.ls_webhook.requests.post", mock_post
-        ):
+        with patch("gemini.ls_webhook.requests.get", mock_get), patch("gemini.ls_webhook.requests.post", mock_post):
             lw.cmd_register(project_id=5)
 
         mock_post.assert_called_once()
@@ -156,9 +158,7 @@ class TestWebhookQueryParamRemoved:
         with patch("gemini.ls_webhook.count_incomplete_tasks", return_value=1):
             resp = client.post(
                 "/webhook",
-                content=json.dumps(
-                    {"action": "ANNOTATION_CREATED", "project": {"id": 1, "title": "t"}}
-                ),
+                content=json.dumps({"action": "ANNOTATION_CREATED", "project": {"id": 1, "title": "t"}}),
                 headers={
                     "Content-Type": "application/json",
                     "X-Webhook-Token": "test-secret",
@@ -198,7 +198,9 @@ class TestCompareDigestTypeError:
         import hmac as _hmac
         import gemini.ls_webhook as lw
 
-        sig = "v0=" + _hmac.new(lw.SLACK_SIGNING_SECRET.encode(), f"v0:{ts}:{body}".encode(), hashlib.sha256).hexdigest()
+        sig = (
+            "v0=" + _hmac.new(lw.SLACK_SIGNING_SECRET.encode(), f"v0:{ts}:{body}".encode(), hashlib.sha256).hexdigest()
+        )
 
         with patch("gemini.ls_webhook.hmac.compare_digest", side_effect=TypeError("mismatch")):
             resp = client.post(

@@ -6,6 +6,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from vlm_pipeline.lib.env_utils import (
+    _RUN_MODE_TO_OUTPUTS,
     VALID_LABELING_METHODS,
     VALID_OUTPUTS,
     YOLO_OUTPUTS,
@@ -14,11 +15,6 @@ from vlm_pipeline.lib.env_utils import (
     resolve_outputs,
 )
 
-_RUN_MODE_TO_OUTPUTS = {
-    "gemini": ["timestamp_video", "captioning_video"],
-    "yolo": ["bbox"],
-    "both": ["timestamp_video", "captioning_video", "bbox"],
-}
 _OUTPUT_PRIORITY = {
     "timestamp_video": 0,
     "captioning_video": 1,

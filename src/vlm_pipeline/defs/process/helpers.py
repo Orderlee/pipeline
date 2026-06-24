@@ -46,7 +46,6 @@ from .helpers_key_utils import (
     _coerce_float,
     _coerce_int,
     _delete_minio_keys,
-    _materialize_object_path,
     _materialize_video_path,
     _stable_clip_id,
 )
@@ -58,13 +57,8 @@ from .helpers_metadata import (
     _stable_gemini_label_id,
 )
 
-# Legacy underscore aliases — test 호환을 위해 남는 2개만 유지(_resolve_event_clip_extraction_window
-# 과 _plan_asset_event_clip_extraction_windows). 나머지 4개는 캘러 0건으로 제거됨.
-_resolve_event_clip_extraction_window = resolve_event_clip_extraction_window
-_plan_asset_event_clip_extraction_windows = plan_asset_event_clip_extraction_windows
-
 __all__ = [
-    # clip_windows re-exports (public + legacy underscore)
+    # clip_windows re-exports
     "_DEFAULT_EVENT_CLIP_POST_BUFFER_SEC",
     "_DEFAULT_EVENT_CLIP_PRE_BUFFER_SEC",
     "candidate_clip_window_plan_key",
@@ -73,8 +67,6 @@ __all__ = [
     "resolve_event_only_clip_extraction_window",
     "sort_process_candidates",
     "window_values_match",
-    "_resolve_event_clip_extraction_window",
-    "_plan_asset_event_clip_extraction_windows",
     # clip_media
     "_extract_video_clip_media",
     "_extract_video_clip_path",
@@ -99,7 +91,6 @@ __all__ = [
     "_coerce_float",
     "_coerce_int",
     "_delete_minio_keys",
-    "_materialize_object_path",
     "_materialize_video_path",
     "_stable_clip_id",
     # metadata

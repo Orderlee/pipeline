@@ -14,15 +14,7 @@ from __future__ import annotations
 import os
 import time
 
-from .base import BaseGenAIAdapter, PollResult, SubmitResult
-
-
-# Phase 3 의 Kling 어댑터에 있던 동일 placeholder 재사용
-_FAKE_MP4_PLACEHOLDER = (
-    b"\x00\x00\x00\x18ftypmp42\x00\x00\x00\x00mp42isom"
-    b"\x00\x00\x00\x08free"
-    b"\x00\x00\x00\x08mdat"
-)
+from .base import _FAKE_MP4_PLACEHOLDER, BaseGenAIAdapter, PollResult, SubmitResult, _image_mime
 
 
 class HiggsfieldAdapter(BaseGenAIAdapter):
@@ -123,14 +115,3 @@ class HiggsfieldAdapter(BaseGenAIAdapter):
         r = requests.get(result_url, timeout=self.download_timeout, stream=True)
         r.raise_for_status()
         return r.content
-
-
-def _image_mime(filename: str) -> str:
-    name = (filename or "").lower()
-    if name.endswith(".png"):
-        return "image/png"
-    if name.endswith(".jpg") or name.endswith(".jpeg"):
-        return "image/jpeg"
-    if name.endswith(".webp"):
-        return "image/webp"
-    return "image/png"

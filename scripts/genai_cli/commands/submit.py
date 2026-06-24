@@ -31,7 +31,7 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--model", dest="model_name", help="Kling/Veo model_name")
     parser.add_argument("--mode",
                         help="Kling mode (std|pro|master). --text-only 시 자동 'txt2video'")
-    parser.add_argument("--duration", help="duration 초 (Kling: 5|10, Veo: 4|6|8)")
+    parser.add_argument("--duration", help="duration 초 (Kling: 3-15, >10초는 kling-v3만 실동작; Veo: 4|6|8)")
     parser.add_argument("--aspect-ratio", dest="aspect_ratio",
                         help="16:9 | 9:16 | 1:1 (Veo 는 1:1 미지원)")
 

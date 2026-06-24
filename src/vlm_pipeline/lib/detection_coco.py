@@ -8,7 +8,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from copy import deepcopy
 from datetime import datetime
-from typing import Any
+from typing import Any, TypeGuard
 
 from vlm_pipeline.lib.yolo_thresholds import (
     resolve_active_class_confidence_thresholds,
@@ -100,7 +100,7 @@ def _resolve_coco_category_names(detections: list[dict[str, Any]], requested_cla
     return names
 
 
-def is_coco_detection_payload(payload: Mapping[str, Any] | None) -> bool:
+def is_coco_detection_payload(payload: Mapping[str, Any] | None) -> TypeGuard[Mapping[str, Any]]:
     if not isinstance(payload, Mapping):
         return False
 
@@ -109,6 +109,66 @@ def is_coco_detection_payload(payload: Mapping[str, Any] | None) -> bool:
         and isinstance(payload.get("annotations"), list)
         and isinstance(payload.get("categories"), list)
     )
+
+
+def parse_coco_annotation_boxes(payload: Mapping[str, Any] | None) -> list[dict[str, Any]]:
+    """COCO detection payload → ``image_label_annotations`` projection 용 박스 리스트.
+
+    각 원소: ``{box_index, category, bbox_x, bbox_y, bbox_w, bbox_h, score}``.
+    - ``box_index`` = COCO ``annotations`` 배열의 0-based 위치 (migration 011 의 box_index 정의와 일치).
+    - bbox 는 COCO 와 동일하게 절대 픽셀 ``[x, y, w, h]``. (LS RectangleLabels → 픽셀 변환 후 저장)
+    - ``category`` 는 ``categories[category_id].name``; 없으면 ``str(category_id)`` fallback.
+    - ``score`` 는 0.0~1.0 범위만 유지(011 CHECK 제약). 범위 밖/파싱 실패 → ``None`` (박스는 보존).
+
+    malformed annotation (bbox 누락·음수·w/h<=0) 은 skip — per-box fail-forward.
+    COCO 가 아니면 빈 리스트.
+    """
+    if not is_coco_detection_payload(payload):
+        return []
+
+    categories: dict[Any, str] = {}
+    for cat in payload.get("categories") or []:
+        if isinstance(cat, Mapping) and cat.get("id") is not None:
+            categories[cat["id"]] = str(cat.get("name") or cat["id"]).strip() or str(cat["id"])
+
+    boxes: list[dict[str, Any]] = []
+    for box_index, ann in enumerate(payload.get("annotations") or []):
+        if not isinstance(ann, Mapping):
+            continue
+        bbox = ann.get("bbox")
+        if not isinstance(bbox, (list, tuple)) or len(bbox) < 4:
+            continue
+        try:
+            x, y, w, h = float(bbox[0]), float(bbox[1]), float(bbox[2]), float(bbox[3])
+        except (TypeError, ValueError):
+            continue
+        if x < 0 or y < 0 or w <= 0 or h <= 0:
+            continue
+
+        category_id = ann.get("category_id")
+        category = categories.get(category_id) or str(category_id if category_id is not None else "unknown")
+        category = category.strip() or "unknown"
+
+        score = ann.get("score")
+        try:
+            score = float(score) if score is not None else None
+        except (TypeError, ValueError):
+            score = None
+        if score is not None and not (0.0 <= score <= 1.0):
+            score = None  # 011 CHECK: score IN [0,1] — 범위 밖이면 박스는 살리고 score 만 버림
+
+        boxes.append(
+            {
+                "box_index": box_index,
+                "category": category,
+                "bbox_x": round(x, 2),
+                "bbox_y": round(y, 2),
+                "bbox_w": round(w, 2),
+                "bbox_h": round(h, 2),
+                "score": score,
+            }
+        )
+    return boxes
 
 
 def build_coco_detection_payload(

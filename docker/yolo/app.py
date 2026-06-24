@@ -20,11 +20,9 @@ from io import BytesIO
 from pathlib import Path
 from typing import Any
 
-import numpy as np
 import torch
 import uvicorn
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
-from fastapi.responses import JSONResponse
 from PIL import Image
 from pydantic import BaseModel
 from ultralytics import YOLOWorld
@@ -241,12 +239,6 @@ def _run_detection(
             ],
         })
     return detections, applied_classes
-
-
-class DetectParams(BaseModel):
-    conf: float = 0.25
-    iou: float = 0.45
-    max_det: int = 300
 
 
 @app.post("/detect")

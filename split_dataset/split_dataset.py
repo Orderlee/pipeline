@@ -175,16 +175,6 @@ def _list_common_prefixes(s3, bucket: str, prefix: str) -> Iterable[str]:
         token = resp.get("NextContinuationToken")
 
 
-def _has_jsons(s3, bucket: str, prefix: str) -> bool:
-    """Return True if any JSON file exists under prefix."""
-    resp = s3.list_objects_v2(Bucket=bucket, Prefix=prefix, MaxKeys=50)
-    for obj in resp.get("Contents", []):
-        key = obj.get("Key") or ""
-        if key.lower().endswith(".json"):
-            return True
-    return False
-
-
 def _collect_json_keys(
     s3,
     bucket: str,
@@ -436,7 +426,7 @@ def _build_basename_to_asset_key_index(
     return basename_to_key, duplicates
 
 
-def _build_dataset_yaml_txt(dest_prefix_path: str, class_names: List[str], include_val: bool) -> dict:
+def _build_dataset_yaml_txt(dest_prefix_path: str, class_names: List[str]) -> dict:
     """
     ✅ YOLO 이미지리스트 방식:
       path: (train.txt/test.txt가 있는 디렉토리)
@@ -493,9 +483,6 @@ def _parse_args() -> argparse.Namespace:
 
     parser.add_argument("--write-yaml", dest="write_yaml", action="store_true", default=True)
     parser.add_argument("--no-yaml", dest="write_yaml", action="store_false")
-
-    parser.add_argument("--include-val", dest="include_val", action="store_true", default=True)
-    parser.add_argument("--no-val", dest="include_val", action="store_false")
 
     parser.add_argument("--create-bucket", dest="create_bucket", action="store_true", default=True)
     parser.add_argument("--no-create-bucket", dest="create_bucket", action="store_false")
@@ -762,7 +749,6 @@ def main() -> int:
             dataset_yaml = _build_dataset_yaml_txt(
                 dest_prefix_path=f"s3://{args.dest_bucket}/{dest_prefix}",
                 class_names=class_names,
-                include_val=args.include_val,
             )
             _put_yaml_object(s3, args.dest_bucket, f"{dest_prefix}/dataset.yaml", dataset_yaml, args.dry_run)
 

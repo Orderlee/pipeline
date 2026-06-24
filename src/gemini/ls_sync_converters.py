@@ -70,18 +70,6 @@ def annotation_to_events(annotation: dict, fps: int) -> list[dict]:
     return events
 
 
-def find_matching_event_index(json_data: list, clip_start_sec: float, clip_end_sec: float) -> int | None:
-    """clip 구간과 겹치는 이벤트 인덱스 반환. 없으면 None."""
-    for i, ev in enumerate(json_data):
-        ts = ev.get("timestamp")
-        if not ts or len(ts) < 2:
-            continue
-        ev_start, ev_end = float(ts[0]), float(ts[1])
-        if ev_end > clip_start_sec and ev_start < clip_end_sec:
-            return i
-    return None
-
-
 def _parse_image_url_to_key(image_url: str) -> str | None:
     """presigned URL -> MinIO object key."""
     try:
@@ -205,25 +193,3 @@ def build_reviewed_coco_json(
     out["categories"] = categories_out
     out["meta"] = meta
     return out
-
-
-def _parse_clip_times(stem: str) -> tuple[float, float]:
-    """stem 끝에서 시작/종료 시간 파싱.
-
-    - 8자리 ms: _00222000_00226000 -> (222.0, 226.0)
-    - 4자리 MMSS: _0435_0455 -> (275.0, 295.0)
-    fallback: (0.0, inf)
-    """
-    m8 = re.search(r"_(\d{8})_(\d{8})$", stem)
-    if m8:
-        return int(m8.group(1)) / 1000.0, int(m8.group(2)) / 1000.0
-
-    m4 = re.search(r"_(\d{4})_(\d{4})$", stem)
-    if m4:
-
-        def mmss_to_sec(s: str) -> float:
-            return int(s[:2]) * 60 + int(s[2:])
-
-        return mmss_to_sec(m4.group(1)), mmss_to_sec(m4.group(2))
-
-    return 0.0, float("inf")
