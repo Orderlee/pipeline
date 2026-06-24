@@ -2065,121 +2065,176 @@ def _compute_class_centroids(
     return centroids
 
 
-def active_learning_queue(n: int = 200, model_name: str = DEFAULT_MODEL) -> dict:
-    """hard-positive mining 큐: 희귀 클래스 lookalike 우선 + 다양성 보장.
+# 후보 풀 배수: rare_sim top-(n*MULT) 를 인덱스로 받아 al_score 재정렬 + 다양성 floor 적용.
+# 메모리는 풀 크기(작은 행: image_id/key/rare_sim, 임베딩 미수신)에 묶여 코퍼스 크기와 무관.
+AL_CANDIDATE_POOL_MULT = 5
 
-    normalized_class='none' 프레임 중 al_score 상위 n개 반환.
+
+def _rare_topk(
+    centroid: Any, k: int, model_name: str,
+    *, exclude_ids: list[str] | None = None, ef_search: int = 200,
+) -> list[dict]:
+    """centroid 벡터에 cosine 가까운 frame top-k (HNSW 인덱스). 임베딩 미반환 → 메모리 O(k).
+
+    exclude_ids(미라벨 필터)가 있으면 hnsw.iterative_scan 으로 필터 통과분 k 개를 채울 때까지
+    인덱스 스캔. 반환 행: image_id, image_bucket, image_key, rare_sim(=1-cosine_dist).
+    """
+    vec = centroid.tolist() if hasattr(centroid, "tolist") else list(centroid)
+    lit = "[" + ",".join(repr(float(x)) for x in vec) + "]"
+    excl = [str(i) for i in (exclude_ids or [])]
+    params: dict = {"q": lit, "model": model_name, "k": int(k), "ef": ef_search}
+    where = ["e.entity_type = 'frame'", "e.model_name = %(model)s"]
+    if excl:
+        # image_id::text 캐스트로 컬럼 타입(uuid/text) 무관하게 비교 — 벡터 인덱스 정렬엔 영향 없음
+        where.append("e.image_id::text <> ALL(%(excl)s)")
+        params["excl"] = excl
+    where_sql = "\n  AND ".join(where)
+    base_sql = f"""
+        SELECT e.image_id, im.image_bucket, im.image_key,
+               1 - (e.embedding <=> %(q)s::vector) AS rare_sim
+        FROM image_embeddings e
+        JOIN image_metadata im ON im.image_id = e.image_id
+        WHERE {where_sql}
+        ORDER BY e.embedding <=> %(q)s::vector
+        LIMIT %(k)s
+    """
+    with _pg_conn() as conn, conn.cursor() as cur:
+        if excl:
+            cur.execute(
+                "SET LOCAL hnsw.iterative_scan = 'relaxed_order'; "
+                "SET LOCAL hnsw.ef_search = %(ef)s; "
+                "SET LOCAL hnsw.max_scan_tuples = 100000;",
+                params,
+            )
+        cur.execute(base_sql, params)
+        cols = [c.name for c in cur.description]
+        return [dict(zip(cols, row)) for row in cur.fetchall()]
+
+
+def _fo_scores_for_ids(image_ids: list[str]) -> dict[str, dict]:
+    """주어진 image_id 한정으로 FiftyOne uniqueness/representativeness 조회 (bounded).
+
+    필드 미존재(=STEP 0 미실행) 또는 데이터셋 없으면 빈 dict → 호출부에서 0 처리.
+    전체 스캔하던 것을 후보 풀(작은 집합)로 한정해 대용량에서도 메모리/시간 안전.
+    """
+    out: dict[str, dict] = {}
+    if not image_ids:
+        return out
+    try:
+        import fiftyone as fo
+        from fiftyone import ViewField as F
+
+        if not fo.dataset_exists("frames"):
+            return out
+        ds = fo.load_dataset("frames")
+        schema = ds.get_field_schema()
+        if "uniqueness" not in schema and "representativeness" not in schema:
+            return out  # 두 필드 다 없으면 전부 0 — 굳이 스캔 안 함
+        view = ds.match(F("image_id").is_in([str(i) for i in image_ids]))
+        for s in view:
+            iid = _sample_value(s, "image_id")
+            if iid:
+                out[str(iid)] = {
+                    "uniqueness": _sample_value(s, "uniqueness"),
+                    "representativeness": _sample_value(s, "representativeness"),
+                }
+    except Exception as exc:  # noqa: BLE001 — FiftyOne optional
+        print(f"_fo_scores_for_ids: skipped: {exc}")
+    return out
+
+
+def active_learning_queue(n: int = 200, model_name: str = DEFAULT_MODEL) -> dict:
+    """hard-positive mining 큐 (pgvector pushdown): 희귀 클래스 lookalike 우선 + 다양성 보장.
+
+    fire/smoke centroid 를 '라벨된 소수 프레임'으로만 계산한 뒤, 미라벨 프레임 중 centroid 에
+    cosine 가까운 top-pool 을 HNSW 인덱스로 받아 al_score 재정렬해 상위 n개 반환.
+    임베딩 전량을 메모리에 올리지 않아 코퍼스가 커져도 메모리 O(pool) — OOM/2만 캡 없음(전체 커버).
+
+    al_score = 0.45*rare_sim + 0.30*representativeness + 0.25*uniqueness
+      (uniqueness/representativeness 는 FiftyOne 필드; 미계산이면 0 → 사실상 rare_sim 단독.
+       필드가 있으면 최종 후보 풀 한정으로 조회해 반영.)
     top-n의 최소 20%는 non-near-rare(representative/edge)로 채워 다양성 보장.
-    Returns dict(rows=[...], n_candidates=int, n=int, reason_counts=dict, truncated=bool).
+    Returns dict(rows=[...], n_candidates=int, n=int, reason_counts=dict, truncated=False).
     rows 각 항목: image_id, al_score, rare_sim, nearest_rare_class,
                   representativeness, uniqueness, reason, minio_key
     """
     try:
-        import numpy as np
-
-        # 1. pgvector 에서 프레임 임베딩 로드 (DQ_FULL_MATRIX_MAX_N 가드)
-        total_n = _count_frames_for_dq(model_name)
-        truncated = total_n > DQ_FULL_MATRIX_MAX_N
-        limit = DQ_FULL_MATRIX_MAX_N if truncated else None
-        if truncated:
-            print(
-                f"active_learning_queue: N={total_n} > DQ_FULL_MATRIX_MAX_N={DQ_FULL_MATRIX_MAX_N}; "
-                "returning partial result for first rows ordered by image_id."
-            )
-        dq_rows = _load_frames_for_dq(model_name, limit=limit)
-        if not dq_rows:
-            return {"rows": [], "n_candidates": 0, "n": n, "reason_counts": {}, "truncated": truncated}
-
-        # 2. FiftyOne 'frames' 에서 normalized_class, uniqueness, representativeness 로드
+        # 1. FiftyOne 라벨 맵 (작은 dict: label/caption 문자열만 → 메모리 안전, 임베딩 아님)
         fo_metadata = _load_fo_metadata_for_dq("normalized_class")
+        labeled_ids_by_class: dict[str, list[str]] = {"fire": [], "smoke": []}
+        labeled_non_none: list[str] = []
+        for iid, meta in fo_metadata.items():
+            lbl = str(meta.get("label") or "none")
+            if lbl != "none":
+                labeled_non_none.append(iid)
+            if lbl in labeled_ids_by_class:
+                labeled_ids_by_class[lbl].append(iid)
 
-        # uniqueness / representativeness 는 FiftyOne sample 필드에서 직접 읽어야 함
-        fo_scores: dict[str, dict[str, float | None]] = {}
-        try:
-            import fiftyone as fo
-
-            if fo.dataset_exists("frames"):
-                ds = fo.load_dataset("frames")
-                for s in ds:
-                    iid = _sample_value(s, "image_id")
-                    if iid:
-                        fo_scores[str(iid)] = {
-                            "uniqueness": _sample_value(s, "uniqueness"),
-                            "representativeness": _sample_value(s, "representativeness"),
-                        }
-        except Exception as exc:  # noqa: BLE001 — FiftyOne optional
-            print(f"active_learning_queue: FiftyOne score lookup skipped: {exc}")
-
-        # 3. 라벨별 임베딩 수집
-        labeled_classes = ("fire", "smoke", "fall")
-        embs_by_class: dict[str, list[list[float]]] = {c: [] for c in labeled_classes}
-        for r in dq_rows:
-            lbl = str(fo_metadata.get(r["image_id"], {}).get("label") or "none")
-            if lbl in embs_by_class:
-                embs_by_class[lbl].append(r["embedding"])
-
+        # 2. 라벨된 fire/smoke 임베딩만 로드(소수) → centroid
+        seed_ids = labeled_ids_by_class["fire"] + labeled_ids_by_class["smoke"]
+        if not seed_ids:
+            return {"rows": [], "n_candidates": 0, "n": n, "reason_counts": {}, "truncated": False}
+        seed_rows = _load_frames_for_dq(model_name, image_ids=seed_ids)
+        emb_by_id = {r["image_id"]: r["embedding"] for r in seed_rows}
+        embs_by_class = {
+            c: [emb_by_id[i] for i in labeled_ids_by_class[c] if i in emb_by_id]
+            for c in ("fire", "smoke")
+        }
         centroids = _compute_class_centroids(embs_by_class)
         rare_classes = [c for c in ("fire", "smoke") if c in centroids]
-        has_fall_centroid = "fall" in centroids
+        if not rare_classes:
+            return {"rows": [], "n_candidates": 0, "n": n, "reason_counts": {}, "truncated": False}
 
-        # 4. 후보(none) 프레임만 필터
-        candidates = [
-            r for r in dq_rows
-            if str(fo_metadata.get(r["image_id"], {}).get("label") or "none") == "none"
-        ]
-        n_candidates = len(candidates)
+        total_frames = _count_frames_for_dq(model_name)
+        n_candidates = max(0, total_frames - len(labeled_non_none))
 
-        if not candidates or not rare_classes:
-            return {"rows": [], "n_candidates": n_candidates, "n": n, "reason_counts": {}, "truncated": truncated}
-
-        # 5. 후보 임베딩 행렬 → cosine 유사도 to rare centroids
-        mat = np.array([r["embedding"] for r in candidates], dtype="float32")
-        norms = np.linalg.norm(mat, axis=1, keepdims=True)
-        norms = np.where(norms == 0, 1.0, norms)
-        mat_norm = mat / norms
-
-        centroid_sims: dict[str, "np.ndarray"] = {}
+        # 3. centroid 별 인덱스 top-pool (미라벨만; 임베딩 미수신). image_id 기준 max rare_sim 병합.
+        pool_k = max(n * AL_CANDIDATE_POOL_MULT, n + 100)
+        best: dict[str, dict] = {}
         for cls in rare_classes:
-            cv = np.array(centroids[cls], dtype="float32")
-            centroid_sims[cls] = mat_norm @ cv  # (N,)
+            for h in _rare_topk(centroids[cls], pool_k, model_name, exclude_ids=labeled_non_none):
+                iid = str(h["image_id"])
+                rs = float(h["rare_sim"])
+                prev = best.get(iid)
+                if prev is None or rs > prev["rare_sim"]:
+                    bucket, key = h.get("image_bucket"), h.get("image_key")
+                    best[iid] = {
+                        "rare_sim": rs,
+                        "nearest_rare_class": cls,
+                        "minio_key": f"{bucket}/{key}" if bucket and key else "",
+                    }
+        if not best:
+            return {"rows": [], "n_candidates": n_candidates, "n": n, "reason_counts": {}, "truncated": False}
 
-        if has_fall_centroid:
-            fall_cv = np.array(centroids["fall"], dtype="float32")
-            centroid_sims["fall"] = mat_norm @ fall_cv
-
-        # rare_sim = max cosine over fire/smoke centroids
-        rare_sim_mat = np.stack([centroid_sims[c] for c in rare_classes], axis=1)  # (N, len(rare_classes))
-        rare_sim_raw = rare_sim_mat.max(axis=1)  # (N,)
-        nearest_rare_idx = rare_sim_mat.argmax(axis=1)  # (N,)
+        # 4. uniqueness/representativeness 는 후보 풀 한정 조회 (없으면 0)
+        fo_scores = _fo_scores_for_ids(list(best.keys()))
 
         RARE_SIM_THRESHOLD = 0.7  # PE-Core cosine baseline ~0.3-0.8; 0.5는 너무 낮아 거의 전부 near-rare 분류됨
-
         scored_rows = []
-        for i, r in enumerate(candidates):
-            iid = r["image_id"]
-            scores_fo = fo_scores.get(iid, {})
-            uniqueness = float(scores_fo.get("uniqueness") or 0.0)
-            representativeness = float(scores_fo.get("representativeness") or 0.0)
-            rare_sim_clipped = float(np.clip(rare_sim_raw[i], 0.0, 1.0))
-            nearest_rare_class = rare_classes[int(nearest_rare_idx[i])]
-            al_score = 0.45 * rare_sim_clipped + 0.30 * representativeness + 0.25 * uniqueness
-            if rare_sim_clipped > RARE_SIM_THRESHOLD:
-                reason = f"near-{nearest_rare_class}"
+        for iid, b in best.items():
+            sc = fo_scores.get(iid, {})
+            uniqueness = float(sc.get("uniqueness") or 0.0)
+            representativeness = float(sc.get("representativeness") or 0.0)
+            rare_sim = max(0.0, min(1.0, b["rare_sim"]))
+            al_score = 0.45 * rare_sim + 0.30 * representativeness + 0.25 * uniqueness
+            if rare_sim > RARE_SIM_THRESHOLD:
+                reason = f"near-{b['nearest_rare_class']}"
             elif uniqueness >= representativeness:
                 reason = "edge/unique"
             else:
                 reason = "representative"
             scored_rows.append({
                 "image_id": iid,
-                "al_score": round(float(al_score), 4),
-                "rare_sim": round(rare_sim_clipped, 4),
-                "nearest_rare_class": nearest_rare_class,
+                "al_score": round(al_score, 4),
+                "rare_sim": round(rare_sim, 4),
+                "nearest_rare_class": b["nearest_rare_class"],
                 "representativeness": round(representativeness, 4),
                 "uniqueness": round(uniqueness, 4),
                 "reason": reason,
-                "minio_key": r.get("minio_key", ""),
+                "minio_key": b["minio_key"],
             })
 
+        # 5. 다양성 floor: top-n 의 최소 20%를 non-near-rare 로 (기존 로직 동일)
         sorted_rows = sorted(scored_rows, key=lambda x: x["al_score"], reverse=True)
         near_rare_rows = [r for r in sorted_rows if str(r["reason"]).startswith("near-")]
         non_near_rare_rows = [r for r in sorted_rows if not str(r["reason"]).startswith("near-")]
@@ -2202,7 +2257,7 @@ def active_learning_queue(n: int = 200, model_name: str = DEFAULT_MODEL) -> dict
             "n_candidates": n_candidates,
             "n": n,
             "reason_counts": reason_counts,
-            "truncated": truncated,
+            "truncated": False,
         }
 
     except Exception as exc:  # noqa: BLE001

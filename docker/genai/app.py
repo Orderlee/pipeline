@@ -310,39 +310,17 @@ def create_app() -> FastAPI:
             return JSONResponse(jsonable_encoder(batch))
         # template 에서 promote 버튼 표시 여부 결정용 — options_json 안 flag 확인.
         promoted = False
-        cost_estimate = None
-        cost_total_estimate = None
         opt_text = batch.get("options_json") or ""
         if opt_text:
             try:
                 import json as _json
-                opts = _json.loads(opt_text)
-                promoted = bool(opts.get("promoted_to_labeling"))
-                # Kling 만 예상 비용 — model/mode/duration 으로 lookup.
-                if (batch.get("engine") or "").strip().lower() == "kling":
-                    from lib.kling_pricing import estimate_kling_cost
-                    cost_estimate = estimate_kling_cost(
-                        model_name=opts.get("model_name") or "",
-                        mode=opts.get("mode") or "pro",
-                        duration=opts.get("duration") or "5",
-                    )
-                    if cost_estimate["cost_usd"] is not None:
-                        # n_total 곱셈해서 batch 합계도 노출 (실제 submit 한 job 수 기준)
-                        n_total = int(batch.get("n_total") or 0)
-                        if n_total > 0:
-                            cost_total_estimate = round(
-                                cost_estimate["cost_usd"] * n_total, 4
-                            )
+                promoted = bool(_json.loads(opt_text).get("promoted_to_labeling"))
             except Exception:
                 promoted = False
         return templates.TemplateResponse(
             request=request,
             name="batch_detail.html",
-            context={
-                "batch": batch, "user": user, "promoted": promoted,
-                "cost_estimate": cost_estimate,
-                "cost_total_estimate": cost_total_estimate,
-            },
+            context={"batch": batch, "user": user, "promoted": promoted},
         )
 
     @app.get("/genai/batches/{batch_id}/promote", response_class=HTMLResponse)
@@ -731,18 +709,31 @@ def create_app() -> FastAPI:
         )
 
     @app.get("/genai/costs", response_class=HTMLResponse)
-    def costs(request: Request, range: str = "week", user: str = Depends(_check_auth)):
-        if range not in ("day", "week", "month"):
-            range = "week"
-        summary = cost_summary(range)
+    def costs(request: Request, user: str = Depends(_check_auth)):
+        summary = cost_summary()
+        # Kling 계정 리소스팩(요금제) 라이브 조회 — best-effort. 실패해도 탭 나머지는 렌더.
+        packs_panel = {"packs": [], "alerts": [], "error": None}
+        try:
+            import time as _time
+            from adapters.kling import (
+                fetch_kling_resource_packs, summarize_resource_packs, resource_pack_totals)
+            all_packs = fetch_kling_resource_packs()
+            # 표는 현재 활성(online) 팩만 노출. 누적 합계는 이전(runOut/expired)+현재 전체 합산.
+            online = [p for p in all_packs if p.get("status") == "online"]
+            packs_panel = summarize_resource_packs(online, _time.time())
+            packs_panel["totals"] = resource_pack_totals(all_packs)
+            packs_panel["error"] = None
+        except Exception as exc:
+            packs_panel = {"packs": [], "alerts": [], "error": str(exc)}
         if _wants_json(request):
-            return JSONResponse(jsonable_encoder({"summary": summary, "limits": limits.status()}))
+            return JSONResponse(jsonable_encoder(
+                {"summary": summary, "limits": limits.status(), "resource_packs": packs_panel}))
         return templates.TemplateResponse(
             request=request,
             name="costs.html",
             context={
                 "summary": summary,
-                "limits": limits.status(),
+                "packs_panel": packs_panel,
                 "user": user,
             },
         )

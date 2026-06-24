@@ -4,37 +4,58 @@
 
 {% block body %}
 <main class="gs-page gs-page--narrow">
-  <h1 class="gs-h1">Cost / Activity <span class="gs-hint gs-mono" style="font-size:12px;font-weight:400">· {{ summary.since }} ~ now</span></h1>
+  <h1 class="gs-h1">Cost / Activity <span class="gs-hint gs-mono" style="font-size:12px;font-weight:400">· 전체기간 누적</span></h1>
 
-  <nav class="gs-range-tabs">
-    {% for r in ["day","week","month"] %}
-      <a href="/genai/costs?range={{ r }}" class="{% if summary.range == r %}is-active{% endif %}">{{ r }}</a>
-    {% endfor %}
-  </nav>
-
-  <h2 class="gs-h2">Totals</h2>
-  <div class="gs-card-block" style="padding:14px">
-    <dl class="gs-dl">
-      <dt>batches</dt><dd>{{ summary.totals.n_batches }}</dd>
-      <dt>users</dt><dd>{{ summary.totals.n_users }}</dd>
-      <dt>jobs done</dt><dd class="gs-mono">{{ summary.totals.n_done }}</dd>
-      <dt>jobs failed</dt><dd class="gs-mono">{{ summary.totals.n_failed }}</dd>
-      <dt>total cost</dt><dd class="gs-mono">{{ "%.4f"|format(summary.totals.total_cost) }}</dd>
-    </dl>
+  {# 핵심 숫자 헤드라인 — 한눈에 비용/잔여/처리량. 상세는 아래 표. #}
+  <div class="gs-stats">
+    {# ponytail: $0.14/unit = Kling list price (kling_pricing.USD_PER_UNIT). 안정값이라 하드코딩. #}
+    <div class="gs-stat">
+      <div class="gs-stat__label">total cost</div>
+      {% if packs_panel.totals and packs_panel.totals.n_packs %}
+      {# 이전+현재 요금제 구매 누적합 (Kling 계정 기준). $0.14/unit. #}
+      <div class="gs-stat__value">{{ "%.0f"|format(packs_panel.totals.purchased) }}<span class="gs-hint" style="font-size:13px"> units</span></div>
+      <div class="gs-stat__sub">${{ "%.2f"|format(packs_panel.totals.purchased * 0.14) }} · 요금제 {{ packs_panel.totals.n_packs }}개</div>
+      {% else %}
+      {# Kling 조회 실패 시 DB job 합으로 fallback #}
+      <div class="gs-stat__value">{{ "%.1f"|format(summary.totals.total_cost) }}<span class="gs-hint" style="font-size:13px"> units</span></div>
+      <div class="gs-stat__sub">${{ "%.2f"|format(summary.totals.total_cost * 0.14) }}</div>
+      {% endif %}
+    </div>
+    {% if packs_panel.totals and packs_panel.totals.n_packs %}
+    <div class="gs-stat">
+      <div class="gs-stat__label">remaining · Kling</div>
+      <div class="gs-stat__value gs-stat__value--accent">{{ "%.0f"|format(packs_panel.totals.remaining) }}<span class="gs-hint" style="font-size:13px"> units</span></div>
+      <div class="gs-stat__sub">${{ "%.2f"|format(packs_panel.totals.remaining_usd) }} · 요금제 {{ packs_panel.totals.n_packs }}번째</div>
+    </div>
+    {% endif %}
+    <div class="gs-stat">
+      <div class="gs-stat__label">jobs done</div>
+      <div class="gs-stat__value">{{ summary.totals.n_done }}</div>
+      <div class="gs-stat__sub">{{ summary.totals.n_failed }} failed</div>
+    </div>
+    <div class="gs-stat">
+      <div class="gs-stat__label">batches</div>
+      <div class="gs-stat__value">{{ summary.totals.n_batches }}</div>
+      <div class="gs-stat__sub">{{ summary.totals.n_users }} users</div>
+    </div>
   </div>
+
+  {% for a in packs_panel.alerts %}
+    <div style="padding:10px 14px;margin:6px 0;border-radius:6px;background:#3a2a00;color:#ffd479;border:1px solid #5a4500">{{ a }}</div>
+  {% endfor %}
 
   <h2 class="gs-h2">By Engine</h2>
   {% if summary.by_engine %}
   <div class="gs-card-block">
     <table class="gs-table">
-      <thead><tr><th>engine</th><th>done</th><th>failed</th><th>cost</th></tr></thead>
+      <thead><tr><th>engine</th><th>done</th><th>failed</th><th>units</th></tr></thead>
       <tbody>
         {% for e in summary.by_engine %}
         <tr>
           <td>{{ e.engine }}</td>
           <td class="gs-mono">{{ e.n_done }}</td>
           <td class="gs-mono">{{ e.n_failed }}</td>
-          <td class="gs-mono">{{ "%.4f"|format(e.total_cost) }}</td>
+          <td class="gs-mono">{{ "%.1f"|format(e.total_cost) }}</td>
         </tr>
         {% endfor %}
       </tbody>
@@ -44,13 +65,32 @@
   <p class="gs-hint">활동 없음.</p>
   {% endif %}
 
-  <h2 class="gs-h2">Limits (env)</h2>
-  <div class="gs-card-block" style="padding:14px">
-    <dl class="gs-dl">
-      <dt>rate_limit_per_min</dt><dd class="gs-mono">{{ limits.rate_limit_per_min or "off" }}</dd>
-      <dt>daily_batch_limit</dt><dd class="gs-mono">{{ limits.daily_batch_limit or "off" }}</dd>
-      <dt>daily_bytes_limit</dt><dd class="gs-mono">{{ limits.daily_bytes_limit or "off" }}</dd>
-    </dl>
+  <h2 class="gs-h2">Resource Packs <span class="gs-hint gs-mono" style="font-size:12px;font-weight:400">· Kling 계정 · live</span></h2>
+  {% if packs_panel.totals and packs_panel.totals.n_packs %}
+  <p class="gs-hint" style="margin:0 0 8px">누적 사용 {{ "%.0f"|format(packs_panel.totals.used) }}u (${{ "%.2f"|format(packs_panel.totals.used_usd) }}) · 구매 합 {{ "%.0f"|format(packs_panel.totals.purchased) }}u · 이전+현재 요금제 합산</p>
+  {% endif %}
+  {% if packs_panel.error %}
+  <p class="gs-hint">Kling 계정 조회 실패: <span class="gs-mono">{{ packs_panel.error }}</span></p>
+  {% elif packs_panel.packs %}
+  <div class="gs-card-block">
+    <table class="gs-table">
+      <thead><tr><th>resource pack (요금제)</th><th>status</th><th>remaining</th><th>USD</th><th>expires</th></tr></thead>
+      <tbody>
+        {% for p in packs_panel.packs %}
+        <tr{% if p.status != 'online' %} style="opacity:.5"{% endif %}>
+          <td class="gs-mono">{{ p.resource_pack_name }}</td>
+          <td class="gs-mono">{{ p.status }}</td>
+          <td class="gs-mono">{{ "%.0f"|format(p.remaining_quantity or 0) }} / {{ "%.0f"|format(p.total_quantity or 0) }}{% if p.pct_remaining is not none %} ({{ p.pct_remaining }}%){% endif %}</td>
+          <td class="gs-mono">{% if p.remaining_usd is not none %}${{ "%.2f"|format(p.remaining_usd) }}{% else %}-{% endif %}</td>
+          <td class="gs-mono">{{ p.invalid_date }}{% if p.days_left is not none %} ({{ p.days_left }}d){% endif %}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
   </div>
+  <p class="gs-hint" style="font-size:11px">remaining 은 Kling 측 12h 지연 집계 · 1 unit = $0.14</p>
+  {% else %}
+  <p class="gs-hint">리소스팩 없음 (또는 KLING 키 미설정).</p>
+  {% endif %}
 </main>
 {% endblock %}

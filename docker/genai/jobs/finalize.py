@@ -15,6 +15,7 @@ genai_jobs 의 status COUNT 로 검사.
 
 from __future__ import annotations
 
+import json
 import os
 from datetime import datetime
 from pathlib import Path
@@ -38,6 +39,29 @@ def _batch_outputs_dir(batch_id: str) -> Path:
     return Path(_NAS_INCOMING) / ts.strftime("%Y-%m-%d") / batch_id / "outputs"
 
 
+def _fallback_cost_units(batch_id: str, engine: str) -> float | None:
+    """Provider 응답에 cost 가 없을 때 가격표로 예상 차감 unit 산출 (Kling 전용).
+
+    Kling image2video task-query 응답엔 credit 차감 필드가 없어 poll() 이 cost_units=None
+    을 반환한다. batch.options_json 의 (model/mode/duration) 으로 lib.kling_pricing 에서
+    환산. mode = 해상도 (std=720P/pro=1080P/4k=4K). 가격표 miss 시 None (그대로 NULL)."""
+    if engine != "kling":
+        return None
+    batch = pg.get_batch_with_jobs(batch_id)
+    opts_text = (batch or {}).get("options_json") or ""
+    try:
+        opts = json.loads(opts_text) if opts_text else {}
+    except (TypeError, ValueError):
+        return None
+    from lib.kling_pricing import estimate_kling_cost
+    est = estimate_kling_cost(
+        model_name=opts.get("model_name") or "",
+        mode=opts.get("mode") or "pro",
+        duration=opts.get("duration") or "5",
+    )
+    return est["cost_units"]
+
+
 def finalize_job(
     batch_id: str,
     seq_in_batch: int,
@@ -53,6 +77,11 @@ def finalize_job(
     outputs_dir = _batch_outputs_dir(batch_id)
     target_name = f"{seq_in_batch:03d}{output_ext}"
     atomic_write_bytes(outputs_dir / target_name, blob)
+
+    # provider 가 cost 를 안 주는 경우(예: Kling task 응답엔 cost 필드 없음) 가격표로 산출.
+    # 안 채우면 cost_units 가 영구 NULL → costs 탭/집계가 $0 으로 보임.
+    if cost_units is None:
+        cost_units = _fallback_cost_units(batch_id, engine)
 
     job_id = f"{batch_id}-{seq_in_batch:03d}"
     pg.update_job_status(job_id, status="done", cost_units=cost_units)

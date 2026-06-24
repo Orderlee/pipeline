@@ -77,8 +77,8 @@
               <div class="gs-field__label gs-mono">mode</div>
               <div class="gs-segmented">
                 {% for m in k.modes %}
-                  <input type="radio" name="mode" id="bulk-kl-mode-{{ m }}" value="{{ m }}" {% if m == k.default_mode %}checked{% endif %}>
-                  <label for="bulk-kl-mode-{{ m }}">{{ m }}</label>
+                  <input type="radio" name="mode" id="bulk-kl-mode-{{ m.value }}" value="{{ m.value }}" {% if m.value == k.default_mode %}checked{% endif %}>
+                  <label for="bulk-kl-mode-{{ m.value }}">{{ m.label }}</label>
                 {% endfor %}
               </div>
             </div>
@@ -102,20 +102,6 @@
             </div>
             <div class="gs-hint" style="font-size:11px;margin-top:3px">
               10초 초과는 <strong>kling-v3</strong> 만 실제 동작. 그 외 모델은 5/10초만 지원.
-            </div>
-          </div>
-          {# 예상 비용 — JS 가 model/mode/duration + N (images × prompts) 곱셈 #}
-          <div class="gs-field" style="padding-top:6px;border-top:1px dashed #2a2a2e">
-            <div class="gs-field__label gs-mono">예상 총 비용</div>
-            <div id="bulk-kling-cost-est" class="gs-mono"
-                 style="font-size:14px;color:#9ce29c">
-              <strong id="bulk-kling-cost-total-usd">—</strong>
-              <span style="color:#888">·</span>
-              <span id="bulk-kling-cost-detail">— jobs × — = — credits</span>
-            </div>
-            <div class="gs-hint" style="font-size:11px;margin-top:2px"
-                 id="bulk-kling-cost-note">
-              Kling Trial / Paid 동일 단가. 1 unit = $0.14.
             </div>
           </div>
         </div>
@@ -278,12 +264,10 @@
           <dt>batches</dt>     <dd class="gs-mono"><span id="pv-batches">0</span></dd>
           <dt>jobs (total)</dt><dd class="gs-mono"><b id="pv-jobs">0</b></dd>
           <dt>input bytes</dt> <dd class="gs-mono"><span id="pv-bytes">0</span></dd>
-          <dt>est cost*</dt>   <dd class="gs-mono"><span id="pv-cost">—</span></dd>
         </dl>
         <p class="gs-hint" style="margin-top:10px;font-size:11px;line-height:1.55">
           서버 hard cap <span class="gs-mono">GENAI_MAX_BULK_JOBS={{ max_bulk_jobs }}</span>.
-          초과 시 자동 차단 — 더 큰 batch 는 CLI <span class="gs-mono">bulk-submit</span> 사용.<br>
-          * 비용은 Veo $0.40/sec 기준 추정. 다른 엔진은 unknown.
+          초과 시 자동 차단 — 더 큰 batch 는 CLI <span class="gs-mono">bulk-submit</span> 사용.
         </p>
         <div id="pv-warn" class="gs-bulk-warn" hidden></div>
       </div>
@@ -329,7 +313,6 @@
   const pvBatches = document.getElementById('pv-batches');
   const pvJobs    = document.getElementById('pv-jobs');
   const pvBytes   = document.getElementById('pv-bytes');
-  const pvCost    = document.getElementById('pv-cost');
   const pvWarn    = document.getElementById('pv-warn');
 
   // ----- idempotency token (UUID v4) -----
@@ -461,72 +444,6 @@
   }
   function chunks(n, k) { return Math.max(1, Math.ceil(n / k)); }
 
-  // Kling 가격표 — server-rendered (lib/kling_pricing.py)
-  window.__KLING_PRICING__ = {{ kling_pricing|tojson }};
-
-  function klingUnitCost(model, mode, durationSec) {
-    const p = window.__KLING_PRICING__ || {};
-    const m = (model || '').toLowerCase();
-    if (m === 'kling-v3') {
-      const rate = (p.video_per_second || {})['kling-v3']?.[mode];
-      const sec = parseInt(durationSec, 10);
-      if (!rate || !sec) return null;
-      const units = rate * sec;
-      return { units, usd: units * (p.usd_per_unit || 0.14), note: `v3 ${rate}/s × ${sec}s` };
-    }
-    const byModel = (p.video || {})[m];
-    if (!byModel) return null;
-    let units = byModel[mode]?.[durationSec];
-    if (units == null) units = byModel.std?.[durationSec] ?? byModel.pro?.[durationSec];
-    if (units == null) return null;
-    return { units, usd: units * (p.usd_per_unit || 0.14), note: 'image2video / text2video (sound=off)' };
-  }
-
-  function estCostUSD(engine, jobs, durationSec, klingModel, klingMode) {
-    if (engine === 'veo') {
-      const sec = Number(durationSec || 8);
-      return jobs * sec * 0.40;
-    }
-    if (engine === 'kling') {
-      const u = klingUnitCost(klingModel, klingMode, String(durationSec || '5'));
-      return u === null ? null : u.usd * jobs;
-    }
-    return null;
-  }
-
-  function updateKlingCostBlock(jobs) {
-    const usdEl = document.getElementById('bulk-kling-cost-total-usd');
-    const detailEl = document.getElementById('bulk-kling-cost-detail');
-    const noteEl = document.getElementById('bulk-kling-cost-note');
-    if (!usdEl) return;
-    const engine = document.querySelector('input[name=engine]:checked')?.value;
-    if (engine !== 'kling') {
-      usdEl.textContent = '—'; detailEl.textContent = 'Kling 선택 시 표시';
-      return;
-    }
-    const opt = document.querySelector('.gs-engine-opt[data-only-engine="kling"]');
-    if (!opt) return;
-    const sel = opt.querySelector('select[name="model_name"]');
-    // 빈 value ('— default —') 면 data-default-model 로 fallback (server env default).
-    const model = sel?.value || sel?.dataset?.defaultModel || '';
-    // mode/duration 도 radio group 충돌 등으로 nothing :checked 면 hard default 적용.
-    // estCostUSD 의 `|| '5'` 와 동일 패턴 — UI 가 '가격표 누락' 으로 빠지지 않게.
-    const mode = opt.querySelector('input[name="mode"]:checked')?.value || 'pro';
-    const dur = opt.querySelector('input[name="duration"]:checked')?.value || '5';
-    const u = klingUnitCost(model, mode, dur);
-    if (!u) {
-      usdEl.textContent = '—';
-      detailEl.textContent = `가격표 누락 (${model}/${mode}/${dur}s)`;
-      noteEl.textContent = '';
-      return;
-    }
-    const totalUsd = u.usd * (jobs || 0);
-    const totalCredits = u.units * (jobs || 0);
-    usdEl.textContent = '$' + totalUsd.toFixed(4).replace(/0+$/,'').replace(/\.$/,'');
-    detailEl.textContent = `${jobs || 0} jobs × ${u.units} credits = ${totalCredits} credits`;
-    const p = window.__KLING_PRICING__ || {};
-    noteEl.textContent = u.note + ' · 1 unit = $' + (p.usd_per_unit || 0.14);
-  }
   function fmtBytes(n) {
     if (n < 1024) return `${n} B`;
     if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
@@ -552,7 +469,7 @@
     let batches = 0, jobs = 0, warning = '';
     if (prompts.length === 0) {
       pvBatches.textContent = '0'; pvJobs.textContent = '0';
-      pvBytes.textContent = '0'; pvCost.textContent = '—';
+      pvBytes.textContent = '0';
       pvWarn.hidden = true;
       submitBtn.disabled = true;
       submitMeta.textContent = '';
@@ -576,14 +493,6 @@
     pvBatches.textContent = batches;
     pvJobs.textContent = jobs;
     pvBytes.textContent = fmtBytes(filesArr.reduce((s, f) => s + f.size, 0));
-    // Kling 인 경우 model + mode 도 lookup 키. 빈 value 면 data-default-model fallback.
-    const klingOpt = document.querySelector('.gs-engine-opt[data-only-engine="kling"]');
-    const klingSel = klingOpt?.querySelector('select[name="model_name"]');
-    const klingModel = klingSel?.value || klingSel?.dataset?.defaultModel || '';
-    const klingMode = klingOpt?.querySelector('input[name="mode"]:checked')?.value;
-    const cost = estCostUSD(engine, jobs, duration, klingModel, klingMode);
-    pvCost.textContent = cost === null ? '—' : `≈ $${cost.toFixed(2)}`;
-    updateKlingCostBlock(jobs);
 
     let disabled = false;
     if (warning) {
@@ -609,12 +518,10 @@
   // submit confirm + disable
   formEl.addEventListener('submit', (e) => {
     const jobs = parseInt(pvJobs.textContent, 10) || 0;
-    const cost = pvCost.textContent;
     const gid = document.getElementById('gs-bulk-gid').value || '<auto bgi-...>';
     if (!window.confirm(
       `진짜 제출하시겠습니까?\n\n` +
       `jobs: ${jobs}\n` +
-      `예상 비용: ${cost}\n` +
       `group: ${gid}\n\n` +
       `(확인 후 취소 불가)`
     )) {

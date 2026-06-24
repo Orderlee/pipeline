@@ -261,3 +261,94 @@ class KlingAdapter(BaseGenAIAdapter):
         r = requests.get(result_url, timeout=self.download_timeout, stream=True)
         r.raise_for_status()
         return r.content
+
+
+# ------------------------------------------------------------------
+# 계정 리소스팩(요금제) 조회 — Kling Open API GET /account/costs
+# 무료, QPS<=1, remaining 은 12h 지연 집계. 같은 AccessKey/SecretKey JWT 사용.
+# 응답: data.resource_pack_subscribe_infos[] (name/type/total/remaining/effective/invalid/status)
+# ------------------------------------------------------------------
+_RESOURCE_PACK_CACHE: dict[str, Any] = {"ts": 0.0, "packs": None}
+# ponytail: 5min 캐시 — QPS<=1 보호 + remaining 12h 지연이라 자주 칠 이유 없음.
+_RESOURCE_PACK_TTL = 300
+
+
+def fetch_kling_resource_packs(force: bool = False) -> list[dict]:
+    """계정 리소스팩 목록+잔여 반환 (실패 시 raise). 키 미설정(mock)이면 []."""
+    now = time.time()
+    cached = _RESOURCE_PACK_CACHE["packs"]
+    if not force and cached is not None and now - _RESOURCE_PACK_CACHE["ts"] < _RESOURCE_PACK_TTL:
+        return cached
+    ad = KlingAdapter()
+    if ad.is_mock:
+        return []
+    import requests
+    now_ms = int(now * 1000)
+    r = requests.get(
+        f"{ad.api_base}/account/costs",
+        params={"start_time": now_ms - 365 * 24 * 3600 * 1000, "end_time": now_ms},
+        headers={"Authorization": f"Bearer {ad._build_jwt()}",
+                 "Content-Type": "application/json"},
+        timeout=ad.poll_timeout,
+    )
+    r.raise_for_status()
+    body = r.json()
+    if body.get("code") not in (0, None):
+        raise RuntimeError(f"account/costs code={body.get('code')}: {body.get('message')}")
+    packs = ((body.get("data") or {}).get("resource_pack_subscribe_infos")) or []
+    _RESOURCE_PACK_CACHE.update(ts=now, packs=packs)
+    return packs
+
+
+def summarize_resource_packs(packs: list[dict], now_ts: float,
+                             expiry_warn_days: float = 7.0,
+                             low_pct_warn: float = 15.0) -> dict:
+    """리소스팩을 표시용으로 보강(days_left/pct/USD/날짜) + 알림 산출. now 주입(테스트용).
+
+    알림은 status='online' 팩만 — 만료 임박(expiry_warn_days 이내) 또는 잔여 낮음(low_pct_warn% 이하).
+    runOut/expired 는 이미 소진/만료라 actionable 아님 → 알림 제외."""
+    out: list[dict] = []
+    alerts: list[str] = []
+    for p in packs:
+        inv = p.get("invalid_time")
+        tot = p.get("total_quantity") or 0
+        rem = p.get("remaining_quantity")
+        days = round((inv / 1000 - now_ts) / 86400, 1) if inv else None
+        pct = round(rem / tot * 100, 1) if (tot and rem is not None) else None
+        out.append({
+            **p,
+            "days_left": days,
+            "pct_remaining": pct,
+            "remaining_usd": round(rem * 0.14, 2) if rem is not None else None,
+            "invalid_date": time.strftime("%Y-%m-%d", time.localtime(inv / 1000)) if inv else "-",
+        })
+        if p.get("status") == "online":
+            name = p.get("resource_pack_name", "?")
+            if days is not None and days <= expiry_warn_days:
+                alerts.append(f"⚠️ '{name}' 만료 임박 — {days}일 남음")
+            if pct is not None and pct <= low_pct_warn:
+                alerts.append(f"⚠️ '{name}' 잔여 부족 — {pct}% ({rem:.0f}u)")
+    return {"packs": out, "alerts": alerts}
+
+
+def resource_pack_totals(packs: list[dict], usd_per_unit: float = 0.14) -> dict:
+    """전체 요금제(팩) 누적 합산 — 이전(runOut/expired)+현재(online) 모두 포함.
+
+    used = Σ(total - remaining), 즉 모든 팩에서 실제 차감된 unit 합 = Kling 누적 사용량.
+    remaining 미보고(None) 팩은 used 합산에서 제외(구매량 purchased 에는 포함)."""
+    used = purchased = remaining = 0.0
+    for p in packs:
+        tot = p.get("total_quantity") or 0
+        rem = p.get("remaining_quantity")
+        purchased += tot
+        if rem is not None:
+            remaining += rem
+            used += tot - rem
+    return {
+        "n_packs": len(packs),
+        "used": round(used, 2),
+        "purchased": round(purchased, 2),
+        "remaining": round(remaining, 2),
+        "used_usd": round(used * usd_per_unit, 2),
+        "remaining_usd": round(remaining * usd_per_unit, 2),
+    }
