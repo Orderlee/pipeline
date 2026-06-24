@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import csv
-import json
 import subprocess
 import threading
 import time
