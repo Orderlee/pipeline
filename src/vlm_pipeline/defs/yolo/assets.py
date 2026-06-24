@@ -444,7 +444,3 @@ def _build_image_classification_payload(
         "resolved_config_id": resolved_config_id,
         "generated_at": detected_at.isoformat(),
     }
-
-
-# Backward-compatible aliases for external imports.
-_normalize_yolo_classes = normalize_classes
