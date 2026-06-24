@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from hashlib import sha1
 from pathlib import Path
 
@@ -17,8 +17,6 @@ class EventLabelImportResult:
     inserted: int = 0
     skipped: int = 0
     not_matched: int = 0
-    imported_asset_ids: set[str] = field(default_factory=set)
-    label_key_by_asset_id: dict[str, str] = field(default_factory=dict)
 
 
 def iter_label_files(label_dir: Path) -> list[Path]:
@@ -323,8 +321,6 @@ def import_event_label_files(
                     label_key=label_key,
                 )
             result.loaded += 1
-            result.imported_asset_ids.add(asset_id)
-            result.label_key_by_asset_id[asset_id] = label_key
         except Exception as exc:  # noqa: BLE001
             context.log.error(f"라벨 로딩 실패: {json_path}: {exc}")
             result.skipped += 1

@@ -146,9 +146,7 @@ def test_unit_signature_change_resets_cycles() -> None:
     now_ns = time.time_ns()
     unit = _make_unit(signature="6:2000:200")
     previous = {"signature": "5:1000:100", "stable_cycles": 5, "manifested_signature": ""}
-    is_stable, _, stable_cycles, _ = decide_unit_ready(
-        unit, previous, now_ns, policy, Path("/nas/incoming")
-    )
+    is_stable, _, stable_cycles, _ = decide_unit_ready(unit, previous, now_ns, policy, Path("/nas/incoming"))
     assert stable_cycles == 1
     assert is_stable is False
 
@@ -242,9 +240,7 @@ def test_decide_eligible_units_already_manifested_excluded() -> None:
     units = {unit_key: unit}
     previous_units = {unit_key: {"signature": "5:1000:100", "stable_cycles": 2, "manifested_signature": "5:1000:100"}}
 
-    ready, _, _ = decide_eligible_units(
-        units, previous_units, set(), set(), now_ns, policy, Path("/nas/incoming")
-    )
+    ready, _, _ = decide_eligible_units(units, previous_units, set(), set(), now_ns, policy, Path("/nas/incoming"))
     assert ready == []
 
 
@@ -281,8 +277,6 @@ def test_decide_eligible_units_next_units_always_includes_scanned() -> None:
     units = {unit_key: unit}
     previous_units = {}
 
-    _, next_units, _ = decide_eligible_units(
-        units, previous_units, set(), set(), now_ns, policy, Path("/nas/incoming")
-    )
+    _, next_units, _ = decide_eligible_units(units, previous_units, set(), set(), now_ns, policy, Path("/nas/incoming"))
     assert unit_key in next_units
     assert next_units[unit_key]["stable_cycles"] == 1

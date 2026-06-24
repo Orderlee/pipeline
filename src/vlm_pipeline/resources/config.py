@@ -21,9 +21,6 @@ def _insecure_creds_allowed() -> bool:
 class PipelineConfig(BaseSettings):
     """MVP 설정 — 환경변수 자동 바인딩 (docker-compose.yml에서 주입)."""
 
-    # DuckDB
-    dataops_duckdb_path: str = "/data/pipeline.duckdb"  # 컨테이너 기준
-
     # MinIO (Docker 내부 네트워크)
     minio_endpoint: str = "http://minio:9000"
     minio_access_key: str

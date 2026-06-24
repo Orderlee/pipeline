@@ -16,7 +16,6 @@ import threading
 import time
 from collections import deque
 from datetime import datetime, timedelta
-from typing import Iterable
 
 from db import pg
 
@@ -116,10 +115,6 @@ def check_daily_quota(user: str | None, files_total_bytes: int) -> None:
             f"일별 입력 bytes 한도 {_DAILY_BYTES_LIMIT} 초과 "
             f"(user={user}, used={total}, request={files_total_bytes})",
         )
-
-
-def estimate_total_bytes(file_blobs: Iterable[bytes]) -> int:
-    return sum(len(b) for b in file_blobs)
 
 
 def status() -> dict:

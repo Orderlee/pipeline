@@ -32,9 +32,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 
-import boto3
 import requests
-from botocore.config import Config as BotoConfig
+
+try:
+    from gemini.ls_tasks_minio import build_minio_client
+except ModuleNotFoundError:
+    from ls_tasks_minio import build_minio_client  # type: ignore[no-redef]
 
 # ---------------------------------------------------------------------------
 # Defaults
@@ -68,20 +71,6 @@ class ClipTask:
 # ---------------------------------------------------------------------------
 # MinIO helpers
 # ---------------------------------------------------------------------------
-
-
-def build_minio_client(endpoint: str, access_key: str, secret_key: str):
-    url = endpoint if endpoint.startswith("http") else f"http://{endpoint}"
-    return boto3.client(
-        "s3",
-        endpoint_url=url,
-        aws_access_key_id=access_key,
-        aws_secret_access_key=secret_key,
-        config=BotoConfig(
-            signature_version="s3v4",
-            s3={"addressing_style": "path"},
-        ),
-    )
 
 
 def list_event_json_keys(client, bucket: str, prefix: str = "") -> list[str]:

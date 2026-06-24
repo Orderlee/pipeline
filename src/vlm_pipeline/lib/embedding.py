@@ -34,8 +34,28 @@ class EmbeddingClient:
             self.__session = requests.Session()
         return self.__session
 
+    def warmup(self, timeout_sec: float = 120.0) -> dict:
+        """idle-unload 후 lazy reload 를 동기 트리거. 이미 로드면 no-op.
+
+        sam3.py 패턴 미러 — idle-unload 상태에선 /health 가 model_loaded:false 만
+        반환하므로, reload 를 깨우려면 /warmup POST 가 필요하다.
+        """
+        r = self._session.post(f"{self.base_url}/warmup", timeout=timeout_sec)
+        r.raise_for_status()
+        return r.json()
+
     def wait_until_ready(self, max_wait_sec: float = 120.0, poll_sec: float = 3.0) -> bool:
-        """/health 가 model_loaded=true 를 반환할 때까지 대기."""
+        """/warmup 으로 reload 를 동기 트리거한 뒤, model_loaded=true 까지 대기.
+
+        idle-unload 상태면 /health 만으론 영원히 false 이므로 먼저 /warmup 을 친다.
+        /warmup 미지원(구버전 서버)이면 예외 → /health polling fallback.
+        """
+        try:
+            info = self.warmup(timeout_sec=max_wait_sec)
+            if info.get("model_loaded"):
+                return True
+        except requests.RequestException:
+            pass  # 구버전 서버(/warmup 없음) 호환 — polling 으로 진행
         deadline = time.monotonic() + max_wait_sec
         while time.monotonic() < deadline:
             try:

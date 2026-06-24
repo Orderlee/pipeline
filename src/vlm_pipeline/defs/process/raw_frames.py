@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -27,8 +28,11 @@ from vlm_pipeline.lib.file_loader import cleanup_temp_path
 from .helpers import (
     _coerce_float,
     _delete_minio_keys,
+    _is_empty_output_frame_error,
     _materialize_video_path,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def raw_video_to_frame_impl(
@@ -189,14 +193,33 @@ def extract_raw_video_frames(
 
     frame_rows: list[dict[str, Any]] = []
     uploaded_keys: list[str] = []
+    empty_output_skips = 0
 
     try:
         for frame_index, frame_sec in enumerate(timestamps, start=1):
-            frame_bytes = extract_frame_jpeg_bytes(
-                video_path,
-                frame_sec,
-                jpeg_quality=jpeg_quality,
-            )
+            try:
+                frame_bytes = extract_frame_jpeg_bytes(
+                    video_path,
+                    frame_sec,
+                    jpeg_quality=jpeg_quality,
+                )
+            except Exception as frame_exc:
+                # empty_output 는 메타데이터 duration 이 실제 디코딩 가능 길이보다
+                # 길 때(주로 끝 프레임) ffmpeg 가 빈 출력을 내는 양성 케이스다.
+                # 이런 프레임 하나 때문에 영상 전체를 실패시키지 않고 건너뛴다
+                # (per-file fail-forward). timeout·실제 디코드 오류 등은 인프라
+                # 문제일 수 있으므로 기존대로 즉시 전파하여 asset 을 실패 처리한다.
+                if not _is_empty_output_frame_error(str(frame_exc)):
+                    raise
+                empty_output_skips += 1
+                logger.warning(
+                    "raw_video_to_frame empty_output 프레임 skip: asset=%s frame_index=%d sec=%.3f",
+                    asset_id,
+                    frame_index,
+                    frame_sec,
+                )
+                continue
+
             image_key = _build_raw_video_image_key(raw_key, frame_index)
             minio.upload("vlm-processed", image_key, frame_bytes, "image/jpeg")
             uploaded_keys.append(image_key)
@@ -226,6 +249,20 @@ def extract_raw_video_frames(
         if uploaded_keys:
             _delete_minio_keys(minio, "vlm-processed", uploaded_keys)
         raise
+
+    if not frame_rows:
+        # 계획된 모든 타임스탬프가 empty_output 으로 건너뛰어짐 → 실제 추출 0장.
+        # 기존 "0 frames = 실패" 의미를 유지하기 위해 asset 을 실패 처리한다.
+        raise RuntimeError(f"ffmpeg_frame_extract_failed:empty_output (all {len(timestamps)} planned frames)")
+
+    if empty_output_skips:
+        logger.warning(
+            "raw_video_to_frame 부분 추출: asset=%s extracted=%d empty_output_skipped=%d planned=%d",
+            asset_id,
+            len(frame_rows),
+            empty_output_skips,
+            len(timestamps),
+        )
 
     return frame_rows, uploaded_keys
 

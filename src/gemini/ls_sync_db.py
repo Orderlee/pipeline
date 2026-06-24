@@ -280,3 +280,65 @@ def update_image_labels_in_db(dsn: str, labels_key: str, object_count: int, conn
     finally:
         if owns_conn:
             conn.close()
+
+
+def replace_image_label_annotations(
+    conn,
+    image_label_id: str,
+    image_id: str | None,
+    boxes: list[dict],
+) -> tuple[int, int]:
+    """확정 image_labels 의 COCO 박스를 image_label_annotations 로 전량 재투영.
+
+    image_label_id 기준 기존 행 전량 DELETE → box 별 INSERT (derived 재생성형 인덱스).
+    MinIO COCO JSON 이 SOT 이고 이 테이블은 조회용 사본이므로, 같은 image_label_id 를
+    여러 번 투영해도 안전해야 한다 — 멱등성: annotation_id = sha1(f"{image_label_id}|{box_index}").
+
+    호출자가 트랜잭션을 소유(commit/rollback)한다 — image_label_id 단위 원자성. 한 행이
+    실패해도 다른 행 projection 을 막지 않도록 호출자가 per-row try/except + rollback 한다.
+
+    boxes 원소는 detection_coco.parse_coco_annotation_boxes() 출력
+    ({box_index, category, bbox_x, bbox_y, bbox_w, bbox_h, score}).
+
+    반환: (deleted, inserted).
+    """
+    import hashlib
+
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT COUNT(*) FROM image_label_annotations WHERE image_label_id = %s",
+            (image_label_id,),
+        )
+        row = cur.fetchone()
+        deleted = int(row[0]) if row else 0
+
+        cur.execute(
+            "DELETE FROM image_label_annotations WHERE image_label_id = %s",
+            (image_label_id,),
+        )
+
+        inserted = 0
+        for b in boxes:
+            annotation_id = hashlib.sha1(f"{image_label_id}|{b['box_index']}".encode()).hexdigest()
+            cur.execute(
+                """
+                INSERT INTO image_label_annotations (
+                    annotation_id, image_label_id, image_id, box_index, category,
+                    bbox_x, bbox_y, bbox_w, bbox_h, score
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                (
+                    annotation_id,
+                    image_label_id,
+                    image_id,
+                    int(b["box_index"]),
+                    b["category"],
+                    b["bbox_x"],
+                    b["bbox_y"],
+                    b["bbox_w"],
+                    b["bbox_h"],
+                    b["score"],
+                ),
+            )
+            inserted += 1
+    return deleted, inserted

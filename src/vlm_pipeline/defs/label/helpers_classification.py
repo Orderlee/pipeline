@@ -46,40 +46,31 @@ def parse_video_classification_response(payload_text: str, candidate_classes: li
     }
 
 
-def resolve_dispatch_video_class_candidates(tags) -> list[str]:
-    raw_categories = str(tags.get("categories") or "").strip()
-    if raw_categories:
-        try:
-            parsed = json.loads(raw_categories) if raw_categories.startswith("[") else raw_categories.split(",")
-        except Exception:
-            parsed = raw_categories.split(",")
-        normalized = []
-        seen = set()
-        for value in parsed:
-            rendered = str(value or "").strip().lower()
-            if not rendered or rendered in seen:
-                continue
-            seen.add(rendered)
-            normalized.append(rendered)
-        if normalized:
-            return normalized
+def _parse_class_tag(raw) -> list[str]:
+    """tag 값(JSON 배열 또는 CSV) → 정규화(소문자/공백제거/중복제거, 순서 보존) 리스트."""
+    text = str(raw or "").strip()
+    if not text:
+        return []
+    try:
+        parsed = json.loads(text) if text.startswith("[") else text.split(",")
+    except Exception:
+        parsed = text.split(",")
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for value in parsed:
+        rendered = str(value or "").strip().lower()
+        if not rendered or rendered in seen:
+            continue
+        seen.add(rendered)
+        normalized.append(rendered)
+    return normalized
 
-    raw_classes = str(tags.get("classes") or "").strip()
-    if raw_classes:
-        try:
-            parsed = json.loads(raw_classes) if raw_classes.startswith("[") else raw_classes.split(",")
-        except Exception:
-            parsed = raw_classes.split(",")
-        normalized = []
-        seen = set()
-        for value in parsed:
-            rendered = str(value or "").strip().lower()
-            if not rendered or rendered in seen:
-                continue
-            seen.add(rendered)
-            normalized.append(rendered)
-        return normalized
-    return []
+
+def resolve_dispatch_video_class_candidates(tags) -> list[str]:
+    categories = _parse_class_tag(tags.get("categories"))
+    if categories:
+        return categories
+    return _parse_class_tag(tags.get("classes"))
 
 
 def find_dispatch_video_classification_candidates(

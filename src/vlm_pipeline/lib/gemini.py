@@ -299,8 +299,5 @@ class GeminiAnalyzer:
 
 from .gemini_script_utils import (  # noqa: F401, E402  # backward-compat re-exports
     DEFAULT_VIDEO_EXTENSIONS,
-    json_save_path_same_dir_as_video,
     list_video_files,
-    process_video_folder,
-    save_response_as_json,
 )
