@@ -41,18 +41,6 @@
       <dt>submitted_at</dt><dd class="gs-mono">{{ batch.submitted_at }}</dd>
       <dt>completed_at</dt><dd class="gs-mono">{{ batch.completed_at or "—" }}</dd>
       <dt>jobs</dt><dd class="gs-mono">{{ batch.n_succeeded }} / {{ batch.n_failed }} / {{ batch.n_total }}</dd>
-      {% if cost_estimate and cost_estimate.cost_usd is not none %}
-      <dt>예상 비용</dt><dd class="gs-mono" style="color:#9ce29c">
-        per job: <strong>${{ '%g' % cost_estimate.cost_usd }}</strong>
-        ({{ '%g' % cost_estimate.cost_units }} credits)
-        {% if cost_total_estimate is not none %}
-        · batch 합계: <strong>${{ '%g' % cost_total_estimate }}</strong> ({{ batch.n_total }} jobs)
-        {% endif %}
-        <br><span class="gs-hint" style="font-size:11px">{{ cost_estimate.note }} · Kling API 가 실측 cost 안 반환 → 가격표 lookup 추정치</span>
-      </dd>
-      {% elif batch.engine == 'kling' %}
-      <dt>예상 비용</dt><dd class="gs-hint">가격표 누락 — {{ cost_estimate.note if cost_estimate else '옵션 정보 부족' }}</dd>
-      {% endif %}
     </dl>
   </div>
 

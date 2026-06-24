@@ -25,8 +25,9 @@ from typing import TypedDict
 # 1 credit unit = $0.14 USD — 가격표의 "Deduct N units" + "$X" 컬럼에서 역산.
 USD_PER_UNIT = 0.14
 
-# 4K 모드 (V2.6/V3) — 추가로 노출하려면 키 차원 확장 필요. 현재는 std/pro 만.
-SUPPORTED_MODES = ("std", "pro")
+# Kling video 의 mode = 출력 해상도 (공식 docs): std=720P, pro=1080P, 4k=4K.
+# 4K 는 v3 등 일부 모델만 지원 (Capability Map) — 비지원 모델+4k 는 가격표 miss → cost None.
+SUPPORTED_MODES = ("std", "pro", "4k")
 
 # 공식 image2video API duration enum ("3".."15"). adapters.kling.KlingAdapter.DEFAULT_DURATIONS
 # 와 동기 유지. ⚠️ 아래 _KLING_VIDEO_CREDITS 가격표는 tier-priced 모델의 5/10 만 보유 —
@@ -87,10 +88,12 @@ _KLING_VIDEO_CREDITS: dict[tuple[str, str, str], float] = {
     ("kling-v2-6", "pro", "10"): 5.0,
 }
 
-# V3 는 초당 단가 — duration 직접 곱셈.
+# V3 는 초당 단가 — duration 직접 곱셈. mode = 해상도 (std=720P / pro=1080P / 4k=4K).
+# 출처: https://kling.ai/dev/pricing (kling-v3 "No Native Audio" 행, 2026-06-24 확인).
 _KLING_V3_PER_SECOND_CREDITS: dict[str, float] = {
-    "std": 0.6,  # std mode, sound off
-    "pro": 0.8,  # pro mode, sound off
+    "std": 0.6,  # 720P, sound off
+    "pro": 0.8,  # 1080P, sound off
+    "4k":  3.0,  # 4K,    sound off
 }
 
 
@@ -132,12 +135,11 @@ def estimate_kling_cost(
 
     key = (m, md, dur)
     units = _KLING_VIDEO_CREDITS.get(key)
-    if units is None:
-        # mode 무시 (master 모델) — std/pro 둘 다 시도
-        if md != "std":
-            units = _KLING_VIDEO_CREDITS.get((m, "std", dur))
-        if units is None and md != "pro":
-            units = _KLING_VIDEO_CREDITS.get((m, "pro", dur))
+    if units is None and md in ("std", "pro"):
+        # master 모델은 std/pro 동일 단가 → 서로 fallback. (4k 는 별도 해상도 tier 라
+        # fallback 금지 — flat 표에 4k 없는 모델은 그대로 None = '가격표 누락'.)
+        alt = "pro" if md == "std" else "std"
+        units = _KLING_VIDEO_CREDITS.get((m, alt, dur))
     if units is None:
         return CostEstimate(
             cost_units=None, cost_usd=None,
