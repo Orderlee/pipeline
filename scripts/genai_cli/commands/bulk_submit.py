@@ -58,7 +58,7 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     opt = parser.add_argument_group("엔진 옵션 (manifest options 와 병합, CLI 우선)")
     opt.add_argument("--model", dest="model_name", help="Kling/Veo model_name")
     opt.add_argument("--mode", help="Kling mode (std|pro|master)")
-    opt.add_argument("--duration", help="duration 초 (Kling: 5|10, Veo: 4|6|8)")
+    opt.add_argument("--duration", help="duration 초 (Kling: 3-15, >10초는 kling-v3만 실동작; Veo: 4|6|8)")
     opt.add_argument("--aspect-ratio", dest="aspect_ratio",
                      help="16:9 | 9:16 | 1:1 (Veo 는 1:1 미지원)")
 
@@ -239,7 +239,6 @@ def _chunked(seq: list, n: int) -> Iterable[list]:
 
 def _precheck(plan: list[dict], limits_resp: dict) -> None:
     n_batches = len(plan)
-    n_jobs = sum(max(1, len(b["images"])) for b in plan)
     daily_batches_remaining = (
         limits_resp.get("usage", {}).get("daily_batches", {}).get("remaining")
     )

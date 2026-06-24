@@ -136,6 +136,13 @@ genai_active() {
     compose config --services 2>/dev/null | grep -qx genai
 }
 
+# embedding-service 도 profile gating (profiles:["embedding"]). prod+staging 둘 다 활성
+# (.env COMPOSE_PROFILES=...,embedding). 2026-06-24: docker/embedding/ 변경 시 자동 rebuild+recreate.
+# 이전엔 build target/up-d 목록에 없어 서비스(app.py/backends) 변경 시 운영자가 수동 재빌드해야 했음.
+embedding_active() {
+    compose config --services 2>/dev/null | grep -qx embedding-service
+}
+
 if [[ "${BUILD_REQUIRED}" == "true" ]]; then
     # 2026-05-21: sam3 도 build target 에 포함 — docker/sam3/ 변경 시 자동 rebuild.
     # 이전에는 app 만 빌드해서 docker/sam3/app.py 변경이 컨테이너에 반영 안 됐음.
@@ -149,6 +156,9 @@ if [[ "${BUILD_REQUIRED}" == "true" ]]; then
     fi
     if genai_active; then
         build_targets+=(genai)
+    fi
+    if embedding_active; then
+        build_targets+=(embedding-service)
     fi
     compose build --progress plain "${build_targets[@]}"
 else
@@ -212,6 +222,19 @@ if genai_active; then
     else
         compose up -d --no-deps genai
         echo "genai ensured running"
+    fi
+fi
+
+# 2026-06-24: embedding-service (profiles:["embedding"]) — GPU 임베딩 FastAPI, dagster 와 무관.
+# BUILD_REQUIRED=true 면 새 image 픽업 위해 force-recreate (모델 재로드 ~30-60s, 백로그 센서 graceful 재시도).
+# profile 미활성이면 skip. docker/embedding/ 변경이 BUILD_REQUIRED 를 트리거하도록 workflow detect 에도 추가.
+if embedding_active; then
+    if [[ "${BUILD_REQUIRED}" == "true" ]]; then
+        compose up -d --no-deps --force-recreate embedding-service
+        echo "embedding-service force-recreated to pick up new image"
+    else
+        compose up -d --no-deps embedding-service
+        echo "embedding-service ensured running"
     fi
 fi
 

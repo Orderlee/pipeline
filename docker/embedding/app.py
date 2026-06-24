@@ -2,13 +2,26 @@
 
 백엔드는 EMBEDDING_BACKEND 로 선택 (open_clip 기본; perception_models 는 추후).
 SAM3 컨테이너 패턴 미러: /health(model_loaded) → asset 의 wait_until_ready 가 폴링.
+
+idle-unload (SAM3/YOLO 패턴 미러): EMBEDDING_IDLE_UNLOAD_SECONDS 동안 무요청이면
+백그라운드 watcher 가 모델을 VRAM 에서 해제한다. 다음 요청(/warmup·/embed·/embed_text)이
+도착하면 lazy reload. 클라이언트는 /warmup 으로 reload 를 동기 트리거할 수 있다.
 """
 
 from __future__ import annotations
 
+import logging
 import os
+import threading
+import time
+from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, File, Form, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+
+logger = logging.getLogger("embedding-service")
+
+IDLE_UNLOAD_SECONDS = int(os.environ.get("EMBEDDING_IDLE_UNLOAD_SECONDS", "300"))
+IDLE_CHECK_INTERVAL_SECONDS = int(os.environ.get("EMBEDDING_IDLE_CHECK_INTERVAL_SECONDS", "60"))
 
 
 def _make_backend():
@@ -26,28 +39,135 @@ def _make_backend():
     raise ValueError(f"unknown EMBEDDING_BACKEND={name!r}")
 
 
-app = FastAPI(title="vlm-embedding-service")
 _backend = _make_backend()
-_ready = {"loaded": False}
+_load_error: str | None = None
+_predict_lock = threading.Lock()
+_last_request_at: float = time.time()
+_idle_thread: threading.Thread | None = None
+_idle_stop_event = threading.Event()
 
 
-@app.on_event("startup")
-def _startup() -> None:
-    _backend.load()
-    _ready["loaded"] = True
+def _load_model() -> None:
+    global _load_error
+    try:
+        _backend.load()
+        _load_error = None
+        logger.info("embedding model loaded: %s (dim=%s)", _backend.name, _backend.dim)
+    except Exception as exc:  # noqa: BLE001
+        _load_error = str(exc)
+        logger.exception("embedding model load failed: %s", exc)
+
+
+def _unload_model() -> None:
+    """idle 시 VRAM 해제. 다음 inference 호출시 lazy reload."""
+    with _predict_lock:
+        if not _backend.is_loaded():
+            return
+        _backend.unload()
+    logger.info("embedding idle unload 완료 (VRAM 해제)")
+
+
+def _ensure_model_loaded() -> None:
+    """idle unload 이후 첫 request 가 도착하면 lazy reload."""
+    if _backend.is_loaded():
+        return
+    with _predict_lock:
+        if not _backend.is_loaded():
+            logger.info("embedding lazy reload (idle 후 첫 request)")
+            _load_model()
+
+
+def _touch_request() -> None:
+    global _last_request_at
+    _last_request_at = time.time()
+
+
+def _idle_watcher() -> None:
+    while not _idle_stop_event.is_set():
+        try:
+            if _backend.is_loaded() and (time.time() - _last_request_at) >= IDLE_UNLOAD_SECONDS:
+                _unload_model()
+        except Exception:
+            logger.exception("embedding idle watcher tick failed")
+        _idle_stop_event.wait(IDLE_CHECK_INTERVAL_SECONDS)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    global _idle_thread
+    _load_model()
+    _idle_stop_event.clear()
+    _idle_thread = threading.Thread(target=_idle_watcher, name="embedding-idle-watcher", daemon=True)
+    _idle_thread.start()
+    logger.info(
+        "embedding idle watcher started: idle_unload=%ds check_every=%ds",
+        IDLE_UNLOAD_SECONDS,
+        IDLE_CHECK_INTERVAL_SECONDS,
+    )
+    yield
+    _idle_stop_event.set()
+    if _idle_thread is not None and _idle_thread.is_alive():
+        _idle_thread.join(timeout=5)
+    _unload_model()
+    logger.info("embedding 모델 해제 완료 (lifespan teardown)")
+
+
+app = FastAPI(title="vlm-embedding-service", lifespan=lifespan)
+
+
+def _status() -> dict:
+    return {
+        "model_loaded": _backend.is_loaded(),
+        "model_name": _backend.name,
+        "dim": _backend.dim,
+        "error": _load_error,
+    }
 
 
 @app.get("/health")
 def health() -> dict:
-    return {"model_loaded": _ready["loaded"], "model_name": _backend.name, "dim": _backend.dim}
+    return _status()
+
+
+@app.post("/warmup")
+def warmup() -> dict:
+    """idle-unload 후 lazy reload 를 동기 트리거. 이미 로드면 no-op.
+
+    클라이언트는 /health 폴링 전에 이걸 호출해 stale "not loaded" 상태를 피한다.
+    """
+    _touch_request()
+    _ensure_model_loaded()
+    return _status()
+
+
+@app.post("/unload")
+def unload() -> dict:
+    """수동 VRAM 해제 (operator-triggered). idle timer 를 기다리기 싫을 때.
+
+    다음 /warmup·/embed·/embed_text 호출이 lazy reload 한다.
+    """
+    _unload_model()
+    return {"model_loaded": _backend.is_loaded()}
 
 
 @app.post("/embed")
 async def embed(file: UploadFile = File(...)) -> dict:
+    _touch_request()
+    _ensure_model_loaded()
+    if not _backend.is_loaded():
+        raise HTTPException(status_code=503, detail=_load_error or "embedding_model_not_loaded")
     data = await file.read()
-    return {"vector": _backend.embed_image(data), "dim": _backend.dim, "model_name": _backend.name}
+    with _predict_lock:
+        vector = _backend.embed_image(data)
+    return {"vector": vector, "dim": _backend.dim, "model_name": _backend.name}
 
 
 @app.post("/embed_text")
 def embed_text(text: str = Form(...)) -> dict:
-    return {"vector": _backend.embed_text(text), "dim": _backend.dim, "model_name": _backend.name}
+    _touch_request()
+    _ensure_model_loaded()
+    if not _backend.is_loaded():
+        raise HTTPException(status_code=503, detail=_load_error or "embedding_model_not_loaded")
+    with _predict_lock:
+        vector = _backend.embed_text(text)
+    return {"vector": vector, "dim": _backend.dim, "model_name": _backend.name}

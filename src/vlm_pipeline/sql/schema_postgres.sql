@@ -359,3 +359,55 @@ CREATE TABLE IF NOT EXISTS classification_datasets (
     build_status           TEXT DEFAULT 'pending',
     created_at             TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
+
+-- ============================================================
+-- 16. image_label_annotations: 검수 확정(finalized) bbox 박스 단위 projection
+-- ============================================================
+-- MinIO COCO JSON 이 source of truth, 이 테이블은 조회용 사본. (migration 010 참조)
+CREATE TABLE IF NOT EXISTS image_label_annotations (
+    annotation_id  TEXT PRIMARY KEY,
+    image_label_id TEXT NOT NULL REFERENCES image_labels(image_label_id) ON DELETE CASCADE,
+    image_id       TEXT REFERENCES image_metadata(image_id),
+    box_index      INTEGER NOT NULL,
+    category       TEXT NOT NULL,
+    bbox_x         DOUBLE PRECISION NOT NULL,
+    bbox_y         DOUBLE PRECISION NOT NULL,
+    bbox_w         DOUBLE PRECISION NOT NULL,
+    bbox_h         DOUBLE PRECISION NOT NULL,
+    score          DOUBLE PRECISION,
+    created_at     TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT image_label_annotations_label_box_unique UNIQUE (image_label_id, box_index),
+    CONSTRAINT image_label_annotations_box_index_check  CHECK (box_index >= 0),
+    CONSTRAINT image_label_annotations_category_check   CHECK (btrim(category) <> ''),
+    CONSTRAINT image_label_annotations_bbox_check       CHECK (bbox_x >= 0 AND bbox_y >= 0 AND bbox_w > 0 AND bbox_h > 0),
+    CONSTRAINT image_label_annotations_score_check      CHECK (score IS NULL OR (score >= 0.0 AND score <= 1.0))
+);
+
+CREATE INDEX IF NOT EXISTS image_label_annotations_category_idx
+    ON image_label_annotations (category);
+CREATE INDEX IF NOT EXISTS image_label_annotations_image_id_idx
+    ON image_label_annotations (image_id);
+
+-- ============================================================
+-- 17. v_finalized_labels: LS 확정 라벨 3종(caption/timestamp/bbox) 통합 추적 VIEW
+-- ============================================================
+-- caption/timestamp = labels (video 이벤트), bbox = image_label_annotations (image 박스).
+-- grain 이 달라 long-format union. SoT 는 MinIO JSON, 이 뷰는 조회용 파생물. (migration 012 참조)
+CREATE OR REPLACE VIEW v_finalized_labels AS
+    SELECT 'caption'::text AS label_type, l.labels_key, l.asset_id,
+           NULL::text AS source_clip_id, NULL::text AS image_id, NULL::text AS category,
+           l.caption_text, l.timestamp_start_sec, l.timestamp_end_sec,
+           NULL::double precision AS score, l.created_at
+    FROM labels l
+    WHERE l.review_status = 'finalized' AND l.caption_text IS NOT NULL AND btrim(l.caption_text) <> ''
+    UNION ALL
+    SELECT 'timestamp'::text, l.labels_key, l.asset_id, NULL::text, NULL::text, NULL::text,
+           NULL::text, l.timestamp_start_sec, l.timestamp_end_sec, NULL::double precision, l.created_at
+    FROM labels l
+    WHERE l.review_status = 'finalized' AND l.timestamp_start_sec IS NOT NULL
+    UNION ALL
+    SELECT 'bbox'::text, il.labels_key, NULL::text, il.source_clip_id, ila.image_id, ila.category,
+           NULL::text, NULL::double precision, NULL::double precision, ila.score, ila.created_at
+    FROM image_label_annotations ila
+    JOIN image_labels il ON il.image_label_id = ila.image_label_id
+    WHERE il.review_status = 'finalized';

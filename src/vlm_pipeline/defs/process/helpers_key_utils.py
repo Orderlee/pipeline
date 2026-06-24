@@ -7,27 +7,10 @@ from __future__ import annotations
 
 from hashlib import sha1
 from pathlib import Path
-from tempfile import NamedTemporaryFile
 from typing import Any
 from datetime import datetime
 
 from vlm_pipeline.resources.minio import MinIOResource
-
-
-def _materialize_object_path(
-    minio: MinIOResource,
-    bucket: str,
-    key: str,
-    *,
-    fallback_name: str,
-) -> tuple[Path, Path]:
-    suffix = Path(str(key or fallback_name)).suffix or Path(fallback_name).suffix or ".mp4"
-    tmp_file = NamedTemporaryFile(delete=False, suffix=suffix)
-    try:
-        minio.download_fileobj(str(bucket or "").strip(), str(key or "").strip(), tmp_file)
-    finally:
-        tmp_file.close()
-    return Path(tmp_file.name), Path(tmp_file.name)
 
 
 def _materialize_video_path(minio: MinIOResource, candidate: dict) -> tuple[Path, Path | None]:

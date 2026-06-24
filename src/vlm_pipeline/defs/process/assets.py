@@ -16,7 +16,8 @@ from vlm_pipeline.resources.postgres import PostgresResource
 from vlm_pipeline.resources.minio import MinIOResource
 
 from .captioning import clip_captioning_mvp, clip_captioning_routed_impl
-from .frame_extract import clip_to_frame_mvp, clip_to_frame_routed_impl
+from .frame_extract_mvp import clip_to_frame_mvp
+from .frame_extract_routed import clip_to_frame_routed_impl
 from .raw_frames import raw_video_to_frame_impl
 
 

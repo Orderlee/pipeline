@@ -35,6 +35,24 @@ class OpenClipBackend(EmbeddingBackend):
         self._model = model.to(self.device).eval()
         self._preprocess = preprocess
 
+    def is_loaded(self) -> bool:
+        return self._model is not None
+
+    def unload(self) -> None:
+        """모델/전처리기/토크나이저 참조를 끊고 CUDA 캐시를 비워 VRAM 을 해제한다.
+
+        다음 embed/warmup 호출 시 load() 로 lazy reload 된다. _torch 모듈 참조는
+        유지(GPU 메모리 아님) — empty_cache 호출에 필요.
+        """
+        self._model = None
+        self._preprocess = None
+        self._tokenizer = None
+        if self._torch is not None and self._torch.cuda.is_available():
+            try:
+                self._torch.cuda.empty_cache()
+            except Exception:
+                pass
+
     def embed_image(self, image_bytes: bytes) -> list[float]:
         from PIL import Image
 
