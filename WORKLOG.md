@@ -56,6 +56,59 @@
 
 
 
+
+
+
+## 2026-06-26
+
+- (당일 커밋/파일 변경 없음)
+## 2026-06-25
+
+- (당일 커밋/파일 변경 없음)
+## 2026-06-24
+
+### 1. 운영 ingest / process 공통 구조 정리
+- **문제**: ingest와 process 공통 책임이 여러 모듈로 흩어져 있어, 운영 로직을 수정할 때 영향 범위와 설정 반영 지점을 한 번에 보기 어려웠음.
+- **원인**: raw ingest 실행 흐름, runtime env 해석, DuckDB schema 보정과 조회 helper가 각각 다른 레이어에 퍼져 있어 공통 동작을 건드릴 때 수정 포인트가 많아졌음.
+- **조치**:
+    - raw ingest에서 상태 생성과 실제 실행 파이프라인을 분리해 진입 구조를 명확히 정리함.
+    - runtime 설정 로더를 추가하고 ingest runtime policy, stuck guard가 같은 설정 해석 경로를 재사용하도록 맞춤.
+    - DuckDB resource에 dispatch/model/raw/image 조회 및 insert helper를 보강하고 schema ensure 흐름을 운영 기준으로 정돈함.
+    - 관련 파일:
+      - `src/vlm_pipeline/defs/process/assets.py`
+
+### 2. 수동 / 사전 라벨 import 경로 정리
+- **문제**: 수동 라벨 import와 사전 라벨링 데이터 적재가 서로 다른 코드 경로에서 중복 구현되어 있었고, staging에서 기존 라벨 결과를 재적재하는 전용 진입점도 부족했음.
+- **원인**: event label JSON 파싱, raw asset 매칭, label key 생성 로직이 manual import 안에 묶여 있었고, prelabeled 데이터는 raw ingest 이후 bbox/image caption까지 연결하는 공통 흐름이 정리되지 않았음.
+- **조치**:
+    - manual label import에서 공통 helper를 분리해 label 파일 순회, asset 매칭, event 추출, label 저장 규칙을 재사용 가능하게 정리함.
+    - staging 전용 prelabeled import job을 추가해 raw ingest 후 event / bbox / image caption artifact import까지 한 경로에서 처리하게 구성함.
+    - 사전 라벨링 이미지명에서 원본 raw stem을 찾는 정규식 패턴을 보강해 stem 추론 누락 케이스를 보완함.
+    - 관련 파일:
+      - `src/vlm_pipeline/defs/label/import_support.py`
+
+### 3. Staging 환경값 및 운영 보조 설정 정리
+- **문제**: staging 실행 시 DuckDB/MinIO/NAS 경로와 sensor guard 설정이 비어 있거나 분산되어 있어, 실제 테스트 환경을 재현할 때 수동 보정이 많이 필요했음.
+- **원인**: staging env 기본값, compose 공통 설정, stuck run guard / MotherDuck / GCS 관련 옵션이 파일마다 흩어져 있어 환경별 기준을 한 번에 맞추기 어려웠음.
+- **조치**:
+    - staging DuckDB, MinIO, incoming/archive/manifest 경로와 주요 timeout / in-flight / guard 옵션을 `.env.staging`에 구체값으로 정리함.
+    - docker compose에서 production dagster 공통 anchor를 분리해 prod/staging 공통점과 차이를 명확히 정리함.
+    - stuck run guard와 ingest feature flag가 runtime settings를 통해 같은 방식으로 로드되도록 맞춰 운영 보조 설정을 단일화함.
+    - 관련 파일:
+      - `docker/docker-compose.yaml`
+
+### 4. 당일 정리
+- **변경 통계**:
+    - 변경 파일 **82개**, +2420/-15753줄.
+- **관련 커밋**:
+    - `31533450`: feat(genai): remaining 카드 '요금제 N개' → 'N번째'(현재 활성 요금제 순번) 표기
+    - `07c2835f`: feat(genai): Costs total cost 카드 = 이전+현재 요금제 구매 누적합
+    - `a1b64b7e`: feat(genai): remaining 카드 '요금제 N개' → 'N번째'(현재 활성 요금제 순번) 표기
+    - `f4ae2e36`: feat(genai): Costs total cost 카드 = 이전+현재 요금제 구매 누적합
+    - `87f91388`: perf(analysis): AL 큐 pgvector pushdown — 대용량 OOM/2만 캡 제거
+- **서비스 상태**: 파이프라인 서비스 16개 컨테이너 중 16개 정상 가동.
+- **작업 환경**: VSCode
+
 ## 2026-06-23
 
 ### 1. 당일 코드 및 설정 정리

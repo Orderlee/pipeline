@@ -12,6 +12,7 @@ from pathlib import Path
 from vlm_pipeline.lib.validator import ALLOWED_EXTENSIONS, is_macos_metadata_file
 
 STALE_MANIFEST_ALL_MISSING_REASON = "manifest_stale_all_missing"
+ALL_ALREADY_COMPLETED_REASON = "manifest_all_already_completed"
 GCP_AUTO_BOOTSTRAP_TRANSFER_TOOLS: frozenset[str] = frozenset(
     {
         "auto_bootstrap_sensor",

@@ -62,6 +62,24 @@ def load_stuck_run_guard_settings() -> StuckRunGuardSettings:
     )
 
 
+@dataclass(frozen=True)
+class MaintenanceGuardSettings:
+    enabled: bool
+    interval_sec: int
+    targets: dict[str, str]  # target -> serving base URL
+
+
+def load_maintenance_guard_settings() -> MaintenanceGuardSettings:
+    return MaintenanceGuardSettings(
+        enabled=bool_env("MAINTENANCE_GUARD_ENABLED", True),
+        interval_sec=int_env("MAINTENANCE_GUARD_INTERVAL_SEC", 60, 30),
+        targets={
+            "sam3": os.environ.get("SAM3_API_URL", "http://docker-sam3-1:8002"),
+            "pe_core": os.environ.get("EMBEDDING_API_URL", "http://docker-embedding-1:8000"),
+        },
+    )
+
+
 def load_production_agent_polling_settings() -> ProductionAgentPollingSettings:
     base_url = (os.getenv("PROD_AGENT_BASE_URL") or "http://host.docker.internal:8080").strip().rstrip("/")
     return ProductionAgentPollingSettings(

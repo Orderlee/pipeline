@@ -35,6 +35,41 @@ _last_request_at: float = time.time()
 _idle_thread: threading.Thread | None = None
 _idle_stop_event = threading.Event()
 
+# ─── GPU 정비 게이트 (server-side, fail-safe) ────────────────────────────────
+# maintenance 활성 동안 /segment·/warmup 은 503, lazy-reload 거부.
+# 프로세스-로컬 in-memory store 가 진실 (컨테이너는 vlm_pipeline-free).
+_maintenance: dict[str, Any] = {
+    "active": False,
+    "owner_run_id": None,
+    "entered_at": None,
+    "heartbeat_at": None,
+    "ttl_seconds": int(os.environ.get("MAINTENANCE_DEFAULT_TTL_SECONDS", "1800")),
+    "note": None,
+}
+_maintenance_lock = threading.Lock()
+
+
+def _maintenance_active() -> bool:
+    return bool(_maintenance.get("active"))
+
+
+def _set_maintenance(active: bool, **fields: Any) -> dict[str, Any]:
+    with _maintenance_lock:
+        _maintenance["active"] = bool(active)
+        if active:
+            now = time.time()
+            _maintenance["owner_run_id"] = fields.get("owner_run_id")
+            _maintenance["entered_at"] = now
+            _maintenance["heartbeat_at"] = now
+            _maintenance["ttl_seconds"] = int(fields.get("ttl_seconds") or _maintenance["ttl_seconds"])
+            _maintenance["note"] = fields.get("note")
+        else:
+            _maintenance["owner_run_id"] = None
+            _maintenance["entered_at"] = None
+            _maintenance["heartbeat_at"] = None
+            _maintenance["note"] = None
+        return dict(_maintenance)
+
 
 def _load_torch():
     import torch
@@ -109,7 +144,9 @@ def _unload_model() -> None:
 
 
 def _ensure_model_loaded() -> None:
-    """idle unload 이후 첫 request 가 도착하면 lazy reload."""
+    """idle unload 이후 첫 request 가 도착하면 lazy reload. 정비 중이면 거부."""
+    if _maintenance_active():
+        return
     if _processor is not None:
         return
     with _predict_lock:
@@ -406,6 +443,8 @@ async def warmup() -> dict[str, Any]:
     this BEFORE polling ``/health`` to ensure they don't see a stale "not loaded"
     state caused by the idle-unload watcher.
     """
+    if _maintenance_active():
+        raise HTTPException(status_code=503, detail="gpu_under_maintenance")
     _touch_request()
     _ensure_model_loaded()
     return {
@@ -450,6 +489,8 @@ async def segment(
     max_masks_per_prompt: int = DEFAULT_MAX_MASKS_PER_PROMPT,
     per_prompt_score_thresholds_json: str | None = Form(None),
 ):
+    if _maintenance_active():
+        raise HTTPException(status_code=503, detail="gpu_under_maintenance")
     _touch_request()
     _ensure_model_loaded()
     if _processor is None:
@@ -485,6 +526,39 @@ async def segment(
         "gpu_memory_peak_gb": _gpu_peak_memory_gb(),
         "per_prompt_score_thresholds": per_prompt_score_thresholds,
     }
+
+
+@app.post("/maintenance/enter")
+async def maintenance_enter(
+    owner_run_id: str | None = Form(None),
+    ttl_seconds: int | None = Form(None),
+    note: str | None = Form(None),
+) -> dict[str, Any]:
+    """정비 진입: 게이트 활성 + 모델 unload. 이후 /segment·/warmup 은 503."""
+    state = _set_maintenance(True, owner_run_id=owner_run_id, ttl_seconds=ttl_seconds, note=note)
+    _unload_model()
+    logger.warning("SAM3 maintenance ENTER owner_run_id=%s ttl=%ss", owner_run_id, state["ttl_seconds"])
+    return state
+
+
+@app.post("/maintenance/exit")
+async def maintenance_exit() -> dict[str, Any]:
+    state = _set_maintenance(False)
+    logger.warning("SAM3 maintenance EXIT")
+    return state
+
+
+@app.post("/maintenance/heartbeat")
+async def maintenance_heartbeat() -> dict[str, Any]:
+    with _maintenance_lock:
+        if _maintenance["active"]:
+            _maintenance["heartbeat_at"] = time.time()
+        return dict(_maintenance)
+
+
+@app.get("/maintenance/status")
+async def maintenance_status() -> dict[str, Any]:
+    return dict(_maintenance)
 
 
 if __name__ == "__main__":
