@@ -276,7 +276,7 @@ COMPOSE_PROFILES=analysis ./scripts/compose-prod.sh up -d analysis
 
 ## Database Schema
 
-주요 테이블/뷰는 `src/vlm_pipeline/sql/schema_postgres.sql`에 정의되고, 증분 변경은 `src/vlm_pipeline/sql/migrations/postgres/`(`001`~`012`)로 관리됩니다.
+주요 테이블/뷰는 `src/vlm_pipeline/sql/schema_postgres.sql`에 정의되고, 증분 변경은 `src/vlm_pipeline/sql/migrations/postgres/`(`001`~`014`)로 관리됩니다.
 
 ### 운영 핵심 테이블/뷰
 
@@ -293,6 +293,9 @@ COMPOSE_PROFILES=analysis ./scripts/compose-prod.sh up -d analysis
 | `datasets` / `dataset_clips` | 데이터셋 정의 및 dataset ↔ clip 연결 |
 | `classification_datasets` | classification 빌드 산출물 추적 |
 | `image_embeddings` | PE-Core 프레임/캡션 임베딩 (pgvector, `ENABLE_EMBEDDING`일 때) |
+| `train_dataset_versions` | 동결 학습셋 버전 메타 및 lineage (`task`, `manifest_key`, `content_checksum`, count/split 통계) |
+| `model_registry` | 모델 버전 레지스트리 및 promote 상태 (`model`, `version`, `train_dataset_version_id`, metrics/checkpoint/env lock) |
+| `gpu_maintenance_lock` | GPU 서빙 정비락 상태 (`target`, `active`, `owner_run_id`, `heartbeat_at`, `ttl_seconds`) |
 
 ### dispatch / spec / genai 테이블
 
@@ -329,14 +332,15 @@ COMPOSE_PROFILES=analysis ./scripts/compose-prod.sh up -d analysis
 │       │   ├── yolo/                    # YOLO-World detection (flag-gated)
 │       │   ├── embed/                  # PE-Core 프레임/캡션 임베딩 (pgvector, ENABLE_EMBEDDING)
 │       │   ├── build/                  # build_dataset + build_classification
+│       │   ├── train/                  # GPU maintenance guard sensor (MLOps finetune scaffolding)
 │       │   ├── gcp/                    # GCS download
 │       │   ├── genai/                  # GenAI Studio async job poll sensor
 │       │   ├── ls/                     # Label Studio task 생성 sensor + presign 갱신 schedule
 │       │   ├── spec/                   # spec config resolver (DB 의존)
 │       │   └── shared/                 # 공용 helper
 │       ├── lib/                        # prompts, frame planning, sam3/yolo/embedding client, key_builders, env helpers
-│       ├── resources/                  # postgres_* (base/migration/ingest/labeling/process/detection/embedding/genai) + minio + config + runtime_settings
-│       └── sql/                        # schema_postgres.sql, migrations/postgres/ (001-012)
+│       ├── resources/                  # postgres_* (base/migration/ingest/labeling/process/detection/embedding/genai/train/maintenance) + minio + config + runtime_settings
+│       └── sql/                        # schema_postgres.sql, migrations/postgres/ (001-014)
 ├── docker/
 │   ├── docker-compose.yaml
 │   ├── docker-compose.dev.yaml         # 로컬 dev overlay
@@ -534,7 +538,7 @@ pytest tests/integration -q
 | `manual_label_import_job` | `ENABLE_MANUAL_LABEL_IMPORT` |
 | `yolo_standard_detection_job` | `ENABLE_YOLO_DETECTION` |
 | `sam3_standard_detection_job` | `ENABLE_SAM3_DETECTION` |
-| `frame_embedding_job` / `caption_embedding_job` | `ENABLE_EMBEDDING` |
+| `frame_embedding_job` / `caption_embedding_job` / `video_embedding_job` | `ENABLE_EMBEDDING` |
 
 ### Sensors / Schedules
 
@@ -546,6 +550,7 @@ pytest tests/integration -q
 | `incoming_manifest_sensor` | RUNNING | pending manifest → `ingest_job` |
 | `auto_bootstrap_manifest_sensor` | RUNNING | incoming 스캔 후 manifest 생성 |
 | `stuck_run_guard_sensor` | RUNNING | stuck / orphan run 정리 |
+| `maintenance_guard_sensor` | RUNNING | GPU 정비락 stale 자동해제 (heartbeat TTL 초과 / owner run 종료 시) |
 | `nas_health_sensor` | RUNNING | NAS 접근성 probe + Slack 알림 |
 | `cross_table_consistency_sensor` | RUNNING | raw_files/video_metadata/labels 정합성 점검 |
 | `dispatch_run_success/failure/canceled_sensor` | RUNNING | dispatch run status finalizer |
