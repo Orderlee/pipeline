@@ -90,6 +90,8 @@ class PostgresMigrationMixin:
             "004_dataset_lineage.sql",
             "005_labels_unique.sql",
             "011_image_label_annotations.sql",
+            "013_mlops_finetune.sql",
+            "014_gpu_maintenance_lock.sql",
         }
     )
 

@@ -24,12 +24,15 @@ from .postgres_embedding import PostgresEmbeddingMixin
 from .postgres_genai import PostgresGenAIMixin
 from .postgres_ingest import PostgresIngestMixin
 from .postgres_labeling import PostgresLabelingMixin
+from .postgres_maintenance import PostgresMaintenanceMixin
 from .postgres_process import PostgresProcessMixin
 from .postgres_spec import PostgresSpecMixin
+from .postgres_train import PostgresTrainMixin
 
 
 class PostgresResource(
     PostgresBaseMixin,
+    PostgresMaintenanceMixin,
     PostgresIngestMixin,
     PostgresDedupMixin,
     PostgresProcessMixin,
@@ -38,6 +41,7 @@ class PostgresResource(
     PostgresSpecMixin,
     PostgresGenAIMixin,
     PostgresEmbeddingMixin,
+    PostgresTrainMixin,
     ConfigurableResource,
 ):
     """PostgreSQL 통합 리소스 — 섹션별 CRUD 메서드 mixin 합성.

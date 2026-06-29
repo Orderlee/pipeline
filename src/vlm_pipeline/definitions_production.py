@@ -30,6 +30,7 @@ from vlm_pipeline.defs.ingest.sensor import (
     nas_health_sensor,
     stuck_run_guard_sensor,
 )
+from vlm_pipeline.defs.train.sensor_maintenance_guard import maintenance_guard_sensor
 from vlm_pipeline.defs.label.assets import classification_video, clip_timestamp
 from vlm_pipeline.defs.label.manual_import import manual_label_import
 from vlm_pipeline.defs.label.sensor import auto_labeling_sensor
@@ -94,6 +95,7 @@ COMMON_INGEST_SENSORS = (
     stuck_run_guard_sensor,
     nas_health_sensor,
     cross_table_consistency_sensor,
+    maintenance_guard_sensor,
 )
 
 COMMON_DISPATCH_STATUS_SENSORS = (

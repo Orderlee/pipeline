@@ -271,6 +271,52 @@ def _detections_from_coco(payload: dict[str, Any], filepath: str) -> list[Any]:
     return detections
 
 
+def _project_of(image_key) -> str:
+    """프로젝트 = image_key 첫 세그먼트(source_unit_name). raw_key=<source>/<rel> 정책 기준."""
+    return (str(image_key or "").strip().split("/", 1)[0]) or "none"
+
+
+def _fetch_image_keys(image_ids: list[str]) -> dict[str, str]:
+    """image_id → image_key. fail-forward (구/스테이징 DB 결손 허용)."""
+    if not image_ids:
+        return {}
+    try:
+        with _pg_conn() as conn, conn.cursor() as cur:
+            cur.execute(
+                "SELECT image_id, image_key FROM image_metadata WHERE image_id = ANY(%(ids)s)",
+                {"ids": list(dict.fromkeys(str(i) for i in image_ids if i))},
+            )
+            return {str(image_id): str(key) for image_id, key in cur.fetchall() if key}
+    except Exception as exc:  # noqa: BLE001 — image_key lookup optional
+        print(f"attach_project: image_key lookup skipped: {exc}")
+        return {}
+
+
+def attach_project(ds):
+    """기존 데이터셋에 sample['project'] 채움 — DB 조회 + 벌크 set_values(라벨/미디어 불변), 앱 재기동 불필요.
+
+    image_key 없으면 minio_key(=bucket/source/...) 2번째 세그먼트로 fallback.
+    fiftyone_full_build 의 set_values(key_field='id') 패턴과 동일 — 대용량에서 per-sample save 회피.
+    """
+    sids = ds.values("id")
+    image_ids = ds.values("image_id")
+    minio_keys = ds.values("minio_key")
+    image_keys = _fetch_image_keys([i for i in image_ids if i])
+    proj_by_sid: dict[str, str] = {}
+    for sid, iid, mk in zip(sids, image_ids, minio_keys):
+        proj = _project_of(image_keys.get(str(iid))) if iid else "none"
+        if proj == "none" and mk:
+            parts = str(mk).split("/")
+            if len(parts) >= 2 and parts[1]:
+                proj = parts[1]
+        proj_by_sid[sid] = proj
+    ds.set_values("project", proj_by_sid, key_field="id")
+    from collections import Counter as _C
+
+    print(f"attach_project: {len(proj_by_sid)} samples; project dist top10={_C(proj_by_sid.values()).most_common(10)}")
+    return ds
+
+
 def attach_labels(ds):
     """Attach SAM3 detections, a single detection_class, and a representative video caption to frame samples.
 
@@ -292,6 +338,7 @@ def attach_labels(ds):
     captions_by_asset = _fetch_asset_captions(asset_ids)
     env_by_asset = _fetch_video_env(asset_ids)
     sam3_refs_by_image = _fetch_sam3_label_refs(image_ids)
+    image_keys = _fetch_image_keys(image_ids)
     mc = _minio_client()
 
     for sample in samples:
@@ -302,6 +349,7 @@ def attach_labels(ds):
             dn, env = env_by_asset.get(str(asset_id), (None, None)) if asset_id else (None, None)
             sample["daynight"] = dn or "none"
             sample["environment"] = env or "none"
+            sample["project"] = _project_of(image_keys.get(image_id))
 
             detections = []
             for bucket, key in sam3_refs_by_image.get(image_id, []):
@@ -621,6 +669,7 @@ def build_fiftyone_dataset(
         s["entity_id"] = r["entity_id"]
         s["embedding"] = r["embedding"]
         s["minio_key"] = f"{r['bucket']}/{r['key']}"
+        s["project"] = _project_of(r.get("key"))
         if r.get("asset_id") or r.get("source_asset_id"):
             s["asset_id"] = r.get("asset_id") or r.get("source_asset_id")
         samples.append(s)
