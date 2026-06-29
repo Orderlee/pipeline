@@ -40,11 +40,13 @@ PostgresBaseMixin = importlib.import_module("vlm_pipeline.resources.postgres_bas
 PostgresDedupMixin = importlib.import_module("vlm_pipeline.resources.postgres_dedup").PostgresDedupMixin
 PostgresIngestMixin = importlib.import_module("vlm_pipeline.resources.postgres_ingest").PostgresIngestMixin
 PostgresLabelingMixin = importlib.import_module("vlm_pipeline.resources.postgres_labeling").PostgresLabelingMixin
+PostgresMaintenanceMixin = importlib.import_module("vlm_pipeline.resources.postgres_maintenance").PostgresMaintenanceMixin
 PostgresSpecMixin = importlib.import_module("vlm_pipeline.resources.postgres_spec").PostgresSpecMixin
 
 
 class _PgIntegrationResource(
     PostgresBaseMixin,
+    PostgresMaintenanceMixin,
     PostgresIngestMixin,
     PostgresDedupMixin,
     PostgresLabelingMixin,
