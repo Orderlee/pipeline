@@ -1,0 +1,11 @@
+# DVC remote → MinIO (S3 호환). 큐레이션 데이터 repo 의 .dvc/config 로 복사 후 자격은
+# .dvc/config.local 에 둔다 (git 미추적). 바이트는 vlm-dataset/_dvc/ 프리픽스에만 (5-버킷 정책).
+# 치환: ${MINIO_ENDPOINT} ${MINIO_ACCESS_KEY} ${MINIO_SECRET_KEY}
+[core]
+    remote = minio
+['remote "minio"']
+    url = s3://vlm-dataset/_dvc
+    endpointurl = ${MINIO_ENDPOINT}
+    access_key_id = ${MINIO_ACCESS_KEY}
+    secret_access_key = ${MINIO_SECRET_KEY}
+    use_ssl = false

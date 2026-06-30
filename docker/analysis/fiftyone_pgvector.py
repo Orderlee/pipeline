@@ -55,6 +55,26 @@ def _pg_conn():
     return psycopg2.connect(dsn)
 
 
+def _active_model_name(scope: str = "frame_search") -> str:
+    """활성 임베딩 model_name (PG embedding_active_model, migration 015). design §8.1-A.
+
+    serving 코드라 vlm_pipeline.lib import 불가 → 자급식 1-쿼리. 테이블/행 부재나 어떤 오류든
+    DEFAULT_MODEL(stock) 로 폴백 — 검색/AL 이 포인터 때문에 깨지지 않게.
+    pin: tests/unit/test_fiftyone_active_model_pin.py 가 lib 의 stock 상수와 일치 보장.
+    """
+    try:
+        with _pg_conn() as conn, conn.cursor() as cur:
+            cur.execute(
+                "SELECT model_name FROM embedding_active_model WHERE scope = %s", (scope,)
+            )
+            row = cur.fetchone()
+        if row and str(row[0] or "").strip():
+            return str(row[0]).strip()
+    except Exception:
+        pass
+    return DEFAULT_MODEL
+
+
 def _minio_client():
     import boto3
 
@@ -314,6 +334,45 @@ def attach_project(ds):
     from collections import Counter as _C
 
     print(f"attach_project: {len(proj_by_sid)} samples; project dist top10={_C(proj_by_sid.values()).most_common(10)}")
+    make_project_saved_views(ds)
+    return ds
+
+
+def make_project_saved_views(ds):
+    """Per-``project`` Saved Views + per-project sample tags so the App Embeddings panel subsets by project.
+
+    FiftyOne 1.17 의 Embeddings 패널은 사이드바 *filter* 가 아니라 *view*(stages)에만 subset 반응한다:
+    server ``/embeddings/plot`` 는 ``data["view"]``(stages)+``filters`` 로 view 를 만들지만, 클라이언트가
+    사이드바 filters 를 이 라우트로 전송하지 않아(=greying 만) 전체 포인트가 유지된다. 따라서 project 를 *view* 로
+    걸어야 패널이 subset 된다.
+      • **Saved View** ``proj: <name>`` — 드롭다운에서 단일 project 선택 (그리드+패널 동시 subset).
+      • **sample tag** ``<name>`` — View bar 의 ``MatchTags`` 스테이지에서 **여러 project 체크박스 다중 선택**
+        (MatchTags 는 view stage 라 패널에 전파됨; 사이드바 tag 필터는 전파 안 됨). 단일 saved view 는 union 불가라
+        다중 선택은 이 태그 경로를 쓴다. 검증: is_in/ MatchTags view → _curr_points == 해당 project 합집합.
+    Idempotent; per-project fail-forward.
+    """
+    from fiftyone import ViewField as F
+
+    if "project" not in ds.get_field_schema():
+        return ds
+    made = 0
+    for p in sorted(x for x in ds.distinct("project") if x and x != "none"):
+        pv = ds.match(F("project") == p)
+        try:  # tag for view-bar MatchTags multi-select
+            untagged = pv.match_tags(p, bool=False)
+            if untagged.count():
+                untagged.tag_samples(p)
+        except Exception as exc:  # noqa: BLE001 — per-project fail-forward
+            print(f"make_project_saved_views: tag skip {p}: {exc}")
+        name = f"proj: {p}"
+        try:  # saved view for single-project dropdown select
+            if ds.has_saved_view(name):
+                ds.delete_saved_view(name)
+            ds.save_view(name, pv)
+            made += 1
+        except Exception as exc:  # noqa: BLE001 — per-view fail-forward
+            print(f"make_project_saved_views: view skip {name}: {exc}")
+    print(f"make_project_saved_views: {made} project views + sample tags")
     return ds
 
 
@@ -692,6 +751,10 @@ def build_fiftyone_dataset(
             fob.compute_visualization(ds, embeddings="embedding", method="pca", brain_key="emb_viz_pca")
         except Exception as exc:  # noqa: BLE001 — PCA 투영 optional
             print(f"PCA viz skipped: {exc}")
+    try:  # project Saved Views — Embeddings 패널이 project 로 subset 되게 (사이드바 filter 는 1.17 패널에 미전파)
+        make_project_saved_views(ds)
+    except Exception as exc:  # noqa: BLE001 — saved views optional
+        print(f"build_fiftyone_dataset: project saved views skipped: {exc}")
     return ds
 
 
@@ -972,7 +1035,7 @@ def translate_query_ko_en(query: str) -> str:
 def search_by_text(
     query: str,
     k: int = 20,
-    model_name: str = DEFAULT_MODEL,
+    model_name: str | None = None,
     *,
     source: str | None = None,
     image_role: str | None = None,
@@ -983,6 +1046,8 @@ def search_by_text(
 
     한국어 도메인 용어는 영어로 치환 후 임베딩 (PE-Core 영어중심 → '화재'=='fire' 동일 결과).
     """
+    if model_name is None:
+        model_name = _active_model_name()
     return _topk_by_vector(
         _embed_text(translate_query_ko_en(query)), k, model_name,
         source=source, image_role=image_role,
@@ -2192,7 +2257,7 @@ def _fo_scores_for_ids(image_ids: list[str]) -> dict[str, dict]:
     return out
 
 
-def active_learning_queue(n: int = 200, model_name: str = DEFAULT_MODEL) -> dict:
+def active_learning_queue(n: int = 200, model_name: str | None = None) -> dict:
     """hard-positive mining 큐 (pgvector pushdown): 희귀 클래스 lookalike 우선 + 다양성 보장.
 
     fire/smoke centroid 를 '라벨된 소수 프레임'으로만 계산한 뒤, 미라벨 프레임 중 centroid 에
@@ -2207,6 +2272,8 @@ def active_learning_queue(n: int = 200, model_name: str = DEFAULT_MODEL) -> dict
     rows 각 항목: image_id, al_score, rare_sim, nearest_rare_class,
                   representativeness, uniqueness, reason, minio_key
     """
+    if model_name is None:
+        model_name = _active_model_name()
     try:
         # 1. FiftyOne 라벨 맵 (작은 dict: label/caption 문자열만 → 메모리 안전, 임베딩 아님)
         fo_metadata = _load_fo_metadata_for_dq("normalized_class")

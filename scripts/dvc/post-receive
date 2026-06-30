@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+# post-receive 훅 — push 된 각 ref 의 '변경된 .dvc' 를 dataset_catalog 에 INSERT (커밋메시지 포함).
+# Dagster 무관: 호스트에서 ingest_to_catalog.py 직접 실행 (재기동 없이 push→테이블 버전 행).
+# 훅 실패가 push 를 막지 않도록 전 구간 fail-soft (항상 exit 0). 설정은 dvc-ingest.env 에서.
+set -uo pipefail
+
+ENV_FILE="${DVC_INGEST_ENV:-/srv/data-repos/dvc-ingest.env}"
+if [ ! -r "$ENV_FILE" ]; then
+    echo "[post-receive] $ENV_FILE 없음 — ingest 생략 (setup_shared_dvc.sh 미실행?)"
+    exit 0
+fi
+# shellcheck disable=SC1090
+. "$ENV_FILE"   # DATAOPS_POSTGRES_DSN, MINIO_*, DVC_INGEST_VENV, DVC_INGEST_SCRIPT [+ DVC_DATA_REPO_ID/TASK]
+export DATAOPS_POSTGRES_DSN MINIO_ENDPOINT MINIO_ACCESS_KEY MINIO_SECRET_KEY \
+       DVC_DATA_REPO_ID DVC_CATALOG_DEFAULT_TASK DVC_CATALOG_DEFAULT_DATASET 2>/dev/null || true
+
+REPO="$(cd "$(git rev-parse --git-dir)" && pwd)"
+PY="${DVC_INGEST_VENV:-/srv/data-repos/dvc-venv}/bin/python"
+SCRIPT="${DVC_INGEST_SCRIPT:?DVC_INGEST_SCRIPT 미설정}"
+ZERO=0000000000000000000000000000000000000000
+
+while read -r oldrev newrev refname; do
+    [ "$newrev" = "$ZERO" ] && continue                       # branch delete
+    if [ "$oldrev" = "$ZERO" ]; then
+        changed="$(git ls-tree -r --name-only "$newrev" | grep '\.dvc$' || true)"   # 첫 push: 전체 .dvc
+    else
+        changed="$(git diff --name-only "$oldrev" "$newrev" -- '*.dvc' || true)"     # 이후: 변경분만
+    fi
+    [ -z "$changed" ] && continue                             # .dvc 변경 없으면 skip
+    only="$(echo "$changed" | paste -sd, -)"
+    echo "[post-receive] ingest rev=${newrev:0:12} ref=$refname changed=$(echo "$changed" | wc -l) .dvc"
+    "$PY" "$SCRIPT" --repo "$REPO" --rev "$newrev" --git-ref "$refname" --only "$only" \
+        || echo "[post-receive] ingest 실패 (fail-soft) — push 는 계속, reconciliation 이 backstop"
+done
+
+exit 0

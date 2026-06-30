@@ -31,6 +31,9 @@ from vlm_pipeline.defs.ingest.sensor import (
     stuck_run_guard_sensor,
 )
 from vlm_pipeline.defs.train.sensor_maintenance_guard import maintenance_guard_sensor
+from vlm_pipeline.defs.train.catalog_ingest import dataset_catalog_reconciliation_sensor
+from vlm_pipeline.defs.train.dataset import build_trainset
+from vlm_pipeline.defs.train.eval import train_eval_gate
 from vlm_pipeline.defs.label.assets import classification_video, clip_timestamp
 from vlm_pipeline.defs.label.manual_import import manual_label_import
 from vlm_pipeline.defs.label.sensor import auto_labeling_sensor
@@ -214,6 +217,8 @@ def build_production_assets(
         classification_video,
         dispatch_sam3_image_detection,
         sam3_shadow_compare,
+        build_trainset,
+        train_eval_gate,
     ]
     if enable_manual_label_import:
         assets.append(manual_label_import)
@@ -227,6 +232,9 @@ def build_production_assets(
         assets.append(frame_embedding)
         assets.append(caption_embedding)
         assets.append(video_embedding)
+        from vlm_pipeline.defs.embed.reembed import reembed_under_version
+
+        assets.append(reembed_under_version)  # PE-Core 승격 재임베딩 (gated; design §8.1-B)
     return assets
 
 
@@ -254,4 +262,6 @@ def build_production_sensors(
         sensors.append(frame_embedding_backlog_sensor)
         sensors.append(caption_embedding_backlog_sensor)
         sensors.append(video_embedding_backlog_sensor)
+    # DVC 큐레이션 카탈로그 reconciliation (STOPPED 기본; 런타임에 DVC_DATA_REPO_PATH 미설정이면 self-skip).
+    sensors.append(dataset_catalog_reconciliation_sensor)
     return sensors
