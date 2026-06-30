@@ -92,6 +92,7 @@ class PostgresMigrationMixin:
             "011_image_label_annotations.sql",
             "013_mlops_finetune.sql",
             "014_gpu_maintenance_lock.sql",
+            "016_dataset_catalog.sql",
         }
     )
 
@@ -107,6 +108,9 @@ class PostgresMigrationMixin:
         "009_video_embeddings.sql": "SELECT 1 FROM pg_available_extensions WHERE name = 'vector'",
         # 010: 캡션 lexical(키워드) 검색용 pg_trgm. pg_trgm 미가용 이미지에서 부팅 깨짐 방지.
         "010_caption_trgm_index.sql": "SELECT 1 FROM pg_available_extensions WHERE name = 'pg_trgm'",
+        # 015: 활성 임베딩 model_name 포인터 (PE-Core 승격). image_embeddings 가 있는
+        #      (pgvector) 환경에서만 의미 → 008/009 과 동일 전제조건. 비-pgvector prod 부팅 보호.
+        "015_embedding_active_model.sql": "SELECT 1 FROM pg_available_extensions WHERE name = 'vector'",
     }
 
     def ensure_runtime_schema(self) -> None:

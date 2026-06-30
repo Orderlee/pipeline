@@ -13,6 +13,8 @@ import json
 from datetime import datetime
 from uuid import uuid4
 
+from vlm_pipeline.resources.postgres_base import PostgresBaseMixin
+
 
 class PostgresTrainMixin:
     """Train-dataset snapshot queries. Mixed into PostgresResource."""
@@ -124,3 +126,301 @@ class PostgresTrainMixin:
                         row.get("upstream_dataset_id"),
                     ),
                 )
+
+    def get_model_registry_row(self, model_version_id: str) -> dict:
+        """Read one model_registry row (eval-gate input). JSONB cols come back as dicts."""
+        with self.connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT model_version_id, model, version, train_dataset_version_id,
+                           train_method, eval_config, checkpoint_key, status
+                    FROM model_registry WHERE model_version_id = %s
+                    """,
+                    (model_version_id,),
+                )
+                rows = cur.fetchall()
+            columns = [
+                "model_version_id", "model", "version", "train_dataset_version_id",
+                "train_method", "eval_config", "checkpoint_key", "status",
+            ]
+            dicts = self._rows_to_dicts(rows, columns)
+        return dicts[0] if dicts else {}
+
+    def update_model_registry_eval(
+        self,
+        model_version_id: str,
+        *,
+        metrics: dict,
+        incumbent_metrics: dict,
+        incumbent_source: str,
+        eval_config: dict,
+        status: str,
+    ) -> None:
+        """Write the eval-gate outcome back to model_registry (Section D)."""
+        with self.connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE model_registry
+                    SET metrics = %s, incumbent_metrics = %s, incumbent_source = %s,
+                        eval_config = %s, status = %s
+                    WHERE model_version_id = %s
+                    """,
+                    (
+                        json.dumps(metrics or {}),
+                        json.dumps(incumbent_metrics or {}),
+                        incumbent_source,
+                        json.dumps(eval_config or {}),
+                        status,
+                        model_version_id,
+                    ),
+                )
+
+    # ── DVC dataset_catalog helpers (Section J — curation layer index) ──
+
+    def insert_catalog_row(self, row: dict) -> str:
+        """Insert a dataset_catalog row; idempotent on the DVC UNIQUE key.
+
+        Returns the dataset_catalog_id of the inserted OR pre-existing row.
+        status comes from row (caller sets 'available' / 'pending_missing_dvc_objects').
+        """
+        with self.connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO dataset_catalog (
+                        dataset_catalog_id, task, dataset_name, status,
+                        data_repo_id, data_repo_url, git_rev, git_short_rev, git_ref, git_tag,
+                        commit_subject, commit_message, commit_author_name, commit_author_email,
+                        committed_at,
+                        dvc_file_path, dvc_out_path, dvc_md5, dvc_size_bytes, dvc_nfiles,
+                        dvc_remote_name, dvc_remote_url,
+                        train_dataset_version_id, content_checksum, mlflow_run_id
+                    ) VALUES (
+                        %(dataset_catalog_id)s, %(task)s, %(dataset_name)s, %(status)s,
+                        %(data_repo_id)s, %(data_repo_url)s, %(git_rev)s, %(git_short_rev)s,
+                        %(git_ref)s, %(git_tag)s,
+                        %(commit_subject)s, %(commit_message)s, %(commit_author_name)s,
+                        %(commit_author_email)s, %(committed_at)s,
+                        %(dvc_file_path)s, %(dvc_out_path)s, %(dvc_md5)s, %(dvc_size_bytes)s,
+                        %(dvc_nfiles)s, %(dvc_remote_name)s, %(dvc_remote_url)s,
+                        %(train_dataset_version_id)s, %(content_checksum)s, %(mlflow_run_id)s
+                    )
+                    ON CONFLICT (data_repo_id, git_rev, dvc_file_path, dvc_out_path) DO NOTHING
+                    RETURNING dataset_catalog_id
+                    """,
+                    {
+                        "dataset_catalog_id": row["dataset_catalog_id"],
+                        "task": row["task"],
+                        "dataset_name": row["dataset_name"],
+                        "status": row.get("status", "available"),
+                        "data_repo_id": row["data_repo_id"],
+                        "data_repo_url": row.get("data_repo_url"),
+                        "git_rev": row["git_rev"],
+                        "git_short_rev": row.get("git_short_rev"),
+                        "git_ref": row.get("git_ref"),
+                        "git_tag": row.get("git_tag"),
+                        "commit_subject": row.get("commit_subject"),
+                        "commit_message": row.get("commit_message"),
+                        "commit_author_name": row.get("commit_author_name"),
+                        "commit_author_email": row.get("commit_author_email"),
+                        "committed_at": row.get("committed_at"),
+                        "dvc_file_path": row["dvc_file_path"],
+                        "dvc_out_path": row["dvc_out_path"],
+                        "dvc_md5": row.get("dvc_md5"),
+                        "dvc_size_bytes": row.get("dvc_size_bytes"),
+                        "dvc_nfiles": row.get("dvc_nfiles"),
+                        "dvc_remote_name": row.get("dvc_remote_name"),
+                        "dvc_remote_url": row.get("dvc_remote_url"),
+                        "train_dataset_version_id": row.get("train_dataset_version_id"),
+                        "content_checksum": row.get("content_checksum"),
+                        "mlflow_run_id": row.get("mlflow_run_id"),
+                    },
+                )
+                inserted = cur.fetchone()
+                if inserted is not None:
+                    new_id = inserted[0]
+                else:
+                    # ON CONFLICT → no RETURNING row; fetch the pre-existing id by UNIQUE key.
+                    cur.execute(
+                        """
+                        SELECT dataset_catalog_id FROM dataset_catalog
+                        WHERE data_repo_id = %(data_repo_id)s AND git_rev = %(git_rev)s
+                          AND dvc_file_path = %(dvc_file_path)s AND dvc_out_path = %(dvc_out_path)s
+                        """,
+                        {
+                            "data_repo_id": row["data_repo_id"],
+                            "git_rev": row["git_rev"],
+                            "dvc_file_path": row["dvc_file_path"],
+                            "dvc_out_path": row["dvc_out_path"],
+                        },
+                    )
+                    new_id = cur.fetchone()[0]
+            conn.commit()
+        return str(new_id)
+
+    def get_catalog_by_alias(self, task: str, alias: str = "current") -> dict | None:
+        """Resolve a task+alias to its pinned dataset_catalog row (or None)."""
+        with self.connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT c.* FROM dataset_catalog_aliases a
+                    JOIN dataset_catalog c ON c.dataset_catalog_id = a.dataset_catalog_id
+                    WHERE a.task = %(task)s AND a.alias = %(alias)s
+                    """,
+                    {"task": task, "alias": alias},
+                )
+                rows = PostgresBaseMixin._cursor_to_dicts(cur)
+        return rows[0] if rows else None
+
+    def pin_alias(
+        self,
+        *,
+        task: str,
+        alias: str,
+        dataset_catalog_id: str,
+        pinned_by: str,
+        pin_reason: str | None = None,
+    ) -> dict:
+        """Transactionally pin task+alias to a catalog id (NOT a raw UPDATE).
+
+        One connection / one commit: read previous alias target → UPSERT the single
+        (task, alias) alias row → append a pin_event with previous_dataset_catalog_id →
+        flip the newly-pinned row to status='pinned'. Atomic so alias + audit never drift.
+        """
+        import uuid as _uuid
+
+        with self.connect() as conn:
+            with conn.cursor() as cur:
+                # 가드(Codex BUG3): 카탈로그 행이 존재하고 같은 task 여야 함. aliases FK 는 존재만
+                # 검사하고 task 일치는 강제하지 않으므로, 다른 task 의 catalog_id 로 pin 하면 빌더가
+                # 엉뚱한 데이터셋을 학습할 수 있음. FOR UPDATE 로 status flip 대상 행도 잠근다.
+                cur.execute(
+                    "SELECT task FROM dataset_catalog WHERE dataset_catalog_id = %(dataset_catalog_id)s FOR UPDATE",
+                    {"dataset_catalog_id": dataset_catalog_id},
+                )
+                crow = cur.fetchone()
+                if crow is None:
+                    raise ValueError(f"dataset_catalog_id {dataset_catalog_id!r} not found")
+                if crow[0] != task:
+                    raise ValueError(
+                        f"task mismatch: alias task={task!r} but catalog {dataset_catalog_id!r} is task={crow[0]!r}"
+                    )
+                # FOR UPDATE(Codex BUG2): 기존 alias 행을 잠가 동시 pin 을 직렬화 →
+                # pin_events.previous_dataset_catalog_id 가 일관(두 pin 이 같은 선행자를 주장하지 않음).
+                cur.execute(
+                    "SELECT dataset_catalog_id FROM dataset_catalog_aliases "
+                    "WHERE task = %(task)s AND alias = %(alias)s FOR UPDATE",
+                    {"task": task, "alias": alias},
+                )
+                prev = cur.fetchone()
+                previous_id = prev[0] if prev else None
+
+                cur.execute(
+                    """
+                    INSERT INTO dataset_catalog_aliases
+                        (task, alias, dataset_catalog_id, pinned_by, pin_reason, pinned_at)
+                    VALUES (%(task)s, %(alias)s, %(dataset_catalog_id)s, %(pinned_by)s,
+                            %(pin_reason)s, CURRENT_TIMESTAMP)
+                    ON CONFLICT (task, alias) DO UPDATE SET
+                        dataset_catalog_id = EXCLUDED.dataset_catalog_id,
+                        pinned_by = EXCLUDED.pinned_by,
+                        pin_reason = EXCLUDED.pin_reason,
+                        pinned_at = EXCLUDED.pinned_at
+                    """,
+                    {
+                        "task": task,
+                        "alias": alias,
+                        "dataset_catalog_id": dataset_catalog_id,
+                        "pinned_by": pinned_by,
+                        "pin_reason": pin_reason,
+                    },
+                )
+                cur.execute(
+                    """
+                    INSERT INTO dataset_catalog_pin_events
+                        (event_id, task, alias, dataset_catalog_id, previous_dataset_catalog_id,
+                         pinned_by, pin_reason, pinned_at)
+                    VALUES (%(event_id)s, %(task)s, %(alias)s, %(dataset_catalog_id)s,
+                            %(previous_dataset_catalog_id)s, %(pinned_by)s, %(pin_reason)s,
+                            CURRENT_TIMESTAMP)
+                    """,
+                    {
+                        "event_id": str(_uuid.uuid4()),
+                        "task": task,
+                        "alias": alias,
+                        "dataset_catalog_id": dataset_catalog_id,
+                        "previous_dataset_catalog_id": previous_id,
+                        "pinned_by": pinned_by,
+                        "pin_reason": pin_reason,
+                    },
+                )
+                cur.execute(
+                    "UPDATE dataset_catalog SET status = 'pinned' "
+                    "WHERE dataset_catalog_id = %(dataset_catalog_id)s",
+                    {"dataset_catalog_id": dataset_catalog_id},
+                )
+            conn.commit()
+        return {
+            "task": task,
+            "alias": alias,
+            "dataset_catalog_id": dataset_catalog_id,
+            "previous_dataset_catalog_id": str(previous_id) if previous_id else None,
+        }
+
+
+def insert_candidate_model_version(
+    db,
+    *,
+    model: str,
+    version: str,
+    train_dataset_version_id: str,
+    train_method: str,
+    checkpoint_key: str,
+    artifact_checksum: str,
+    git_sha: str,
+    training_image_digest: str,
+    training_config: dict,
+    env_lock_key: str,
+    mlflow_run_id: str | None = None,
+) -> str:
+    """Insert a status='candidate' model_registry row; return its model_version_id.
+
+    This is the row Section D's eval gate UPDATEs to 'promotable' and Section E's
+    promotion SELECTs. incumbent_source stays NULL until the gate runs. Mirrors
+    PostgresTrainMixin.insert_train_dataset_version's connect/cursor/positional-%s/
+    json.dumps idiom. Module-level (takes the db resource) so the trainer-register op
+    and tests import it directly.
+    """
+    model_version_id = f"mv-{uuid4().hex[:12]}"
+    with db.connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO model_registry (
+                    model_version_id, model, version, train_dataset_version_id, train_method,
+                    git_sha, training_image_digest, training_config, env_lock_key,
+                    checkpoint_key, artifact_checksum, status, mlflow_run_id, created_at
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'candidate', %s, %s)
+                RETURNING model_version_id
+                """,
+                (
+                    model_version_id,
+                    model,
+                    version,
+                    train_dataset_version_id,
+                    train_method,
+                    git_sha,
+                    training_image_digest,
+                    json.dumps(training_config or {}),
+                    env_lock_key,
+                    checkpoint_key,
+                    artifact_checksum,
+                    mlflow_run_id,
+                    datetime.utcnow(),
+                ),
+            )
+            row = cur.fetchone()
+    return row[0] if row else model_version_id

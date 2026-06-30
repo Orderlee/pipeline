@@ -25,7 +25,8 @@ VIDEO_FRAME_ROLES = ["processed_clip_frame", "raw_video_frame"]
 
 _EMBED_CONFIG_SCHEMA = {
     "limit": Field(int, default_value=500),
-    "model_name": Field(str, default_value=DEFAULT_MODEL),
+    # 빈 문자열 기본값 = "미지정" → 런타임에 활성 포인터(db.get_active_embedding_model) 사용 (§8.1-A).
+    "model_name": Field(str, default_value=""),
     # 빈 리스트 → FRAME_ROLES 기본. 명시 override 가능.
     "image_roles": Field([str], default_value=[]),
 }
@@ -215,12 +216,15 @@ def frame_embedding(
 ) -> dict:
     """미임베딩 프레임을 embedding-service 로 임베딩 후 image_embeddings upsert."""
     limit = int(context.op_config.get("limit", 500))
-    model_name = str(context.op_config.get("model_name", DEFAULT_MODEL))
     image_roles_raw = context.op_config.get("image_roles") or []
     roles = list(image_roles_raw) if image_roles_raw else FRAME_ROLES
 
     # pgvector-gated image_embeddings 테이블 존재 보장 (embedding-only 경로가 첫 실행일 때 대비, Codex review).
     db.ensure_runtime_schema()
+    # design §8.1-A: model_name 미지정이면 활성 포인터(embedding_active_model)를 기본값으로.
+    # 포인터=stock(미승격)이면 현행 동작 그대로. op_config 명시값이 있으면 그것이 우선.
+    cfg_model = context.op_config.get("model_name")
+    model_name = str(cfg_model) if cfg_model else db.get_active_embedding_model()
     pending = db.find_pending_frame_embeddings(model_name=model_name, limit=limit, image_roles=roles)
     context.log.info("frame_embedding: pending=%d limit=%d model=%s roles=%s", len(pending), limit, model_name, roles)
     if not pending:

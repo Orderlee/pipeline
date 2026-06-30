@@ -255,6 +255,10 @@ git -C /home/user/work_p/Datapipeline-Data-data_pipeline_test status       # dev
 | `scripts/reupload_minio_from_archive.py` | archive 기준 MinIO 재업로드 | DuckDB legacy ⚠️ (guard 적용, `ALLOW_LEGACY_DUCKDB_SCRIPT=1` 필요) |
 | `scripts/staging_test_dispatch.py` | staging dispatch 테스트 | DuckDB legacy ⚠️ (guard 적용, `ALLOW_LEGACY_DUCKDB_SCRIPT=1` 필요) |
 | `scripts/verify_mvp.sh` | E2E 검증 | 사용 가능 |
+| `scripts/promote_model.py` | MinIO 체크포인트 → 호스트 materialize + env + recreate (승격/롤백) | MLOps (만들되 기본 미실행; `--dry-run` CI-safe) |
+| `scripts/promote_pe_core.py` | PE-Core 포인터 전환 + partial-HNSW + 서빙 교체 (승격/롤백) | MLOps (만들되 기본 미실행; `--dry-run`) |
+| `scripts/dataset_pull.py` | dataset_catalog pin 해석 → `dvc get` (DVC 버전 데이터셋 pull) | MLOps (기본 dry-run) |
+| `scripts/clear_maintenance.sh` | GPU 정비락 수동 강제 해제 + `/maintenance/exit` + `/warmup` | MLOps 복구 (`.agent/skill/mlops-finetune/SKILL.md` §9) |
 
 ### Deprecated (scripts/archive/ 로 이동됨)
 
@@ -286,6 +290,82 @@ git -C /home/user/work_p/Datapipeline-Data-data_pipeline_test status       # dev
 - 스크립트: `gcp/download_from_gcs_rclone.py`
 - Dagster schedule: `gcs_download_schedule` (매일 04:00 KST)
 - 0바이트 파일 복구: `GCS_ZERO_BYTE_RETRIES` (기본 2)
+
+---
+
+## MLOps — 파인튜닝 트랙
+
+> SAM3 / PE-Core 를 도메인 데이터로 파인튜닝하는 골격. **인프라는 CI(dev→staging→main), 가중치 승격만 수동.**
+> 설계 source of truth: `docs/superpowers/specs/2026-06-29-mlops-finetune-scaffolding-design.md`.
+> 상세 운영 런북: `.agent/skill/mlops-finetune/SKILL.md` (정비락 복구·hung run 판별·검증 분리).
+
+### 핵심 불변식 (위반 금지)
+
+- **레지스트리가 진실**: 서빙 중인 가중치 = `model_registry` 의 `status='promoted'` 행. **심볼릭링크 아님** (CI `rsync --delete`+`git reset --hard` 가 untracked 링크를 날림).
+- **학습셋은 동결 스냅샷**: `train_dataset_versions` 행 = `vlm-dataset/_trainsets/<id>/` 의 immutable 스냅샷. 라이브 라벨 흐름과 무간섭.
+- **자기학습 금지**: 모델 파생 라벨(`auto_generated`, Gemini 캡션, `vlm-classification`)로 학습/eval 금지. GT = LS `finalized` 또는 AL-선별-후-사람-어노테이트만.
+- **CI 는 학습 안 함**: GPU 학습은 `ENABLE_TRAINING` + 수동 게이트. CI(GPU 없음)는 마이그레이션·스냅샷빌더·eval로직·승격 dry-run·defs 로드만 검증.
+
+### 학습 트리거 (온디맨드 수동, prod 박스)
+
+1. 스냅샷 빌드 (Dagster asset, `defs/train/dataset.py`) → `train_dataset_versions` 행 + `_trainsets/<id>/` 동결. `al_confirmed_count=0` 은 정상(백필 전).
+2. **정비 윈도우 진입** (아래 GPU 정비 모드) — 공유 GPU 라 서빙 drain 필수.
+3. trainer 기동 — **Dagster run 과 분리된 독립 프로세스**(CI 재배포가 in-run op 고아화):
+   ```bash
+   cd /home/user/work_p/Datapipeline-Data-data_pipeline/docker
+   # ENABLE_TRAINING=1 + 학습 대상 train_dataset_version_id 를 env 로 전달
+   docker compose --env-file .env run --rm trainer   # profiles:["trainer"], 자동기동 X
+   ```
+   `gpu_trainer` concurrency=1 (run_coordinator) — 동시 학습 1개만.
+4. 산출물: `vlm-dataset/_models/<model>/<version>/` (merged full-weight + `env_lock.json` + `train_log.jsonl` + `training_summary.json`) + `model_registry` `status='candidate'` 행.
+
+### eval 게이트 읽기
+
+- eval asset(`defs/train/eval.py`)이 sealed test split 에서 candidate vs incumbent → `model_registry.metrics` / `incumbent_metrics` 기록.
+- `incumbent_source='stock_base'` = 첫 run(이전 promoted 없음, stock 모델을 동일 split 에 통과시킨 점수).
+- **per-metric margin + per-class non-regression floor** 통과 시에만 `status='promotable'` 로 승격(평균이 클래스 퇴행 숨기지 않게). margin 기본값은 `eval_config`.
+- 현재 상태 확인:
+  ```sql
+  SELECT model, version, status, incumbent_source, metrics, incumbent_metrics
+  FROM model_registry ORDER BY created_at DESC LIMIT 10;
+  ```
+  `sam3_shadow_compare`(YOLO-동의도, mAP 아님)는 **게이트 아님, 2차 sanity 신호만**.
+
+### 승격 + 롤백 (`scripts/promote_model.py`) — 만들되 기본 미실행
+
+- 승격(`status='promotable'` 행만 대상): MinIO `checkpoint_key` → 호스트 모델 볼륨 다운로드 + `artifact_checksum` 검증 → env 세팅(SAM3=`SAM3_CHECKPOINT_PATH`, PE-Core=`EMBEDDING_CHECKPOINT_PATH`) → `docker recreate`.
+  ```bash
+  python scripts/promote_model.py promote --model-version-id <id> --env prod   # 볼륨 있는 prod 박스에서만
+  python scripts/promote_model.py promote --model-version-id <id> --dry-run     # CI/staging: 무변경 검증
+  ```
+  성공 시 `status='promoted'`, `promoted_at`/`promoted_env` 기록.
+- **롤백**: 이전 `promoted` 행을 재승격(같은 명령, 옛 `--model-version-id`) → recreate. 서빙 시작 로그에 resolved 경로 + checksum 출력 → 확인.
+- **PE-Core 승격은 다름** (`scripts/promote_pe_core.py`): 가중치는 벡터 → 재임베딩(`reembed_under_version` asset, gated) 으로 새 `model_name`(`...@ft-<ver>`) 커버리지 확보 → partial HNSW 빌드 → `embedding_active_model` 포인터 원자 전환(AL/검색이 즉시 새 벡터 read). GT(사람검수) < `pe_core_min_gt` 면 게이트가 abstain → GT 축적 전까지 PE 승격 비활성. 롤백 = 포인터를 옛 `model_name` 으로 (옛 벡터/인덱스 보존돼 즉시).
+
+### GPU 정비 모드 (서빙 drain) + 복구
+
+- 학습 전 GPU 서빙을 비워야 함. **공유 `docker-sam3-1`**(prod·staging 공유) 주의 — staging 도 같은 컨테이너를 본다.
+- 서버사이드 게이트: `POST /maintenance/enter` → `/segment`·`/embed` 가 `503` + lazy-reload 거부. 완료 후 `POST /maintenance/exit` + `/warmup`.
+- **fail-safe**: 정비 플래그에 `owner_run_id`+heartbeat/TTL. guard 센서(`stuck_run_guard` 패턴)가 stale 감지 시 자동 해제. 수동 복구는 `scripts/clear_maintenance.sh` → 상세 절차는 `.agent/skill/mlops-finetune/SKILL.md` §9.
+- **⚠️ prod-GPU 주의**: prod main push(docs/tests 제외)는 dagster 무조건 재가동(memory `project_prod_deploy_dagster_restart`). 학습 윈도우 중에는 prod 배포 보류 권장 — 재배포가 정비 상태/in-run op 를 흔든다.
+
+### DVC 큐레이션 데이터 버저닝 (선택)
+
+- 큐레이션 데이터셋은 bare git repo(`/srv/data-repos/dvc-datasets.git`, 앱 배포 경로와 격리) + MinIO `vlm-dataset/_dvc/` (5-버킷 정책). 커밋 = `dataset_catalog` 1행(커밋 메시지 보존).
+- pin: `dataset_catalog_aliases`(task당 alias 1개) — `pin_alias()` API 만 갱신. pull: `python scripts/dataset_pull.py --task <t> --alias current --dest <dir>` (기본 dry-run, `--no-dry-run` 으로 실 pull).
+- 학습셋 빌더가 pinned alias 를 source 로 쓰면 `train_dataset_versions.dataset_catalog_id` 로 역링크 + MLflow 에 `dvc_*` lineage 기록.
+
+### env 노브
+
+| env | 기본 | 의미 |
+|-----|------|------|
+| `ENABLE_TRAINING` | `false` | 1/true 일 때만 trainer 가 실제 GPU 학습. CI·staging 은 false 유지 |
+| `TRAIN_FULL_FT` | `0` | 1 이면 풀파인튠(16GB 공유 GPU 주의), 기본은 LoRA/PEFT |
+| `SAM3_CHECKPOINT_PATH` | (현행) | SAM3 서빙 로컬 가중치 경로 — 승격이 갱신 |
+| `EMBEDDING_CHECKPOINT_PATH` | (미설정=stock) | PE-Core 서빙 가중치 경로(신규). 미설정 시 HF Hub stock |
+| `EMBEDDING_MODEL_VERSION` | (미설정) | PE-Core 서빙 model_name 버전 태그(`@ft-...`). 승격이 갱신 |
+| `MLFLOW_TRACKING_URI` | `http://mlflow:5000` | trainer 학습 추적 서버. unreachable 시 fail-soft(레지스트리=SoT) |
+| `COMPOSE_PROFILES` | (prod) `...,trainer` | trainer 컨테이너를 prod compose 에 노출(자동기동은 안 함) |
 
 ---
 

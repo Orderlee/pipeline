@@ -68,7 +68,7 @@ def test_013_creates_model_registry(pg_resource) -> None:
         "model_version_id", "model", "version", "train_dataset_version_id", "train_method",
         "git_sha", "training_image_digest", "training_config", "env_lock_key", "eval_config",
         "metrics", "incumbent_metrics", "incumbent_source", "checkpoint_key", "artifact_checksum",
-        "status", "created_at", "promoted_at", "promoted_env",
+        "status", "created_at", "promoted_at", "promoted_env", "mlflow_run_id",
     ]
     with pg_resource.connect() as conn:
         with conn.cursor() as cur:
