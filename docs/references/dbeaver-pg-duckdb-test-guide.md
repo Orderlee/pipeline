@@ -263,7 +263,7 @@ $$);
 
 -- 특정 source_unit 의 mp4 만 (확장자 + 경로 패턴 동시 필터)
 SELECT * FROM duckdb.query($$
-  SELECT file FROM glob('s3://vlm-raw/abb_banwoldang/**/*.mp4') LIMIT 5
+  SELECT file FROM glob('s3://vlm-raw/source-e/**/*.mp4') LIMIT 5
 $$);
 ```
 
@@ -353,7 +353,7 @@ $$);
 SELECT * FROM duckdb.query($$
   SELECT COUNT(*) AS labels,
          AVG(timestamp_end_sec - timestamp_start_sec) AS avg_duration_sec
-  FROM read_json_auto('s3://vlm-labels/abb_banwoldang/**/*.json',
+  FROM read_json_auto('s3://vlm-labels/source-e/**/*.json',
                       union_by_name = true)
 $$);
 ```
