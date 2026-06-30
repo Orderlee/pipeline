@@ -14,6 +14,7 @@
 -- @ASSERT_AFTER: SELECT to_regclass('model_registry') IS NOT NULL
 -- @ASSERT_AFTER: SELECT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'train_dataset_versions_task_checksum_unique' AND conrelid = 'train_dataset_versions'::regclass AND contype = 'u')
 -- @ASSERT_AFTER: SELECT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid = 'model_registry'::regclass AND confrelid = 'train_dataset_versions'::regclass AND contype = 'f')
+-- @ASSERT_AFTER: SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'model_registry' AND column_name = 'mlflow_run_id')
 
 BEGIN;
 
@@ -61,6 +62,7 @@ CREATE TABLE IF NOT EXISTS model_registry (
     created_at                TIMESTAMPTZ NOT NULL DEFAULT now(),
     promoted_at               TIMESTAMPTZ,
     promoted_env              TEXT,
+    mlflow_run_id             TEXT,
     CONSTRAINT model_registry_model_check        CHECK (model IN ('sam3', 'pe_core')),
     CONSTRAINT model_registry_train_method_check CHECK (train_method IS NULL OR train_method IN ('lora', 'full_ft', 'contrastive_lora', 'linear_probe')),
     CONSTRAINT model_registry_incumbent_src_check CHECK (incumbent_source IS NULL OR incumbent_source IN ('promoted', 'stock_base')),
@@ -73,5 +75,10 @@ CREATE INDEX IF NOT EXISTS model_registry_model_status_idx
     ON model_registry (model, status);
 CREATE INDEX IF NOT EXISTS model_registry_train_dataset_idx
     ON model_registry (train_dataset_version_id);
+
+-- mlflow_run_id (design §5.2/§7.5): MLflow run 교차링크. CREATE TABLE IF NOT EXISTS 는
+-- 기존 테이블에 컬럼을 추가하지 않으므로, pre-reconciliation 013 을 적용했을 수 있는 환경(예: staging)
+-- 대비 멱등 보강. 신규 환경에선 위 인라인 컬럼이 이미 만들어 no-op.
+ALTER TABLE model_registry ADD COLUMN IF NOT EXISTS mlflow_run_id TEXT;
 
 COMMIT;
