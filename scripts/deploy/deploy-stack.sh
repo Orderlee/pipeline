@@ -143,6 +143,15 @@ embedding_active() {
     compose config --services 2>/dev/null | grep -qx embedding-service
 }
 
+# trainer 도 profile gating (profiles:["trainer"]). prod 만 활성 (.env COMPOSE_PROFILES=...,trainer).
+# ⚠️ sam3/embedding 와 달리 deploy 가 trainer 를 절대 기동/recreate 하지 않는다 — 학습은
+# Dagster run 라이프사이클과 분리된 수동 GPU 프로세스(spec §7.3, CI 재배포가 in-run op 고아화).
+# active 일 때 build 만 해서 prod 로컬 이미지 캐시를 deployed 코드와 맞춰 둔다 →
+# 운영자가 정비 윈도우에 `compose run` 으로 직접 띄움.
+trainer_active() {
+    compose config --services 2>/dev/null | grep -qx trainer
+}
+
 if [[ "${BUILD_REQUIRED}" == "true" ]]; then
     # 2026-05-21: sam3 도 build target 에 포함 — docker/sam3/ 변경 시 자동 rebuild.
     # 이전에는 app 만 빌드해서 docker/sam3/app.py 변경이 컨테이너에 반영 안 됐음.
@@ -159,6 +168,9 @@ if [[ "${BUILD_REQUIRED}" == "true" ]]; then
     fi
     if embedding_active; then
         build_targets+=(embedding-service)
+    fi
+    if trainer_active; then
+        build_targets+=(trainer)
     fi
     compose build --progress plain "${build_targets[@]}"
 else

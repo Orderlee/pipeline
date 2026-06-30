@@ -34,8 +34,8 @@
 | 10:35:22 | `raw_ingest` STEP_START |
 | 10:35:22 | `yolo_image_detection` STEP_START → SUCCESS (408ms, outputs에 bbox 있으나 프레임 미생성 상태라 대상 없음) |
 | 10:55:26 | 중복 스킵: `평촌_자이2단지/우리병원앞/...mp4` (기존 asset `8c3d9986`, Phase 1에서 ingest 완료) |
-| 11:07:33 | MinIO 업로드 완료: `gsgeonseol/.../gate3_jineunghyeong2/...mp4` (961MB) |
-| 11:07:45 | MinIO 업로드 완료: `gsgeonseol/.../tc2-2/...mp4` (1,012MB) |
+| 11:07:33 | MinIO 업로드 완료: `source-d/.../gate3_case-a2/...mp4` (961MB) |
+| 11:07:45 | MinIO 업로드 완료: `source-d/.../tc2-2/...mp4` (1,012MB) |
 | 11:08:57 | 중복 스킵 이력 반영: 1건 |
 | 11:09:40 | archive `_DONE` marker 생성 |
 | 11:09:40 | **INGEST 완료**: total=3, success=2, failed=0, skipped=1 |
@@ -70,11 +70,11 @@
 
 | 버킷 | 경로 | 객체 수 |
 |------|------|---------|
-| `vlm-raw` | `gsgeonseol/icheon_jaideorebeu-1_b1/gate3_jineunghyeong2/` | 1 (961MB) |
-| `vlm-raw` | `gsgeonseol/icheon_jaideorebeu-1_b1/tc2-2/` | 1 (1,012MB) |
-| `vlm-processed` | `gsgeonseol/.../gate3_jineunghyeong2/image/` | 12 프레임 |
-| `vlm-processed` | `gsgeonseol/.../tc2-2/image/` | 6 프레임 |
-| `vlm-labels` | `gsgeonseol/` | 0 (timestamp/captioning 미실행) |
+| `vlm-raw` | `source-d/loc-a_site-a-1_b1/gate3_case-a2/` | 1 (961MB) |
+| `vlm-raw` | `source-d/loc-a_site-a-1_b1/tc2-2/` | 1 (1,012MB) |
+| `vlm-processed` | `source-d/.../gate3_case-a2/image/` | 12 프레임 |
+| `vlm-processed` | `source-d/.../tc2-2/image/` | 6 프레임 |
+| `vlm-labels` | `source-d/` | 0 (timestamp/captioning 미실행) |
 
 ### 4.3 파일 시스템
 
@@ -88,9 +88,9 @@
 
 | 원본 한글 경로 | 정규화된 MinIO key |
 |---------------|-------------------|
-| `GS건설` | `gsgeonseol` |
-| `이천_자이더레브-1 B1` | `icheon_jaideorebeu-1_b1` |
-| `Gate3 지능형2` | `gate3_jineunghyeong2` |
+| `GS건설` | `source-d` |
+| `이천_자이더레브-1 B1` | `loc-a_site-a-1_b1` |
+| `Gate3 지능형2` | `gate3_case-a2` |
 | `TC2-2` | `tc2-2` |
 
 한글→로마자 정규화(sanitizer)가 정상 작동하여 MinIO key가 ASCII-safe로 변환됨.
@@ -122,7 +122,7 @@
 
 ### 5.5 raw_video_to_frame — PASS
 - 2개 비디오에서 총 18프레임 추출 완료
-  - `gate3_jineunghyeong2`: 12프레임 (7,352초 영상)
+  - `gate3_case-a2`: 12프레임 (7,352초 영상)
   - `tc2-2`: 6프레임 (3,703초 영상)
 - `vlm-processed`에 JPEG 프레임 업로드 완료
 - `video_metadata.frame_extract_status=completed` 갱신 완료

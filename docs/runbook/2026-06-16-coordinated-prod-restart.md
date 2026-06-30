@@ -7,7 +7,7 @@
 ## 0. 사전 상태 (이 런북 작성 시점)
 - 복사 오케스트레이터(`/home/user/batch_ingest/orchestrator.sh`, pgid **59247**)는 **SIGSTOP 정지** 상태(batch 7 dispatch 전). 재개는 `kill -CONT -59247`.
 - 임베딩은 현재 **수동 `docker run`** 으로만 떠 있음: `prod-embed-analysis`(:5153 FiftyOne, :8503 Streamlit) + `prod-embed-mongo`. PG(vlm_pipeline)에 pgvector in-place + 008 적용, 임베딩 backfill(caption 11978 + frame 2740) 완료.
-- KPI: `pipeline-postgres-1` 이 호스트 포트 **15434 미게시** → KPI 샘플러(cron, kjh) 실패 → Grafana operational-kpi "No data".
+- KPI: `pipeline-postgres-1` 이 호스트 포트 **15434 미게시** → KPI 샘플러(cron, eng-a) 실패 → Grafana operational-kpi "No data".
 
 ## 1. GATE — 재가동해도 되는지 확인 (필수)
 ```bash

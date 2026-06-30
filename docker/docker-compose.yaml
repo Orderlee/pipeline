@@ -326,7 +326,7 @@ services:
     # 2026-05-22: uvicorn workers=N 으로 GPU memory 더 활용 + concurrent inference throughput ↑.
     # 각 worker 가 독립 process 로 model 별도 로드 (memory N× ~3.7GB).
     # SAM3_WORKERS env 로 조절. 2026-05-27 GPU1 OOM 인시던트로 prod .env 는 2 로 설정
-    # (4×3.7=14.8GB 가 GPU1 16GB 에서 jsh ComfyUI 등과 공유 시 파편화로 OOM). default 도 2 로 보수화.
+    # (4×3.7=14.8GB 가 GPU1 16GB 에서 eng-b ComfyUI 등과 공유 시 파편화로 OOM). default 도 2 로 보수화.
     command: ["sh", "-c", "exec python -m uvicorn app:app --host 0.0.0.0 --port 8002 --workers ${SAM3_WORKERS:-2}"]
     ports:
       - "${SAM3_PORT:-8002}:8002"
@@ -383,6 +383,10 @@ services:
     environment:
       EMBEDDING_BACKEND: ${EMBEDDING_BACKEND:-open_clip}
       EMBEDDING_DEVICE: "cuda:0"
+      # §8 서빙 로딩: 승격 스크립트가 호스트 모델 볼륨(./data/models/pe-core/)으로 materialize 한 경로.
+      # 미설정(빈 값) = stock HF Hub 동작 유지 (미승격). promote_model.py 가 .env 에 세팅 후 recreate.
+      EMBEDDING_CHECKPOINT_PATH: ${EMBEDDING_CHECKPOINT_PATH:-}
+      EMBEDDING_MODEL_VERSION: ${EMBEDDING_MODEL_VERSION:-}
       HF_HOME: /data/models/pe-core
       CUDA_VISIBLE_DEVICES: "0"
       NVIDIA_VISIBLE_DEVICES: "0"
@@ -405,6 +409,54 @@ services:
       start_period: 180s   # 최초 PE-Core 가중치 다운로드(~1.5GB)+로드 여유
       retries: 3
     restart: unless-stopped
+
+  trainer:
+    # vlm-trainer — SAM3 box-only LoRA + PE-Core contrastive-LoRA fine-tuning.
+    # profiles:["trainer"] + NO restart/healthcheck: one-shot, manual, never auto-started.
+    #   build : COMPOSE_PROFILES=...,trainer (활성 시 CI 가 image rebuild — deploy-stack 가드 불필요,
+    #           자동 기동 안 하므로 build_targets/force-recreate 목록에 넣지 않는다)
+    #   run   : COMPOSE_PROFILES=trainer ./scripts/compose-prod.sh run --rm trainer
+    # ENABLE_TRAINING=0 (default) → secrets preflight 후 dry-run exit 0 (GPU 무접촉).
+    # 실제 학습은 정비모드(§9) 윈도우에서 ENABLE_TRAINING=1 로 수동 실행.
+    profiles: ["trainer"]
+    build:
+      context: ./trainer
+      dockerfile: Dockerfile
+    image: datapipeline-trainer:gpu-cu128
+    user: root
+    command: ["python", "entrypoint.py"]
+    volumes:
+      - ./data/models:/data/models
+      - ./data:/data
+    environment:
+      TRAINER_TASK: ${TRAINER_TASK:-sam3_detection}
+      ENABLE_TRAINING: ${ENABLE_TRAINING:-0}
+      TRAIN_FULL_FT: ${TRAIN_FULL_FT:-0}
+      TRAIN_DATASET_VERSION_ID: ${TRAIN_DATASET_VERSION_ID:-}
+      MODEL_VERSION: ${MODEL_VERSION:-}
+      MAX_EPOCHS: ${MAX_EPOCHS:-5}
+      TRAIN_SEED: ${TRAIN_SEED:-123}
+      NUM_CLASSES: ${NUM_CLASSES:-2}
+      HF_TOKEN: ${HF_TOKEN:-}
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-}
+      MINIO_ENDPOINT: ${MINIO_ENDPOINT:-http://nas-minio:9000}
+      # 학습 추적(I): mlflow 서버를 service 이름으로 (pipeline-network). mlflow profile 미활성/unreachable 시
+      # 로깅은 fail-soft(None) — 학습/승격 무영향 (§7.5).
+      MLFLOW_TRACKING_URI: ${MLFLOW_TRACKING_URI:-http://mlflow:5000}
+      PYTORCH_CUDA_ALLOC_CONF: ${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}
+      CUDA_VISIBLE_DEVICES: "1"
+      NVIDIA_VISIBLE_DEVICES: "1"
+    networks:
+      - default
+      - pipeline-network
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
 
   genai:
     profiles: ["genai"]
@@ -469,6 +521,44 @@ services:
       - pipeline-network
     healthcheck:
       test: ["CMD-SHELL", "python -c 'import urllib.request; urllib.request.urlopen(\"http://localhost:8088/healthz\").read()'"]
+      interval: 30s
+      timeout: 5s
+      start_period: 30s
+      retries: 3
+    restart: unless-stopped
+    depends_on:
+      - postgres
+
+  mlflow:
+    # MLflow 추적 서버 — 학습 params + 어떤 동결 스냅샷으로 학습했는지 + metrics + artifacts.
+    # profiles:["mlflow"] → 기본 스택에서 자동기동 안 함. prod .env 에 COMPOSE_PROFILES=...,mlflow 시 활성.
+    # backend store = 공유 postgres 의 별도 'mlflow' DB (CREATE DATABASE 는 일회성 bootstrap, I1.7).
+    # artifact store = MinIO s3://vlm-dataset/_mlflow/ (새 버킷 X — 5-버킷 정책, prefix 만).
+    # registry(PG)=승격 SoT, MLflow=사람용 추적 UI. 이 서버 장애가 학습/승격을 막지 않음(fail-soft).
+    profiles: ["mlflow"]
+    build:
+      context: ./mlflow
+      dockerfile: Dockerfile
+    image: datapipeline-mlflow:0.1
+    ports:
+      - "${MLFLOW_PORT:-5500}:5000"
+    command: >
+      mlflow server
+      --host 0.0.0.0
+      --port 5000
+      --backend-store-uri postgresql://${POSTGRES_USER:-airflow}:${POSTGRES_PASSWORD:-airflow}@postgres:5432/mlflow
+      --artifacts-destination s3://vlm-dataset/_mlflow/
+      --serve-artifacts
+    environment:
+      # MLflow 가 artifact 를 MinIO(S3 호환)로 업로드할 때 쓰는 자격/엔드포인트.
+      MLFLOW_S3_ENDPOINT_URL: ${MINIO_ENDPOINT:-http://10.0.0.51:9000}
+      AWS_ACCESS_KEY_ID: ${MINIO_ACCESS_KEY:-minioadmin}
+      AWS_SECRET_ACCESS_KEY: ${MINIO_SECRET_KEY:-minioadmin}
+    networks:
+      - default
+      - pipeline-network
+    healthcheck:
+      test: ["CMD-SHELL", "python -c 'import urllib.request; urllib.request.urlopen(\"http://localhost:5000/health\").read()'"]
       interval: 30s
       timeout: 5s
       start_period: 30s

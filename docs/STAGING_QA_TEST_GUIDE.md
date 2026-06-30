@@ -332,7 +332,7 @@ WHERE r.raw_key LIKE 'tmp_data_2/%';
 SELECT
   CASE
     WHEN r.raw_key LIKE 'tmp_data_2/%' THEN 'tmp_data_2'
-    WHEN r.raw_key LIKE 'gsgeonseol/%' THEN 'GS건설'
+    WHEN r.raw_key LIKE 'source-d/%' THEN 'GS건설'
     ELSE 'other'
   END AS folder_group,
   COUNT(*) AS row_count
@@ -353,14 +353,14 @@ ORDER BY 1;
 예시:
 
 - `tmp_data_2` -> `tmp_data_2`
-- `GS건설` -> `gsgeonseol`
+- `GS건설` -> `source-d`
 
 즉 `GS건설` 로 테스트했으면 SQL 에서는 보통 아래처럼 조회해야 합니다.
 
 ```sql
 SELECT COUNT(*)
 FROM raw_files
-WHERE raw_key LIKE 'gsgeonseol/%';
+WHERE raw_key LIKE 'source-d/%';
 ```
 
 ## 실패 케이스 테스트

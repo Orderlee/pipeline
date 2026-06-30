@@ -16,8 +16,8 @@
 ## 2. 기대 결과
 
 - tmp_data_2만 raw_files/processed_clips 등 생성, archive로 이동
-- gsgeonseol(GS건설) raw_files 0, archive_pending/GS건설 유지
+- source-d(GS건설) raw_files 0, archive_pending/GS건설 유지
 
 ## 3. 후속 조치
 
-- `staging_qa_wait_expect.py --mode dual_ts_cap` 로 tmp_data_2 처리·gsgeonseol 0 확인
+- `staging_qa_wait_expect.py --mode dual_ts_cap` 로 tmp_data_2 처리·source-d 0 확인

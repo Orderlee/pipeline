@@ -72,6 +72,13 @@ tests/unit/*
 !tests/unit/test_clear_maintenance_script.py
 # Section B — frozen snapshot builder candidate queries (mock cursor, no live PG)
 !tests/unit/test_postgres_train_candidates.py
+!tests/unit/test_train_dataset_builder.py
+!tests/unit/test_definitions_train_loads.py
+# Section C — vlm-trainer (pure logic: adapter / config / LoRA-merge; file-path import, no GPU in CI)
+!tests/unit/test_trainer_coco_adapter.py
+!tests/unit/test_trainer_sam3_config.py
+!tests/unit/test_trainer_lora_merge.py
+!tests/unit/test_trainer_preflight.py
 # Phase 4-B integration tests (#12) — self-contained conftest, sidecar PG 의존
 # (DATAOPS_TEST_POSTGRES_DSN 미설정 시 자동 skip).
 !tests/integration/
@@ -159,3 +166,45 @@ result/*.txt
 
 # 1회성 복구 스크립트 (날짜 suffix)
 scripts/recover_*_[0-9]*.py
+# R2 — run_coordinator concurrency tags (yaml parse test)
+!tests/unit/test_dagster_yaml_concurrency_tags.py
+# R1 — model_registry candidate-row INSERT (mock connect/cursor)
+!tests/unit/test_register_candidate_model.py
+# Section D — eval scoring + promotion gate (pure lib, stdlib+numpy)
+!tests/unit/test_box_map.py
+!tests/unit/test_recall_at_k.py
+!tests/unit/test_train_eval_gate.py
+!tests/unit/test_train_eval_asset.py
+# Section E — serving load + promotion/rollback
+!tests/unit/test_open_clip_checkpoint_branch.py
+!tests/unit/test_promote_model.py
+!tests/integration/test_promote_model_pg.py
+!tests/integration/test_active_model_migration_015.py
+!tests/integration/test_active_model_mixin.py
+!tests/integration/test_reembed_targets.py
+!tests/integration/test_dataset_catalog_migration_016.py
+# Section I — MLflow tracking
+!tests/unit/test_mlflow_compose_service.py
+!tests/unit/test_trainer_mlflow_logging.py
+!tests/unit/test_register_candidate_mlflow_run_id.py
+!tests/unit/test_pgvector_index.py
+!tests/unit/test_active_model.py
+!tests/unit/test_fiftyone_active_model_pin.py
+!tests/unit/test_frame_embedding_active_default.py
+!tests/unit/test_reembed_asset.py
+!tests/unit/test_pe_core_gate.py
+!tests/unit/test_promote_pe_core.py
+!tests/unit/test_dvc_catalog_parsers.py
+!tests/unit/test_dataset_catalog_db.py
+!tests/unit/test_dataset_catalog_ingest.py
+!tests/unit/test_dataset_pull.py
+!tests/unit/test_dataset_builder_dvc_source.py
+!tests/unit/test_dvc_setup_artifacts.py
+!tests/unit/test_mlflow_dvc_tags.py
+!tests/unit/test_ci_trainer_rebuild_glob.py
+!tests/unit/test_deploy_stack_trainer_gate.py
+!tests/unit/test_claudemd_mlops_section.py
+!tests/unit/test_mlops_skill_runbook.py
+!tests/unit/test_claudemd_scripts_table.py
+!tests/unit/test_coco_merge.py
+!tests/unit/test_multi_project_assemble.py

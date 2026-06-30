@@ -744,8 +744,8 @@ ffmpeg 가 `-c:v -gpu` 로 해석 → codec 미지정 → 실행 실패 → 3 re
 
 **🚨 인시던트 — part1 무효 (NAS outage 연쇄)**
 - part1 bbox: SAM3 detection 중 **NAS 10.0.0.51 일시 outage** 발생
-- 연쇄: NAS down → `/nas/data` NFS hard-mount hang(D-state) + MinIO retry 폭주 → **호스트 load 244~393 폭증**(16코어, 대부분 I/O-wait) → SAM3 uvicorn worker CPU 굶음 + GPU1 **CUDA OOM**(workers=4 ×3.7GB=14.8GB가 jsh ComfyUI 782MB와 GPU1 16GB 공유 → 부하 중 파편화로 OOM) → `503/500 segment` 다발 → SAM3 detection 238+ 프레임 fail-forward 영구 실패 → run **orphaned**(code-server gRPC >900s) → `stuck_run_guard`가 자동 취소(11240/12532에서 CANCELED)
-- NAS 복귀 후 자동 회복: SAM3 worker OOM 사망→uvicorn 재생성(clean 3.7GB×4), jsh ComfyUI 종료, load 393→1.0
+- 연쇄: NAS down → `/nas/data` NFS hard-mount hang(D-state) + MinIO retry 폭주 → **호스트 load 244~393 폭증**(16코어, 대부분 I/O-wait) → SAM3 uvicorn worker CPU 굶음 + GPU1 **CUDA OOM**(workers=4 ×3.7GB=14.8GB가 eng-b ComfyUI 782MB와 GPU1 16GB 공유 → 부하 중 파편화로 OOM) → `503/500 segment` 다발 → SAM3 detection 238+ 프레임 fail-forward 영구 실패 → run **orphaned**(code-server gRPC >900s) → `stuck_run_guard`가 자동 취소(11240/12532에서 CANCELED)
+- NAS 복귀 후 자동 회복: SAM3 worker OOM 사망→uvicorn 재생성(clean 3.7GB×4), eng-b ComfyUI 종료, load 393→1.0
 
 **도출된 코드 수정 필요 (우선순위)**
 1. 🔴 **SAM3 detection retry 부재** — [detection_assets.py:198-234](../../src/vlm_pipeline/defs/sam/detection_assets.py#L198-L234) MinIO download + `/segment` 호출이 모든 예외에 즉시 fail. transient(503/500/connection/timeout)에 bounded retry+backoff 추가 → 이번 ~250 프레임 손실 방지

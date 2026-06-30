@@ -59,6 +59,41 @@
 
 
 
+
+## 2026-06-29
+
+### 1. 운영 ingest / process 공통 구조 정리
+- **문제**: ingest와 process 공통 책임이 여러 모듈로 흩어져 있어, 운영 로직을 수정할 때 영향 범위와 설정 반영 지점을 한 번에 보기 어려웠음.
+- **원인**: raw ingest 실행 흐름, runtime env 해석, DuckDB schema 보정과 조회 helper가 각각 다른 레이어에 퍼져 있어 공통 동작을 건드릴 때 수정 포인트가 많아졌음.
+- **조치**:
+    - raw ingest에서 상태 생성과 실제 실행 파이프라인을 분리해 진입 구조를 명확히 정리함.
+    - runtime 설정 로더를 추가하고 ingest runtime policy, stuck guard가 같은 설정 해석 경로를 재사용하도록 맞춤.
+    - DuckDB resource에 dispatch/model/raw/image 조회 및 insert helper를 보강하고 schema ensure 흐름을 운영 기준으로 정돈함.
+    - 관련 파일:
+      - `src/vlm_pipeline/resources/runtime_settings.py`
+
+### 2. Staging 환경값 및 운영 보조 설정 정리
+- **문제**: staging 실행 시 DuckDB/MinIO/NAS 경로와 sensor guard 설정이 비어 있거나 분산되어 있어, 실제 테스트 환경을 재현할 때 수동 보정이 많이 필요했음.
+- **원인**: staging env 기본값, compose 공통 설정, stuck run guard / MotherDuck / GCS 관련 옵션이 파일마다 흩어져 있어 환경별 기준을 한 번에 맞추기 어려웠음.
+- **조치**:
+    - staging DuckDB, MinIO, incoming/archive/manifest 경로와 주요 timeout / in-flight / guard 옵션을 `.env.staging`에 구체값으로 정리함.
+    - docker compose에서 production dagster 공통 anchor를 분리해 prod/staging 공통점과 차이를 명확히 정리함.
+    - stuck run guard와 ingest feature flag가 runtime settings를 통해 같은 방식으로 로드되도록 맞춰 운영 보조 설정을 단일화함.
+    - 관련 파일:
+      - `src/vlm_pipeline/resources/runtime_settings.py`
+
+### 3. 당일 정리
+- **변경 통계**:
+    - 변경 파일 **43개**, +14666/-19줄.
+- **관련 커밋**:
+    - `781e57ea`: feat(trainer): fail-fast secrets preflight + per-step JSONL train log
+    - `fc0a45dc`: feat(trainer): LoRA->full-weight merge export + trainable-param assert
+    - `0b80429d`: feat(trainer): authored SAM3 box-only Hydra config tree + test
+    - `6c48586f`: feat(trainer): COCO->sam3 per-split annFile adapter + test
+    - `7e94596f`: feat(trainer): vlm-trainer image base (sam3+open_clip+hydra+peft, cu128)
+- **서비스 상태**: 파이프라인 서비스 16개 컨테이너 중 16개 정상 가동.
+- **작업 환경**: VSCode
+
 ## 2026-06-26
 
 - (당일 커밋/파일 변경 없음)
@@ -4125,8 +4160,8 @@
 ## 2026-02-04
 - `pipeline-app-1` 컨테이너에서 `nas_folder_tree_to_postgres.py` 실행 및 검증 완료.
 - **Docker 데이터 적재 이슈 해결**:
-  - 증상: 스크립트 실행 시 데이터가 `pipeline-postgres-1`이 아닌 `kjh-dataops-postgres` 컨테이너로 잘못 적재됨.
-  - 원인: 두 Docker 스택(`pipeline`, `kjh-dataops`)이 동일한 네트워크(`pipeline-network`)를 공유하고 있으며, 둘 다 서비스명이 `postgres`로 설정되어 있어 호스트 이름 해석이 모호했음 (Round-robin 또는 랜덤 접속 발생).
+  - 증상: 스크립트 실행 시 데이터가 `pipeline-postgres-1`이 아닌 `eng-a-dataops-postgres` 컨테이너로 잘못 적재됨.
+  - 원인: 두 Docker 스택(`pipeline`, `eng-a-dataops`)이 동일한 네트워크(`pipeline-network`)를 공유하고 있으며, 둘 다 서비스명이 `postgres`로 설정되어 있어 호스트 이름 해석이 모호했음 (Round-robin 또는 랜덤 접속 발생).
   - 해결: `docker-compose.yaml`에 정의된 네트워크 별칭(`pipeline-postgres`)을 사용하도록 `nas_folder_tree_to_postgres.py`의 기본 호스트 설정 변경.
 - **Grafana 설정 가이드**:
   - Docker 내부망에서 Grafana가 올바른 DB를 바라보도록 Host URL을 `pipeline-postgres:5432`로 명시.

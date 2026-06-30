@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import io
+import os
 
 from .base import EmbeddingBackend
 
@@ -15,7 +16,6 @@ EMBED_DIM = 1024
 
 
 class OpenClipBackend(EmbeddingBackend):
-    name = MODEL_NAME
     dim = EMBED_DIM
 
     def __init__(self, device: str = "cuda:0") -> None:
@@ -24,6 +24,10 @@ class OpenClipBackend(EmbeddingBackend):
         self._preprocess = None
         self._tokenizer = None
         self._torch = None
+        # §5.3: 파인튠 가중치 서빙 시 model_name 에 버전 인코딩 (image_embeddings 버전 격리).
+        # env 미설정 = stock 동작 (현행 incumbent 유지, 미승격).
+        version = os.environ.get("EMBEDDING_MODEL_VERSION", "").strip()
+        self.name = f"{MODEL_NAME}@{version}" if version else MODEL_NAME
 
     def load(self) -> None:
         import open_clip
@@ -32,6 +36,17 @@ class OpenClipBackend(EmbeddingBackend):
         self._torch = torch
         model, _, preprocess = open_clip.create_model_and_transforms(HF_HUB_REF)
         self._tokenizer = open_clip.get_tokenizer(HF_HUB_REF)
+
+        # 승격된 merged full-weight 체크포인트 로드 (env 설정 시). 어댑터(LoRA) 서빙 코드 없음 —
+        # 학습 종료 시 base 에 merge 된 full-weight 만 로드 (design §8). env 미설정이면 stock.
+        ckpt_path = os.environ.get("EMBEDDING_CHECKPOINT_PATH", "").strip()
+        if ckpt_path:
+            if not os.path.isfile(ckpt_path):
+                raise FileNotFoundError(f"EMBEDDING_CHECKPOINT_PATH not found: {ckpt_path}")
+            ckpt = torch.load(ckpt_path, map_location=self.device)
+            state_dict = ckpt.get("state_dict", ckpt) if isinstance(ckpt, dict) else ckpt
+            model.load_state_dict(state_dict, strict=True)
+
         self._model = model.to(self.device).eval()
         self._preprocess = preprocess
 

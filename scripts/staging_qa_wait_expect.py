@@ -130,9 +130,9 @@ def main() -> None:
                 "SELECT COUNT(*) FROM processed_clips pc JOIN raw_files rf ON rf.asset_id=pc.source_asset_id "
                 "WHERE rf.raw_key LIKE 'tmp_data_2/%'"
             )
-            g = run_sql("SELECT COUNT(*) FROM raw_files WHERE raw_key LIKE 'gsgeonseol/%'")
+            g = run_sql("SELECT COUNT(*) FROM raw_files WHERE raw_key LIKE 'source-d/%'")
             if t > 0 and g == 0:
-                print(json.dumps({"ok": True, "processed_clips_tmp": t, "gsgeonseol_rows": g}))
+                print(json.dumps({"ok": True, "processed_clips_tmp": t, "source-d_rows": g}))
                 return
         elif args.mode == "dispatch_failed":
             from pathlib import Path
