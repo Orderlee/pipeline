@@ -280,18 +280,17 @@ def main(argv=None) -> int:
                 dry_run=args.dry_run,
             )
 
-            if not args.dry_run:
-                _write_env_var(env_file, serving["env_path_key"], serving["container_path"])
-                if serving["env_version_key"]:
-                    _write_env_var(env_file, serving["env_version_key"], str(row.get("version") or ""))
-
-            docker_recreate(serving["service"], dry_run=args.dry_run)
-
             if args.dry_run:
+                docker_recreate(serving["service"], dry_run=args.dry_run)
                 print("[promote][dry-run] would commit registry transition; rolling back (no change)")
                 conn.rollback()
                 return 0
 
+            # H-5: DB 전이를 commit 한 뒤 env write + docker_recreate. 예전 순서(recreate→commit)는
+            # 그 사이 crash 시 '새 가중치가 서빙 중인데 registry 는 옛 행이 promoted'라는
+            # 조용한 under-report 를 남겼다(registry=truth 위반). 순서를 뒤집으면 crash 시
+            # over-report(registry 는 새 행 promoted, 서빙은 아직 옛것)로 바뀌는데, recreate 실패는
+            # 아래 loud repair 메시지 + 재실행으로 즉시 복구 가능 → 조용한 under-report 보다 안전.
             if args.rollback:
                 rollback_transition(
                     cur, restore_row=row,
@@ -300,7 +299,28 @@ def main(argv=None) -> int:
             else:
                 promote_transition(cur, row=row, env=args.env)
         conn.commit()
-        print(f"[promote] committed: model={args.model} -> promoted ({args.env})")
+        print(f"[promote] committed registry: model={args.model} -> promoted ({args.env})")
+
+        # env write 는 commit 후에만. commit 前에 쓰면 전이가 rollback 됐을 때 docker/.env 는
+        # 새 checkpoint 를 가리키는데 registry 는 옛 행이 promoted 로 남아, 다음 컨테이너 재기동 시
+        # 승격 안 된 checkpoint 를 서빙하는 over-report(registry=truth 위반)가 된다. promote_pe_core 와 동일 순서.
+        # env write 는 멱등이라 recreate 실패 후 재실행으로 복구 가능.
+        _write_env_var(env_file, serving["env_path_key"], serving["container_path"])
+        if serving["env_version_key"]:
+            _write_env_var(env_file, serving["env_version_key"], str(row.get("version") or ""))
+
+        try:
+            docker_recreate(serving["service"], dry_run=False)
+        except Exception:
+            print(
+                "[promote] registry transition is already committed, but service recreate failed. "
+                "Repair with: "
+                f"docker compose -f {REPO_ROOT / 'docker' / 'docker-compose.yaml'} "
+                f"up -d --force-recreate {serving['service']}",
+                file=sys.stderr,
+            )
+            raise
+        print(f"[promote] service recreated: {serving['service']}")
         return 0
     except Exception:
         conn.rollback()

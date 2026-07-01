@@ -60,6 +60,47 @@
 
 
 
+
+## 2026-06-30
+
+### 1. 수동 / 사전 라벨 import 경로 정리
+- **문제**: 수동 라벨 import와 사전 라벨링 데이터 적재가 서로 다른 코드 경로에서 중복 구현되어 있었고, staging에서 기존 라벨 결과를 재적재하는 전용 진입점도 부족했음.
+- **원인**: event label JSON 파싱, raw asset 매칭, label key 생성 로직이 manual import 안에 묶여 있었고, prelabeled 데이터는 raw ingest 이후 bbox/image caption까지 연결하는 공통 흐름이 정리되지 않았음.
+- **조치**:
+    - manual label import에서 공통 helper를 분리해 label 파일 순회, asset 매칭, event 추출, label 저장 규칙을 재사용 가능하게 정리함.
+    - staging 전용 prelabeled import job을 추가해 raw ingest 후 event / bbox / image caption artifact import까지 한 경로에서 처리하게 구성함.
+    - 사전 라벨링 이미지명에서 원본 raw stem을 찾는 정규식 패턴을 보강해 stem 추론 누락 케이스를 보완함.
+
+### 2. Staging dispatch 서비스 분리 및 흐름 정리
+- **문제**: staging dispatch 처리 로직이 sensor 안에 몰려 있어 중복 요청 체크, 실패 기록, manifest 작성, run 상태 연동을 한 번에 파악하기 어려웠음.
+- **원인**: dispatch request 준비, archive/manifest 경로 계산, DB 기록, in-flight run 검사 로직이 sensor 본문과 run status 처리 코드에 분산되어 유지보수성이 떨어졌음.
+- **조치**:
+    - dispatch request 준비, manifest 작성, DB 기록, run request 생성 로직을 service 레이어로 분리해 sensor 책임을 줄임.
+    - 중복 request_id, 같은 folder의 진행 중 run, 실패 request upsert 흐름을 DB helper와 공통 함수로 정리함.
+    - dispatch run status와 archive 판단 경로가 같은 tag 해석 함수를 사용하도록 맞춰 상태 전파를 일관되게 정리함.
+
+### 3. Staging 환경값 및 운영 보조 설정 정리
+- **문제**: staging 실행 시 DuckDB/MinIO/NAS 경로와 sensor guard 설정이 비어 있거나 분산되어 있어, 실제 테스트 환경을 재현할 때 수동 보정이 많이 필요했음.
+- **원인**: staging env 기본값, compose 공통 설정, stuck run guard / MotherDuck / GCS 관련 옵션이 파일마다 흩어져 있어 환경별 기준을 한 번에 맞추기 어려웠음.
+- **조치**:
+    - staging DuckDB, MinIO, incoming/archive/manifest 경로와 주요 timeout / in-flight / guard 옵션을 `.env.staging`에 구체값으로 정리함.
+    - docker compose에서 production dagster 공통 anchor를 분리해 prod/staging 공통점과 차이를 명확히 정리함.
+    - stuck run guard와 ingest feature flag가 runtime settings를 통해 같은 방식으로 로드되도록 맞춰 운영 보조 설정을 단일화함.
+    - 관련 파일:
+      - `docker/docker-compose.yaml`
+
+### 4. 당일 정리
+- **변경 통계**:
+    - 변경 파일 **92개**, +15629/-422줄.
+- **관련 커밋**:
+    - `97c0bdcd`: test(mlops): update post-receive hook test to new direct-ingest contract
+    - `1355330d`: docs(mlops): split DVC + MLflow operations runbooks (DVC.md, MLFLOW.md)
+    - `ae98769f`: feat(mlops): wire build_trainset 'sources' config → multi-project DVC assemble+freeze (Tier 2 asset)
+    - `2e8e9b19`: feat(mlops): freeze_multi_project_trainset — combined COCO → immutable train_dataset_versions
+    - `653e51c8`: feat(mlops): assemble_multi_project_coco — combine N pinned DVC datasets (Tier 2 integration)
+- **서비스 상태**: 파이프라인 서비스 16개 컨테이너 중 16개 정상 가동.
+- **작업 환경**: VSCode
+
 ## 2026-06-29
 
 ### 1. 운영 ingest / process 공통 구조 정리

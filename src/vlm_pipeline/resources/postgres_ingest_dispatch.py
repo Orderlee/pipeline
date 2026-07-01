@@ -39,6 +39,33 @@ class PostgresIngestDispatchMixin:
                 rows = cur.fetchall()
         return [{"request_id": str(row[0]), "status": str(row[1]) if row[1] is not None else ""} for row in rows]
 
+    def find_stale_running_dispatch_requests(self, older_than_minutes: int) -> list[dict[str, Any]]:
+        """created_at 이 TTL 초과한 non-terminal(running/archive_moved) dispatch_requests 조회 (DISPATCH-2).
+
+        활성 Dagster run 존재 여부는 호출자(reaper sensor)가 확인 후 close 한다 —
+        여기서는 순수 DB 조회만. 정상 실행이 절대 넘지 않는 TTL 을 전제로 한다.
+        """
+        minutes = max(1, int(older_than_minutes))
+        with self.connect() as conn:
+            if not self._table_exists(conn, "dispatch_requests"):
+                return []
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT request_id, folder_name, status
+                    FROM dispatch_requests
+                    WHERE status IN ('running', 'archive_moved')
+                      AND created_at < now() - make_interval(mins => %s)
+                    ORDER BY created_at
+                    """,
+                    (minutes,),
+                )
+                rows = cur.fetchall()
+        return [
+            {"request_id": str(r[0]), "folder_name": str(r[1]) if r[1] is not None else "", "status": str(r[2] or "")}
+            for r in rows
+        ]
+
     def get_dispatch_request_status(self, request_id: str) -> str | None:
         normalized_request_id = self._norm_str(request_id)
         if not normalized_request_id:

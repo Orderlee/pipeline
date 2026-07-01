@@ -136,6 +136,69 @@ def test_freeze_idempotent_on_content_checksum():
     assert len(db.inserted) == 1                            # 두 번째는 no-op
 
 
+_SINGLE_SPEC = {"sources": [{"task": "projA", "dataset_catalog_id": "ca", "git_rev": "r1"}]}
+
+
+def test_freeze_sets_dataset_catalog_id_for_single_source():
+    # H-1: exactly one source -> FK is unambiguous, populate it.
+    db, minio = _FreezeDB(), _MinIO()
+    freeze_multi_project_trainset(db, minio, merged_coco=_MERGED, source_spec=_SINGLE_SPEC, task="sam3_detection")
+    row = db.inserted[0]
+    assert row["dataset_catalog_id"] == "ca"
+
+
+def test_freeze_leaves_dataset_catalog_id_null_for_multi_source():
+    # H-1: two+ sources -> FK left NULL, lineage lives only in source_spec.
+    db, minio = _FreezeDB(), _MinIO()
+    freeze_multi_project_trainset(db, minio, merged_coco=_MERGED, source_spec=_SPEC, task="sam3_detection")
+    row = db.inserted[0]
+    assert row["dataset_catalog_id"] is None
+    assert row["source_spec"] == _SPEC
+
+
+_MERGED_STARVED = {
+    "images": [
+        {"id": 1, "file_name": "a.jpg", "source": "projA"},
+        {"id": 2, "file_name": "b.jpg", "source": "projA"},
+        {"id": 3, "file_name": "c.jpg", "source": "projA"},
+        {"id": 4, "file_name": "d.jpg", "source": "projA"},
+        {"id": 5, "file_name": "e.jpg", "source": "projA"},
+    ],
+    "annotations": [
+        {"id": 1, "image_id": 1, "category_id": 1, "bbox": [0, 0, 1, 1]},
+        {"id": 2, "image_id": 2, "category_id": 1, "bbox": [0, 0, 1, 1]},
+        {"id": 3, "image_id": 3, "category_id": 1, "bbox": [0, 0, 1, 1]},
+        {"id": 4, "image_id": 4, "category_id": 1, "bbox": [0, 0, 1, 1]},
+        # rare class: only ever appears in one image -> starves val/test.
+        {"id": 5, "image_id": 5, "category_id": 2, "bbox": [1, 1, 2, 2]},
+    ],
+    "categories": [{"id": 1, "name": "fire"}, {"id": 2, "name": "rare_smoke"}],
+}
+
+
+def test_freeze_starved_class_does_not_raise_but_is_reported():
+    # L-2: unlike _run_build_trainset's hard-fail floor, Tier-2 must not raise on a starved
+    # rare class -- it should freeze successfully and surface starved_classes in the result.
+    db, minio = _FreezeDB(), _MinIO()
+    out = freeze_multi_project_trainset(
+        db, minio, merged_coco=_MERGED_STARVED, source_spec=_SINGLE_SPEC, task="sam3_detection",
+    )
+    assert out["skipped_duplicate"] is False
+    assert "rare_smoke" in out["starved_classes"]
+    assert len(db.inserted) == 1  # freeze still happened -- not blocked
+
+
+def test_freeze_no_starved_classes_when_min_per_split_is_zero():
+    # min_per_split=0 -> floor can never be violated (0 < 0 is always false) -> no starved
+    # classes reported, confirming the check is threshold-driven and not a false positive.
+    db, minio = _FreezeDB(), _MinIO()
+    out = freeze_multi_project_trainset(
+        db, minio, merged_coco=_MERGED_STARVED, source_spec=_SINGLE_SPEC, task="sam3_detection",
+        min_per_split=0,
+    )
+    assert out["starved_classes"] == []
+
+
 class _FullDB:
     """assemble(get_catalog_by_alias) + freeze(exists/insert) 둘 다 — asset DVC 경로 end-to-end."""
     def __init__(self, rows):
@@ -166,3 +229,15 @@ def test_run_build_trainset_from_dvc_end_to_end(tmp_path):
     assert out["sources"] == 2 and out["missing_sources"] == 0 and out["total_count"] == 2
     assert len(db.inserted) == 1
     assert [s["task"] for s in db.inserted[0]["source_spec"]["sources"]] == ["projA", "projB"]
+
+
+def test_freeze_raises_on_empty_merge():
+    """모든 source 결측 → merged 0장이면 loud fail (total_count=0 스냅샷 봉인 금지, Codex 감사)."""
+    import pytest
+
+    db, minio = _FreezeDB(), _MinIO()
+    empty = {"images": [], "annotations": [], "categories": []}
+    spec = {"sources": [], "missing": [{"task": "projA", "alias": "current"}]}
+    with pytest.raises(ValueError, match="0 images"):
+        freeze_multi_project_trainset(db, minio, merged_coco=empty, source_spec=spec, task="sam3_detection")
+    assert db.inserted == [] and minio.uploaded == []   # 아무것도 봉인 안 됨

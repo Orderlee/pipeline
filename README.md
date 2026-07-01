@@ -271,6 +271,7 @@ COMPOSE_PROFILES=analysis ./scripts/compose-prod.sh up -d analysis
 | `fiftyone_full_build.py` | 대용량(188K+) `frames` 초기 빌드 — 병렬 미디어 다운로드(`FFB_WORKERS`)·청크 add(`FFB_CHUNK`)·UMAP sample-fit(`FFB_FIT`)·표본 상한(`FFB_LIMIT`)으로 OOM 방지 |
 | `fiftyone_relaunch.py` | 이미 빌드된 데이터셋을 빌드 없이 앱만 재기동 + keep-alive |
 | `fiftyone_umap_only.py` | 기존 데이터셋에 UMAP/PCA brain run만 재실행 |
+| `label_qa_fiftyone.py` | 사람 GT 이미지를 격리 `pseudo_qa` 데이터셋으로 빌드 → FiftyOne `evaluate_detections`로 SAM3 pseudo-label FP/FN 육안 QA |
 
 > ⚠️ FiftyOne App에서 이미지(presigned URL)가 브라우저에 뜨려면 `ANALYSIS_MINIO_ENDPOINT`를 host-reachable 주소(예: `http://10.0.0.10:9000`)로 설정해야 합니다. 내부 docker 명(`minio:9000`)은 브라우저에서 미도달합니다. 세부는 [docker/analysis/README.md](docker/analysis/README.md) 참고.
 

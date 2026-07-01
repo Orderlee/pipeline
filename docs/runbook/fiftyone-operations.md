@@ -22,7 +22,7 @@ FiftyOne = 프레임 임베딩(PE-Core-L14-336, 1024-d, pgvector 적재)을 **UM
 |------|-----------|---------|
 | 컨테이너 | `docker-analysis-1` | `pipeline-test-analysis-1` |
 | Mongo 사이드카 | `docker-fiftyone-mongo-1` | `pipeline-test-fiftyone-mongo-1` |
-| JupyterLab | `:8888` | `:8889` (token=`<jupyter-token>`) |
+| JupyterLab | `:8888` | `:8889` (token=dispatch-embed) |
 | FiftyOne App | `:5153` (→컨테이너 :5151) | `:5152` |
 | Streamlit 대시보드 | `:8503` (→컨테이너 :8501) | `:8502` |
 | embedding-service | `:8004` (→ :8003) | `:8013` |
@@ -154,7 +154,7 @@ print('detection_class', dict(ds.count_values('detection_class')))"
 ### 5.3 여러 프로젝트로 좁히기 — View bar `MatchTags` 스테이지 (Saved View 불필요)
 Saved View 는 단일 선택이라 union 불가. 임의 조합은 **MatchTags 임시 스테이지**로(저장뷰 아님):
 1. 상단 **View bar** 빈칸 클릭 → `MatchTags` 타이핑 → 뜨는 `MatchTags` 클릭
-2. 첫 칸(placeholder `list,of,tags`)에 **프로젝트명 쉼표 구분 free-text** 입력: `source-d,ax_project`
+2. 첫 칸(placeholder `list,of,tags`)에 **프로젝트명 쉼표 구분 free-text** 입력: `source-d,source-f`
    - ⚠️ 자동완성 드롭다운 **없음**(free-text). 프로젝트명을 정확히 입력.
 3. **★ 스테이지 끝의 submit 화살표(→) 버튼 클릭** ← **이게 적용 트리거. Enter 로는 적용 안 됨!**
    → Unsaved view 에 그 프로젝트들만(예: 8,276), 임베딩 패널도 그것만.

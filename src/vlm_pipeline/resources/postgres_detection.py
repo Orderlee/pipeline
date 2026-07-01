@@ -32,7 +32,12 @@ ON CONFLICT (image_label_id) DO UPDATE SET
     label_status = EXCLUDED.label_status,
     object_count = EXCLUDED.object_count,
     created_at = EXCLUDED.created_at
+WHERE image_labels.review_status NOT IN ('reviewed', 'finalized')
 """
+# ON CONFLICT WHERE 가드(SAM3-1): 사람 검수(reviewed) 또는 확정(finalized)된 행은
+# 재-detection(primary re-run / sam3_shadow_compare)이 auto 결과로 덮어써
+# review_status 를 'auto_generated' 로 되돌리거나 사람 박스 참조(labels_key)를
+# clobber 하지 못하게 한다. 미검수(auto_generated/pending) 행은 정상적으로 갱신.
 
 
 class PostgresDetectionMixin:

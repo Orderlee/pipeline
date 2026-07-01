@@ -11,4 +11,6 @@ psutil
 --extra-index-url https://download.pytorch.org/whl/cu128
 torch==2.10.0
 torchvision>=0.21.0
-git+https://github.com/facebookresearch/sam3.git
+# DEP-1: pin to the commit currently deployed in docker-sam3-1 (재빌드 시 prod segmentation
+# 동작 drift 방지 + trainer↔serving 스택 parity 보장). 의도적 업그레이드 시 SHA 갱신+changelog.
+git+https://github.com/facebookresearch/sam3.git@5dd401d1c5c1d5c3eedff06d41b77af824517619
