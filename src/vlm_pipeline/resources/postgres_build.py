@@ -37,12 +37,16 @@ class PostgresBuildMixin:
             return [{"folder": row[0], "video_count": row[1], "image_count": row[2]} for row in rows]
 
     def find_project_video_candidates(self, folder: str, require_ls_finalized: bool = False) -> list[dict]:
+        # 검수 게이트는 **자산 단위** (l.asset_id = r.asset_id). 폴더 스코프
+        # (r2.source_unit_name = r.source_unit_name) 로 하면 폴더 안 비디오 1개만
+        # finalize 돼도 전체 비디오가 후보로 잡혀 미검수(auto-generated) 라벨이
+        # finalized 데이터셋에 유입된다 (no-self-training 위반). image 후보 쿼리
+        # (find_project_image_candidates) 및 build sensor readiness 게이트와 대칭.
         finalized_filter = (
             """
                   AND EXISTS (
                       SELECT 1 FROM labels l
-                      JOIN raw_files r2 ON r2.asset_id = l.asset_id
-                      WHERE r2.source_unit_name = r.source_unit_name
+                      WHERE l.asset_id = r.asset_id
                         AND l.review_status = 'finalized'
                   )
             """
@@ -240,6 +244,28 @@ class PostgresBuildMixin:
                     "UPDATE datasets SET build_status = %s WHERE dataset_id = %s",
                     (status, dataset_id),
                 )
+
+    def reap_stale_building_datasets(self, older_than_minutes: int) -> list[str]:
+        """created_at 이 TTL 초과한 ``build_status='building'`` datasets 를 'failed' 로 마감 (BUILD-4).
+
+        빌드는 짧다 → TTL(넉넉히) 초과 building = ``_build_project`` 가 insert 후 죽어
+        업데이트되지 못한 orphan. 게이팅 소비자는 모두 build_status='completed' 만 보므로
+        기능 영향은 없으나, 누적 clutter 를 정리하고 관측성을 유지한다.
+        """
+        minutes = max(1, int(older_than_minutes))
+        with self.connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE datasets
+                    SET build_status = 'failed'
+                    WHERE build_status = 'building'
+                      AND created_at < now() - make_interval(mins => %s)
+                    RETURNING dataset_id
+                    """,
+                    (minutes,),
+                )
+                return [r[0] for r in cur.fetchall()]
 
     def find_projects_ready_to_build(self) -> list[str]:
         """LS 검수 finalized 라벨이 있고 아직 완료된 dataset이 없는 folder."""

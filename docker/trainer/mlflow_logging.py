@@ -25,6 +25,10 @@ _LINEAGE_FIELDS = (
     "al_confirmed_count",
     "per_class_counts",
     "split_ratios",
+    # TODO(mlops-audit H-2): 아래 dvc_* 매핑은 구현됨이나 생산자 없음 — 아무 코드도
+    # training_summary["dataset"] 에 이 4키를 안 채운다. M-1(register 단계) 완료 후, freeze/register 가
+    # train_dataset_versions.dataset_catalog_id → dataset_catalog(git_rev/commit_subject/dvc_md5) 해석해
+    # 채우도록 배선 + DVC-sourced 학습으로 검증. docs/pipeline-flow-audit-2026-07-01.md §추후작업 H-2.
     "dvc_catalog_id",       # J8: which dataset_catalog row (DVC version) sourced this trainset
     "dvc_git_rev",          # J8: the data-repo commit
     "dvc_commit_subject",   # J8: human-readable curation intent

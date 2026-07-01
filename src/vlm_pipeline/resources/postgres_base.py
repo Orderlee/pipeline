@@ -31,10 +31,16 @@ def _is_transient_pg_error(exc: BaseException) -> bool:
 
     - OperationalError: 네트워크 끊김, 서버 재시작 등
     - InterfaceError: pool에서 빌려온 커넥션이 이미 끊어진 경우
-    위 두 가지가 발생했을 때만 retry 의미가 있다. SQL 에러(IntegrityError 등)는
-    재시도해도 동일한 결과이므로 즉시 raise.
+    - PoolError("connection pool exhausted"): 동시성이 pool_max 를 넘어 일시적으로
+      빈 커넥션이 없는 경우 — 다른 스레드가 putconn 하면 해소되므로 backoff 후
+      재시도 가치가 있다. 단 "pool is closed"(풀 자체 종료)는 재시도해도 무의미.
+    SQL 에러(IntegrityError 등)는 재시도해도 동일하므로 즉시 raise.
     """
-    return isinstance(exc, (psycopg2.OperationalError, psycopg2.InterfaceError))
+    if isinstance(exc, (psycopg2.OperationalError, psycopg2.InterfaceError)):
+        return True
+    if isinstance(exc, psycopg2.pool.PoolError):
+        return "closed" not in str(exc).lower()
+    return False
 
 
 class PostgresBaseMixin(PostgresPhashMixin, PostgresMigrationMixin):
@@ -172,10 +178,9 @@ class PostgresBaseMixin(PostgresPhashMixin, PostgresMigrationMixin):
         conn: Optional[psycopg2.extensions.connection] = None
         for attempt in range(retry_count + 1):
             try:
+                # 풀 고갈 시 getconn() 은 None 이 아니라 psycopg2.pool.PoolError 를
+                # raise 한다 → _is_transient_pg_error 가 이를 transient 로 잡아 backoff 재시도.
                 conn = pool.getconn()
-                # pool.getconn() 이 None 반환 시 (풀 고갈 edge case) transient 로 재시도.
-                if conn is None:
-                    raise psycopg2.InterfaceError("pool returned None connection")
                 # 끊어진 커넥션을 빌려왔는지 가벼운 확인
                 if conn.closed:
                     pool.putconn(conn, close=True)

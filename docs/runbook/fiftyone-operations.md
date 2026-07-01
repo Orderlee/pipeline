@@ -22,7 +22,7 @@ FiftyOne = 프레임 임베딩(PE-Core-L14-336, 1024-d, pgvector 적재)을 **UM
 |------|-----------|---------|
 | 컨테이너 | `docker-analysis-1` | `pipeline-test-analysis-1` |
 | Mongo 사이드카 | `docker-fiftyone-mongo-1` | `pipeline-test-fiftyone-mongo-1` |
-| JupyterLab | `:8888` | `:8889` (token=`<jupyter-token>`) |
+| JupyterLab | `:8888` | `:8889` (token=dispatch-embed) |
 | FiftyOne App | `:5153` (→컨테이너 :5151) | `:5152` |
 | Streamlit 대시보드 | `:8503` (→컨테이너 :8501) | `:8502` |
 | embedding-service | `:8004` (→ :8003) | `:8013` |
