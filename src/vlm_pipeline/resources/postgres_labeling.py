@@ -43,6 +43,12 @@ class PostgresLabelingMixin(PostgresDetectionMixin):
                     WHERE r.media_type = 'video'
                       AND r.ingest_status = 'completed'
                       AND COALESCE(vm.auto_label_status, 'pending') = 'pending'
+                      -- routed/dispatch 흐름이 이미 처리(또는 실패)한 비디오는 제외.
+                      -- routed 는 timestamp_status 만 세팅하고 auto_label_status 는
+                      -- NULL 로 두므로, 이 가드가 없으면 MVP backstop 이 dispatch 로
+                      -- 라벨된 비디오를 Gemini 재호출하여 카테고리필터 라벨을 clobber 한다.
+                      -- (auto_labeling_sensor gemini_pending CTE 와 반드시 동일 조건 유지)
+                      AND COALESCE(vm.timestamp_status, 'pending') = 'pending'
                       {query_cond}
                     ORDER BY r.created_at
                     LIMIT %s
@@ -176,7 +182,11 @@ class PostgresLabelingMixin(PostgresDetectionMixin):
                     WHERE r.media_type = 'video'
                       AND r.ingest_status = 'ready_for_labeling'
                       AND r.spec_id = %s
-                      AND COALESCE(vm.timestamp_status, 'pending') = 'pending'
+                      -- 'failed' 포함 → 이전 spec run 에서 Gemini 실패(transient
+                      -- rate-limit/5xx)한 비디오를 재-spec-run 시 재시도. 무한루프
+                      -- 아님: 이 쿼리는 clip_timestamp_routed_impl(dispatch/spec run)
+                      -- 에서만 호출되고 항상-on 센서가 자동 재발화하지 않는다.
+                      AND COALESCE(vm.timestamp_status, 'pending') IN ('pending', 'failed')
                     ORDER BY r.created_at
                     LIMIT %s
                     """,
@@ -209,7 +219,9 @@ class PostgresLabelingMixin(PostgresDetectionMixin):
                     WHERE r.media_type = 'video'
                       AND r.ingest_status = 'completed'
                       AND r.source_unit_name = %s
-                      AND COALESCE(vm.timestamp_status, 'pending') = 'pending'
+                      -- 'failed' 포함 → 이전 dispatch 에서 실패한 비디오를 폴더
+                      -- 재-dispatch 시 재시도 (operator 액션으로 bound, 자동루프 아님).
+                      AND COALESCE(vm.timestamp_status, 'pending') IN ('pending', 'failed')
                     ORDER BY r.created_at
                     LIMIT %s
                     """,

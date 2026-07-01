@@ -161,7 +161,8 @@ def _mark_failed_records(
     if not failed_updates:
         return
     try:
-        db.batch_update_status(failed_updates)
+        # skip_completed: 이미 완료(업로드+archive)된 행은 실패-마킹에서 제외 (INGEST-3).
+        db.batch_update_status(failed_updates, skip_completed=True)
     except Exception as update_exc:  # noqa: BLE001
         context.log.warning(f"raw_ingest 실패 후 raw_files 상태 정리 실패: {update_exc}")
 

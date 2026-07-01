@@ -28,12 +28,14 @@ from vlm_pipeline.defs.ingest.sensor import (
     cross_table_consistency_sensor,
     incoming_manifest_sensor,
     nas_health_sensor,
+    stale_state_reaper_sensor,
     stuck_run_guard_sensor,
 )
 from vlm_pipeline.defs.train.sensor_maintenance_guard import maintenance_guard_sensor
 from vlm_pipeline.defs.train.catalog_ingest import dataset_catalog_reconciliation_sensor
 from vlm_pipeline.defs.train.dataset import build_trainset
 from vlm_pipeline.defs.train.eval import train_eval_gate
+from vlm_pipeline.defs.train.label_qa import pseudo_label_bbox_qa, pseudo_label_timestamp_qa
 from vlm_pipeline.defs.label.assets import classification_video, clip_timestamp
 from vlm_pipeline.defs.label.manual_import import manual_label_import
 from vlm_pipeline.defs.label.sensor import auto_labeling_sensor
@@ -96,6 +98,7 @@ COMMON_INGEST_SENSORS = (
     incoming_manifest_sensor,
     auto_bootstrap_manifest_sensor,
     stuck_run_guard_sensor,
+    stale_state_reaper_sensor,  # default STOPPED — 운영자가 UI 에서 활성화
     nas_health_sensor,
     cross_table_consistency_sensor,
     maintenance_guard_sensor,
@@ -219,6 +222,8 @@ def build_production_assets(
         sam3_shadow_compare,
         build_trainset,
         train_eval_gate,
+        pseudo_label_bbox_qa,
+        pseudo_label_timestamp_qa,
     ]
     if enable_manual_label_import:
         assets.append(manual_label_import)

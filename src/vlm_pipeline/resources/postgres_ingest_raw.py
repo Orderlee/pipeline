@@ -199,8 +199,14 @@ class PostgresIngestRawMixin(PostgresIngestAuditMixin):
                         )
             return len([x for x in updates if x.get("asset_id")])
 
-    def batch_update_status(self, updates: list[dict]) -> int:
-        """배치 상태 업데이트."""
+    def batch_update_status(self, updates: list[dict], *, skip_completed: bool = False) -> int:
+        """배치 상태 업데이트.
+
+        ``skip_completed=True`` 면 이미 ``ingest_status='completed'`` 인 행은
+        건드리지 않는다 — 파이프라인 예외 시 실패-마킹이 (Phase C 에서 이미 업로드+
+        archive 되어 completed 로 커밋된) 행을 'failed' 로 되돌려 DB↔MinIO↔archive
+        가 어긋나고 dedup 이 그 자산을 놓치는 회귀(INGEST-3)를 방지.
+        """
         if not updates:
             return 0
         now = datetime.now()
@@ -216,21 +222,49 @@ class PostgresIngestRawMixin(PostgresIngestAuditMixin):
                     u["asset_id"],
                 )
             )
+        completed_guard = "\n                      AND ingest_status <> 'completed'" if skip_completed else ""
         with self.connect() as conn:
             with conn.cursor() as cur:
                 cur.executemany(
-                    """
+                    f"""
                     UPDATE raw_files
                     SET ingest_status = %s,
                         error_message = %s,
                         archive_path = COALESCE(%s, archive_path),
                         raw_bucket = COALESCE(%s, raw_bucket),
                         updated_at = %s
-                    WHERE asset_id = %s
+                    WHERE asset_id = %s{completed_guard}
                     """,
                     rows,
                 )
         return len(rows)
+
+    def reap_stale_uploading_raw_files(self, older_than_minutes: int) -> list[str]:
+        """updated_at 이 TTL 초과한 ``ingest_status='uploading'`` 행을 재수집 가능하게 마감 (INGEST-1).
+
+        'uploading' 은 ingest op 실행 중에만 잠깐 존재 → TTL(넉넉히) 초과 = 그 run 이 죽음
+        (hard SIGKILL/컨테이너 재시작). error_message 에 transient 마커('timeout')를 넣어
+        dedup 의 ``_is_retryable_failed_record`` 가 재수집 가능으로 판정하게 한다 —
+        그렇지 않으면 orphan 'uploading' 행이 ``find_any_by_checksum`` dedup 을 오염시켜
+        동일 checksum 신규 파일을 조용히 skip 한다(INGEST-1 poison).
+        **'pending' 은 제외** — auto_bootstrap 이 dispatch 대기용으로 장기 pending 을 둔다.
+        """
+        minutes = max(1, int(older_than_minutes))
+        with self.connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE raw_files
+                    SET ingest_status = 'failed',
+                        error_message = 'reaped_stale_uploading: timeout (orphaned ingest run)',
+                        updated_at = now()
+                    WHERE ingest_status = 'uploading'
+                      AND updated_at < now() - make_interval(mins => %s)
+                    RETURNING asset_id
+                    """,
+                    (minutes,),
+                )
+                return [r[0] for r in cur.fetchall()]
 
     def abort_in_progress_raw_files_for_dispatch(
         self,

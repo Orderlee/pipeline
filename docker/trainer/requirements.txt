@@ -1,7 +1,9 @@
 --extra-index-url https://download.pytorch.org/whl/cu128
 torch==2.10.0
 torchvision>=0.21.0
-git+https://github.com/facebookresearch/sam3.git
+# DEP-1: pin to the SAME commit as docker/sam3 (trainer↔serving parity — merged
+# checkpoint 가 서빙 스택에서 로드되려면 동일 sam3 버전이어야 함). SHA 변경은 sam3 와 동시.
+git+https://github.com/facebookresearch/sam3.git@5dd401d1c5c1d5c3eedff06d41b77af824517619
 open_clip_torch>=2.24.0
 hydra-core>=1.3.2
 omegaconf>=2.3.0

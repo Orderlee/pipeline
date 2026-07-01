@@ -25,7 +25,7 @@ DEFAULT_MODEL = "facebook/PE-Core-L14-336"
 # ── 분류 택소노미 정규화 ──
 # 여러 표현을 단일 클래스 이름으로 통일. detection_class 는 원본 보존, normalized_class 에 정규 이름 저장.
 NORMALIZED_CLASS_MAP: dict[str, str] = {
-    "person on the ground": "fall",
+    "person on the ground": "person",  # 2026-07 통합: person on the ground → person (fall 아님, 의도적)
     "fallen person": "fall",
     "person lying down": "fall",
     "patient": "patient",  # 'patient' 는 쓰러짐(fall)과 별개 — 라벨이 있으므로 독립 클래스로 유지
@@ -408,7 +408,17 @@ def attach_labels(ds):
             dn, env = env_by_asset.get(str(asset_id), (None, None)) if asset_id else (None, None)
             sample["daynight"] = dn or "none"
             sample["environment"] = env or "none"
-            sample["project"] = _project_of(image_keys.get(image_id))
+            proj = _project_of(image_keys.get(image_id))
+            if proj == "none":  # image_key 조회 miss → minio_key fallback (attach_project 와 동일)
+                mk = _sample_value(sample, "minio_key")
+                parts = str(mk).split("/") if mk else []
+                if len(parts) >= 2 and parts[1]:
+                    proj = parts[1]
+            if proj == "none":  # refresh 중 조회 실패로 정상 project 를 none 으로 downgrade 금지
+                existing = _sample_value(sample, "project")
+                if existing and existing != "none":
+                    proj = existing
+            sample["project"] = proj
 
             detections = []
             for bucket, key in sam3_refs_by_image.get(image_id, []):

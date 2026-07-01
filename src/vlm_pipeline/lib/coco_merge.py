@@ -41,6 +41,7 @@ def merge_coco(
         n_img = 0
         n_ann = 0
         n_orphan = 0
+        n_dropped_unknown_category = 0
         for img in coco.get("images", []):
             nid = next_img
             next_img += 1
@@ -50,6 +51,9 @@ def merge_coco(
         for ann in coco.get("annotations", []):
             cname = name_by_oldcat.get(ann["category_id"])
             if cname is None:
+                # unknown category_id: not in this source's own categories list (malformed/
+                # exporter drift) → crash 대신 skip+count, symmetric with orphan handling below.
+                n_dropped_unknown_category += 1
                 continue
             if allow is not None and cname not in allow:
                 continue
@@ -68,7 +72,12 @@ def merge_coco(
             })
             next_ann += 1
             n_ann += 1
-        prov[name] = {"images": n_img, "annotations": n_ann, "orphan_annotations": n_orphan}
+        prov[name] = {
+            "images": n_img,
+            "annotations": n_ann,
+            "orphan_annotations": n_orphan,
+            "dropped_unknown_category": n_dropped_unknown_category,
+        }
 
     categories = [{"id": cid, "name": cname} for cname, cid in sorted(cat_id_by_name.items(), key=lambda kv: kv[1])]
     return {"images": out_imgs, "annotations": out_anns, "categories": categories}, prov
