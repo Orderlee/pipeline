@@ -15,6 +15,10 @@ from vlm_pipeline.lib.sensor_db import open_sensor_read_connection
 AUTO_LABELING_TARGET_JOBS = {
     "auto_labeling_job",
     "mvp_stage_job",
+    # dispatch_stage_job 도 routed clip_timestamp 로 Gemini 라벨링을 수행한다.
+    # 이 job 실행 중에는 auto_labeling backstop 을 skip 해야 같은 폴더의
+    # 아직-미처리 비디오를 MVP 브랜치가 동시 Gemini 처리하는 race 를 막는다.
+    "dispatch_stage_job",
 }
 
 
@@ -34,6 +38,11 @@ def _read_auto_label_backlog_snapshot() -> dict[str, int | str | None]:
                     WHERE r.media_type = 'video'
                       AND r.ingest_status = 'completed'
                       AND COALESCE(vm.auto_label_status, 'pending') = 'pending'
+                      -- find_auto_label_pending_videos 와 동일 가드: routed/dispatch
+                      -- 가 이미 처리(또는 실패)한 비디오는 MVP backlog 에서 제외.
+                      -- (둘이 어긋나면 센서는 backlog>0 로 발화하는데 job 은 후보 0건
+                      --  → 빈 run 반복. 반드시 동기 유지.)
+                      AND COALESCE(vm.timestamp_status, 'pending') = 'pending'
                 ),
                 caption_pending AS (
                     SELECT

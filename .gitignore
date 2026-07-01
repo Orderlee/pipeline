@@ -208,3 +208,10 @@ scripts/recover_*_[0-9]*.py
 !tests/unit/test_claudemd_scripts_table.py
 !tests/unit/test_coco_merge.py
 !tests/unit/test_multi_project_assemble.py
+# Pseudo-label 품질평가 스코어러 (pure P/R/F1, box_map._iou 재사용, dagster 의존 없음)
+!tests/unit/test_pseudo_label_qa.py
+!tests/unit/test_label_qa_asset.py
+# FiftyOne FP/FN push 순수 헬퍼 (importlib 로드, fiftyone 불필요)
+!tests/unit/test_label_qa_fiftyone.py
+# key_builders (build_pseudo_bbox_key 등 순수 키빌더 — C-1 감사 수정)
+!tests/unit/test_key_builders.py
