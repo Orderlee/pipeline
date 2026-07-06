@@ -181,6 +181,8 @@ class PostgresBaseMixin(PostgresPhashMixin, PostgresMigrationMixin):
                 # 풀 고갈 시 getconn() 은 None 이 아니라 psycopg2.pool.PoolError 를
                 # raise 한다 → _is_transient_pg_error 가 이를 transient 로 잡아 backoff 재시도.
                 conn = pool.getconn()
+                if conn is None:  # 방어: 풀 구현이 None 을 돌려주는 비정상 케이스
+                    raise psycopg2.InterfaceError("pool returned None connection")
                 # 끊어진 커넥션을 빌려왔는지 가벼운 확인
                 if conn.closed:
                     pool.putconn(conn, close=True)

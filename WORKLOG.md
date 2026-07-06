@@ -61,6 +61,57 @@
 
 
 
+
+
+
+## 2026-07-03
+
+### 1. 당일 코드 및 설정 정리
+- **문제**: 당일 변경이 여러 영역에 걸쳐 있어, 커밋 목록만 보면 실제 수정 범위와 운영 영향 지점을 파악하기 어려웠음.
+- **원인**: 자동 기록이 파일/커밋 나열 중심으로 작성되면 코드, 설정, 문서 변경이 어떤 의도로 묶였는지 드러나지 않음.
+- **조치**:
+    - 당일 변경 파일과 커밋을 기준으로 작업 내용을 정리함.
+
+### 2. 당일 정리
+- **서비스 상태**: 파이프라인 서비스 16개 컨테이너 중 16개 정상 가동.
+- **작업 환경**: VSCode
+
+## 2026-07-02
+
+- (당일 커밋/파일 변경 없음)
+## 2026-07-01
+
+### 1. 당일 코드 및 설정 정리
+- **문제**: 당일 변경이 여러 영역에 걸쳐 있어, 커밋 목록만 보면 실제 수정 범위와 운영 영향 지점을 파악하기 어려웠음.
+- **원인**: 자동 기록이 파일/커밋 나열 중심으로 작성되면 코드, 설정, 문서 변경이 어떤 의도로 묶였는지 드러나지 않음.
+- **조치**:
+    - 파이프라인 코드 변경을 정리함: `src/vlm_pipeline/definitions_production.py`, `src/vlm_pipeline/defs/ingest/ingest_post.py`, `src/vlm_pipeline/defs/ingest/sensor.py`, `src/vlm_pipeline/defs/ingest/sensor_nas_health.py`, `... 외 8개`
+    - 인프라/설정 변경을 정리함: `docker/sam3/requirements.txt`, `docker/trainer/requirements.txt`
+    - 테스트 변경을 정리함: `tests/unit/test_pipeline_flow_audit_fixes.py`
+    - 문서 변경을 정리함: `docs/pipeline-flow-audit-2026-07-01-core.md`, `docs/pipeline-status-report-2026-07-01.md`
+    - 관련 커밋: `ce7ad5a1` fix(db,ops,ingest): PoolError retry + sam3 pin + nas_health cursor + stale-state reaper (audit DB-1/DEP-1/TEST-2, INGEST-1/DISPATCH-2/BUILD-4), `009bef3e` docs(audit): core-flow gap audit + pipeline status report (2026-07-01), `26d92b42` fix(ingest,sam): guard completed-row demotion + reviewed-label clobber (audit INGEST-3, SAM3-1), `55e31c1d` fix(build,label): per-asset finalized gate + dual-state-machine guards (audit BUILD-1, LABEL-1/2/3)
+    - 관련 파일:
+      - `docker/sam3/requirements.txt`
+      - `docker/trainer/requirements.txt`
+      - `docs/pipeline-flow-audit-2026-07-01-core.md`
+      - `docs/pipeline-status-report-2026-07-01.md`
+      - `src/vlm_pipeline/definitions_production.py`
+      - `src/vlm_pipeline/defs/ingest/ingest_post.py`
+      - `src/vlm_pipeline/defs/ingest/sensor.py`
+      - `src/vlm_pipeline/defs/ingest/sensor_nas_health.py`
+      - `... 외 9개`
+
+### 2. 당일 정리
+- **변경 통계**:
+    - 변경 파일 **17개**, +917/-32줄.
+- **관련 커밋**:
+    - `ce7ad5a1`: fix(db,ops,ingest): PoolError retry + sam3 pin + nas_health cursor + stale-state reaper (audit DB-1/DEP-1/TEST-2, INGEST-1/DISPATCH-2/BUILD-4)
+    - `009bef3e`: docs(audit): core-flow gap audit + pipeline status report (2026-07-01)
+    - `26d92b42`: fix(ingest,sam): guard completed-row demotion + reviewed-label clobber (audit INGEST-3, SAM3-1)
+    - `55e31c1d`: fix(build,label): per-asset finalized gate + dual-state-machine guards (audit BUILD-1, LABEL-1/2/3)
+- **서비스 상태**: 파이프라인 서비스 16개 컨테이너 중 16개 정상 가동.
+- **작업 환경**: VSCode
+
 ## 2026-06-30
 
 ### 1. 수동 / 사전 라벨 import 경로 정리
