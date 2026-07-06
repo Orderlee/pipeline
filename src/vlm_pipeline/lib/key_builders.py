@@ -104,17 +104,6 @@ def build_gemini_label_key(raw_key: str) -> str:
     return str(PurePosixPath("events") / f"{stem}.json")
 
 
-def build_pseudo_events_key(events_key: str) -> str:
-    """원본(모델) 이벤트 스냅샷 키: `.../x.json` → `.../x.pseudo.json`.
-
-    LS finalize 가 events/<stem>.json 를 사람수정본으로 덮어써도 원본 pseudo 를 보존해
-    timestamp 품질평가(pseudo vs GT)가 가능하게 한다. `build_gemini_label_key` 출력에 적용.
-    """
-    key_path = PurePosixPath(str(events_key or "").strip())
-    suffix = key_path.suffix or ".json"
-    return str(key_path.with_suffix("")) + ".pseudo" + suffix
-
-
 def build_raw_video_image_key(raw_key: str, frame_index: int) -> str:
     key_path = PurePosixPath(str(raw_key or "").strip())
     stem = key_path.stem or "video"
@@ -144,17 +133,3 @@ def build_sam3_detection_key(image_key: str) -> str:
 
 
 build_sam3_segmentation_key = build_sam3_detection_key
-
-
-def build_pseudo_bbox_key(image_key: str) -> str:
-    """원본(모델) SAM3 bbox 스냅샷 키: `.../x.json` → `.../x.pseudo.json`.
-
-    LS 리뷰 `/sync`가 finalize 前 `sam3_segmentations/<stem>.json`을 사람수정본으로
-    in-place 덮어써도 원본 pseudo 를 보존해 bbox 품질평가(pseudo vs GT)가 가능하게 한다.
-    `build_sam3_detection_key` 출력에 적용 (timestamp 쪽 `build_pseudo_events_key`와 동일 패턴).
-    """
-    key_path = PurePosixPath(str(image_key or "").strip())
-    detection_key = build_sam3_detection_key(str(key_path))
-    detection_path = PurePosixPath(detection_key)
-    suffix = detection_path.suffix or ".json"
-    return str(detection_path.with_suffix("")) + ".pseudo" + suffix

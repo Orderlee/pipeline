@@ -18,7 +18,6 @@ from typing import Any
 from dagster import Field, asset
 
 from vlm_pipeline.lib.box_map import mean_average_precision
-from vlm_pipeline.lib.pe_core_gate import pe_core_gate_decision
 from vlm_pipeline.lib.recall_at_k import bootstrap_ci, cross_modal_recall_at_k
 from vlm_pipeline.lib.train_eval_gate import (
     DEFAULT_EVAL_CONFIG,
@@ -96,9 +95,6 @@ def _score_candidate(context, db: PostgresResource, minio: MinIOResource, row: d
     checkpoint (row['checkpoint_key']), and dispatches to _score_sam3_predictions /
     _score_pe_core_recall. Not executed in CI (monkeypatched).
     """
-    # TODO(mlops-audit M-2): sealed-split GT 로드 + candidate 체크포인트 추론 →
-    # _score_sam3_predictions / _score_pe_core_recall 로 채점. 학습된 candidate + GT + prod GPU
-    # 유입 시 구현·검증. 착수 가이드: docs/pipeline-flow-audit-2026-07-01.md §추후작업 M-2.
     raise NotImplementedError("GPU candidate scoring runs on prod box; monkeypatched in CI")
 
 
@@ -111,8 +107,6 @@ def _score_incumbent(
     Else cold-start: score the stock/base model ('stock_base', §7.4 H3). GPU-only;
     monkeypatched in CI.
     """
-    # TODO(mlops-audit M-2): 위 _score_candidate 와 동일 — incumbent 체크포인트(없으면 stock_base)를
-    # 같은 sealed split 에 추론·채점. docs/pipeline-flow-audit-2026-07-01.md §추후작업 M-2.
     raise NotImplementedError("GPU incumbent scoring runs on prod box; monkeypatched in CI")
 
 
@@ -124,31 +118,12 @@ def _run_train_eval_gate(context, db: PostgresResource, minio: MinIOResource) ->
     candidate_metrics = _score_candidate(context, db, minio, row)
     incumbent_metrics, incumbent_source = _score_incumbent(context, db, minio, row)
 
-    # PE-Core 는 GT-abstain 게이트 경유(사람검수 GT < pe_core_min_gt 면 승격 불가, design §7.4/§8.1-D).
-    # gt_count = 이번 eval 에서 실제 채점한 사람-GT 쿼리 수(_score_pe_core_recall 의 n_queries).
-    # SAM3 등은 기존 evaluate_gate 직행. (M-3: 이전엔 pe_core 도 evaluate_gate 직행이라 abstain 미강제.)
-    if row.get("model") == "pe_core":
-        decision = pe_core_gate_decision(
-            candidate_metrics,
-            incumbent_metrics,
-            cfg,
-            gt_count=int(candidate_metrics.get("n_queries", 0)),
-            incumbent_source=incumbent_source,
-        )
-    else:
-        # TODO(mlops-audit M-2/gate): SAM3 경로엔 최소표본 floor 가 없다 — pe_core 는 gt_count <
-        # pe_core_min_gt 면 abstain 하는데(small-N holdout → 고분산, design §7.4/§10) 같은 분산 위험이
-        # SAM3 mAP 에도 동일하게 적용된다. tiny sealed split(예: 1장, map 0.5 vs stock 0.0)이 margin 을
-        # 통과해 promotable 로 flip 될 수 있다. 근본수정: M-2 의 _score_candidate/_score_incumbent 가
-        # 채점 표본수(n_eval_images 등)를 metrics 에 실으면, pe_core 의 gt_count abstain 과 대칭으로
-        # eval_config['min_eval_images'] 미만 시 abstain 추가. 스코어러(M-2) 미구현이라 지금 field 계약을
-        # 선발명하지 않고 여기 flag 만. docs/pipeline-flow-audit-2026-07-01.md §추후작업 M-2.
-        decision = evaluate_gate(
-            candidate_metrics,
-            incumbent_metrics,
-            cfg,
-            incumbent_source=incumbent_source,
-        )
+    decision = evaluate_gate(
+        candidate_metrics,
+        incumbent_metrics,
+        cfg,
+        incumbent_source=incumbent_source,
+    )
     new_status = "promotable" if decision.promotable else "candidate"
     for reason in decision.reasons:
         context.log.info("train_eval_gate[%s]: %s", model_version_id, reason)

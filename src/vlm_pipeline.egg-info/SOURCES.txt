@@ -1,204 +1,106 @@
 README.md
 pyproject.toml
-src/gemini/__init__.py
-src/gemini/ls_import.py
-src/gemini/ls_sync.py
-src/gemini/ls_sync_converters.py
-src/gemini/ls_sync_db.py
-src/gemini/ls_tasks.py
-src/gemini/ls_tasks_create.py
-src/gemini/ls_tasks_label_config.py
-src/gemini/ls_tasks_minio.py
-src/gemini/ls_webhook.py
-src/gemini/ls_webhook_dagster.py
-src/gemini/ls_webhook_env.py
-src/gemini/ls_webhook_finalize.py
-src/gemini/ls_webhook_state.py
-src/gemini/video.py
-src/gemini/assets/__init__.py
-src/gemini/assets/config.py
-src/python/nas_folder_tree_db_helpers.py
-src/python/nas_folder_tree_event_handler.py
-src/python/nas_folder_tree_event_watcher.py
-src/python/nas_folder_tree_to_postgres.py
-src/python/common/__init__.py
-src/python/common/config.py
-src/vlm_pipeline/__init__.py
-src/vlm_pipeline/definitions.py
-src/vlm_pipeline/definitions_production.py
-src/vlm_pipeline.egg-info/PKG-INFO
-src/vlm_pipeline.egg-info/SOURCES.txt
-src/vlm_pipeline.egg-info/dependency_links.txt
-src/vlm_pipeline.egg-info/requires.txt
-src/vlm_pipeline.egg-info/top_level.txt
-src/vlm_pipeline/defs/__init__.py
-src/vlm_pipeline/defs/build/__init__.py
-src/vlm_pipeline/defs/build/assets.py
-src/vlm_pipeline/defs/build/build_genai.py
-src/vlm_pipeline/defs/build/build_helpers.py
-src/vlm_pipeline/defs/build/classification.py
-src/vlm_pipeline/defs/build/classification_fallback.py
-src/vlm_pipeline/defs/build/sensor.py
-src/vlm_pipeline/defs/dispatch/__init__.py
-src/vlm_pipeline/defs/dispatch/_types.py
-src/vlm_pipeline/defs/dispatch/archive_dispatch_sensor.py
-src/vlm_pipeline/defs/dispatch/builders.py
-src/vlm_pipeline/defs/dispatch/production_agent_sensor.py
-src/vlm_pipeline/defs/dispatch/sensor.py
-src/vlm_pipeline/defs/dispatch/sensor_run_status.py
-src/vlm_pipeline/defs/dispatch/service.py
-src/vlm_pipeline/defs/dispatch/webhook_server.py
-src/vlm_pipeline/defs/embed/__init__.py
-src/vlm_pipeline/defs/embed/assets.py
-src/vlm_pipeline/defs/embed/helpers.py
-src/vlm_pipeline/defs/embed/sensor.py
-src/vlm_pipeline/defs/embed/video.py
-src/vlm_pipeline/defs/gcp/__init__.py
-src/vlm_pipeline/defs/gcp/assets.py
-src/vlm_pipeline/defs/genai/__init__.py
-src/vlm_pipeline/defs/genai/sensor.py
-src/vlm_pipeline/defs/ingest/__init__.py
-src/vlm_pipeline/defs/ingest/archive.py
-src/vlm_pipeline/defs/ingest/archive_cleanup.py
-src/vlm_pipeline/defs/ingest/archive_finalize.py
-src/vlm_pipeline/defs/ingest/archive_move.py
-src/vlm_pipeline/defs/ingest/archive_policy.py
-src/vlm_pipeline/defs/ingest/asset_checks.py
-src/vlm_pipeline/defs/ingest/assets.py
-src/vlm_pipeline/defs/ingest/compaction.py
-src/vlm_pipeline/defs/ingest/duplicate.py
-src/vlm_pipeline/defs/ingest/env_backfill.py
-src/vlm_pipeline/defs/ingest/env_backfill_helpers.py
-src/vlm_pipeline/defs/ingest/hydration.py
-src/vlm_pipeline/defs/ingest/ingest_archive_flow.py
-src/vlm_pipeline/defs/ingest/ingest_manifest_flow.py
-src/vlm_pipeline/defs/ingest/ingest_orchestrate.py
-src/vlm_pipeline/defs/ingest/ingest_post.py
-src/vlm_pipeline/defs/ingest/ingest_state.py
-src/vlm_pipeline/defs/ingest/inline_dedup.py
-src/vlm_pipeline/defs/ingest/manifest.py
-src/vlm_pipeline/defs/ingest/ops_common.py
-src/vlm_pipeline/defs/ingest/ops_normalize.py
-src/vlm_pipeline/defs/ingest/ops_register.py
-src/vlm_pipeline/defs/ingest/ops_upload_archived.py
-src/vlm_pipeline/defs/ingest/runtime_policy.py
-src/vlm_pipeline/defs/ingest/sensor.py
-src/vlm_pipeline/defs/ingest/sensor_bootstrap.py
-src/vlm_pipeline/defs/ingest/sensor_bootstrap_cursor.py
-src/vlm_pipeline/defs/ingest/sensor_bootstrap_discover.py
-src/vlm_pipeline/defs/ingest/sensor_bootstrap_helpers.py
-src/vlm_pipeline/defs/ingest/sensor_bootstrap_policy.py
-src/vlm_pipeline/defs/ingest/sensor_bootstrap_scan.py
-src/vlm_pipeline/defs/ingest/sensor_cross_table_consistency.py
-src/vlm_pipeline/defs/ingest/sensor_helpers.py
-src/vlm_pipeline/defs/ingest/sensor_incoming.py
-src/vlm_pipeline/defs/ingest/sensor_nas_health.py
-src/vlm_pipeline/defs/ingest/sensor_stuck_guard.py
-src/vlm_pipeline/defs/ingest/upload_archived_asset.py
-src/vlm_pipeline/defs/label/__init__.py
-src/vlm_pipeline/defs/label/artifact_bbox.py
-src/vlm_pipeline/defs/label/artifact_caption.py
-src/vlm_pipeline/defs/label/artifact_classification.py
-src/vlm_pipeline/defs/label/artifact_import.py
-src/vlm_pipeline/defs/label/artifact_import_support.py
-src/vlm_pipeline/defs/label/artifact_import_utils.py
-src/vlm_pipeline/defs/label/artifact_resolve.py
-src/vlm_pipeline/defs/label/artifact_scan.py
-src/vlm_pipeline/defs/label/assets.py
-src/vlm_pipeline/defs/label/helpers_classification.py
-src/vlm_pipeline/defs/label/helpers_common.py
-src/vlm_pipeline/defs/label/helpers_gemini.py
-src/vlm_pipeline/defs/label/helpers_video.py
-src/vlm_pipeline/defs/label/import_support.py
-src/vlm_pipeline/defs/label/label_helpers.py
-src/vlm_pipeline/defs/label/manual_import.py
-src/vlm_pipeline/defs/label/sensor.py
-src/vlm_pipeline/defs/label/timestamp.py
-src/vlm_pipeline/defs/ls/__init__.py
-src/vlm_pipeline/defs/ls/sensor.py
-src/vlm_pipeline/defs/process/__init__.py
-src/vlm_pipeline/defs/process/assets.py
-src/vlm_pipeline/defs/process/captioning.py
-src/vlm_pipeline/defs/process/clip_windows.py
-src/vlm_pipeline/defs/process/frame_extract_common.py
-src/vlm_pipeline/defs/process/frame_extract_mvp.py
-src/vlm_pipeline/defs/process/frame_extract_routed.py
-src/vlm_pipeline/defs/process/helpers.py
-src/vlm_pipeline/defs/process/helpers_clip_media.py
-src/vlm_pipeline/defs/process/helpers_frame_caption.py
-src/vlm_pipeline/defs/process/helpers_key_utils.py
-src/vlm_pipeline/defs/process/helpers_metadata.py
-src/vlm_pipeline/defs/process/raw_frames.py
-src/vlm_pipeline/defs/sam/__init__.py
-src/vlm_pipeline/defs/sam/assets.py
-src/vlm_pipeline/defs/sam/detection_assets.py
-src/vlm_pipeline/defs/shared/__init__.py
-src/vlm_pipeline/defs/shared/detection_sensor_factory.py
-src/vlm_pipeline/defs/shared/sensor_cursor_utils.py
-src/vlm_pipeline/defs/spec/__init__.py
-src/vlm_pipeline/defs/spec/config_resolver.py
-src/vlm_pipeline/defs/spec/target_classes.py
-src/vlm_pipeline/defs/yolo/__init__.py
-src/vlm_pipeline/defs/yolo/assets.py
-src/vlm_pipeline/defs/yolo/sensor.py
-src/vlm_pipeline/lib/__init__.py
-src/vlm_pipeline/lib/checksum.py
-src/vlm_pipeline/lib/dataset_lineage.py
-src/vlm_pipeline/lib/detection_coco.py
-src/vlm_pipeline/lib/detection_common.py
-src/vlm_pipeline/lib/detection_sensor_utils.py
-src/vlm_pipeline/lib/dispatch_payload.py
-src/vlm_pipeline/lib/embedding.py
-src/vlm_pipeline/lib/env_utils.py
-src/vlm_pipeline/lib/file_loader.py
-src/vlm_pipeline/lib/gemini.py
-src/vlm_pipeline/lib/gemini_credentials.py
-src/vlm_pipeline/lib/gemini_json.py
-src/vlm_pipeline/lib/gemini_prompts.py
-src/vlm_pipeline/lib/gemini_script_utils.py
-src/vlm_pipeline/lib/gemini_translate.py
-src/vlm_pipeline/lib/key_builders.py
-src/vlm_pipeline/lib/media_utils.py
-src/vlm_pipeline/lib/minio_cross_sync.py
-src/vlm_pipeline/lib/network_probe.py
-src/vlm_pipeline/lib/phash.py
-src/vlm_pipeline/lib/runtime_profile.py
-src/vlm_pipeline/lib/sam3.py
-src/vlm_pipeline/lib/sam3_compare.py
-src/vlm_pipeline/lib/sam3_labeling.py
-src/vlm_pipeline/lib/sanitizer.py
-src/vlm_pipeline/lib/sensor_db.py
-src/vlm_pipeline/lib/slack_notify.py
-src/vlm_pipeline/lib/spec_config.py
-src/vlm_pipeline/lib/validator.py
-src/vlm_pipeline/lib/vertex_chunking.py
-src/vlm_pipeline/lib/video_embedding.py
-src/vlm_pipeline/lib/video_env.py
-src/vlm_pipeline/lib/video_frames.py
-src/vlm_pipeline/lib/video_loader.py
-src/vlm_pipeline/lib/video_reencode.py
-src/vlm_pipeline/lib/yolo_thresholds.py
-src/vlm_pipeline/lib/yolo_world.py
-src/vlm_pipeline/resources/__init__.py
-src/vlm_pipeline/resources/config.py
-src/vlm_pipeline/resources/minio.py
-src/vlm_pipeline/resources/postgres.py
-src/vlm_pipeline/resources/postgres_base.py
-src/vlm_pipeline/resources/postgres_build.py
-src/vlm_pipeline/resources/postgres_dedup.py
-src/vlm_pipeline/resources/postgres_detection.py
-src/vlm_pipeline/resources/postgres_embedding.py
-src/vlm_pipeline/resources/postgres_genai.py
-src/vlm_pipeline/resources/postgres_ingest.py
-src/vlm_pipeline/resources/postgres_ingest_audit.py
-src/vlm_pipeline/resources/postgres_ingest_dispatch.py
-src/vlm_pipeline/resources/postgres_ingest_metadata.py
-src/vlm_pipeline/resources/postgres_ingest_raw.py
-src/vlm_pipeline/resources/postgres_labeling.py
-src/vlm_pipeline/resources/postgres_migration.py
-src/vlm_pipeline/resources/postgres_phash.py
-src/vlm_pipeline/resources/postgres_process.py
-src/vlm_pipeline/resources/postgres_spec.py
-src/vlm_pipeline/resources/postgres_video_metadata.py
-src/vlm_pipeline/resources/runtime_settings.py
-src/vlm_pipeline/sql/__init__.py
+src / gemini / __init__.py
+src / gemini / video.py
+src / gemini / assets / __init__.py
+src / gemini / assets / config.py
+src / gemini / gemini / __init__.py
+src / gemini / gemini / gemini_api.py
+src / python / local_duckdb_to_motherduck_sync.py
+src / python / nas_folder_tree_event_watcher.py
+src / python / nas_folder_tree_to_postgres.py
+src / python / common / __init__.py
+src / python / common / config.py
+src / python / common / motherduck.py
+src / vlm_pipeline / __init__.py
+src / vlm_pipeline / definitions.py
+src / vlm_pipeline / definitions_common.py
+src / vlm_pipeline / definitions_profiles.py
+src / vlm_pipeline / definitions_staging.py
+src / vlm_pipeline.egg - info / PKG - INFO
+src / vlm_pipeline.egg - info / SOURCES.txt
+src / vlm_pipeline.egg - info / dependency_links.txt
+src / vlm_pipeline.egg - info / requires.txt
+src / vlm_pipeline.egg - info / top_level.txt
+src / vlm_pipeline / defs / __init__.py
+src / vlm_pipeline / defs / build / __init__.py
+src / vlm_pipeline / defs / build / assets.py
+src / vlm_pipeline / defs / dispatch / __init__.py
+src / vlm_pipeline / defs / dispatch / production_agent_sensor.py
+src / vlm_pipeline / defs / dispatch / sensor.py
+src / vlm_pipeline / defs / dispatch / sensor_incoming_mover.py
+src / vlm_pipeline / defs / dispatch / sensor_run_status.py
+src / vlm_pipeline / defs / dispatch / service.py
+src / vlm_pipeline / defs / dispatch / staging_agent_sensor.py
+src / vlm_pipeline / defs / gcp / __init__.py
+src / vlm_pipeline / defs / gcp / assets.py
+src / vlm_pipeline / defs / ingest / __init__.py
+src / vlm_pipeline / defs / ingest / archive.py
+src / vlm_pipeline / defs / ingest / assets.py
+src / vlm_pipeline / defs / ingest / duplicate.py
+src / vlm_pipeline / defs / ingest / manifest.py
+src / vlm_pipeline / defs / ingest / ops.py
+src / vlm_pipeline / defs / ingest / runtime_policy.py
+src / vlm_pipeline / defs / ingest / sensor.py
+src / vlm_pipeline / defs / ingest / sensor_bootstrap.py
+src / vlm_pipeline / defs / ingest / sensor_helpers.py
+src / vlm_pipeline / defs / ingest / sensor_incoming.py
+src / vlm_pipeline / defs / ingest / sensor_stuck_guard.py
+src / vlm_pipeline / defs / label / __init__.py
+src / vlm_pipeline / defs / label / artifact_import_support.py
+src / vlm_pipeline / defs / label / assets.py
+src / vlm_pipeline / defs / label / import_support.py
+src / vlm_pipeline / defs / label / manual_import.py
+src / vlm_pipeline / defs / label / prelabeled_import.py
+src / vlm_pipeline / defs / label / sensor.py
+src / vlm_pipeline / defs / process / __init__.py
+src / vlm_pipeline / defs / process / assets.py
+src / vlm_pipeline / defs / process / sensor.py
+src / vlm_pipeline / defs / sam / __init__.py
+src / vlm_pipeline / defs / sam / assets.py
+src / vlm_pipeline / defs / spec / __init__.py
+src / vlm_pipeline / defs / spec / assets.py
+src / vlm_pipeline / defs / spec / config_resolver.py
+src / vlm_pipeline / defs / spec / sensor.py
+src / vlm_pipeline / defs / spec / staging_assets.py
+src / vlm_pipeline / defs / spec / staging_sensor.py
+src / vlm_pipeline / defs / sync / __init__.py
+src / vlm_pipeline / defs / sync / assets.py
+src / vlm_pipeline / defs / sync / sensor.py
+src / vlm_pipeline / defs / yolo / __init__.py
+src / vlm_pipeline / defs / yolo / assets.py
+src / vlm_pipeline / defs / yolo / sensor.py
+src / vlm_pipeline / defs / yolo / staging_assets.py
+src / vlm_pipeline / lib / __init__.py
+src / vlm_pipeline / lib / checksum.py
+src / vlm_pipeline / lib / env_utils.py
+src / vlm_pipeline / lib / file_loader.py
+src / vlm_pipeline / lib / gemini.py
+src / vlm_pipeline / lib / gemini_prompts.py
+src / vlm_pipeline / lib / phash.py
+src / vlm_pipeline / lib / runtime_profile.py
+src / vlm_pipeline / lib / sam3.py
+src / vlm_pipeline / lib / sam3_compare.py
+src / vlm_pipeline / lib / sanitizer.py
+src / vlm_pipeline / lib / spec_config.py
+src / vlm_pipeline / lib / staging_dispatch.py
+src / vlm_pipeline / lib / staging_vertex.py
+src / vlm_pipeline / lib / validator.py
+src / vlm_pipeline / lib / video_env.py
+src / vlm_pipeline / lib / video_frames.py
+src / vlm_pipeline / lib / video_loader.py
+src / vlm_pipeline / lib / video_reencode.py
+src / vlm_pipeline / lib / yolo_coco.py
+src / vlm_pipeline / lib / yolo_thresholds.py
+src / vlm_pipeline / lib / yolo_world.py
+src / vlm_pipeline / resources / __init__.py
+src / vlm_pipeline / resources / config.py
+src / vlm_pipeline / resources / duckdb.py
+src / vlm_pipeline / resources / duckdb_base.py
+src / vlm_pipeline / resources / duckdb_dedup.py
+src / vlm_pipeline / resources / duckdb_ingest.py
+src / vlm_pipeline / resources / duckdb_labeling.py
+src / vlm_pipeline / resources / duckdb_spec.py
+src / vlm_pipeline / resources / minio.py
+src / vlm_pipeline / resources / runtime_settings.py
+src / vlm_pipeline / sql / __init__.py

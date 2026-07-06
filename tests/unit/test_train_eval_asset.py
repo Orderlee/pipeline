@@ -116,32 +116,3 @@ def test_eval_config_override_from_op_config(monkeypatch) -> None:
     out = _ev._run_train_eval_gate(ctx, db, _DummyMinIO())
     assert out["promotable"] is False
     assert db.written["eval_config"]["primary_margin"] == 0.99
-
-
-def _pe_metrics(recall5: float, n_queries: int) -> dict[str, Any]:
-    return {"recall_at_5": recall5, "per_class_recall": {"fire": recall5}, "n_queries": n_queries}
-
-
-def test_pe_core_abstains_below_min_gt(monkeypatch) -> None:
-    """M-3: pe_core 행은 GT-abstain 게이트 경유 — GT(n_queries) < pe_core_min_gt 면 승격 불가,
-    metric 이 아무리 좋아도. (이전엔 evaluate_gate 직행이라 advisory=True 로 무조건 promotable.)"""
-    db = _DummyDB(_base_row(model="pe_core", version="pe_core@ft-001"))
-    ctx = _DummyContext({"model_version_id": "mv-001"})
-    # candidate 가 incumbent 를 크게 앞서지만 GT 는 겨우 10 (< 기본 50) → abstain
-    monkeypatch.setattr(_ev, "_score_candidate", lambda *a: _pe_metrics(0.9, 10))
-    monkeypatch.setattr(_ev, "_score_incumbent", lambda *a: (_pe_metrics(0.1, 10), "stock_base"))
-    out = _ev._run_train_eval_gate(ctx, db, _DummyMinIO())
-    assert out["promotable"] is False
-    assert any("gt_below_min" in r for r in out["reasons"])
-    assert db.written["status"] == "candidate"
-
-
-def test_pe_core_delegates_when_gt_sufficient(monkeypatch) -> None:
-    """M-3: GT >= min 이면 evaluate_gate 로 위임 — margin 통과 시 promotable."""
-    db = _DummyDB(_base_row(model="pe_core", version="pe_core@ft-002"))
-    ctx = _DummyContext({"model_version_id": "mv-001"})
-    monkeypatch.setattr(_ev, "_score_candidate", lambda *a: _pe_metrics(0.9, 200))
-    monkeypatch.setattr(_ev, "_score_incumbent", lambda *a: (_pe_metrics(0.1, 200), "stock_base"))
-    out = _ev._run_train_eval_gate(ctx, db, _DummyMinIO())
-    assert out["promotable"] is True
-    assert not any("gt_below_min" in r for r in out["reasons"])

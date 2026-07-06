@@ -531,6 +531,7 @@ pytest tests/integration -q
 | `mvp_stage_job` | 수집 전용 호환 job |
 | `ingest_job` | raw ingest 단독 |
 | `gcs_download_job` | GCS → incoming |
+| `sourcea_download_job` | source-a 사이트 일일 수집 (06:00 KST 스케줄) |
 | `dispatch_stage_job` | 운영 자동 라벨링의 유일한 진입점 (ingest + Gemini + classification + SAM3) |
 | `auto_labeling_job` | dispatch 잔여/누락분 backlog 라벨링 (`clip_timestamp` + `clip_captioning` + `classification_video`) |
 | `upload_label_job` | `from_archived=True` dispatch JSON → archive 파일 MinIO 업로드 |
@@ -567,6 +568,7 @@ pytest tests/integration -q
 | `genai_poll_sensor` | RUNNING | 비동기 GenAI(Kling/Veo/Higgsfield) job polling |
 | `frame_embedding_backlog_sensor` / `caption_embedding_backlog_sensor` | STOPPED (`ENABLE_EMBEDDING`) | 미임베딩 backlog → embedding job |
 | `gcs_download_schedule` | - | 매일 04:00 KST GCS 수집 |
+| `sourcea_download_schedule` | RUNNING | 매일 06:00 KST source-a 사이트 일일 수집 |
 | `ls_presign_renew_schedule` | - | 매일 05:00 KST LS presigned URL 갱신 |
 
 ## Query Examples

@@ -31,7 +31,7 @@ def tmp_data_repo(tmp_path):
     repo = tmp_path / "dvc-datasets"
     repo.mkdir()
     _git(repo, "init", "-q")
-    _git(repo, "config", "user.email", "shjin@user.space")
+    _git(repo, "config", "user.email", "shjin@example.com")
     _git(repo, "config", "user.name", "Seohee Jin")
     data = repo / "data"
     data.mkdir()
@@ -61,7 +61,7 @@ def test_dvc_git_wrappers_read_real_repo(tmp_data_repo):
     meta = dvc_git.git_log_meta(str(repo), rev)
     assert meta.commit_subject == "curate: fire v3"
     assert "removed blurry frames" in meta.commit_message
-    assert meta.commit_author_email == "shjin@user.space"
+    assert meta.commit_author_email == "shjin@example.com"
     files = dvc_git.list_dvc_files_at_rev(str(repo), rev)
     assert files == ["data/fire_v3.dvc"]
     text = dvc_git.read_file_at_rev(str(repo), rev, "data/fire_v3.dvc")

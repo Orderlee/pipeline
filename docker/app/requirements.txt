@@ -5,9 +5,16 @@ pydantic>=2.10.0
 pydantic-settings>=2.0.0
 pyyaml>=6.0.2
 psycopg2-binary>=2.9.9
-dvc[s3]>=3.51,<4
+pymysql>=1.1
+dvc
 dagster>=1.6,<2
 dagster-webserver>=1.6,<2
+# grpcio 1.82 의 health-checking gencode(protobuf 7.35)가 dagster/aiplatform 의
+# protobuf<7 cap 과 불일치 → code-server 크래시 (2026-07-06 재빌드 드리프트).
+# protobuf-6 호환 확인된 최신(1.76.0)로 고정 — protobuf cap 이 풀리기 전엔 유지.
+grpcio==1.76.0
+grpcio-health-checking==1.76.0
+grpcio-status==1.76.0
 imagehash>=4.3.1
 Pillow>=10.4.0
 pillow-heif>=0.18.0

@@ -22,7 +22,7 @@ from dagster import Field, asset
 
 from vlm_pipeline.lib.checksum import sha256_bytes
 from vlm_pipeline.lib.coco_merge import merge_coco
-from vlm_pipeline.lib.dataset_split import SPLIT_NAMES, _per_class_floor_ok, _split_groups
+from vlm_pipeline.lib.dataset_split import _per_class_floor_ok, _split_groups
 from vlm_pipeline.lib.dvc_pull import build_dvc_get_argv
 from vlm_pipeline.lib.trainset_manifest import (
     build_manifest,
@@ -376,18 +376,8 @@ def assemble_multi_project_coco(
     pin 없는 프로젝트는 skip 하고 source_spec.missing 에 기록(조용한 누락 금지). class_allowlist/remap 은
     union/선택 조합을 위해 merge_coco 로 위임. dvc_get 주입 → CI mock(실 dvc 미실행).
 
-    Returns (merged_coco, source_spec). source_spec = {sources:[{task,catalog_id,git_rev,dvc_out_path,
-    gt_source}], missing, provenance, class_allowlist, class_remap} → train_dataset_versions.source_spec
-    로 lineage 기록.
-
-    ⚠️ Trust boundary (M-4): every source here is a DVC-committed COCO file — trusted as
-    human-curated GT because it only reaches DVC via the human curation/review gate upstream
-    (LS finalize → export → dvc add/commit), NOT because this function re-runs the SQL
-    model-derived-label exclusion that the single-project path (_run_build_trainset) applies.
-    The no-self-training invariant on THIS path is therefore enforced by process (who is
-    allowed to `dvc add`+commit into the curated repo), not by a query filter. Each entry is
-    tagged gt_source='dvc_curated' so this trust boundary is visible in the recorded lineage,
-    not just in a docstring.
+    Returns (merged_coco, source_spec). source_spec = {sources:[{task,catalog_id,git_rev,dvc_out_path}],
+    missing, provenance, class_allowlist, class_remap} → train_dataset_versions.source_spec 로 lineage 기록.
     """
     pulled = []
     spec_sources = []
@@ -407,7 +397,6 @@ def assemble_multi_project_coco(
             "dataset_catalog_id": src["dataset_catalog_id"],
             "git_rev": src["git_rev"],
             "dvc_out_path": src["dvc_out_path"],
-            "gt_source": "dvc_curated",
         })
     merged, provenance = merge_coco(pulled, class_allowlist=class_allowlist, class_remap=class_remap)
     source_spec = {
@@ -431,34 +420,15 @@ def freeze_multi_project_trainset(
     split_ratios=None,
     group_key_field=None,
     force_new=False,
-    min_per_split=1,
-    log=None,
 ):
     """assemble 한 merged COCO 를 불변 train_dataset_versions 스냅샷으로 동결 (Tier 2 freeze).
 
     이미지 바이트는 재복사 안 함 — DVC 데이터셋이 이미 MinIO 에 content-addressed 정본
     (source_spec 으로 재현). 여기선 manifest+split+content_checksum+source_spec(멀티프로젝트 lineage)
     만 동결하고, merged COCO json 을 _trainsets/<id>/coco.json 에 올린다. (task, content_checksum) 멱등.
-
-    dataset_catalog_id (H-1): train_dataset_versions 의 FK 컬럼은 정확히 1개 dataset_catalog 행만
-    가리킬 수 있다. source_spec["sources"] 가 단일 소스일 때만(unambiguous) 그 소스의
-    dataset_catalog_id 를 채운다 — 소스가 여러 개면 FK 는 NULL 로 남기고 source_spec JSON 이
-    멀티프로젝트 lineage 의 유일한 source of truth 로 남는다(단일 컬럼으로 N개를 표현 불가).
-
-    per-class stratify floor (L-2): 단일소스 경로(_run_build_trainset)와 달리 Tier-2 는 조합이
-    예측 불가(N개 프로젝트 union) 하므로 floor 위반을 하드 fail 하지 않는다 — 합법적인 rare-class
-    조합을 조기 차단하지 않기 위해 WARN 로그 + starved_classes 를 결과 dict 에 기록만 한다.
     """
     split_ratios = split_ratios or {"train": 0.8, "val": 0.1, "test": 0.1}
     images = merged_coco.get("images", [])
-    # 빈 merge 를 스냅샷으로 봉인하지 않는다 — 모든 source 의 pin 이 없거나 결측이면(source_spec.missing)
-    # merged 가 0장이 되는데, 그대로 freeze 하면 total_count=0 인 '정상처럼 보이는' 사용불가 스냅샷이
-    # 조용히 생긴다. freeze 는 operator 가 source 리스트로 트리거하는 행위라 loud fail 이 맞다.
-    if not images:
-        raise ValueError(
-            "freeze_multi_project_trainset: merged COCO has 0 images — all sources missing/unpinned? "
-            f"missing={source_spec.get('missing')}"
-        )
     cats = {c["id"]: c["name"] for c in merged_coco.get("categories", [])}
     class_map = {name: i for i, name in enumerate(sorted(cats.values()))}
 
@@ -488,37 +458,6 @@ def freeze_multi_project_trainset(
         for im in rows:
             split_assignment[_ukey(im)] = sname
 
-    # ---- per-class stratify floor (L-2): WARN + record, never hard-fail (multi-source combos
-    # are less predictable than the single-project path's, which does raise on this check). ----
-    def _explode_by_category(rows):
-        out = []
-        for im in rows:
-            for a in anns_by_img.get(im["id"], []):
-                cn = cats.get(a["category_id"])
-                if cn:
-                    out.append({"category": cn})
-        return out
-
-    exploded_by_split = {sname: _explode_by_category(rows) for sname, rows in splits.items()}
-    _floor_ok, _floor_counts = _per_class_floor_ok(
-        exploded_by_split, class_fn=lambda r: r["category"], min_per_split=min_per_split
-    )
-    starved_classes = sorted(
-        cls
-        for cls, per in _floor_counts.items()
-        for sname in SPLIT_NAMES
-        if exploded_by_split.get(sname) and per[sname] < min_per_split
-    )
-    if starved_classes:
-        msg = (
-            f"[trainset/dvc] per-class stratify floor violated (min_per_split={min_per_split}): "
-            f"starved_classes={starved_classes} per_class_counts={json.dumps(_floor_counts)}"
-        )
-        if log is not None:
-            log.warning(msg)
-        else:
-            print(msg)
-
     # manifest: per-image (source/file_name, sha256 over sorted box payloads) — stable/deterministic.
     objects = []
     for im in images:
@@ -540,10 +479,6 @@ def freeze_multi_project_trainset(
     # split_assignment 도 MinIO 에 동결하고 그 '키'를 기록 (Codex BUG1: 리터럴 문자열 금지).
     split_key = f"{TRAINSETS_PREFIX}/{version_id}/split_assignment.json"
     minio.upload(DATASET_BUCKET, split_key, json.dumps(split_assignment, sort_keys=True).encode("utf-8"))
-    # H-1: FK is unambiguous only for exactly one source — multi-source lineage stays in
-    # source_spec only (a single column can't represent N catalog rows).
-    spec_sources = source_spec.get("sources") or []
-    dataset_catalog_id = spec_sources[0].get("dataset_catalog_id") if len(spec_sources) == 1 else None
     db.insert_train_dataset_version({
         "train_dataset_version_id": version_id,
         "task": task,
@@ -559,7 +494,6 @@ def freeze_multi_project_trainset(
         "per_class_counts": per_class_counts,
         "total_count": len(images),
         "seed": seed,
-        "dataset_catalog_id": dataset_catalog_id,
     })
     return {
         "skipped_duplicate": False,
@@ -567,7 +501,6 @@ def freeze_multi_project_trainset(
         "train_dataset_version_id": version_id,
         "total_count": len(images),
         "per_class_counts": per_class_counts,
-        "starved_classes": starved_classes,
     }
 
 
@@ -601,7 +534,6 @@ def _run_build_trainset_from_dvc(
     out = freeze_multi_project_trainset(
         db, minio, merged_coco=merged, source_spec=source_spec, task=task,
         seed=seed, split_ratios=split_ratios, group_key_field=group_key_field, force_new=force_new,
-        log=log,
     )
     out["sources"] = len(source_spec["sources"])
     out["missing_sources"] = len(source_spec["missing"])

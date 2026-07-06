@@ -29,10 +29,10 @@ outs:
 _GIT_STDOUT = (
     "9f3c2a1b7e4d5c6a8b0f1e2d3c4b5a6978d0e1f2\n"
     "curate: fire/smoke v3 — drop blurry night frames\n"
-    "Added 320 KhonKaen night clips, removed 44 mislabeled.\n"
+    "Added 320 SourceA night clips, removed 44 mislabeled.\n"
     "Class balance: fire=540 smoke=410.\n"
     "Seohee Jin\n"
-    "shjin@user.space\n"
+    "shjin@example.com\n"
     "2026-06-29T11:18:04+09:00\n"
 )
 
@@ -78,10 +78,10 @@ def test_parse_git_log_format_multiline_body() -> None:
     assert meta.git_rev == "9f3c2a1b7e4d5c6a8b0f1e2d3c4b5a6978d0e1f2"
     assert meta.commit_subject == "curate: fire/smoke v3 — drop blurry night frames"
     # body = everything between subject and the trailing 3 fields (may be multi-line):
-    assert "Added 320 KhonKaen night clips" in meta.commit_message
+    assert "Added 320 SourceA night clips" in meta.commit_message
     assert "Class balance: fire=540 smoke=410." in meta.commit_message
     assert meta.commit_author_name == "Seohee Jin"
-    assert meta.commit_author_email == "shjin@user.space"
+    assert meta.commit_author_email == "shjin@example.com"
     assert meta.committed_at == "2026-06-29T11:18:04+09:00"
 
 

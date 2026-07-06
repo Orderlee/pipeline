@@ -22,6 +22,7 @@ from vlm_pipeline.defs.dispatch.sensor_run_status import (
 )
 from vlm_pipeline.defs.gcp.assets import DEFAULT_GCP_BUCKETS, DEFAULT_GCP_DOWNLOAD_DIR, gcs_download_to_incoming
 from vlm_pipeline.defs.ingest.assets import raw_ingest
+from vlm_pipeline.defs.ingest.sourcea_download import sourcea_site_download
 from vlm_pipeline.defs.ingest.upload_archived_asset import upload_archived
 from vlm_pipeline.defs.ingest.sensor import (
     auto_bootstrap_manifest_sensor,
@@ -35,7 +36,6 @@ from vlm_pipeline.defs.train.sensor_maintenance_guard import maintenance_guard_s
 from vlm_pipeline.defs.train.catalog_ingest import dataset_catalog_reconciliation_sensor
 from vlm_pipeline.defs.train.dataset import build_trainset
 from vlm_pipeline.defs.train.eval import train_eval_gate
-from vlm_pipeline.defs.train.label_qa import pseudo_label_bbox_qa, pseudo_label_timestamp_qa
 from vlm_pipeline.defs.label.assets import classification_video, clip_timestamp
 from vlm_pipeline.defs.label.manual_import import manual_label_import
 from vlm_pipeline.defs.label.sensor import auto_labeling_sensor
@@ -202,6 +202,22 @@ def build_gcs_download_schedule(job) -> ScheduleDefinition:
     )
 
 
+def build_sourcea_download_schedule(job) -> ScheduleDefinition:
+    """매일 06:00 KST SourceA 사이트 수집 (tailscale 창구 06:00-07:00).
+
+    07:00 종료는 asset 내부 자체 마감(기본 06:55, env SOURCEA_DEADLINE)이 보장 —
+    이 배포에는 run monitoring 이 없어 dagster/max_runtime 태그가 동작하지 않는다.
+    env/NAS/tailscale 부재 시 asset 이 graceful skip 하므로 RUNNING 이 안전하다.
+    """
+    return ScheduleDefinition(
+        name="sourcea_download_schedule",
+        job=job,
+        cron_schedule="0 6 * * *",
+        execution_timezone="Asia/Seoul",
+        default_status=DefaultScheduleStatus.RUNNING,
+    )
+
+
 def build_production_assets(
     *,
     enable_manual_label_import: bool,
@@ -213,6 +229,7 @@ def build_production_assets(
         raw_ingest,
         upload_archived,  # Phase 2b: archive 경로 → MinIO 업로드
         gcs_download_to_incoming,
+        sourcea_site_download,
         *CLIP_AUTO_LABEL_ASSETS,
         raw_video_to_frame,
         build_dataset,
@@ -222,8 +239,6 @@ def build_production_assets(
         sam3_shadow_compare,
         build_trainset,
         train_eval_gate,
-        pseudo_label_bbox_qa,
-        pseudo_label_timestamp_qa,
     ]
     if enable_manual_label_import:
         assets.append(manual_label_import)
