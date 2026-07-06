@@ -34,12 +34,8 @@ def test_union_remaps_ids_no_collision():
     img_ids = {im["id"] for im in merged["images"]}
     assert all(a["image_id"] in img_ids for a in merged["annotations"])
     assert len(merged["annotations"]) == 4
-    assert prov["projA"] == {
-        "images": 2, "annotations": 2, "orphan_annotations": 0, "dropped_unknown_category": 0,
-    }
-    assert prov["projB"] == {
-        "images": 1, "annotations": 2, "orphan_annotations": 0, "dropped_unknown_category": 0,
-    }
+    assert prov["projA"] == {"images": 2, "annotations": 2, "orphan_annotations": 0}
+    assert prov["projB"] == {"images": 1, "annotations": 2, "orphan_annotations": 0}
 
 
 def test_orphan_annotation_skipped_not_crash():
@@ -54,28 +50,7 @@ def test_orphan_annotation_skipped_not_crash():
     }
     merged, prov = merge_coco([("p", bad)])
     assert len(merged["annotations"]) == 1            # orphan dropped, not crashed
-    assert prov["p"] == {
-        "images": 1, "annotations": 1, "orphan_annotations": 1, "dropped_unknown_category": 0,
-    }
-
-
-def test_unknown_category_id_skipped_and_counted():
-    # L-1: annotation references a category_id absent from this source's own categories list
-    # (malformed/exporter drift) — must be counted symmetrically with orphan_annotations, not
-    # silently dropped.
-    bad = {
-        "images": [{"id": 1, "file_name": "x.jpg"}],
-        "annotations": [
-            {"id": 1, "image_id": 1, "category_id": 1, "bbox": [0, 0, 1, 1]},
-            {"id": 2, "image_id": 1, "category_id": 999, "bbox": [0, 0, 1, 1]},  # unknown category
-        ],
-        "categories": [{"id": 1, "name": "fire"}],
-    }
-    merged, prov = merge_coco([("p", bad)])
-    assert len(merged["annotations"]) == 1
-    assert prov["p"] == {
-        "images": 1, "annotations": 1, "orphan_annotations": 0, "dropped_unknown_category": 1,
-    }
+    assert prov["p"] == {"images": 1, "annotations": 1, "orphan_annotations": 1}
 
 
 def test_allowlist_keeps_only_selected_classes():

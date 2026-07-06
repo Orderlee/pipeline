@@ -32,7 +32,7 @@ _GIT_STDOUT = (
     "Added 320 SourceA night clips, removed 44 mislabeled.\n"
     "Class balance: fire=540 smoke=410.\n"
     "Seohee Jin\n"
-    "eng-c@user.space\n"
+    "eng-c@example.com\n"
     "2026-06-29T11:18:04+09:00\n"
 )
 
@@ -81,7 +81,7 @@ def test_parse_git_log_format_multiline_body() -> None:
     assert "Added 320 SourceA night clips" in meta.commit_message
     assert "Class balance: fire=540 smoke=410." in meta.commit_message
     assert meta.commit_author_name == "Seohee Jin"
-    assert meta.commit_author_email == "eng-c@user.space"
+    assert meta.commit_author_email == "eng-c@example.com"
     assert meta.committed_at == "2026-06-29T11:18:04+09:00"
 
 

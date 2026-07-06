@@ -79,6 +79,10 @@ tests/unit/*
 !tests/unit/test_trainer_sam3_config.py
 !tests/unit/test_trainer_lora_merge.py
 !tests/unit/test_trainer_preflight.py
+# SourceA 사이트 미러+분류 순수 로직 — 표준 lib(urllib/xml/pathlib) + lazy pymysql 의존, dagster import 없음.
+!tests/unit/test_sourcea_site.py
+# SourceA 일일 수집 asset — preflight graceful skip + 자체 마감 (Task 2)
+!tests/unit/test_sourcea_download_asset.py
 # Phase 4-B integration tests (#12) — self-contained conftest, sidecar PG 의존
 # (DATAOPS_TEST_POSTGRES_DSN 미설정 시 자동 skip).
 !tests/integration/
@@ -208,10 +212,6 @@ scripts/recover_*_[0-9]*.py
 !tests/unit/test_claudemd_scripts_table.py
 !tests/unit/test_coco_merge.py
 !tests/unit/test_multi_project_assemble.py
-# Pseudo-label 품질평가 스코어러 (pure P/R/F1, box_map._iou 재사용, dagster 의존 없음)
-!tests/unit/test_pseudo_label_qa.py
-!tests/unit/test_label_qa_asset.py
-# FiftyOne FP/FN push 순수 헬퍼 (importlib 로드, fiftyone 불필요)
-!tests/unit/test_label_qa_fiftyone.py
-# key_builders (build_pseudo_bbox_key 등 순수 키빌더 — C-1 감사 수정)
-!tests/unit/test_key_builders.py
+
+# bkit agent audit logs — local tool state (SSH cmds/IPs), never publish
+.bkit/

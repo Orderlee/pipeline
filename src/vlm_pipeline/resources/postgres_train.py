@@ -61,39 +61,6 @@ class PostgresTrainMixin:
             ]
             return self._rows_to_dicts(rows, columns)
 
-    def find_finalized_timestamp_events(self, folder_name: str | None = None) -> list[dict]:
-        """One row per human-finalized timestamp event (labels, review_status='finalized').
-
-        For pseudo-label QA: GT event intervals per video (labels_key). labels has no
-        category column → QA is event-level (single 'event' class). raw_files join scopes
-        to a folder. Only rows with both timestamps present.
-        """
-        where_folder = ""
-        params: list = []
-        if folder_name:
-            where_folder = "AND r.source_unit_name = %s"
-            params.append(folder_name)
-        with self.connect() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    f"""
-                    SELECT l.labels_key, l.asset_id,
-                           l.timestamp_start_sec, l.timestamp_end_sec
-                    FROM labels l
-                    JOIN raw_files r ON r.asset_id = l.asset_id
-                    WHERE l.review_status = 'finalized'
-                      AND l.labels_key IS NOT NULL
-                      AND l.timestamp_start_sec IS NOT NULL
-                      AND l.timestamp_end_sec IS NOT NULL
-                      {where_folder}
-                    ORDER BY l.labels_key, l.timestamp_start_sec
-                    """,
-                    tuple(params),
-                )
-                rows = cur.fetchall()
-            columns = ["labels_key", "asset_id", "timestamp_start_sec", "timestamp_end_sec"]
-            return self._rows_to_dicts(rows, columns)
-
     def find_al_confirmed_image_ids(self, image_ids: list[str]) -> set[str]:
         """Subset of image_ids that have ≥1 human-confirmed annotation box.
 
@@ -127,14 +94,7 @@ class PostgresTrainMixin:
                 return cur.fetchone() is not None
 
     def insert_train_dataset_version(self, row: dict) -> None:
-        """Insert a sealed train_dataset_versions row; idempotent on (task, content_checksum).
-
-        dataset_catalog_id (migration 016 FK) is nullable here by design: it links a frozen
-        snapshot back to exactly ONE dataset_catalog row, so callers only set it for
-        single-source DVC builds (unambiguous). Multi-source Tier-2 builds (see
-        freeze_multi_project_trainset) leave it NULL and record per-source lineage in
-        source_spec instead — a single FK column can't represent N sources.
-        """
+        """Insert a sealed train_dataset_versions row; idempotent on (task, content_checksum)."""
         with self.connect() as conn:
             with conn.cursor() as cur:
                 cur.execute(
@@ -143,8 +103,8 @@ class PostgresTrainMixin:
                         train_dataset_version_id, created_at, task, source_spec, class_map,
                         group_key_field, split_assignment_key, split_ratios, manifest_key,
                         content_checksum, ls_count, al_confirmed_count, per_class_counts,
-                        total_count, seed, upstream_dataset_id, dataset_catalog_id
-                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        total_count, seed, upstream_dataset_id
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     ON CONFLICT (task, content_checksum) DO NOTHING
                     """,
                     (
@@ -164,7 +124,6 @@ class PostgresTrainMixin:
                         int(row.get("total_count") or 0),
                         int(row.get("seed") or 0),
                         row.get("upstream_dataset_id"),
-                        row.get("dataset_catalog_id"),
                     ),
                 )
 
@@ -225,11 +184,6 @@ class PostgresTrainMixin:
 
         Returns the dataset_catalog_id of the inserted OR pre-existing row.
         status comes from row (caller sets 'available' / 'pending_missing_dvc_objects').
-
-        On conflict, self-heals a 'pending_missing_dvc_objects' row to the freshly-observed
-        status (e.g. once the MinIO objects show up) — mirrors scripts/dvc/ingest_to_catalog.py's
-        DO UPDATE (Codex BUG2 there). 'available'/'pinned' rows are protected by the WHERE guard
-        so a stale re-ingest can never demote them.
         """
         with self.connect() as conn:
             with conn.cursor() as cur:
@@ -253,9 +207,7 @@ class PostgresTrainMixin:
                         %(dvc_nfiles)s, %(dvc_remote_name)s, %(dvc_remote_url)s,
                         %(train_dataset_version_id)s, %(content_checksum)s, %(mlflow_run_id)s
                     )
-                    ON CONFLICT (data_repo_id, git_rev, dvc_file_path, dvc_out_path) DO UPDATE
-                        SET status = EXCLUDED.status
-                        WHERE dataset_catalog.status = 'pending_missing_dvc_objects'
+                    ON CONFLICT (data_repo_id, git_rev, dvc_file_path, dvc_out_path) DO NOTHING
                     RETURNING dataset_catalog_id
                     """,
                     {
@@ -346,8 +298,7 @@ class PostgresTrainMixin:
                 # 검사하고 task 일치는 강제하지 않으므로, 다른 task 의 catalog_id 로 pin 하면 빌더가
                 # 엉뚱한 데이터셋을 학습할 수 있음. FOR UPDATE 로 status flip 대상 행도 잠근다.
                 cur.execute(
-                    "SELECT task, status FROM dataset_catalog WHERE dataset_catalog_id = %(dataset_catalog_id)s "
-                    "FOR UPDATE",
+                    "SELECT task FROM dataset_catalog WHERE dataset_catalog_id = %(dataset_catalog_id)s FOR UPDATE",
                     {"dataset_catalog_id": dataset_catalog_id},
                 )
                 crow = cur.fetchone()
@@ -356,13 +307,6 @@ class PostgresTrainMixin:
                 if crow[0] != task:
                     raise ValueError(
                         f"task mismatch: alias task={task!r} but catalog {dataset_catalog_id!r} is task={crow[0]!r}"
-                    )
-                # M-5: fast-fail instead of letting a pending/invalid row get pinned (fails later,
-                # opaquely, at `dvc get` time). Only available/pinned rows have real bytes to pull.
-                if crow[1] not in ("available", "pinned"):
-                    raise ValueError(
-                        f"dataset_catalog_id {dataset_catalog_id!r} has status={crow[1]!r}, "
-                        "must be 'available' or 'pinned' to pin"
                     )
                 # FOR UPDATE(Codex BUG2): 기존 alias 행을 잠가 동시 pin 을 직렬화 →
                 # pin_events.previous_dataset_catalog_id 가 일관(두 pin 이 같은 선행자를 주장하지 않음).

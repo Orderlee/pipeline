@@ -146,13 +146,6 @@ try:
 except Exception as exc:  # noqa: BLE001 — 라벨 실패해도 빌드 유지
     log(f"labels skipped: {exc!r}")
 
-# ── 4b. project 필드 + per-project Saved Views (attach_labels 경로와 동일 기능) ──
-try:
-    fp.attach_project(ds)  # project=image_key 첫 세그먼트 + proj:<name> saved views/tags
-    log("project + saved views set")
-except Exception as exc:  # noqa: BLE001 — project 실패해도 빌드 유지
-    log(f"project skipped: {exc!r}")
-
 # ── 5. UMAP 샘플-fit → transform 배치 (+ PCA) ──
 try:
     embs = ds.values("embedding")  # ds 순서 = points 정렬 보장

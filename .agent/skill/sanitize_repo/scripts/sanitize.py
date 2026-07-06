@@ -62,6 +62,11 @@ EXTRA_FILE_GLOBS = (".env*",)
 PURGE_PATHS = (
     ".github/workflows",
     ".pre-commit-config.yaml",
+    # standalone operator toolkit synced from prod: real plaintext passwords,
+    # tailnet hosts, CCTV sample JPGs, and a 700MB vendored .venv. Not wired into
+    # the pipeline (pipeline uses src/vlm_pipeline/lib/sourcea_site.py). Never publish.
+    "site_reports",
+    ".bkit",
 )
 
 # how many sample lines to show per (file, risky-token) in the review section

@@ -9888,7 +9888,7 @@ _GIT_STDOUT = (
     "Added 320 SourceA night clips, removed 44 mislabeled.\n"
     "Class balance: fire=540 smoke=410.\n"
     "Seohee Jin\n"
-    "eng-c@user.space\n"
+    "eng-c@example.com\n"
     "2026-06-29T11:18:04+09:00\n"
 )
 
@@ -9937,7 +9937,7 @@ def test_parse_git_log_format_multiline_body() -> None:
     assert "Added 320 SourceA night clips" in meta.commit_message
     assert "Class balance: fire=540 smoke=410." in meta.commit_message
     assert meta.commit_author_name == "Seohee Jin"
-    assert meta.commit_author_email == "eng-c@user.space"
+    assert meta.commit_author_email == "eng-c@example.com"
     assert meta.committed_at == "2026-06-29T11:18:04+09:00"
 
 
@@ -10511,7 +10511,7 @@ def tmp_data_repo(tmp_path):
     repo = tmp_path / "dvc-datasets"
     repo.mkdir()
     _git(repo, "init", "-q")
-    _git(repo, "config", "user.email", "eng-c@user.space")
+    _git(repo, "config", "user.email", "eng-c@example.com")
     _git(repo, "config", "user.name", "Seohee Jin")
     data = repo / "data"
     data.mkdir()
@@ -10541,7 +10541,7 @@ def test_dvc_git_wrappers_read_real_repo(tmp_data_repo):
     meta = dvc_git.git_log_meta(str(repo), rev)
     assert meta.commit_subject == "curate: fire v3"
     assert "removed blurry frames" in meta.commit_message
-    assert meta.commit_author_email == "eng-c@user.space"
+    assert meta.commit_author_email == "eng-c@example.com"
     files = dvc_git.list_dvc_files_at_rev(str(repo), rev)
     assert files == ["data/fire_v3.dvc"]
     text = dvc_git.read_file_at_rev(str(repo), rev, "data/fire_v3.dvc")

@@ -10,6 +10,7 @@ from vlm_pipeline.definitions_production import (
     build_common_resources,
     build_dispatch_stage_selection,
     build_gcs_download_schedule,
+    build_sourcea_download_schedule,
     build_production_assets,
     build_production_sensors,
     build_video_env_backfill_schedule,
@@ -18,6 +19,7 @@ from vlm_pipeline.defs.ingest.env_backfill import video_env_backfill_job
 from vlm_pipeline.defs.gcp.assets import gcs_download_to_incoming
 from vlm_pipeline.defs.ingest.asset_checks import PHASE_3C_ASSET_CHECKS
 from vlm_pipeline.defs.ingest.assets import raw_ingest
+from vlm_pipeline.defs.ingest.sourcea_download import sourcea_site_download
 from vlm_pipeline.defs.ingest.upload_archived_asset import upload_archived
 from vlm_pipeline.defs.label.assets import classification_video, clip_timestamp
 from vlm_pipeline.defs.label.manual_import import manual_label_import
@@ -46,6 +48,11 @@ _gcs_download_job = build_asset_job(
     name="gcs_download_job",
     selection=[gcs_download_to_incoming],
     description="GCS 외부 데이터 수집",
+)
+_sourcea_download_job = build_asset_job(
+    name="sourcea_download_job",
+    selection=[sourcea_site_download],
+    description="SourceA 사이트 일일 수집 (tailscale 06:00-07:00 창구)",
 )
 _dispatch_stage_job = build_asset_job(
     name="dispatch_stage_job",
@@ -83,6 +90,7 @@ _jobs: list[object] = [
     _mvp_stage_job,
     _ingest_job,
     _gcs_download_job,
+    _sourcea_download_job,
     _dispatch_stage_job,
     _auto_labeling_job,
     _upload_label_job,
@@ -156,6 +164,7 @@ defs = Definitions(
     jobs=_jobs,
     schedules=[
         build_gcs_download_schedule(_gcs_download_job),
+        build_sourcea_download_schedule(_sourcea_download_job),
         ls_presign_renew_schedule,
         build_video_env_backfill_schedule(video_env_backfill_job),
     ],
