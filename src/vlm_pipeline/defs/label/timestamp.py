@@ -31,6 +31,7 @@ from vlm_pipeline.resources.postgres import PostgresResource
 from vlm_pipeline.resources.minio import MinIOResource
 
 from vlm_pipeline.lib.file_loader import cleanup_temp_path
+from vlm_pipeline.lib.key_builders import build_pseudo_events_key
 
 from .label_helpers import (
     analyze_routed_video_events,
@@ -182,12 +183,17 @@ def _process_routed_candidate(
         )
         label_key = build_gemini_label_key(raw_key)
         minio.ensure_bucket("vlm-labels")
-        minio.upload(
-            "vlm-labels",
-            label_key,
-            serialize_gemini_events(events),
-            "application/json",
-        )
+        payload_bytes = serialize_gemini_events(events)
+        minio.upload("vlm-labels", label_key, payload_bytes, "application/json")
+        # pseudo-label QA 보존: 원본(모델) 이벤트를 별도 키에 1회 스냅샷 → LS finalize 가
+        # events/ 를 사람수정본으로 덮어써도 원본이 남아 timestamp 품질평가(pseudo vs GT)가 가능.
+        # best-effort: 실패해도 라벨 생성은 성공. 최초 1회만(사람 리뷰 후 재생성돼도 원본 유지).
+        try:
+            pseudo_key = build_pseudo_events_key(label_key)
+            if not minio.exists("vlm-labels", pseudo_key):
+                minio.upload("vlm-labels", pseudo_key, payload_bytes, "application/json")
+        except Exception:  # noqa: BLE001
+            pass
         return {"asset_id": asset_id, "label_key": label_key}
     except Exception as exc:  # noqa: BLE001
         return {"asset_id": asset_id, "error": exc}

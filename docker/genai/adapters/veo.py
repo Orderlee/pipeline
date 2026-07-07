@@ -25,6 +25,7 @@ from .base import (
     SubmitResult,
     _has_vertex_creds,
     _image_mime,
+    download_bytes_with_retry,
 )
 
 
@@ -309,10 +310,7 @@ class VeoAdapter(BaseGenAIAdapter):
             except Exception as exc:
                 raise RuntimeError(f"veo inline base64 디코드 실패: {exc}")
         # HTTPS URL fallback
-        import requests
-        r = requests.get(result_url, timeout=300, stream=True)
-        r.raise_for_status()
-        return r.content
+        return download_bytes_with_retry(result_url, timeout=300)
 
 
 def _download_gcs(gcs_uri: str, project: str) -> bytes:

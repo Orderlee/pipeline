@@ -75,7 +75,7 @@ rsync "${RSYNC_OPTS[@]}" \
   --exclude='/README.md' \
   --exclude='/.mcp.json' \
   --exclude='/site_reports' \
-  --exclude='/.bkit' \
+  --exclude='.bkit' \
   "${PROD_USER}@${PROD_HOST}:${PROD_REPO}/" \
   "${REPO_ROOT}/"
 
