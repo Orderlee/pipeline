@@ -90,6 +90,11 @@ def _run_catalog_ingest(db, minio, *, repo_path, data_repo_id, rev, dataset_name
     required_resource_keys={"db", "minio"},
 )
 def dataset_catalog_reconciliation_sensor(context):
+    # TODO(mlops-audit L-3): DVC Tier-2 실운영 시 — compose dagster 서비스에 bare repo
+    # (/srv/data-repos/dvc-datasets.git) bind-mount + DVC_DATA_REPO_PATH env + git safe.directory,
+    # 그리고 이 센서를 Dagster UI 에서 enable(기본 STOPPED). 재기동 동반 → 정비 윈도우.
+    # 검증: 지연 dvc push → tick 가 pending_missing_dvc_objects→available(H-4 self-heal) 전이.
+    # docs/pipeline-flow-audit-2026-07-01.md §추후작업 L-3.
     repo_path = os.environ.get("DVC_DATA_REPO_PATH", "").strip()
     if not repo_path or not os.path.isdir(repo_path):
         return SkipReason(f"DVC_DATA_REPO_PATH 미설정/부재: {repo_path!r}")

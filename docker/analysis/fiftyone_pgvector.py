@@ -25,7 +25,7 @@ DEFAULT_MODEL = "facebook/PE-Core-L14-336"
 # ── 분류 택소노미 정규화 ──
 # 여러 표현을 단일 클래스 이름으로 통일. detection_class 는 원본 보존, normalized_class 에 정규 이름 저장.
 NORMALIZED_CLASS_MAP: dict[str, str] = {
-    "person on the ground": "fall",
+    "person on the ground": "person",  # 2026-07 통합: person on the ground → person (fall 아님, 의도적)
     "fallen person": "fall",
     "person lying down": "fall",
     "patient": "patient",  # 'patient' 는 쓰러짐(fall)과 별개 — 라벨이 있으므로 독립 클래스로 유지
@@ -291,6 +291,91 @@ def _detections_from_coco(payload: dict[str, Any], filepath: str) -> list[Any]:
     return detections
 
 
+def _project_of(image_key) -> str:
+    """프로젝트 = image_key 첫 세그먼트(source_unit_name). raw_key=<source>/<rel> 정책 기준."""
+    return (str(image_key or "").strip().split("/", 1)[0]) or "none"
+
+
+def _fetch_image_keys(image_ids: list[str]) -> dict[str, str]:
+    """image_id → image_key. fail-forward (구/스테이징 DB 결손 허용)."""
+    if not image_ids:
+        return {}
+    try:
+        with _pg_conn() as conn, conn.cursor() as cur:
+            cur.execute(
+                "SELECT image_id, image_key FROM image_metadata WHERE image_id = ANY(%(ids)s)",
+                {"ids": list(dict.fromkeys(str(i) for i in image_ids if i))},
+            )
+            return {str(image_id): str(key) for image_id, key in cur.fetchall() if key}
+    except Exception as exc:  # noqa: BLE001 — image_key lookup optional
+        print(f"attach_project: image_key lookup skipped: {exc}")
+        return {}
+
+
+def attach_project(ds):
+    """기존 데이터셋에 sample['project'] 채움 — DB 조회 + 벌크 set_values(라벨/미디어 불변), 앱 재기동 불필요.
+
+    image_key 없으면 minio_key(=bucket/source/...) 2번째 세그먼트로 fallback.
+    fiftyone_full_build 의 set_values(key_field='id') 패턴과 동일 — 대용량에서 per-sample save 회피.
+    """
+    sids = ds.values("id")
+    image_ids = ds.values("image_id")
+    minio_keys = ds.values("minio_key")
+    image_keys = _fetch_image_keys([i for i in image_ids if i])
+    proj_by_sid: dict[str, str] = {}
+    for sid, iid, mk in zip(sids, image_ids, minio_keys):
+        proj = _project_of(image_keys.get(str(iid))) if iid else "none"
+        if proj == "none" and mk:
+            parts = str(mk).split("/")
+            if len(parts) >= 2 and parts[1]:
+                proj = parts[1]
+        proj_by_sid[sid] = proj
+    ds.set_values("project", proj_by_sid, key_field="id")
+    from collections import Counter as _C
+
+    print(f"attach_project: {len(proj_by_sid)} samples; project dist top10={_C(proj_by_sid.values()).most_common(10)}")
+    make_project_saved_views(ds)
+    return ds
+
+
+def make_project_saved_views(ds):
+    """Per-``project`` Saved Views + per-project sample tags so the App Embeddings panel subsets by project.
+
+    FiftyOne 1.17 의 Embeddings 패널은 사이드바 *filter* 가 아니라 *view*(stages)에만 subset 반응한다:
+    server ``/embeddings/plot`` 는 ``data["view"]``(stages)+``filters`` 로 view 를 만들지만, 클라이언트가
+    사이드바 filters 를 이 라우트로 전송하지 않아(=greying 만) 전체 포인트가 유지된다. 따라서 project 를 *view* 로
+    걸어야 패널이 subset 된다.
+      • **Saved View** ``proj: <name>`` — 드롭다운에서 단일 project 선택 (그리드+패널 동시 subset).
+      • **sample tag** ``<name>`` — View bar 의 ``MatchTags`` 스테이지에서 **여러 project 체크박스 다중 선택**
+        (MatchTags 는 view stage 라 패널에 전파됨; 사이드바 tag 필터는 전파 안 됨). 단일 saved view 는 union 불가라
+        다중 선택은 이 태그 경로를 쓴다. 검증: is_in/ MatchTags view → _curr_points == 해당 project 합집합.
+    Idempotent; per-project fail-forward.
+    """
+    from fiftyone import ViewField as F
+
+    if "project" not in ds.get_field_schema():
+        return ds
+    made = 0
+    for p in sorted(x for x in ds.distinct("project") if x and x != "none"):
+        pv = ds.match(F("project") == p)
+        try:  # tag for view-bar MatchTags multi-select
+            untagged = pv.match_tags(p, bool=False)
+            if untagged.count():
+                untagged.tag_samples(p)
+        except Exception as exc:  # noqa: BLE001 — per-project fail-forward
+            print(f"make_project_saved_views: tag skip {p}: {exc}")
+        name = f"proj: {p}"
+        try:  # saved view for single-project dropdown select
+            if ds.has_saved_view(name):
+                ds.delete_saved_view(name)
+            ds.save_view(name, pv)
+            made += 1
+        except Exception as exc:  # noqa: BLE001 — per-view fail-forward
+            print(f"make_project_saved_views: view skip {name}: {exc}")
+    print(f"make_project_saved_views: {made} project views + sample tags")
+    return ds
+
+
 def attach_labels(ds):
     """Attach SAM3 detections, a single detection_class, and a representative video caption to frame samples.
 
@@ -312,6 +397,7 @@ def attach_labels(ds):
     captions_by_asset = _fetch_asset_captions(asset_ids)
     env_by_asset = _fetch_video_env(asset_ids)
     sam3_refs_by_image = _fetch_sam3_label_refs(image_ids)
+    image_keys = _fetch_image_keys(image_ids)
     mc = _minio_client()
 
     for sample in samples:
@@ -322,6 +408,17 @@ def attach_labels(ds):
             dn, env = env_by_asset.get(str(asset_id), (None, None)) if asset_id else (None, None)
             sample["daynight"] = dn or "none"
             sample["environment"] = env or "none"
+            proj = _project_of(image_keys.get(image_id))
+            if proj == "none":  # image_key 조회 miss → minio_key fallback (attach_project 와 동일)
+                mk = _sample_value(sample, "minio_key")
+                parts = str(mk).split("/") if mk else []
+                if len(parts) >= 2 and parts[1]:
+                    proj = parts[1]
+            if proj == "none":  # refresh 중 조회 실패로 정상 project 를 none 으로 downgrade 금지
+                existing = _sample_value(sample, "project")
+                if existing and existing != "none":
+                    proj = existing
+            sample["project"] = proj
 
             detections = []
             for bucket, key in sam3_refs_by_image.get(image_id, []):
@@ -641,6 +738,7 @@ def build_fiftyone_dataset(
         s["entity_id"] = r["entity_id"]
         s["embedding"] = r["embedding"]
         s["minio_key"] = f"{r['bucket']}/{r['key']}"
+        s["project"] = _project_of(r.get("key"))
         if r.get("asset_id") or r.get("source_asset_id"):
             s["asset_id"] = r.get("asset_id") or r.get("source_asset_id")
         samples.append(s)
@@ -663,6 +761,10 @@ def build_fiftyone_dataset(
             fob.compute_visualization(ds, embeddings="embedding", method="pca", brain_key="emb_viz_pca")
         except Exception as exc:  # noqa: BLE001 — PCA 투영 optional
             print(f"PCA viz skipped: {exc}")
+    try:  # project Saved Views — Embeddings 패널이 project 로 subset 되게 (사이드바 filter 는 1.17 패널에 미전파)
+        make_project_saved_views(ds)
+    except Exception as exc:  # noqa: BLE001 — saved views optional
+        print(f"build_fiftyone_dataset: project saved views skipped: {exc}")
     return ds
 
 
