@@ -59,6 +59,10 @@ def main() -> int:
         )
         return 0
 
+    # TODO(mlops-audit M-1): trainer↔registry 글루 미배선 — (a) TRAIN_DATASET_VERSION_ID env 읽어
+    # (b) vlm-dataset/_trainsets/<id>/ → /trainset/ 다운로드(현재 하드코드 경로 가정), (c) 학습 후
+    # insert_candidate_model_version 호출 + _models/<ver>/ 산출물 업로드. 외부 학습루프 인스턴스화 +
+    # 첫 실학습 시 배선·검증. 착수 가이드: docs/pipeline-flow-audit-2026-07-01.md §추후작업 M-1.
     # --- GPU path (manual, prod-only). Lazy imports so CI import stays GPU-free. ---
     if task == "sam3_detection":
         return _run_sam3()

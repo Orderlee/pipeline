@@ -21,7 +21,7 @@ from vlm_pipeline.lib.detection_coco import (
     convert_sam3_detections_for_coco,
 )
 from vlm_pipeline.lib.detection_common import stable_image_label_id
-from vlm_pipeline.lib.key_builders import build_sam3_detection_key
+from vlm_pipeline.lib.key_builders import build_pseudo_bbox_key, build_sam3_detection_key
 
 if TYPE_CHECKING:
     from vlm_pipeline.resources.minio import MinIOResource
@@ -102,6 +102,15 @@ def run_sam3_and_build_label_row(
 
     sam3_labels_key = build_sam3_detection_key(image_key)
     minio.upload_json(labels_bucket, sam3_labels_key, coco_payload)
+    # pseudo-label QA 보존: 원본(모델) SAM3 COCO 를 별도 키에 1회 스냅샷 → LS 리뷰가
+    # sam3_segmentations/ 를 사람수정본으로 in-place 덮어써도 원본이 남아 bbox 품질평가
+    # (pseudo vs GT) 가 가능. best-effort: 실패해도 detection 은 성공. 최초 1회만.
+    try:
+        pseudo_key = build_pseudo_bbox_key(image_key)
+        if not minio.exists(labels_bucket, pseudo_key):
+            minio.upload_json(labels_bucket, pseudo_key, coco_payload)
+    except Exception:  # noqa: BLE001
+        pass
 
     label_row = {
         "image_label_id": stable_image_label_id(image_id, sam3_labels_key),
