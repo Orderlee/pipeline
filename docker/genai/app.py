@@ -34,6 +34,10 @@ import limits
 
 _ROOT = Path(__file__).parent
 templates = Jinja2Templates(directory=str(_ROOT / "templates"))
+# 헤더 환경 배지. GENAI_ENV_LABEL 로 명시 오버라이드, 미설정 시 staging DB 경로 여부로 유도.
+templates.env.globals["env_label"] = os.getenv("GENAI_ENV_LABEL") or (
+    "staging · dev" if "staging" in os.getenv("DATAOPS_DUCKDB_PATH", "") else "prod · main"
+)
 security = HTTPBasic()
 
 

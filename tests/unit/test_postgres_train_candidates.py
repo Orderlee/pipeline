@@ -89,6 +89,45 @@ def test_insert_train_dataset_version_uses_on_conflict():
     assert "ON CONFLICT (task, content_checksum) DO NOTHING" in sql
 
 
+def test_insert_train_dataset_version_writes_dataset_catalog_id():
+    # H-1: the FK column must be in the INSERT column list + params, not silently dropped.
+    m = _Mixin([])
+    m.insert_train_dataset_version(
+        {
+            "train_dataset_version_id": "tdv-2",
+            "task": "sam3_detection",
+            "content_checksum": "def",
+            "ls_count": 1,
+            "al_confirmed_count": 0,
+            "total_count": 1,
+            "seed": 42,
+            "dataset_catalog_id": "cat-123",
+        }
+    )
+    sql, params = m.executed[0]
+    assert "dataset_catalog_id" in sql
+    assert "cat-123" in params
+
+
+def test_insert_train_dataset_version_dataset_catalog_id_defaults_to_none():
+    # Single-project PG-folder path (_run_build_trainset) has no catalog id -- must stay NULL,
+    # not raise, when the caller omits it entirely.
+    m = _Mixin([])
+    m.insert_train_dataset_version(
+        {
+            "train_dataset_version_id": "tdv-3",
+            "task": "sam3_detection",
+            "content_checksum": "ghi",
+            "ls_count": 1,
+            "al_confirmed_count": 0,
+            "total_count": 1,
+            "seed": 42,
+        }
+    )
+    _, params = m.executed[0]
+    assert params[-1] is None
+
+
 @pytest.mark.usefixtures("postgres_resource")
 def test_insert_then_conflict_noop_real_pg(postgres_resource):
     db = postgres_resource

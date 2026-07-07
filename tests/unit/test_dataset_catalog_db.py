@@ -33,18 +33,26 @@ class _Cursor:
         self.store["log"].append((sql, params))
         s = " ".join(sql.split()).lower()
         if "insert into dataset_catalog (" in s:
-            # ON CONFLICT DO NOTHING + RETURNING — simulate dedup by UNIQUE key:
+            # ON CONFLICT DO UPDATE ... WHERE status='pending_missing_dvc_objects' — simulate
+            # dedup by UNIQUE key, self-heal only when the pre-existing row is still pending.
             key = (params["data_repo_id"], params["git_rev"], params["dvc_file_path"], params["dvc_out_path"])
             existing = self.store["catalog_by_key"].get(key)
             if existing is None:
                 self.store["catalog_by_key"][key] = params["dataset_catalog_id"]
                 self.store["task_by_id"][params["dataset_catalog_id"]] = params["task"]
+                self.store["status_by_id"][params["dataset_catalog_id"]] = params.get("status", "available")
                 self._result = (params["dataset_catalog_id"],)
             else:
-                self._result = None  # conflict → no RETURNING row
-        elif "select task from dataset_catalog where dataset_catalog_id" in s:
+                prev_status = self.store["status_by_id"].get(existing)
+                if prev_status == "pending_missing_dvc_objects":
+                    self.store["status_by_id"][existing] = params.get("status", "available")
+                    self._result = (existing,)  # DO UPDATE matched WHERE -> RETURNING fires
+                else:
+                    self._result = None  # WHERE guard blocked the update -> no RETURNING row
+        elif "select task, status from dataset_catalog where dataset_catalog_id" in s:
             tsk = self.store["task_by_id"].get(params["dataset_catalog_id"])
-            self._result = (tsk,) if tsk is not None else None
+            status = self.store["status_by_id"].get(params["dataset_catalog_id"])
+            self._result = (tsk, status) if tsk is not None else None
         elif "select dataset_catalog_id from dataset_catalog where" in s:
             key = (params["data_repo_id"], params["git_rev"], params["dvc_file_path"], params["dvc_out_path"])
             cid = self.store["catalog_by_key"].get(key)
@@ -63,6 +71,7 @@ class _Cursor:
             self.store["pin_events"].append(params)
         elif "update dataset_catalog set status" in s:
             self.store["status_updates"].append(params)
+            self.store["status_by_id"][params["dataset_catalog_id"]] = "pinned"
 
     def fetchone(self):
         return self._result
@@ -95,7 +104,7 @@ class _Conn:
 class _DummyDB(PostgresTrainMixin):
     def __init__(self):
         self.store = {
-            "log": [], "catalog_by_key": {}, "task_by_id": {}, "aliases": {},
+            "log": [], "catalog_by_key": {}, "task_by_id": {}, "status_by_id": {}, "aliases": {},
             "pin_events": [], "status_updates": [],
         }
 
@@ -154,3 +163,59 @@ def test_pin_alias_rejects_cross_task_catalog():
     db.insert_catalog_row(_row(cid, rev="rev9"))  # task='sam3_detection'
     with pytest.raises(ValueError):
         db.pin_alias(task="person_detection", alias="current", dataset_catalog_id=cid, pinned_by="eng")
+
+
+def test_insert_catalog_row_self_heals_pending_to_available():
+    # H-4: a re-ingest of the same DVC UNIQUE key must flip a pending row to the newly
+    # observed status (e.g. once the MinIO objects show up), not stay stuck forever.
+    db = _DummyDB()
+    cid = "dddddddd-dddd-dddd-dddd-dddddddddddd"
+    db.insert_catalog_row(_row(cid, rev="rev-pending", status="pending_missing_dvc_objects"))
+    assert db.store["status_by_id"][cid] == "pending_missing_dvc_objects"
+
+    healed_id = db.insert_catalog_row(_row("eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee", rev="rev-pending", status="available"))
+    assert healed_id == cid, "self-heal must still return the original row's id"
+    assert db.store["status_by_id"][cid] == "available"
+
+
+def test_insert_catalog_row_does_not_demote_available_row():
+    # WHERE guard: an 'available'/'pinned' row must never be overwritten by a re-ingest.
+    db = _DummyDB()
+    cid = "ffffffff-ffff-ffff-ffff-ffffffffffff"
+    db.insert_catalog_row(_row(cid, rev="rev-avail", status="available"))
+    assert db.store["status_by_id"][cid] == "available"
+
+    same_id = db.insert_catalog_row(
+        _row("11111111-2222-3333-4444-555555555555", rev="rev-avail", status="pending_missing_dvc_objects")
+    )
+    assert same_id == cid
+    assert db.store["status_by_id"][cid] == "available", "available row must not be demoted back to pending"
+
+
+def test_pin_alias_rejects_pending_status():
+    # M-5: fast-fail instead of letting a pending_missing_dvc_objects row get pinned (which
+    # would only fail later, opaquely, at `dvc get` time).
+    db = _DummyDB()
+    cid = "12121212-1212-1212-1212-121212121212"
+    db.insert_catalog_row(_row(cid, rev="rev-p", status="pending_missing_dvc_objects"))
+    with pytest.raises(ValueError):
+        db.pin_alias(task="sam3_detection", alias="current", dataset_catalog_id=cid, pinned_by="eng")
+
+
+def test_pin_alias_rejects_invalid_status():
+    db = _DummyDB()
+    cid = "13131313-1313-1313-1313-131313131313"
+    db.insert_catalog_row(_row(cid, rev="rev-i", status="invalid"))
+    with pytest.raises(ValueError):
+        db.pin_alias(task="sam3_detection", alias="current", dataset_catalog_id=cid, pinned_by="eng")
+
+
+def test_pin_alias_accepts_available_and_pinned_status():
+    db = _DummyDB()
+    cid = "14141414-1414-1414-1414-141414141414"
+    db.insert_catalog_row(_row(cid, rev="rev-ok", status="available"))
+    out = db.pin_alias(task="sam3_detection", alias="current", dataset_catalog_id=cid, pinned_by="eng")
+    assert out["dataset_catalog_id"] == cid
+    # re-pinning an already-pinned row (status now 'pinned') must also succeed.
+    out2 = db.pin_alias(task="sam3_detection", alias="current", dataset_catalog_id=cid, pinned_by="eng2")
+    assert out2["dataset_catalog_id"] == cid

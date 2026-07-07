@@ -14,7 +14,14 @@ from __future__ import annotations
 import os
 import time
 
-from .base import _FAKE_MP4_PLACEHOLDER, BaseGenAIAdapter, PollResult, SubmitResult, _image_mime
+from .base import (
+    _FAKE_MP4_PLACEHOLDER,
+    BaseGenAIAdapter,
+    PollResult,
+    SubmitResult,
+    _image_mime,
+    download_bytes_with_retry,
+)
 
 
 class HiggsfieldAdapter(BaseGenAIAdapter):
@@ -111,7 +118,4 @@ class HiggsfieldAdapter(BaseGenAIAdapter):
     def download_result(self, result_url):
         if self.is_mock or result_url.startswith("mock://"):
             return _FAKE_MP4_PLACEHOLDER
-        import requests
-        r = requests.get(result_url, timeout=self.download_timeout, stream=True)
-        r.raise_for_status()
-        return r.content
+        return download_bytes_with_retry(result_url, self.download_timeout)

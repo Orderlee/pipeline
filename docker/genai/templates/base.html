@@ -31,7 +31,7 @@
     </nav>
     <div class="gs-header__spacer"></div>
     <div class="gs-header__credit">
-      {{ icon('cost', size=13) }} <span class="gs-mono">staging · dev</span>
+      {{ icon('cost', size=13) }} <span class="gs-mono">{{ env_label }}</span>
     </div>
     <span class="gs-header__avatar">{{ (user[:2]|upper) if user else "PI" }}</span>
   </header>

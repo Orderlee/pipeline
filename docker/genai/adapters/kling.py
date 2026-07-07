@@ -18,7 +18,13 @@ import os
 import time
 from typing import Any
 
-from .base import _FAKE_MP4_PLACEHOLDER, BaseGenAIAdapter, PollResult, SubmitResult
+from .base import (
+    _FAKE_MP4_PLACEHOLDER,
+    BaseGenAIAdapter,
+    PollResult,
+    SubmitResult,
+    download_bytes_with_retry,
+)
 
 
 class KlingError(RuntimeError):
@@ -256,11 +262,7 @@ class KlingAdapter(BaseGenAIAdapter):
     def download_result(self, result_url: str) -> bytes:
         if self.is_mock or result_url.startswith("mock://"):
             return _FAKE_MP4_PLACEHOLDER
-
-        import requests
-        r = requests.get(result_url, timeout=self.download_timeout, stream=True)
-        r.raise_for_status()
-        return r.content
+        return download_bytes_with_retry(result_url, self.download_timeout)
 
 
 # ------------------------------------------------------------------

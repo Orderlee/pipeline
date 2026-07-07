@@ -13,6 +13,7 @@ Adapter 는 외부 API 호출만 책임지고, DB/NAS 쓰기는 호출자(orches
 from __future__ import annotations
 
 import os
+import time
 from typing import Protocol
 
 
@@ -50,6 +51,31 @@ def _has_vertex_creds() -> bool:
         if path and os.path.exists(path):
             return True
     return False
+
+
+def download_bytes_with_retry(url: str, timeout: int, attempts: int = 3) -> bytes:
+    """결과 CDN 다운로드 — transient 절단에 짧은 재시도 (2s/4s backoff).
+
+    Kling CDN 이 간헐적으로 연결을 끊는다 (RemoteDisconnected 2026-07-03,
+    SSL UNEXPECTED_EOF 2026-07-02 실측). 여기서 1회 실패로 raise 하면 호출자
+    (_do_finalize)가 job 을 영구 failed 처리 → 이미 과금된 결과물 소실.
+    4xx(만료 URL 등)는 재시도 무의미라 즉시 raise."""
+    import requests
+
+    last_exc: Exception | None = None
+    for attempt in range(attempts):
+        try:
+            r = requests.get(url, timeout=timeout, stream=True)
+            r.raise_for_status()
+            return r.content
+        except requests.exceptions.RequestException as exc:
+            resp = getattr(exc, "response", None)
+            if resp is not None and resp.status_code < 500:
+                raise
+            last_exc = exc
+            if attempt + 1 < attempts:
+                time.sleep(2**attempt * 2)
+    raise last_exc  # type: ignore[misc]
 
 
 class SubmitResult:
