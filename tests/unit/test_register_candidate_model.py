@@ -1,4 +1,5 @@
 """insert_candidate_model_version builds the correct INSERT and returns the id (no real DB)."""
+
 from __future__ import annotations
 
 
@@ -50,11 +51,17 @@ def test_insert_candidate_builds_insert_with_status_candidate():
 
     db = _DummyDB()
     mv_id = insert_candidate_model_version(
-        db, model="sam3", version="sam3-2026.06.29-lora-001",
-        train_dataset_version_id="tdv-1", train_method="lora",
+        db,
+        model="sam3",
+        version="sam3-2026.06.29-lora-001",
+        train_dataset_version_id="tdv-1",
+        train_method="lora",
         checkpoint_key="vlm-dataset/_models/sam3/sam3-2026.06.29-lora-001/checkpoint.pt",
-        artifact_checksum="abc123", git_sha="deadbee", training_image_digest="sha256:xyz",
-        training_config={"seed": 7}, env_lock_key="vlm-dataset/_models/sam3/sam3-2026.06.29-lora-001/env_lock.json",
+        artifact_checksum="abc123",
+        git_sha="deadbee",
+        training_image_digest="sha256:xyz",
+        training_config={"seed": 7},
+        env_lock_key="vlm-dataset/_models/sam3/sam3-2026.06.29-lora-001/env_lock.json",
     )
     sql = db.cursor_obj.sql.lower()
     assert "insert into model_registry" in sql

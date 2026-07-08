@@ -1,4 +1,5 @@
 """sourcea_site_download asset — preflight skip 경로와 happy path."""
+
 from datetime import datetime
 from unittest.mock import patch
 

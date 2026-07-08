@@ -12,9 +12,7 @@ import pathlib
 
 import pytest
 
-_SPEC = importlib.util.spec_from_file_location(
-    "promote_model", str(pathlib.Path("scripts/promote_model.py").resolve())
-)
+_SPEC = importlib.util.spec_from_file_location("promote_model", str(pathlib.Path("scripts/promote_model.py").resolve()))
 promote_model = importlib.util.module_from_spec(_SPEC)
 _SPEC.loader.exec_module(promote_model)
 
@@ -55,8 +53,10 @@ def test_promote_then_rollback_roundtrip(pg_resource):
             restore = promote_model.select_rollback_target(cur, model="pe_core")
             assert restore["version"] == "itv1"
             promote_model.rollback_transition(
-                cur, restore_row=restore,
-                current_promoted_id=row["model_version_id"], env="prod",
+                cur,
+                restore_row=restore,
+                current_promoted_id=row["model_version_id"],
+                env="prod",
             )
         conn.commit()
 

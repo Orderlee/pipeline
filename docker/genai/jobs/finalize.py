@@ -5,7 +5,8 @@
   - 동기 엔진(Nanobanana, GPT Image): submit.py 에서 즉시 호출
 
 NAS 안착 순서:
-  1) outputs/<seq>.<ext> atomic write (.partial → rename)
+  1) outputs/<입력이미지명>.<ext> atomic write (.partial → rename)
+     — 파일명 = 입력 이미지 stem + output 확장자 (build_output_namer). 원본 없으면 <seq:03d>.
   2) 같은 batch 안의 모든 jobs 가 finalize 끝나면
      outputs/_manifest.json 마지막 작성 → ingest sensor 픽업 트리거.
 
@@ -17,8 +18,10 @@ from __future__ import annotations
 
 import json
 import os
+from collections import Counter
 from datetime import datetime
 from pathlib import Path
+from typing import Callable, Iterable
 
 from adapters import get_adapter
 from db import pg
@@ -37,6 +40,78 @@ def _batch_outputs_dir(batch_id: str) -> Path:
     if not isinstance(ts, datetime):
         ts = datetime.now()
     return Path(_NAS_INCOMING) / ts.strftime("%Y-%m-%d") / batch_id / "outputs"
+
+
+# ----------------------------------------------------------------------
+# 출력 파일명 = 입력 이미지명(stem) + output 확장자.
+#   예) originals/ 의 혼잡도관리CCTV#12_crowded.png → outputs/ 의 혼잡도관리CCTV#12_crowded.mp4
+# 원본명 소스는 originals/_manifest.json 의 original_filename (submit 시 기록).
+# ----------------------------------------------------------------------
+def _basename_stem(name: str) -> str:
+    """경로 구분자 제거 후 확장자 뗀 basename. 빈 문자열이면 그대로 빈 문자열."""
+    base = (name or "").replace("\\", "/").rsplit("/", 1)[-1]
+    dot = base.rfind(".")
+    return base[:dot] if dot > 0 else base
+
+
+def _read_originals_stems(outputs_dir: Path) -> dict[int, str]:
+    """seq -> 입력 이미지 stem. originals/_manifest.json 이 소스. 없으면 {} (txt2video 등)."""
+    mpath = outputs_dir.parent / "originals" / "_manifest.json"
+    try:
+        data = json.loads(mpath.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    stems: dict[int, str] = {}
+    for it in data.get("items", []) or []:
+        try:
+            seq = int(it["seq"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        stem = _basename_stem(it.get("original_filename") or it.get("filename") or "")
+        if stem:
+            stems[seq] = stem
+    return stems
+
+
+def build_output_namer(outputs_dir: Path) -> Callable[[int, str], str]:
+    """seq,ext -> 출력 파일명. 입력 이미지 stem 으로 맞춤.
+
+    batch 내 동일 stem 이 둘 이상이면 덮어쓰기 방지로 `<stem>__<seq:03d>` 접미
+    (모든 충돌 seq 에 결정적으로 적용 — write 순서와 무관). 원본 없으면 `<seq:03d>` fallback.
+    """
+    stems = _read_originals_stems(outputs_dir)
+    dup = {s for s, c in Counter(stems.values()).items() if c > 1}
+
+    def namer(seq: int, ext: str) -> str:
+        stem = stems.get(int(seq))
+        if not stem:
+            return f"{int(seq):03d}{ext}"
+        return f"{stem}__{int(seq):03d}{ext}" if stem in dup else f"{stem}{ext}"
+
+    return namer
+
+
+def resolve_output_filenames(
+    outputs_dir: Path, output_ext: str, seqs: Iterable[int]
+) -> dict[int, str]:
+    """seq -> 실제 출력 파일명 (promote / UI 링크용).
+
+    우선순위:
+      1) outputs/_manifest.json items[].filename — 완료 batch 의 실제 디스크명.
+         legacy 배치(001.mp4)도 정확. finalize 가 파일과 함께 기록한 값.
+      2) originals 기반 파생 (in-progress: manifest 미작성 구간) — finalize 가 쓸 이름과 동일.
+    """
+    try:
+        data = json.loads((outputs_dir / "_manifest.json").read_text(encoding="utf-8"))
+        recorded = {
+            int(it["seq"]): it["filename"]
+            for it in (data.get("items", []) or [])
+            if it.get("filename")
+        }
+    except (OSError, ValueError, KeyError, TypeError):
+        recorded = {}
+    namer = build_output_namer(outputs_dir)
+    return {int(s): (recorded.get(int(s)) or namer(int(s), output_ext)) for s in seqs}
 
 
 def _fallback_cost_units(batch_id: str, engine: str) -> float | None:
@@ -75,7 +150,7 @@ def finalize_job(
     blob = adapter.download_result(result_url)
 
     outputs_dir = _batch_outputs_dir(batch_id)
-    target_name = f"{seq_in_batch:03d}{output_ext}"
+    target_name = build_output_namer(outputs_dir)(seq_in_batch, output_ext)
     atomic_write_bytes(outputs_dir / target_name, blob)
 
     # provider 가 cost 를 안 주는 경우(예: Kling task 응답엔 cost 필드 없음) 가격표로 산출.
@@ -103,9 +178,10 @@ def finalize_sync_results(
     finalize_job 과 달리 외부 API 다운로드 없이 in-memory bytes 를 NAS write.
     """
     outputs_dir = _batch_outputs_dir(batch_id)
+    namer = build_output_namer(outputs_dir)
     for r in results:
         seq = int(r["seq"])
-        target_name = f"{seq:03d}{r['ext']}"
+        target_name = namer(seq, r["ext"])
         atomic_write_bytes(outputs_dir / target_name, r["bytes"])
         pg.update_job_status(r["job_id"], status="done", cost_units=r.get("cost_units"))
     pg.recompute_batch_status(batch_id)
@@ -173,12 +249,13 @@ def _maybe_write_outputs_manifest(
 
             items = []
             output_ext = ".mp4" if (output_media_db or output_media) == "video" else ".png"
+            namer = build_output_namer(outputs_dir)
             for seq, status, provider_id, cost in job_rows:
                 if status != "done":
                     continue
                 items.append({
                     "seq": int(seq),
-                    "filename": f"{int(seq):03d}{output_ext}",
+                    "filename": namer(int(seq), output_ext),
                     "provider_job_id": provider_id,
                     "cost_units": float(cost) if cost is not None else None,
                 })

@@ -3,6 +3,7 @@
 git ops run for real (subprocess on a tmp repo). The DVC byte transfer is NEVER run;
 object presence is checked against moto. Missing object -> pending_missing_dvc_objects.
 """
+
 from __future__ import annotations
 
 import pathlib
@@ -73,8 +74,14 @@ def test_ingest_available_when_object_present(tmp_data_repo, mock_minio):
     mock_minio.upload("vlm-dataset", "_dvc/fire_v3", b"x")  # simulate dvc push done
     db = _DummyDB()
     out = _ci._run_catalog_ingest(
-        db, mock_minio, repo_path=str(repo), data_repo_id="dvc-datasets",
-        rev=rev, dataset_name="fire", task="sam3_detection", log=_NullLog(),
+        db,
+        mock_minio,
+        repo_path=str(repo),
+        data_repo_id="dvc-datasets",
+        rev=rev,
+        dataset_name="fire",
+        task="sam3_detection",
+        log=_NullLog(),
     )
     assert out["status"] == "available"
     assert out["missing_objects"] is False
@@ -88,8 +95,14 @@ def test_ingest_pending_when_object_missing(tmp_data_repo, mock_minio):
     repo, rev = tmp_data_repo  # no upload → object absent
     db = _DummyDB()
     out = _ci._run_catalog_ingest(
-        db, mock_minio, repo_path=str(repo), data_repo_id="dvc-datasets",
-        rev=rev, dataset_name="fire", task="sam3_detection", log=_NullLog(),
+        db,
+        mock_minio,
+        repo_path=str(repo),
+        data_repo_id="dvc-datasets",
+        rev=rev,
+        dataset_name="fire",
+        task="sam3_detection",
+        log=_NullLog(),
     )
     assert out["status"] == "pending_missing_dvc_objects"
     assert out["missing_objects"] is True

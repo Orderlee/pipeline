@@ -7,6 +7,7 @@ deploy script (it is a manual, Dagster-decoupled GPU process, spec §7.3). So:
   - the script NEVER runs `compose up`/recreate on the trainer service.
 Pure string checks on the shell source (CI-safe, no docker).
 """
+
 from pathlib import Path
 
 _REPO = Path(__file__).resolve().parents[2]

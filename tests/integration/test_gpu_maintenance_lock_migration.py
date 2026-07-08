@@ -1,4 +1,5 @@
 """014_gpu_maintenance_lock 적용 검증 (real-PG fixture)."""
+
 from __future__ import annotations
 
 import pytest

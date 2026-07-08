@@ -6,7 +6,7 @@
 
 ## 배경
 
-`data_download/`는 SourceA 경찰서 사이트(Tailscale 경유 `macs-sourcea`)의 이벤트 미디어 수집 툴킷이다.
+`data_download/`는 SourceA 경찰서 사이트(Tailscale 경유 `sourcea-site-host`)의 이벤트 미디어 수집 툴킷이다.
 
 | 파일 | 성격 |
 |---|---|
@@ -58,7 +58,7 @@ ScheduleDefinition(
 | `SOURCEA_MINIO_HOST` | `10.0.0.21` | tailnet IP. 컨테이너 안에서 MagicDNS(`*.internal`) 미해석 → IP 필수 |
 | `SOURCEA_MINIO_PORT` | `9000` | |
 | `SOURCEA_DB_HOST` / `SOURCEA_DB_PORT` | `10.0.0.21` / `3306` | 동일 호스트 |
-| `SOURCEA_DB_USER` / `SOURCEA_DB_PASS` / `SOURCEA_DB_NAME` | (기존 config.py 값) / `source-c2stage` | 평문 creds는 repo에 커밋 금지 |
+| `SOURCEA_DB_USER` / `SOURCEA_DB_PASS` / `SOURCEA_DB_NAME` | (기존 config.py 값) / `sourcea_db` | 평문 creds는 repo에 커밋 금지 |
 | `SOURCEA_DEST` | `/nas/data/sourcea` | 컨테이너 경로 = 호스트 `/home/user/mou/nas_200tb/sourcea`. staging은 `NAS_DATA_ROOT`가 `staging/` 하위라 자동 격리 |
 | `SOURCEA_LOOKBACK_DAYS` | `14` | |
 | `SOURCEA_DEADLINE` | `06:55` | |

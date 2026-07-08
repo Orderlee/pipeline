@@ -70,13 +70,16 @@ def test_promotable_path_writes_status_and_metrics(monkeypatch) -> None:
     ctx = _DummyContext({"model_version_id": "mv-001"})
 
     monkeypatch.setattr(
-        _ev, "_score_candidate",
+        _ev,
+        "_score_candidate",
         lambda context, db_, minio_, row: {"map": 0.50, "per_class_ap": {"fire": 0.50}},
     )
     monkeypatch.setattr(
-        _ev, "_score_incumbent",
+        _ev,
+        "_score_incumbent",
         lambda context, db_, minio_, row: (
-            {"map": 0.30, "per_class_ap": {"fire": 0.30}}, "stock_base",
+            {"map": 0.30, "per_class_ap": {"fire": 0.30}},
+            "stock_base",
         ),
     )
 
@@ -92,11 +95,13 @@ def test_not_promotable_keeps_candidate_status(monkeypatch) -> None:
     db = _DummyDB(_base_row())
     ctx = _DummyContext({"model_version_id": "mv-001"})
     monkeypatch.setattr(
-        _ev, "_score_candidate",
+        _ev,
+        "_score_candidate",
         lambda *a: {"map": 0.305, "per_class_ap": {"fire": 0.305}},
     )
     monkeypatch.setattr(
-        _ev, "_score_incumbent",
+        _ev,
+        "_score_incumbent",
         lambda *a: ({"map": 0.30, "per_class_ap": {"fire": 0.30}}, "promoted"),
     )
     out = _ev._run_train_eval_gate(ctx, db, _DummyMinIO())
@@ -107,10 +112,18 @@ def test_not_promotable_keeps_candidate_status(monkeypatch) -> None:
 def test_eval_config_override_from_op_config(monkeypatch) -> None:
     db = _DummyDB(_base_row())
     # huge margin -> even a big win fails
-    ctx = _DummyContext({"model_version_id": "mv-001", "eval_config": {
-        "primary_metric": "map", "primary_margin": 0.99,
-        "per_class_field": "per_class_ap", "per_class_floor": -0.02, "advisory": False,
-    }})
+    ctx = _DummyContext(
+        {
+            "model_version_id": "mv-001",
+            "eval_config": {
+                "primary_metric": "map",
+                "primary_margin": 0.99,
+                "per_class_field": "per_class_ap",
+                "per_class_floor": -0.02,
+                "advisory": False,
+            },
+        }
+    )
     monkeypatch.setattr(_ev, "_score_candidate", lambda *a: {"map": 0.9, "per_class_ap": {"fire": 0.9}})
     monkeypatch.setattr(_ev, "_score_incumbent", lambda *a: ({"map": 0.1, "per_class_ap": {"fire": 0.1}}, "promoted"))
     out = _ev._run_train_eval_gate(ctx, db, _DummyMinIO())

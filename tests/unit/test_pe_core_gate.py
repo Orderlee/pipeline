@@ -25,7 +25,7 @@ _CFG = {
     "primary_margin": 0.02,
     "per_class_field": "per_class_recall",
     "per_class_floor": -0.05,
-    "advisory": False,            # gate hard so the abstain path is the only thing relaxing it
+    "advisory": False,  # gate hard so the abstain path is the only thing relaxing it
     "pe_core_min_gt": DEFAULT_PE_CORE_MIN_GT,
 }
 

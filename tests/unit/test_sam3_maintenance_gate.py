@@ -1,4 +1,5 @@
 """SAM3 서비스 정비 게이트: maintenance 활성 시 503 + lazy-reload 거부."""
+
 from __future__ import annotations
 
 import importlib

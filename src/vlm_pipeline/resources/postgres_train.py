@@ -182,8 +182,14 @@ class PostgresTrainMixin:
                 )
                 rows = cur.fetchall()
             columns = [
-                "model_version_id", "model", "version", "train_dataset_version_id",
-                "train_method", "eval_config", "checkpoint_key", "status",
+                "model_version_id",
+                "model",
+                "version",
+                "train_dataset_version_id",
+                "train_method",
+                "eval_config",
+                "checkpoint_key",
+                "status",
             ]
             dicts = self._rows_to_dicts(rows, columns)
         return dicts[0] if dicts else {}
@@ -414,8 +420,7 @@ class PostgresTrainMixin:
                     },
                 )
                 cur.execute(
-                    "UPDATE dataset_catalog SET status = 'pinned' "
-                    "WHERE dataset_catalog_id = %(dataset_catalog_id)s",
+                    "UPDATE dataset_catalog SET status = 'pinned' " "WHERE dataset_catalog_id = %(dataset_catalog_id)s",
                     {"dataset_catalog_id": dataset_catalog_id},
                 )
             conn.commit()

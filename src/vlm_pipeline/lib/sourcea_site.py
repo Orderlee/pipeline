@@ -5,6 +5,7 @@ data_download/download_classify.py 에서 포팅. 원자적 쓰기(.part→renam
 영구 누락되는 갭이 있어 채택하지 않는다.
 설계: docs/superpowers/specs/2026-07-06-sourcea-daily-download-design.md
 """
+
 from __future__ import annotations
 
 import os
@@ -229,9 +230,14 @@ def classify(cfg: SourceAConfig, dates: set[str] | None) -> dict:
     import pymysql  # lazy — CI/테스트 환경에 미설치여도 lib import 가능해야 함
 
     conn = pymysql.connect(
-        host=cfg.db_host, port=cfg.db_port, user=cfg.db_user,
-        password=cfg.db_pass, database=cfg.db_name,
-        connect_timeout=10, read_timeout=30, write_timeout=30,
+        host=cfg.db_host,
+        port=cfg.db_port,
+        user=cfg.db_user,
+        password=cfg.db_pass,
+        database=cfg.db_name,
+        connect_timeout=10,
+        read_timeout=30,
+        write_timeout=30,
         cursorclass=pymysql.cursors.DictCursor,
     )
     with conn, conn.cursor() as cur:

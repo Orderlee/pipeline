@@ -52,7 +52,11 @@ def test_loss_is_box_only() -> None:
     assert "Boxes" in loss_blob
     assert "Masks" not in loss_blob  # no mask loss — box-only supervision
     # semantic seg loss explicitly off
-    assert '"loss_fn_semantic_seg": null' in loss_blob or "loss_fn_semantic_seg" not in _cfg()["trainer"]["loss"] or _has_none_semantic(_cfg())
+    assert (
+        '"loss_fn_semantic_seg": null' in loss_blob
+        or "loss_fn_semantic_seg" not in _cfg()["trainer"]["loss"]
+        or _has_none_semantic(_cfg())
+    )
 
 
 def _has_none_semantic(cfg: dict) -> bool:
@@ -65,6 +69,7 @@ def _has_none_semantic(cfg: dict) -> bool:
         if isinstance(node, list):
             return any(walk(v) for v in node)
         return False
+
     return walk(cfg["trainer"]["loss"])
 
 
@@ -75,7 +80,14 @@ def test_dataset_box_only_load_segmentation_false() -> None:
 
 def test_full_ft_toggle_changes_seed_value_passthrough() -> None:
     full = trainer_lib.assemble_sam3_config(
-        train_annfile="/t", val_annfile="/v", images_root="/i", save_dir="/s",
-        num_classes=2, max_epochs=1, seed=7, full_ft=True, log_dir="/l",
+        train_annfile="/t",
+        val_annfile="/v",
+        images_root="/i",
+        save_dir="/s",
+        num_classes=2,
+        max_epochs=1,
+        seed=7,
+        full_ft=True,
+        log_dir="/l",
     )
     assert full["trainer"]["seed_value"] == 7

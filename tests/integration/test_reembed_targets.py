@@ -10,8 +10,7 @@ pytest.importorskip("psycopg2")
 def _has(conn, name):
     with conn.cursor() as cur:
         cur.execute(
-            "SELECT EXISTS (SELECT 1 FROM information_schema.tables "
-            "WHERE table_schema='public' AND table_name=%s)",
+            "SELECT EXISTS (SELECT 1 FROM information_schema.tables " "WHERE table_schema='public' AND table_name=%s)",
             (name,),
         )
         return bool(cur.fetchone()[0])
@@ -47,5 +46,5 @@ def test_reembed_targets_only_incumbent_covered_frames(postgres_resource) -> Non
         limit=100,
     )
     ids = {t["image_id"] for t in targets}
-    assert "rt-f1" in ids        # incumbent-covered → re-embed target
-    assert "rt-f2" not in ids    # never embedded → NOT a re-embed target (coverage discipline)
+    assert "rt-f1" in ids  # incumbent-covered → re-embed target
+    assert "rt-f2" not in ids  # never embedded → NOT a re-embed target (coverage discipline)

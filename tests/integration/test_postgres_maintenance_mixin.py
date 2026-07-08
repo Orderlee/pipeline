@@ -1,4 +1,5 @@
 """PostgresMaintenanceMixin — gpu_maintenance_lock read/write (real-PG)."""
+
 from __future__ import annotations
 
 import pytest
@@ -10,9 +11,7 @@ def test_set_get_and_clear(pg_resource):
     row0 = pg_resource.get_gpu_maintenance("sam3")
     assert row0 is None or row0.get("active") in (False, None)
 
-    pg_resource.set_gpu_maintenance(
-        "sam3", active=True, owner_run_id="run-42", ttl_seconds=900, note="ft"
-    )
+    pg_resource.set_gpu_maintenance("sam3", active=True, owner_run_id="run-42", ttl_seconds=900, note="ft")
     row = pg_resource.get_gpu_maintenance("sam3")
     assert row["active"] is True
     assert row["owner_run_id"] == "run-42"

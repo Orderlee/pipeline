@@ -10,8 +10,7 @@ pytest.importorskip("psycopg2")
 def _has_table(conn, name: str) -> bool:
     with conn.cursor() as cur:
         cur.execute(
-            "SELECT EXISTS (SELECT 1 FROM information_schema.tables "
-            "WHERE table_schema='public' AND table_name=%s)",
+            "SELECT EXISTS (SELECT 1 FROM information_schema.tables " "WHERE table_schema='public' AND table_name=%s)",
             (name,),
         )
         return bool(cur.fetchone()[0])
@@ -27,9 +26,7 @@ def test_set_then_get_roundtrip(postgres_resource) -> None:
     with postgres_resource.connect() as conn:
         if not _has_table(conn, "embedding_active_model"):
             pytest.skip("embedding_active_model absent — pgvector not available")
-    postgres_resource.set_active_embedding_model(
-        "facebook/PE-Core-L14-336@ft-test", updated_by="pytest"
-    )
+    postgres_resource.set_active_embedding_model("facebook/PE-Core-L14-336@ft-test", updated_by="pytest")
     assert postgres_resource.get_active_embedding_model() == "facebook/PE-Core-L14-336@ft-test"
     # restore stock so the test is idempotent across reruns
     postgres_resource.set_active_embedding_model("facebook/PE-Core-L14-336", updated_by="pytest")

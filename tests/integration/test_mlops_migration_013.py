@@ -51,10 +51,22 @@ def _constraint_exists(cur, conname: str, conrelid: str, contype: str) -> bool:
 
 def test_013_creates_train_dataset_versions(pg_resource) -> None:
     expected_cols = [
-        "train_dataset_version_id", "created_at", "task", "source_spec", "class_map",
-        "group_key_field", "split_assignment_key", "split_ratios", "manifest_key",
-        "content_checksum", "ls_count", "al_confirmed_count", "per_class_counts",
-        "total_count", "seed", "upstream_dataset_id",
+        "train_dataset_version_id",
+        "created_at",
+        "task",
+        "source_spec",
+        "class_map",
+        "group_key_field",
+        "split_assignment_key",
+        "split_ratios",
+        "manifest_key",
+        "content_checksum",
+        "ls_count",
+        "al_confirmed_count",
+        "per_class_counts",
+        "total_count",
+        "seed",
+        "upstream_dataset_id",
     ]
     with pg_resource.connect() as conn:
         with conn.cursor() as cur:
@@ -65,10 +77,26 @@ def test_013_creates_train_dataset_versions(pg_resource) -> None:
 
 def test_013_creates_model_registry(pg_resource) -> None:
     expected_cols = [
-        "model_version_id", "model", "version", "train_dataset_version_id", "train_method",
-        "git_sha", "training_image_digest", "training_config", "env_lock_key", "eval_config",
-        "metrics", "incumbent_metrics", "incumbent_source", "checkpoint_key", "artifact_checksum",
-        "status", "created_at", "promoted_at", "promoted_env", "mlflow_run_id",
+        "model_version_id",
+        "model",
+        "version",
+        "train_dataset_version_id",
+        "train_method",
+        "git_sha",
+        "training_image_digest",
+        "training_config",
+        "env_lock_key",
+        "eval_config",
+        "metrics",
+        "incumbent_metrics",
+        "incumbent_source",
+        "checkpoint_key",
+        "artifact_checksum",
+        "status",
+        "created_at",
+        "promoted_at",
+        "promoted_env",
+        "mlflow_run_id",
     ]
     with pg_resource.connect() as conn:
         with conn.cursor() as cur:

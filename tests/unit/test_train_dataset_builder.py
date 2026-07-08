@@ -6,8 +6,8 @@ import pytest
 
 pytest.importorskip("dagster")
 
-from tests.helpers.dagster_dummies import DummyContext, DummyLogPermissive
-from vlm_pipeline.defs.train import dataset as train_dataset
+from tests.helpers.dagster_dummies import DummyContext, DummyLogPermissive  # noqa: E402
+from vlm_pipeline.defs.train import dataset as train_dataset  # noqa: E402
 
 
 class _DummyDB:
@@ -96,9 +96,16 @@ def test_al_confirmed_count_honest_zero():
     db = _DummyDB(_cands(), confirmed=set())  # AL∩annotations empty today
     minio = _DummyMinIO()
     r = train_dataset._run_build_trainset(
-        db, minio, task="sam3_detection", folder_name="proj",
-        ratios={"train": 0.6, "val": 0.2, "test": 0.2}, seed=1,
-        group_key_field="source_asset_id", min_per_split=1, force_new=False, log=_ctx().log,
+        db,
+        minio,
+        task="sam3_detection",
+        folder_name="proj",
+        ratios={"train": 0.6, "val": 0.2, "test": 0.2},
+        seed=1,
+        group_key_field="source_asset_id",
+        min_per_split=1,
+        force_new=False,
+        log=_ctx().log,
     )
     assert r["al_confirmed_count"] == 0
     assert r["ls_count"] == len(_cands())
@@ -108,9 +115,16 @@ def test_no_group_spans_splits_in_split_file():
     db = _DummyDB(_cands())
     minio = _DummyMinIO()
     train_dataset._run_build_trainset(
-        db, minio, task="sam3_detection", folder_name="proj",
-        ratios={"train": 0.6, "val": 0.2, "test": 0.2}, seed=3,
-        group_key_field="source_asset_id", min_per_split=1, force_new=False, log=_ctx().log,
+        db,
+        minio,
+        task="sam3_detection",
+        folder_name="proj",
+        ratios={"train": 0.6, "val": 0.2, "test": 0.2},
+        seed=3,
+        group_key_field="source_asset_id",
+        min_per_split=1,
+        force_new=False,
+        log=_ctx().log,
     )
     import json as _j
 
@@ -131,17 +145,31 @@ def test_stratify_floor_fails_when_rare_class_starved():
         for i in range(2):
             cands.append(
                 {
-                    "image_id": f"vid{g}_f{i}", "image_bucket": "vlm-processed",
-                    "image_key": f"proj/vid{g}/image/f{i}.jpg", "source_asset_id": f"vid{g}",
-                    "source_unit_name": "proj", "category": "fire" if g == 0 else "smoke",
-                    "box_index": 0, "bbox_x": 1.0, "bbox_y": 1.0, "bbox_w": 5.0, "bbox_h": 5.0,
+                    "image_id": f"vid{g}_f{i}",
+                    "image_bucket": "vlm-processed",
+                    "image_key": f"proj/vid{g}/image/f{i}.jpg",
+                    "source_asset_id": f"vid{g}",
+                    "source_unit_name": "proj",
+                    "category": "fire" if g == 0 else "smoke",
+                    "box_index": 0,
+                    "bbox_x": 1.0,
+                    "bbox_y": 1.0,
+                    "bbox_w": 5.0,
+                    "bbox_h": 5.0,
                 }
             )
     db = _DummyDB(cands)
     minio = _DummyMinIO()
     with pytest.raises(ValueError, match="stratify"):
         train_dataset._run_build_trainset(
-            db, minio, task="sam3_detection", folder_name="proj",
-            ratios={"train": 0.5, "val": 0.25, "test": 0.25}, seed=1,
-            group_key_field="source_asset_id", min_per_split=1, force_new=False, log=_ctx().log,
+            db,
+            minio,
+            task="sam3_detection",
+            folder_name="proj",
+            ratios={"train": 0.5, "val": 0.25, "test": 0.25},
+            seed=1,
+            group_key_field="source_asset_id",
+            min_per_split=1,
+            force_new=False,
+            log=_ctx().log,
         )

@@ -801,7 +801,7 @@ SOURCEA_DB_HOST=10.0.0.21
 SOURCEA_DB_PORT=3306
 SOURCEA_DB_USER=<site_reports/config.py 의 db_user 값>
 SOURCEA_DB_PASS=<site_reports/config.py 의 db_pass 값>
-SOURCEA_DB_NAME=source-c2stage
+SOURCEA_DB_NAME=sourcea_db
 SOURCEA_DEST=/nas/data/sourcea
 ```
 

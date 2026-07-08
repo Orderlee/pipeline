@@ -30,11 +30,18 @@ ENGINE_TAB: dict[str, str] = {
 }
 
 
+_KLING_DEFAULT_CONCURRENT = 5
+
+
 def engine_max_concurrent(engine: str) -> int:
     """engine 별 동시 in-flight 작업 상한. 0 = 무제한.
 
     Kling 은 resource pack 에 동시 작업(parallel) 한도가 있어 초과 시 1303 거부.
-    플랜별로 다름 (현재 사용자 플랜 = 5). KLING_MAX_CONCURRENT env 로 조정.
+    플랜별로 다름. KLING_MAX_CONCURRENT env 로 제어:
+      - 숫자 (예 "5") → 그 값 고정 (수동 override).
+      - "auto"        → 활성 요금제 이름의 `<N>Con` 파싱해 자동 (plan 바뀌면 자동 추종).
+                        감지 실패(API 다운/mock/파싱불가) 시 기본값 fallback.
+      - 미설정        → 기본값(kling=5). 기존 동작 유지.
     타 엔진은 별도 env 미설정 시 0(무제한).
 
     ⚠️ 동기 엔진(nanobanana/gpt_image)은 submit 시점에 결과까지 받아 deferred 가
@@ -46,10 +53,19 @@ def engine_max_concurrent(engine: str) -> int:
         return 0
     env_key = f"{engine.upper()}_MAX_CONCURRENT"
     raw = (os.getenv(env_key, "") or "").strip()
+    default = _KLING_DEFAULT_CONCURRENT if engine == "kling" else 0
+    if raw.lower() == "auto":
+        # 요금제 이름에 동시성이 박혀 옴 (예 'Trial-Video-1000Units-5Con-1Months' → 5).
+        # fetch 는 5분 캐시라 매 tick 호출돼도 QPS 안전.
+        if engine == "kling":
+            from .kling import kling_plan_concurrency
+            detected = kling_plan_concurrency()
+            if detected and detected > 0:
+                return detected
+        return default
     if raw.isdigit():
         return int(raw)
-    # env 미설정 기본값: kling 만 게이트 (플랜 동시 한도). compose 가 보통 명시.
-    return 5 if engine == "kling" else 0
+    return default
 
 
 def get_adapter(engine: str) -> BaseGenAIAdapter:

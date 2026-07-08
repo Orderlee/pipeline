@@ -81,11 +81,14 @@ def test_rollback_pointer_restores_prior():
         cur, prior_model_name="facebook/PE-Core-L14-336", scope="frame_search", dry_run=False
     )
     sql = " ".join(s.lower() for s, _ in cur.executed)
-    assert "facebook/pe-core-l14-336" in (cur.executed[0][1] or {}).get("model_name", "").lower() \
+    assert (
+        "facebook/pe-core-l14-336" in (cur.executed[0][1] or {}).get("model_name", "").lower()
         or "embedding_active_model" in sql
+    )
 
 
 # ── C-2: main() 배선 검증 (이전엔 --apply 도 no-op 이었음 → 이제 실제 함수 호출) ──
+
 
 class _FakeConn:
     def __init__(self, cur):
@@ -123,6 +126,7 @@ def test_model_name_from_row_empty_version_raises():
 
 def test_model_name_from_row_builds_versioned_when_no_override():
     from vlm_pipeline.lib.embedding_model_name import build_versioned_model_name
+
     assert promote_pe_core._model_name_from_row({"version": "ft-001"}) == build_versioned_model_name("ft-001")
 
 
@@ -133,6 +137,7 @@ def test_model_name_from_row_override_mismatch_raises():
 
 def test_model_name_from_row_override_match_passes_through():
     from vlm_pipeline.lib.embedding_model_name import build_versioned_model_name
+
     name = build_versioned_model_name("ft-001")
     assert promote_pe_core._model_name_from_row({"version": "ft-001"}, override=name) == name
 
@@ -153,9 +158,13 @@ def test_main_dry_run_calls_real_functions_not_noop(monkeypatch):
     cur = _FakeCursor([(100,), (100,)])  # assert_reembed: new count, incumbent count
     conn = _FakeConn(cur)
     monkeypatch.setattr(
-        promote_pe_core, "select_promotable_row",
+        promote_pe_core,
+        "select_promotable_row",
         lambda c, *, model, model_version_id: {
-            "model_version_id": "mv-1", "version": "ft-001", "checkpoint_key": "k", "artifact_checksum": "s",
+            "model_version_id": "mv-1",
+            "version": "ft-001",
+            "checkpoint_key": "k",
+            "artifact_checksum": "s",
         },
     )
 
@@ -165,6 +174,7 @@ def test_main_dry_run_calls_real_functions_not_noop(monkeypatch):
 
     monkeypatch.setattr(promote_pe_core, "_make_pe_resource", lambda dsn: _FakeDB())
     import psycopg2
+
     monkeypatch.setattr(psycopg2, "connect", lambda dsn: conn)
 
     rc = promote_pe_core.main(["--model-version-id", "mv-1", "--dsn", "postgresql://x"])

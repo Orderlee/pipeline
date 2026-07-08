@@ -5,6 +5,7 @@ A fake `mlflow` module records calls. Asserts (a) params + dataset lineage + met
 (c) ANY mlflow error is swallowed (fail-soft) → returns None, training continues.
 No real mlflow, no network.
 """
+
 from __future__ import annotations
 
 import importlib.util
@@ -92,8 +93,12 @@ def test_logs_params_dataset_metrics_and_returns_run_id(tmp_path, monkeypatch) -
     mod = _load_module()
 
     run_id = mod.log_training_run(
-        hparams=_HPARAMS, dataset=_DATASET, metrics=_METRICS,
-        artifact_paths=[str(art)], experiment="sam3_detection", run_name="sam3-2026.06.29-lora-001",
+        hparams=_HPARAMS,
+        dataset=_DATASET,
+        metrics=_METRICS,
+        artifact_paths=[str(art)],
+        experiment="sam3_detection",
+        run_name="sam3-2026.06.29-lora-001",
         tracking_uri="http://mlflow:5000",
     )
 
@@ -121,8 +126,11 @@ def test_failsoft_returns_none_when_mlflow_raises(tmp_path, monkeypatch) -> None
     mod = _load_module()
     # MUST NOT raise — fail-soft. Returns None so the trainer keeps going.
     run_id = mod.log_training_run(
-        hparams=_HPARAMS, dataset=_DATASET, metrics=_METRICS,
-        artifact_paths=[], experiment="sam3_detection",
+        hparams=_HPARAMS,
+        dataset=_DATASET,
+        metrics=_METRICS,
+        artifact_paths=[],
+        experiment="sam3_detection",
     )
     assert run_id is None
 
@@ -132,6 +140,10 @@ def test_failsoft_returns_none_when_mlflow_not_installed(monkeypatch) -> None:
     monkeypatch.setitem(sys.modules, "mlflow", None)  # forces ImportError on `import mlflow`
     mod = _load_module()
     run_id = mod.log_training_run(
-        hparams=_HPARAMS, dataset=_DATASET, metrics=_METRICS, artifact_paths=[], experiment="x",
+        hparams=_HPARAMS,
+        dataset=_DATASET,
+        metrics=_METRICS,
+        artifact_paths=[],
+        experiment="x",
     )
     assert run_id is None
