@@ -114,10 +114,7 @@ def mean_average_precision(
     classes = sorted(set(pooled_gt) | set(pooled_pred))
     per_class_ap: dict[str, float] = {}
     for cls in classes:
-        thr_aps = [
-            _ap_single_class(pooled_gt.get(cls, []), pooled_pred.get(cls, []), thr)
-            for thr in iou_thresholds
-        ]
+        thr_aps = [_ap_single_class(pooled_gt.get(cls, []), pooled_pred.get(cls, []), thr) for thr in iou_thresholds]
         per_class_ap[cls] = round(float(np.mean(thr_aps)), 6)
     map_value = round(float(np.mean(list(per_class_ap.values()))), 6) if per_class_ap else 0.0
     return {

@@ -33,6 +33,7 @@ from typing import Any
 from uuid import uuid4
 
 from db import pg
+from jobs.finalize import resolve_output_filenames
 
 
 # manifest_id 와 dispatch sensor 가 받는 enum 의 유효 집합. dispatch service 가
@@ -161,11 +162,15 @@ def promote_batch_to_labeling(
     src_outputs_dir = _batch_outputs_dir(batch_id, submitted_at)
 
     # items: seq → filename 매핑. ops_register 가 raw_files ↔ genai_jobs 링크용.
+    # 출력 파일명은 입력 이미지명 기반 (finalize 가 그렇게 씀) — outputs/_manifest.json
+    # 을 authoritative 소스로 읽는다. legacy 배치(001.mp4)도 manifest 값 그대로 정확.
+    done_seqs = [int(j.get("seq_in_batch") or 0) for j in done_jobs]
+    name_by_seq = resolve_output_filenames(src_outputs_dir, output_ext, done_seqs)
     items: list[dict[str, Any]] = []
-    src_paths: list[tuple[int, Path]] = []
+    src_paths: list[tuple[int, str, Path]] = []
     for j in done_jobs:
         seq = int(j.get("seq_in_batch") or 0)
-        filename = f"{seq:03d}{output_ext}"
+        filename = name_by_seq[seq]
         src = src_outputs_dir / filename
         if not src.exists():
             # output 누락 — claim 안 한 상태에서 fail. 다음 재시도 가능.
@@ -173,7 +178,7 @@ def promote_batch_to_labeling(
                 f"output 파일 없음: seq={seq} path={src} "
                 f"(NAS 정리됐거나 finalize 미완료)"
             )
-        src_paths.append((seq, src))
+        src_paths.append((seq, filename, src))
         items.append({
             "seq": seq,
             "filename": filename,
@@ -249,8 +254,8 @@ def promote_batch_to_labeling(
         if tmp_dir.exists():
             shutil.rmtree(tmp_dir, ignore_errors=True)
         tmp_dir.mkdir(parents=True, exist_ok=False)
-        for seq, src in src_paths:
-            dst = tmp_dir / f"{seq:03d}{output_ext}"
+        for _seq, filename, src in src_paths:
+            dst = tmp_dir / filename
             shutil.copy2(str(src), str(dst))
         tmp_dir.rename(target_dir)
     except Exception:

@@ -1,4 +1,5 @@
 """DVC setup artifacts — presence + shape (NOT executed). Pure file checks."""
+
 from __future__ import annotations
 
 import pathlib
@@ -33,8 +34,8 @@ def test_post_receive_hook_ingests_pushed_rev():
     assert "while read" in text
     # 직접 ingest 경로(webhook 수신부 대신): dvc-ingest.env source + 변경 .dvc 만 ingest 구동.
     assert "dvc-ingest.env" in text
-    assert "--only" in text                  # 변경된 .dvc 만 인덱싱
-    assert "DVC_INGEST_SCRIPT" in text        # ingest_to_catalog.py 호출
+    assert "--only" in text  # 변경된 .dvc 만 인덱싱
+    assert "DVC_INGEST_SCRIPT" in text  # ingest_to_catalog.py 호출
 
 
 def test_dvc_config_template_is_minio_s3_remote():

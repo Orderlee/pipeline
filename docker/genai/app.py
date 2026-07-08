@@ -66,15 +66,19 @@ def _check_auth(creds: Annotated[HTTPBasicCredentials, Depends(security)]) -> st
 
 # ----- upload limits ----------------------------------------------------
 _MAX_BYTES_PER_FILE = int(os.getenv("GENAI_MAX_BYTES_PER_FILE", str(50 * 1024 * 1024)))
-_MAX_FILES_PER_BATCH = int(os.getenv("GENAI_MAX_FILES_PER_BATCH", "20"))
+# batch 1개(=단일 /genai/batches 업로드, bulk chunk 단위)당 최대 이미지 수. 50 —
+# bulk 상한(_MAX_BULK_JOBS=50)과 정합. async 엔진(kling/veo)은 job 즉시 defer+드레인이라 안전.
+_MAX_FILES_PER_BATCH = int(os.getenv("GENAI_MAX_FILES_PER_BATCH", "50"))
 _ALLOWED_EXT = {".png", ".jpg", ".jpeg", ".webp"}
 
 # bulk-submit 묶음 id — 영숫자 / _ / - / . 1~64자. namespacing (team-a.run-001) 용도로 . 허용.
 _BULK_GROUP_ID_RE = re.compile(r"[A-Za-z0-9_.-]{1,64}")
 
-# bulk 한 번에 허용하는 최대 jobs (이미지×prompt 조합 총합). default 25 — Veo 8s 기준
-# 동기 호출시간 ~12s 안에 끝나서 브라우저 timeout 피함. env 로 운영자 override 가능.
-_MAX_BULK_JOBS = int(os.getenv("GENAI_MAX_BULK_JOBS", "25"))
+# bulk 한 번에 허용하는 최대 jobs (이미지×prompt 조합 총합). default 50 — prod 엔진(kling/veo)은
+# ASYNC (job 은 즉시 defer 되고 poll sensor 가 드레인) 이라 브라우저 동기 timeout 무관. 단, sync
+# 엔진(nanobanana/gpt_image) 을 활성화하는 경우 ~12s 응답을 브라우저가 기다려야 하니 주의.
+# env 로 운영자 override 가능.
+_MAX_BULK_JOBS = int(os.getenv("GENAI_MAX_BULK_JOBS", "50"))
 _BULK_SLEEP_SECONDS = float(os.getenv("GENAI_BULK_SLEEP_SECONDS", "0.5"))
 
 # 이중 제출 방지 — client 가 보낸 UUID idempotency token 을 TTL 캐시. 브라우저 새로고침
@@ -161,6 +165,7 @@ def create_app() -> FastAPI:
                 "filter_status": f_status,
                 "user": user,
                 "kling_pricing": pricing_table_json(),
+                "max_files_per_batch": _MAX_FILES_PER_BATCH,
             },
         )
 
@@ -321,10 +326,26 @@ def create_app() -> FastAPI:
                 promoted = bool(_json.loads(opt_text).get("promoted_to_labeling"))
             except Exception:
                 promoted = False
+        # 출력 파일명은 입력 이미지명 기반 (finalize 규칙) — seq→실제 파일명 맵을 넘겨
+        # template 이 하드코딩 001.mp4 대신 정확한 링크를 만들도록. legacy 배치도 정확.
+        from jobs.finalize import _batch_outputs_dir, resolve_output_filenames
+        output_ext = ".mp4" if batch.get("output_media") == "video" else ".png"
+        seqs = [int(j.get("seq_in_batch") or 0) for j in (batch.get("jobs") or [])]
+        try:
+            output_names = resolve_output_filenames(
+                _batch_outputs_dir(batch_id), output_ext, seqs
+            )
+        except Exception:
+            output_names = {}
         return templates.TemplateResponse(
             request=request,
             name="batch_detail.html",
-            context={"batch": batch, "user": user, "promoted": promoted},
+            context={
+                "batch": batch,
+                "user": user,
+                "promoted": promoted,
+                "output_names": output_names,
+            },
         )
 
     @app.get("/genai/batches/{batch_id}/promote", response_class=HTMLResponse)
@@ -470,7 +491,14 @@ def create_app() -> FastAPI:
                 )
                 headers = {}
                 if download:
-                    headers["Content-Disposition"] = f'attachment; filename="{batch_id}_{filename}"'
+                    # 파일명이 한글/#/공백 포함 가능 → RFC 5987 filename* (UTF-8 pct-encode)
+                    # + ASCII fallback. 다운로드 이름 = 출력 파일명(=입력 이미지명) 그대로.
+                    from urllib.parse import quote
+                    ascii_fallback = filename.encode("ascii", "ignore").decode() or "download"
+                    headers["Content-Disposition"] = (
+                        f'attachment; filename="{ascii_fallback}"; '
+                        f"filename*=UTF-8''{quote(filename)}"
+                    )
                 return FileResponse(path, media_type=media, headers=headers)
         raise HTTPException(
             status_code=404,

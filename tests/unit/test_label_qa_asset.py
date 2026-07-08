@@ -6,6 +6,7 @@ timestamp pseudo = 보존 스냅샷(*.pseudo.json), GT = finalized labels 이벤
 C-1: bbox 는 라이브 sam3_segmentations/<stem>.json 을 pseudo 로 읽지 않는다 — LS 리뷰가
 그 키를 사람수정본으로 in-place 덮어써 pseudo==GT 로 오염되기 때문. 반드시 `.pseudo.json`.
 """
+
 from __future__ import annotations
 
 from vlm_pipeline.defs.train.label_qa import (
@@ -48,8 +49,15 @@ def _coco(cls, bbox):
 
 
 def _gt_box(cls, x, y, w, h, image_key="src/a/frames/f1.jpg", image_id="img1"):
-    return {"image_id": image_id, "image_key": image_key, "category": cls,
-            "bbox_x": x, "bbox_y": y, "bbox_w": w, "bbox_h": h}
+    return {
+        "image_id": image_id,
+        "image_key": image_key,
+        "category": cls,
+        "bbox_x": x,
+        "bbox_y": y,
+        "bbox_w": w,
+        "bbox_h": h,
+    }
 
 
 def test_bbox_qa_perfect_match():
@@ -91,8 +99,9 @@ def test_bbox_qa_empty_gt_is_empty_report():
 def test_timestamp_qa_temporal_match():
     lk = "src/a/events/v1.json"
     pk = build_pseudo_events_key(lk)  # src/a/events/v1.pseudo.json
-    db = _DB(ts_rows=[{"labels_key": lk, "asset_id": "a1",
-                       "timestamp_start_sec": 1.0, "timestamp_end_sec": 9.0}])  # GT [1,9]
+    db = _DB(
+        ts_rows=[{"labels_key": lk, "asset_id": "a1", "timestamp_start_sec": 1.0, "timestamp_end_sec": 9.0}]
+    )  # GT [1,9]
     minio = _MinIO({pk: [{"category": "fire", "timestamp": [0.0, 10.0]}]})  # pseudo [0,10], tIoU 0.8
     r = _run_timestamp_label_qa(db, minio)
     assert r["gt_items"] == 1 and r["missing_pseudo"] == 0
@@ -101,8 +110,11 @@ def test_timestamp_qa_temporal_match():
 
 
 def test_timestamp_qa_missing_snapshot_is_recall_miss():
-    db = _DB(ts_rows=[{"labels_key": "x/events/v.json", "asset_id": "a",
-                       "timestamp_start_sec": 0.0, "timestamp_end_sec": 5.0}])
+    db = _DB(
+        ts_rows=[
+            {"labels_key": "x/events/v.json", "asset_id": "a", "timestamp_start_sec": 0.0, "timestamp_end_sec": 5.0}
+        ]
+    )
     minio = _MinIO({})  # 보존 스냅샷 없음(스냅샷 배포 전 finalize 된 옛 영상)
     r = _run_timestamp_label_qa(db, minio)
     assert r["missing_pseudo"] == 1

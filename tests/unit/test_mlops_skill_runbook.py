@@ -1,4 +1,5 @@
 """mlops-finetune SKILL.md operator-runbook presence guard (Section G, spec §14)."""
+
 from pathlib import Path
 
 _REPO = Path(__file__).resolve().parents[2]
@@ -12,7 +13,7 @@ def test_skill_file_exists():
 def test_skill_has_required_sections():
     txt = _SKILL.read_text(encoding="utf-8")
     required = [
-        "## 9. 정비락 복구",          # maintenance-lock recovery (spec §9)
+        "## 9. 정비락 복구",  # maintenance-lock recovery (spec §9)
         "scripts/clear_maintenance.sh",
         "/maintenance/exit",
         "/warmup",

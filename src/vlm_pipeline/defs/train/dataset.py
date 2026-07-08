@@ -102,9 +102,7 @@ def _run_build_trainset(
         rec["categories"].add(str(c["category"]))
     image_records = [per_image[i] for i in sorted(per_image.keys())]
 
-    splits = _split_groups(
-        image_records, key_fn=lambda r: r["group"], ratios=ratios, seed=seed
-    )
+    splits = _split_groups(image_records, key_fn=lambda r: r["group"], ratios=ratios, seed=seed)
 
     # ---- 4. per-class stratify floor (fail honestly if rare class starved) ----
     # explode by category so a multi-class image counts toward each of its classes
@@ -116,9 +114,7 @@ def _run_build_trainset(
         return out
 
     exploded = {name: _explode(rows) for name, rows in splits.items()}
-    ok, per_class_counts = _per_class_floor_ok(
-        exploded, class_fn=lambda r: r["category"], min_per_split=min_per_split
-    )
+    ok, per_class_counts = _per_class_floor_ok(exploded, class_fn=lambda r: r["category"], min_per_split=min_per_split)
     if not ok:
         raise ValueError(
             f"stratify floor violated: a class has < {min_per_split} examples in some split. "
@@ -290,7 +286,8 @@ def build_trainset(
             if old and new:
                 remap[old] = new
         summary = _run_build_trainset_from_dvc(
-            db, minio,
+            db,
+            minio,
             sources=sources,
             task=cfg.get("task", "sam3_detection"),
             seed=int(cfg.get("seed", 42)),
@@ -315,9 +312,7 @@ def build_trainset(
             log=context.log,
         )
     # scalar 만 metadata 로 (dict/list 값은 Dagster metadata 타입 에러 회피).
-    context.add_output_metadata(
-        {k: v for k, v in summary.items() if isinstance(v, (str, int, float, bool))}
-    )
+    context.add_output_metadata({k: v for k, v in summary.items() if isinstance(v, (str, int, float, bool))})
     return summary
 
 
@@ -402,13 +397,15 @@ def assemble_multi_project_coco(
         with open(os.path.join(src["local_path"], coco_filename), encoding="utf-8") as fh:
             coco = json.load(fh)
         pulled.append((task, coco))
-        spec_sources.append({
-            "task": task,
-            "dataset_catalog_id": src["dataset_catalog_id"],
-            "git_rev": src["git_rev"],
-            "dvc_out_path": src["dvc_out_path"],
-            "gt_source": "dvc_curated",
-        })
+        spec_sources.append(
+            {
+                "task": task,
+                "dataset_catalog_id": src["dataset_catalog_id"],
+                "git_rev": src["git_rev"],
+                "dvc_out_path": src["dvc_out_path"],
+                "gt_source": "dvc_curated",
+            }
+        )
     merged, provenance = merge_coco(pulled, class_allowlist=class_allowlist, class_remap=class_remap)
     source_spec = {
         "sources": spec_sources,
@@ -544,23 +541,25 @@ def freeze_multi_project_trainset(
     # source_spec only (a single column can't represent N catalog rows).
     spec_sources = source_spec.get("sources") or []
     dataset_catalog_id = spec_sources[0].get("dataset_catalog_id") if len(spec_sources) == 1 else None
-    db.insert_train_dataset_version({
-        "train_dataset_version_id": version_id,
-        "task": task,
-        "source_spec": source_spec,        # 멀티프로젝트 출처 lineage
-        "class_map": class_map,
-        "group_key_field": group_key_field or "file_name",
-        "split_assignment_key": split_key,
-        "split_ratios": split_ratios,
-        "manifest_key": manifest_key,
-        "content_checksum": checksum,
-        "ls_count": 0,
-        "al_confirmed_count": 0,
-        "per_class_counts": per_class_counts,
-        "total_count": len(images),
-        "seed": seed,
-        "dataset_catalog_id": dataset_catalog_id,
-    })
+    db.insert_train_dataset_version(
+        {
+            "train_dataset_version_id": version_id,
+            "task": task,
+            "source_spec": source_spec,  # 멀티프로젝트 출처 lineage
+            "class_map": class_map,
+            "group_key_field": group_key_field or "file_name",
+            "split_assignment_key": split_key,
+            "split_ratios": split_ratios,
+            "manifest_key": manifest_key,
+            "content_checksum": checksum,
+            "ls_count": 0,
+            "al_confirmed_count": 0,
+            "per_class_counts": per_class_counts,
+            "total_count": len(images),
+            "seed": seed,
+            "dataset_catalog_id": dataset_catalog_id,
+        }
+    )
     return {
         "skipped_duplicate": False,
         "content_checksum": checksum,
@@ -590,17 +589,30 @@ def _run_build_trainset_from_dvc(
     """Tier 2 DVC-sources 경로: pinned 프로젝트 데이터셋 N개 → assemble → freeze (불변 학습셋)."""
     dest_root = dest_root or tempfile.mkdtemp(prefix="trainset_assemble_")
     merged, source_spec = assemble_multi_project_coco(
-        db, sources=sources, dest_root=dest_root,
-        class_allowlist=class_allowlist or None, class_remap=class_remap or None, dvc_get=dvc_get,
+        db,
+        sources=sources,
+        dest_root=dest_root,
+        class_allowlist=class_allowlist or None,
+        class_remap=class_remap or None,
+        dvc_get=dvc_get,
     )
     if log:
         log.info(
             "[trainset/dvc] sources=%d missing=%d images=%d",
-            len(source_spec["sources"]), len(source_spec["missing"]), len(merged.get("images", [])),
+            len(source_spec["sources"]),
+            len(source_spec["missing"]),
+            len(merged.get("images", [])),
         )
     out = freeze_multi_project_trainset(
-        db, minio, merged_coco=merged, source_spec=source_spec, task=task,
-        seed=seed, split_ratios=split_ratios, group_key_field=group_key_field, force_new=force_new,
+        db,
+        minio,
+        merged_coco=merged,
+        source_spec=source_spec,
+        task=task,
+        seed=seed,
+        split_ratios=split_ratios,
+        group_key_field=group_key_field,
+        force_new=force_new,
         log=log,
     )
     out["sources"] = len(source_spec["sources"])

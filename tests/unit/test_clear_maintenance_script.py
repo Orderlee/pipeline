@@ -1,4 +1,5 @@
 """scripts/clear_maintenance.sh 정적 검증 (no exec — 구조/내용만)."""
+
 from __future__ import annotations
 
 import os

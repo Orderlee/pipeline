@@ -170,14 +170,20 @@ def pseudo_label_bbox_qa(context, db: PostgresResource, minio: MinIOResource) ->
         iou_threshold=float(cfg.get("iou_threshold", 0.5)),
         score_threshold=float(cfg.get("score_threshold", 0.0)),
     )
-    context.log.info("pseudo_label_bbox_qa: gt_items=%s macro_f1=%s micro=%s",
-                     report["gt_items"], report["macro_f1"], report["micro"])
-    context.add_output_metadata({
-        "macro_f1": report["macro_f1"],
-        "gt_items": report["gt_items"],
-        "missing_pseudo": report["missing_pseudo"],
-        "per_class": MetadataValue.md(format_qa_report_md(report)),
-    })
+    context.log.info(
+        "pseudo_label_bbox_qa: gt_items=%s macro_f1=%s micro=%s",
+        report["gt_items"],
+        report["macro_f1"],
+        report["micro"],
+    )
+    context.add_output_metadata(
+        {
+            "macro_f1": report["macro_f1"],
+            "gt_items": report["gt_items"],
+            "missing_pseudo": report["missing_pseudo"],
+            "per_class": MetadataValue.md(format_qa_report_md(report)),
+        }
+    )
     return report
 
 
@@ -192,12 +198,18 @@ def pseudo_label_timestamp_qa(context, db: PostgresResource, minio: MinIOResourc
     report = _run_timestamp_label_qa(
         db, minio, folder=cfg.get("folder"), tiou_threshold=float(cfg.get("tiou_threshold", 0.5))
     )
-    context.log.info("pseudo_label_timestamp_qa: gt_items=%s macro_f1=%s missing_pseudo=%s",
-                     report["gt_items"], report["macro_f1"], report["missing_pseudo"])
-    context.add_output_metadata({
-        "macro_f1": report["macro_f1"],
-        "gt_items": report["gt_items"],
-        "missing_pseudo": report["missing_pseudo"],
-        "per_class": MetadataValue.md(format_qa_report_md(report)),
-    })
+    context.log.info(
+        "pseudo_label_timestamp_qa: gt_items=%s macro_f1=%s missing_pseudo=%s",
+        report["gt_items"],
+        report["macro_f1"],
+        report["missing_pseudo"],
+    )
+    context.add_output_metadata(
+        {
+            "macro_f1": report["macro_f1"],
+            "gt_items": report["gt_items"],
+            "missing_pseudo": report["missing_pseudo"],
+            "per_class": MetadataValue.md(format_qa_report_md(report)),
+        }
+    )
     return report

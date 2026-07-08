@@ -4,6 +4,7 @@ pg_resource applies ALL migrations (ensure_schema) on a throwaway DB, so this al
 exercises the 016 -> 013 ALTER ordering. Auto-skips without DATAOPS_TEST_POSTGRES_DSN;
 a skip is NOT a pass — provision a throwaway postgres:15 (see J1.2) to actually run it.
 """
+
 from __future__ import annotations
 
 import uuid
@@ -25,19 +26,36 @@ def test_016_creates_three_catalog_tables(pg_resource) -> None:
 
 def test_016_catalog_core_columns(pg_resource) -> None:
     expected = {
-        "dataset_catalog_id", "task", "dataset_name", "status",
-        "data_repo_id", "data_repo_url", "git_rev", "git_short_rev", "git_ref", "git_tag",
-        "commit_subject", "commit_message", "commit_author_name", "commit_author_email",
-        "committed_at", "ingested_at",
-        "dvc_file_path", "dvc_out_path", "dvc_md5", "dvc_size_bytes", "dvc_nfiles",
-        "dvc_remote_name", "dvc_remote_url",
-        "train_dataset_version_id", "content_checksum", "mlflow_run_id",
+        "dataset_catalog_id",
+        "task",
+        "dataset_name",
+        "status",
+        "data_repo_id",
+        "data_repo_url",
+        "git_rev",
+        "git_short_rev",
+        "git_ref",
+        "git_tag",
+        "commit_subject",
+        "commit_message",
+        "commit_author_name",
+        "commit_author_email",
+        "committed_at",
+        "ingested_at",
+        "dvc_file_path",
+        "dvc_out_path",
+        "dvc_md5",
+        "dvc_size_bytes",
+        "dvc_nfiles",
+        "dvc_remote_name",
+        "dvc_remote_url",
+        "train_dataset_version_id",
+        "content_checksum",
+        "mlflow_run_id",
     }
     with pg_resource.connect() as conn:
         with conn.cursor() as cur:
-            cur.execute(
-                "SELECT column_name FROM information_schema.columns WHERE table_name = 'dataset_catalog'"
-            )
+            cur.execute("SELECT column_name FROM information_schema.columns WHERE table_name = 'dataset_catalog'")
             got = {r[0] for r in cur.fetchall()}
     missing = expected - got
     assert not missing, f"dataset_catalog missing columns: {sorted(missing)}"

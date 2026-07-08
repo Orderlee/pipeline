@@ -2,6 +2,7 @@
 
 A fake mlflow module is injected so NO real mlflow/network is touched.
 """
+
 from __future__ import annotations
 
 import importlib.util
@@ -71,7 +72,11 @@ def test_dvc_fields_logged_as_params_and_tags(monkeypatch):
     m = _load()
 
     run_id = m.log_training_run(
-        hparams={"lr": 0.001}, dataset=_DATASET, metrics={}, artifact_paths=[], experiment="sam3-ft",
+        hparams={"lr": 0.001},
+        dataset=_DATASET,
+        metrics={},
+        artifact_paths=[],
+        experiment="sam3-ft",
     )
     assert run_id == "run-xyz"
     for key in ("dvc_catalog_id", "dvc_git_rev", "dvc_commit_subject", "dvc_md5", "content_checksum"):

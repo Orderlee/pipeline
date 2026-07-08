@@ -1,4 +1,5 @@
 """lib.maintenance_flag — 순수 정비락 판단 로직 (no PG/dagster)."""
+
 from __future__ import annotations
 
 from vlm_pipeline.lib.maintenance_flag import (
@@ -12,8 +13,13 @@ from vlm_pipeline.lib.maintenance_flag import (
 
 def _active(**kw) -> MaintenanceFlag:
     base = dict(
-        active=True, target="sam3", owner_run_id="run-1",
-        entered_at=1000.0, heartbeat_at=1000.0, ttl_seconds=600, note=None,
+        active=True,
+        target="sam3",
+        owner_run_id="run-1",
+        entered_at=1000.0,
+        heartbeat_at=1000.0,
+        ttl_seconds=600,
+        note=None,
     )
     base.update(kw)
     return MaintenanceFlag(**base)
@@ -27,11 +33,15 @@ def test_flag_from_none_row_is_clear():
 
 def test_flag_from_pg_row_parses_timestamps():
     import datetime as dt
+
     ts = dt.datetime(2026, 6, 29, tzinfo=dt.timezone.utc)
     row = {
-        "active": True, "owner_run_id": "run-9",
-        "entered_at": ts, "heartbeat_at": ts,
-        "ttl_seconds": 900, "note": "training",
+        "active": True,
+        "owner_run_id": "run-9",
+        "entered_at": ts,
+        "heartbeat_at": ts,
+        "ttl_seconds": 900,
+        "note": "training",
     }
     f = flag_from_pg_row(row, target="pe_core")
     assert f.active is True and f.owner_run_id == "run-9"
@@ -41,7 +51,7 @@ def test_flag_from_pg_row_parses_timestamps():
 
 def test_heartbeat_stale_when_past_ttl():
     f = _active(heartbeat_at=1000.0, ttl_seconds=600)
-    assert is_heartbeat_stale(f, now_ts=1700.0) is True   # 700s > 600 ttl
+    assert is_heartbeat_stale(f, now_ts=1700.0) is True  # 700s > 600 ttl
     assert is_heartbeat_stale(f, now_ts=1500.0) is False  # 500s < 600 ttl
 
 

@@ -8,6 +8,7 @@ union 기본 + 선택적 class allowlist(쓸 클래스만) / remap(동의어 통
 # ponytail: dedup 미포함 — 프로젝트 disjoint 가정. 동일 프레임이 여러 프로젝트에 겹치면
 #   image file_name 기준 dedup 추가 (충돌 관측 시). 지금은 YAGNI.
 """
+
 from __future__ import annotations
 
 from typing import Any
@@ -64,12 +65,14 @@ def merge_coco(
                 continue
             if cname not in cat_id_by_name:
                 cat_id_by_name[cname] = len(cat_id_by_name) + 1
-            out_anns.append({
-                **ann,
-                "id": next_ann,
-                "image_id": new_img_id,
-                "category_id": cat_id_by_name[cname],
-            })
+            out_anns.append(
+                {
+                    **ann,
+                    "id": next_ann,
+                    "image_id": new_img_id,
+                    "category_id": cat_id_by_name[cname],
+                }
+            )
             next_ann += 1
             n_ann += 1
         prov[name] = {
