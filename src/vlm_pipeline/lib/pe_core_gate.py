@@ -37,6 +37,4 @@ def pe_core_gate_decision(
             per_metric={},
             per_class={},
         )
-    return evaluate_gate(
-        candidate_metrics, incumbent_metrics, eval_config, incumbent_source=incumbent_source
-    )
+    return evaluate_gate(candidate_metrics, incumbent_metrics, eval_config, incumbent_source=incumbent_source)

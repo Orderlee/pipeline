@@ -22,9 +22,9 @@ from typing import Any
 # overridable per-run via model_registry.eval_config). SAM3 detection track.
 DEFAULT_EVAL_CONFIG: dict[str, Any] = {
     "primary_metric": "map",
-    "primary_margin": 0.01,        # absolute mAP@0.5 improvement required
+    "primary_margin": 0.01,  # absolute mAP@0.5 improvement required
     "per_class_field": "per_class_ap",
-    "per_class_floor": -0.02,      # each class may drop at most 0.02 absolute AP
+    "per_class_floor": -0.02,  # each class may drop at most 0.02 absolute AP
     "advisory": False,
 }
 
@@ -103,9 +103,7 @@ def evaluate_gate(
         }
         if not ok:
             class_regression = True
-            reasons.append(
-                f"per-class regression: '{cls}' delta {c_delta} < floor {floor}"
-            )
+            reasons.append(f"per-class regression: '{cls}' delta {c_delta} < floor {floor}")
 
     hard_pass = margin_passed and not class_regression
     if advisory:

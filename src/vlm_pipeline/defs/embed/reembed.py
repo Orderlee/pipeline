@@ -71,7 +71,11 @@ def _run_reembed(context, db: PostgresResource, minio: MinIOResource) -> dict:
             total += inserted
             context.log.info(
                 "reembed[%s]: page=%d inserted=%d failed=%d new_model=%s",
-                et, len(page), inserted, len(failed), new_model_name,
+                et,
+                len(page),
+                inserted,
+                len(failed),
+                new_model_name,
             )
             # 진전 없음(전부 embed 실패) → NOT EXISTS 가 같은 page 를 무한 재조회. 중단해 GPU 낭비 방지.
             if inserted == 0:

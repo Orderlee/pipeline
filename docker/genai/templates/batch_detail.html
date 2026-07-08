@@ -53,8 +53,8 @@
       </thead>
       <tbody>
         {% for j in batch.jobs %}
-        {% set fname = '%03d'|format(j.seq_in_batch) ~ output_ext %}
-        {% set out_url = '/genai/batches/' ~ batch.batch_id ~ '/outputs/' ~ fname %}
+        {% set fname = output_names.get(j.seq_in_batch) or ('%03d'|format(j.seq_in_batch) ~ output_ext) %}
+        {% set out_url = '/genai/batches/' ~ batch.batch_id ~ '/outputs/' ~ (fname | urlencode) %}
         <tr>
           <td>{{ j.seq_in_batch }}</td>
           <td><code>{{ j.job_id }}</code></td>

@@ -65,6 +65,39 @@
 
 
 
+
+## 2026-07-07
+
+### 1. 당일 코드 및 설정 정리
+- **문제**: 당일 변경이 여러 영역에 걸쳐 있어, 커밋 목록만 보면 실제 수정 범위와 운영 영향 지점을 파악하기 어려웠음.
+- **원인**: 자동 기록이 파일/커밋 나열 중심으로 작성되면 코드, 설정, 문서 변경이 어떤 의도로 묶였는지 드러나지 않음.
+- **조치**:
+    - 파이프라인 코드 변경을 정리함: `src/vlm_pipeline/definitions_production.py`, `src/vlm_pipeline/defs/label/timestamp.py`, `src/vlm_pipeline/defs/train/catalog_ingest.py`, `src/vlm_pipeline/defs/train/dataset.py`, `... 외 5개`
+    - 인프라/설정 변경을 정리함: `docker/analysis/fiftyone_full_build.py`, `docker/analysis/fiftyone_pgvector.py`, `docker/analysis/label_qa_fiftyone.py`, `docker/app/requirements.txt`, `... 외 8개`
+    - 스크립트/도구 변경을 정리함: `scripts/promote_model.py`, `scripts/promote_pe_core.py`
+    - 테스트 변경을 정리함: `tests/unit/test_coco_merge.py`, `tests/unit/test_dataset_catalog_db.py`, `tests/unit/test_key_builders.py`, `tests/unit/test_label_qa_asset.py`, `... 외 7개`
+    - 문서 변경을 정리함: `docs/pipeline-flow-audit-2026-07-01.md`, `docs/pseudo-label-qa-feasibility.md`, `docs/runbook/fiftyone-operations.md`, `docs/runbook/pseudo-label-qa.md`
+    - 기타 변경을 정리함: `.gitignore`, `src/vlm_pipeline.egg-info/PKG-INFO`, `src/vlm_pipeline.egg-info/SOURCES.txt`, `src/vlm_pipeline.egg-info/requires.txt`
+    - 관련 커밋: `f80638d7` feat: pseudo-label QA + FiftyOne label QA + genai/trainer/train 스택 정비
+    - 관련 파일:
+      - `.gitignore`
+      - `docker/analysis/fiftyone_full_build.py`
+      - `docker/analysis/fiftyone_pgvector.py`
+      - `docker/analysis/label_qa_fiftyone.py`
+      - `docker/app/requirements.txt`
+      - `docker/genai/adapters/base.py`
+      - `docker/genai/adapters/higgsfield.py`
+      - `docker/genai/adapters/kling.py`
+      - `... 외 34개`
+
+### 2. 당일 정리
+- **변경 통계**:
+    - 변경 파일 **42개**, +2621/-189줄.
+- **관련 커밋**:
+    - `f80638d7`: feat: pseudo-label QA + FiftyOne label QA + genai/trainer/train 스택 정비
+- **서비스 상태**: 파이프라인 서비스 16개 컨테이너 중 16개 정상 가동.
+- **작업 환경**: VSCode
+
 ## 2026-07-06
 
 ### 1. 운영 ingest / process 공통 구조 정리

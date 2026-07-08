@@ -46,9 +46,7 @@ def _install_fakes(monkeypatch, be, *, captured_path):
         "oc",
         (),
         {
-            "create_model_and_transforms": staticmethod(
-                lambda ref: (fake_model, None, (lambda x: x))
-            ),
+            "create_model_and_transforms": staticmethod(lambda ref: (fake_model, None, (lambda x: x))),
             "get_tokenizer": staticmethod(lambda ref: (lambda xs: xs)),
         },
     )

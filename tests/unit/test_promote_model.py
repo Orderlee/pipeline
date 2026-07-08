@@ -11,9 +11,7 @@ import pathlib
 
 import pytest
 
-_SPEC = importlib.util.spec_from_file_location(
-    "promote_model", str(pathlib.Path("scripts/promote_model.py").resolve())
-)
+_SPEC = importlib.util.spec_from_file_location("promote_model", str(pathlib.Path("scripts/promote_model.py").resolve()))
 promote_model = importlib.util.module_from_spec(_SPEC)
 _SPEC.loader.exec_module(promote_model)
 
@@ -137,9 +135,14 @@ def test_promote_transition_sets_promoted_and_archives_prior():
 
 
 def test_select_rollback_target_picks_prior_promoted():
-    prior = {"model_version_id": 5, "model": "pe_core", "version": "v1",
-             "status": "archived", "checkpoint_key": "_models/pe_core/v1/merged.pt",
-             "artifact_checksum": "c5"}
+    prior = {
+        "model_version_id": 5,
+        "model": "pe_core",
+        "version": "v1",
+        "status": "archived",
+        "checkpoint_key": "_models/pe_core/v1/merged.pt",
+        "artifact_checksum": "c5",
+    }
     cur = _FakeCursor([prior])
     got = promote_model.select_rollback_target(cur, model="pe_core")
     assert got["model_version_id"] == 5
@@ -160,21 +163,19 @@ def test_rollback_transition_flips_current_and_restores():
     promote_model.rollback_transition(cur, restore_row=restore, current_promoted_id=7, env="prod")
     sqls = " ".join(s.lower() for s, _ in cur.executed)
     assert "status = 'rolled_back'" in sqls  # 현 promoted → rolled_back
-    assert "status = 'promoted'" in sqls     # restore → promoted
+    assert "status = 'promoted'" in sqls  # restore → promoted
 
 
 def test_docker_recreate_dry_run_no_subprocess(monkeypatch):
     calls = []
-    monkeypatch.setattr(promote_model.subprocess, "run",
-                        lambda *a, **k: calls.append((a, k)))
+    monkeypatch.setattr(promote_model.subprocess, "run", lambda *a, **k: calls.append((a, k)))
     promote_model.docker_recreate("embedding-service", dry_run=True)
     assert calls == []
 
 
 def test_docker_recreate_apply_invokes_compose(monkeypatch):
     calls = []
-    monkeypatch.setattr(promote_model.subprocess, "run",
-                        lambda *a, **k: calls.append((a, k)) or _Ok())
+    monkeypatch.setattr(promote_model.subprocess, "run", lambda *a, **k: calls.append((a, k)) or _Ok())
     promote_model.docker_recreate("embedding-service", dry_run=False)
     assert calls, "subprocess.run not called on --apply"
     argv = calls[0][0][0]
@@ -220,10 +221,14 @@ def test_h5_commits_registry_before_docker_recreate(monkeypatch):
             pass
 
     monkeypatch.setattr(
-        promote_model, "select_promotable_row",
+        promote_model,
+        "select_promotable_row",
         lambda c, *, model, model_version_id: {
-            "model_version_id": 1, "model": "sam3", "version": "v1",
-            "checkpoint_key": "k", "artifact_checksum": "s",
+            "model_version_id": 1,
+            "model": "sam3",
+            "version": "v1",
+            "checkpoint_key": "k",
+            "artifact_checksum": "s",
         },
     )
     monkeypatch.setattr(promote_model, "download_and_verify", lambda *a, **k: None)
@@ -231,12 +236,15 @@ def test_h5_commits_registry_before_docker_recreate(monkeypatch):
     monkeypatch.setattr(promote_model, "_make_minio", lambda: object())
     monkeypatch.setattr(promote_model, "docker_recreate", lambda service, *, dry_run: order.append("recreate"))
     import psycopg2
+
     monkeypatch.setattr(psycopg2, "connect", lambda dsn: _Conn())
 
     rc = promote_model.main(["--model", "sam3", "--dsn", "postgresql://x", "--apply"])
     assert rc == 0
     # env write must also follow commit: writing docker/.env before a rolled-back commit would
     # leave serving pointing at an unpromoted checkpoint (registry=truth violation via env file).
-    assert order == ["commit", "env_write", "recreate"], (
-        f"commit must precede env write and recreate (H-5), got {order}"
-    )
+    assert order == [
+        "commit",
+        "env_write",
+        "recreate",
+    ], f"commit must precede env write and recreate (H-5), got {order}"

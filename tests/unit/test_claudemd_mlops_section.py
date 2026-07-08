@@ -3,6 +3,7 @@
 Asserts the safety-critical MLOps runbook section exists and names the exact
 shared-contract symbols operators need (promote/rollback/maintenance recovery).
 """
+
 from pathlib import Path
 
 _REPO = Path(__file__).resolve().parents[2]

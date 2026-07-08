@@ -22,9 +22,7 @@ def test_stock_constant_matches_serving_backend():
 
 
 def test_build_default_base():
-    assert build_versioned_model_name("ft-2026.06.29-lora-001") == (
-        "facebook/PE-Core-L14-336@ft-2026.06.29-lora-001"
-    )
+    assert build_versioned_model_name("ft-2026.06.29-lora-001") == ("facebook/PE-Core-L14-336@ft-2026.06.29-lora-001")
 
 
 def test_build_custom_base():

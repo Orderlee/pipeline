@@ -3,6 +3,7 @@
 No real PG. _DummyDB captures executed SQL and simulates UNIQUE-on-catalog + the
 single alias-per-task invariant so pin_alias' transaction logic is fully exercised.
 """
+
 from __future__ import annotations
 
 import pathlib
@@ -65,7 +66,9 @@ class _Cursor:
             self._result = (row["dataset_catalog_id"],) if row else None
         elif "insert into dataset_catalog_aliases" in s or "update dataset_catalog_aliases" in s:
             self.store["aliases"][(params["task"], params["alias"])] = {
-                "dataset_catalog_id": params["dataset_catalog_id"], "task": params["task"], "alias": params["alias"],
+                "dataset_catalog_id": params["dataset_catalog_id"],
+                "task": params["task"],
+                "alias": params["alias"],
             }
         elif "insert into dataset_catalog_pin_events" in s:
             self.store["pin_events"].append(params)
@@ -104,8 +107,13 @@ class _Conn:
 class _DummyDB(PostgresTrainMixin):
     def __init__(self):
         self.store = {
-            "log": [], "catalog_by_key": {}, "task_by_id": {}, "status_by_id": {}, "aliases": {},
-            "pin_events": [], "status_updates": [],
+            "log": [],
+            "catalog_by_key": {},
+            "task_by_id": {},
+            "status_by_id": {},
+            "aliases": {},
+            "pin_events": [],
+            "status_updates": [],
         }
 
     def connect(self):
@@ -114,9 +122,14 @@ class _DummyDB(PostgresTrainMixin):
 
 def _row(cid, rev="rev1", status="available"):
     return {
-        "dataset_catalog_id": cid, "task": "sam3_detection", "dataset_name": "fire",
-        "status": status, "data_repo_id": "dvc-datasets", "git_rev": rev,
-        "dvc_file_path": "data/fire.dvc", "dvc_out_path": "fire",
+        "dataset_catalog_id": cid,
+        "task": "sam3_detection",
+        "dataset_name": "fire",
+        "status": status,
+        "data_repo_id": "dvc-datasets",
+        "git_rev": rev,
+        "dvc_file_path": "data/fire.dvc",
+        "dvc_out_path": "fire",
     }
 
 
@@ -143,7 +156,9 @@ def test_pin_alias_is_transactional_and_appends_event():
     assert len(db.store["pin_events"]) == 1
     assert db.store["status_updates"][-1]["dataset_catalog_id"] == a  # status->pinned
 
-    out2 = db.pin_alias(task="sam3_detection", alias="current", dataset_catalog_id=b, pinned_by="eng", pin_reason="better")
+    out2 = db.pin_alias(
+        task="sam3_detection", alias="current", dataset_catalog_id=b, pinned_by="eng", pin_reason="better"
+    )
     assert out2["dataset_catalog_id"] == b
     assert out2["previous_dataset_catalog_id"] == a, "must record the displaced catalog id"
     assert db.store["aliases"][("sam3_detection", "current")]["dataset_catalog_id"] == b
@@ -173,7 +188,9 @@ def test_insert_catalog_row_self_heals_pending_to_available():
     db.insert_catalog_row(_row(cid, rev="rev-pending", status="pending_missing_dvc_objects"))
     assert db.store["status_by_id"][cid] == "pending_missing_dvc_objects"
 
-    healed_id = db.insert_catalog_row(_row("eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee", rev="rev-pending", status="available"))
+    healed_id = db.insert_catalog_row(
+        _row("eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee", rev="rev-pending", status="available")
+    )
     assert healed_id == cid, "self-heal must still return the original row's id"
     assert db.store["status_by_id"][cid] == "available"
 

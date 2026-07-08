@@ -5,6 +5,7 @@ env·NAS·연결 preflight 실패는 모두 graceful skip — NAS 미복구/tail
 스케줄이 돌아도 에러가 나지 않는다.
 설계: docs/superpowers/specs/2026-07-06-sourcea-daily-download-design.md
 """
+
 from __future__ import annotations
 
 import socket

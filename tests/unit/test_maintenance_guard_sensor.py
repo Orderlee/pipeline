@@ -1,18 +1,24 @@
 """maintenance_guard_sensor 순수 판단 로직 + settings 검증 (no Dagster instance)."""
+
 from __future__ import annotations
 
 import pytest
 
 pytest.importorskip("dagster")
 
-from vlm_pipeline.defs.train.sensor_maintenance_guard import resolve_release_actions
-from vlm_pipeline.lib.maintenance_flag import MaintenanceFlag
+from vlm_pipeline.defs.train.sensor_maintenance_guard import resolve_release_actions  # noqa: E402
+from vlm_pipeline.lib.maintenance_flag import MaintenanceFlag  # noqa: E402
 
 
 def _flag(**kw) -> MaintenanceFlag:
     base = dict(
-        active=True, target="sam3", owner_run_id="run-1",
-        entered_at=1000.0, heartbeat_at=1000.0, ttl_seconds=600, note=None,
+        active=True,
+        target="sam3",
+        owner_run_id="run-1",
+        entered_at=1000.0,
+        heartbeat_at=1000.0,
+        ttl_seconds=600,
+        note=None,
     )
     base.update(kw)
     return MaintenanceFlag(**base)
@@ -29,9 +35,7 @@ def test_release_on_dead_owner_run():
 
 
 def test_release_when_owner_run_id_missing():
-    release, reason = resolve_release_actions(
-        _flag(owner_run_id=None), owner_run_is_running=False, now_ts=1100.0
-    )
+    release, reason = resolve_release_actions(_flag(owner_run_id=None), owner_run_is_running=False, now_ts=1100.0)
     assert release is True and reason == "owner_run_id_missing"
 
 
@@ -41,9 +45,7 @@ def test_no_release_when_healthy():
 
 
 def test_no_release_when_inactive():
-    release, reason = resolve_release_actions(
-        _flag(active=False), owner_run_is_running=False, now_ts=1100.0
-    )
+    release, reason = resolve_release_actions(_flag(active=False), owner_run_is_running=False, now_ts=1100.0)
     assert release is False and reason is None
 
 

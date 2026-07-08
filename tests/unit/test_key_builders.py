@@ -151,6 +151,4 @@ class TestBuildPseudoBboxKey:
     def test_differs_from_live_detection_key(self):
         image_key = "folder/image/test.jpg"
         assert build_pseudo_bbox_key(image_key) != build_sam3_detection_key(image_key)
-        assert build_pseudo_bbox_key(image_key) == build_sam3_detection_key(image_key).replace(
-            ".json", ".pseudo.json"
-        )
+        assert build_pseudo_bbox_key(image_key) == build_sam3_detection_key(image_key).replace(".json", ".pseudo.json")

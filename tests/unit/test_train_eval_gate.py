@@ -64,7 +64,7 @@ def test_per_class_regression_vetoes_even_when_primary_passes() -> None:
     inc = {"map": 0.40, "per_class_ap": {"fire": 0.40, "smoke": 0.40}}
     d = evaluate_gate(cand, inc, _CFG, incumbent_source="promoted")
     assert d.promotable is False
-    assert d.per_metric["map"]["passed"] is True       # primary alone would pass
+    assert d.per_metric["map"]["passed"] is True  # primary alone would pass
     assert d.per_class["smoke"]["passed"] is False
     assert any("smoke" in r and "regression" in r for r in d.reasons)
 

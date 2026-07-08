@@ -1,4 +1,5 @@
 """lib/sourcea_site 순수 로직 테스트 — 네트워크/DB 없이 mock으로만 검증."""
+
 import io
 import sys
 import time
@@ -153,8 +154,10 @@ def test_download_dates_deadline_passed_lists_nothing(tmp_path):
 
 def test_download_dates_happy_path(tmp_path):
     cfg = _cfg(tmp_path)
-    with patch.object(kk, "list_objects", return_value=[("20260706/a.jpg", 10)]) as lo, \
-         patch.object(kk, "fetch", return_value=1) as f:
+    with (
+        patch.object(kk, "list_objects", return_value=[("20260706/a.jpg", 10)]) as lo,
+        patch.object(kk, "fetch", return_value=1) as f,
+    ):
         stats = kk.download_dates(cfg, ["20260706"], deadline=None)
     assert lo.call_count == 2  # thumbnail + video 버킷
     assert f.call_count == 2 and stats["downloaded"] == 2 and stats["failed"] == 0
@@ -162,8 +165,10 @@ def test_download_dates_happy_path(tmp_path):
 
 def test_download_dates_per_file_fail_forward(tmp_path):
     cfg = _cfg(tmp_path)
-    with patch.object(kk, "list_objects", return_value=[("20260706/a.jpg", 10)]), \
-         patch.object(kk, "fetch", side_effect=OSError("boom")):
+    with (
+        patch.object(kk, "list_objects", return_value=[("20260706/a.jpg", 10)]),
+        patch.object(kk, "fetch", side_effect=OSError("boom")),
+    ):
         stats = kk.download_dates(cfg, ["20260706"], deadline=None)
     assert stats["failed"] == 2 and stats["downloaded"] == 0
 
@@ -171,6 +176,7 @@ def test_download_dates_per_file_fail_forward(tmp_path):
 def test_download_dates_enumeration_fail_forward(tmp_path):
     cfg = _cfg(tmp_path)
     import xml.etree.ElementTree as ET
+
     with patch.object(kk, "list_objects", side_effect=ET.ParseError("bad xml")):
         stats = kk.download_dates(cfg, ["20260706"], deadline=None)
     assert stats["failed"] == 2 and stats["downloaded"] == 0  # 버킷 2개 각각 fail-forward
@@ -244,10 +250,12 @@ def test_classify_copies_by_category(tmp_path):
     (tmp_path / "thumbnail" / "20260706").mkdir(parents=True)
     (tmp_path / "thumbnail" / "20260706" / "e1.jpg").write_bytes(b"x")
     events = [
-        {"event_name": "fire", "thumbnail": "/user-service/minio/thumbnail/20260706/e1.jpg",
-         "video_url": "/user-service/minio/video/20260706/e1.mp4"},
-        {"event_name": "peoplecount", "thumbnail": "/user-service/minio/thumbnail/20260706/e2.jpg",
-         "video_url": None},
+        {
+            "event_name": "fire",
+            "thumbnail": "/user-service/minio/thumbnail/20260706/e1.jpg",
+            "video_url": "/user-service/minio/video/20260706/e1.mp4",
+        },
+        {"event_name": "peoplecount", "thumbnail": "/user-service/minio/thumbnail/20260706/e2.jpg", "video_url": None},
     ]
     with patch.dict(sys.modules, {"pymysql": _fake_pymysql(events)}):
         out = kk.classify(cfg, {"20260706"})

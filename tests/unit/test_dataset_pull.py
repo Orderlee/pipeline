@@ -2,6 +2,7 @@
 
 Dry-run default → no dvc invoked, no bytes moved (scaffolding only).
 """
+
 from __future__ import annotations
 
 import importlib.util
@@ -25,7 +26,7 @@ def test_build_dvc_get_argv():
 
 
 def test_verify_pulled_md5():
-    assert verify_pulled_md5(None, "anything") is True       # nothing to verify
+    assert verify_pulled_md5(None, "anything") is True  # nothing to verify
     assert verify_pulled_md5("deadbeef", "deadbeef") is True
     assert verify_pulled_md5("deadbeef", "cafef00d") is False
 
@@ -37,14 +38,19 @@ def test_dry_run_resolves_but_does_not_invoke_dvc(monkeypatch, capsys):
         def get_catalog_by_alias(self, task, alias="current"):
             assert task == "sam3_detection"
             return {
-                "dataset_catalog_id": "cid-1", "git_rev": "abc123", "dvc_out_path": "fire_v3",
-                "dvc_md5": "deadbeef", "status": "pinned", "commit_subject": "curate: fire v3",
+                "dataset_catalog_id": "cid-1",
+                "git_rev": "abc123",
+                "dvc_out_path": "fire_v3",
+                "dvc_md5": "deadbeef",
+                "status": "pinned",
+                "commit_subject": "curate: fire v3",
             }
 
     monkeypatch.setattr(dataset_pull, "_open_db", lambda: _DB())
     monkeypatch.setattr(dataset_pull, "_repo_path", lambda: "/srv/data-repos/dvc-datasets.git")
     monkeypatch.setattr(
-        dataset_pull, "_run_dvc_get",
+        dataset_pull,
+        "_run_dvc_get",
         lambda *a, **k: invoked.__setitem__("dvc", True),
     )
 
