@@ -4,6 +4,7 @@ Only `git` is invoked here (read-only: log, ls-tree, show). The `dvc` binary and
 MinIO bytes are NOT touched — those live in the L4 ingestion op / the pull wrapper.
 No dagster / resources / ops import.
 """
+
 from __future__ import annotations
 
 import subprocess

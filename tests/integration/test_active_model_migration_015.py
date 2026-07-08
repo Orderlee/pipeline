@@ -13,8 +13,7 @@ pytest.importorskip("psycopg2")
 
 def _table_exists(cur, name: str) -> bool:
     cur.execute(
-        "SELECT EXISTS (SELECT 1 FROM information_schema.tables "
-        "WHERE table_schema='public' AND table_name=%s)",
+        "SELECT EXISTS (SELECT 1 FROM information_schema.tables " "WHERE table_schema='public' AND table_name=%s)",
         (name,),
     )
     return bool(cur.fetchone()[0])
@@ -26,14 +25,10 @@ def test_015_active_model_table_and_seed(postgres_resource) -> None:
             if not _table_exists(cur, "embedding_active_model"):
                 pytest.skip("embedding_active_model absent — pgvector not available on this PG")
             # seed row present + defaults to stock model_name
-            cur.execute(
-                "SELECT model_name FROM embedding_active_model WHERE scope = 'frame_search'"
-            )
+            cur.execute("SELECT model_name FROM embedding_active_model WHERE scope = 'frame_search'")
             row = cur.fetchone()
             assert row is not None, "frame_search seed row missing"
             assert row[0] == "facebook/PE-Core-L14-336"
             # CHECK rejects unknown scope
             with pytest.raises(Exception):
-                cur.execute(
-                    "INSERT INTO embedding_active_model (scope, model_name) VALUES ('bogus', 'x')"
-                )
+                cur.execute("INSERT INTO embedding_active_model (scope, model_name) VALUES ('bogus', 'x')")

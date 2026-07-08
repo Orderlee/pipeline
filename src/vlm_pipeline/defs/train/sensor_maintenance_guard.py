@@ -4,6 +4,7 @@
   1) PG 플래그 clear  2) 서빙 /maintenance/exit + /warmup  3) 경고 로그.
 '락은 fail-safe(자동해제), fail-stuck 아님' — 설계 요구사항(§9).
 """
+
 from __future__ import annotations
 
 import time
@@ -81,9 +82,7 @@ def maintenance_guard_sensor(context):
             continue
 
         owner_running = _owner_run_is_running(context, flag.owner_run_id)
-        should_release, reason = resolve_release_actions(
-            flag, owner_run_is_running=owner_running, now_ts=now_ts
-        )
+        should_release, reason = resolve_release_actions(flag, owner_run_is_running=owner_running, now_ts=now_ts)
         if not should_release:
             continue
 
@@ -93,7 +92,10 @@ def maintenance_guard_sensor(context):
             released.append(f"{target}:{reason}")
             context.log.warning(
                 "maintenance 자동해제: target=%s reason=%s owner_run_id=%s base_url=%s",
-                target, reason, flag.owner_run_id, base_url,
+                target,
+                reason,
+                flag.owner_run_id,
+                base_url,
             )
         except Exception as exc:  # noqa: BLE001
             context.log.warning("maintenance 자동해제 실패 target=%s: %s", target, exc)

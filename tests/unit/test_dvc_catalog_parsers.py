@@ -1,4 +1,5 @@
 """lib.dvc_catalog — pure .dvc YAML + git-log parsers (L1, no dagster/DB/MinIO)."""
+
 from __future__ import annotations
 
 import pathlib

@@ -3,6 +3,7 @@
 서버사이드 게이트(docker/*/app.py)와 guard 센서(defs/train/sensor_maintenance_guard.py)가
 공유하는 flag 표현 + stale 판정. 저장/네트워크 부수효과 없음.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass

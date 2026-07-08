@@ -1,4 +1,5 @@
 """label_qa_fiftyone 순수 헬퍼 — bbox 정규화 + GT 그룹핑. fiftyone/psycopg2 불필요(lazy import)."""
+
 from __future__ import annotations
 
 import importlib.util
@@ -42,6 +43,7 @@ def test_sam3_detection_key_mirrors_key_builder():
     m = _load()
     # 원본 vlm_pipeline.lib.key_builders.build_sam3_detection_key 와 동일 결과여야 함
     from vlm_pipeline.lib.key_builders import build_sam3_detection_key
+
     for k in ("proj/a/frames/f1.jpg", "proj/a/image/f1.jpg", "f1.jpg", "a/b/c/image/x.png"):
         assert m.sam3_detection_key(k) == build_sam3_detection_key(k)
 
@@ -50,6 +52,7 @@ def test_pseudo_bbox_key_mirrors_key_builder():
     m = _load()
     # 원본 vlm_pipeline.lib.key_builders.build_pseudo_bbox_key 와 동일 결과여야 함 (C-1 스냅샷 키)
     from vlm_pipeline.lib.key_builders import build_pseudo_bbox_key
+
     for k in ("proj/a/frames/f1.jpg", "proj/a/image/f1.jpg", "f1.jpg", "a/b/c/image/x.png"):
         assert m.pseudo_bbox_key(k) == build_pseudo_bbox_key(k)
 
@@ -59,6 +62,7 @@ def test_ls_sync_converters_sam3_key_mirrors_key_builder():
     build_sam3_detection_key() 와 동일 규약을 유지하는지(원본 키빌더 변경 시 조용한 drift 방지)."""
     from gemini.ls_sync_converters import _sam3_key_from_image_key
     from vlm_pipeline.lib.key_builders import build_sam3_detection_key
+
     for k in ("proj/a/frames/f1.jpg", "proj/a/image/f1.jpg", "f1.jpg", "a/b/c/image/x.png"):
         assert _sam3_key_from_image_key(k) == build_sam3_detection_key(k)
 
@@ -66,12 +70,13 @@ def test_ls_sync_converters_sam3_key_mirrors_key_builder():
 def test_coco_boxes_mirrors_parser():
     m = _load()
     from vlm_pipeline.lib.detection_coco import parse_coco_annotation_boxes
+
     payload = {
         "images": [{"id": 1, "file_name": "f.jpg"}],
         "categories": [{"id": 1, "name": "fire"}, {"id": 2, "name": "smoke"}],
         "annotations": [
             {"category_id": 1, "bbox": [0, 0, 10, 10], "score": 0.9},
-            {"category_id": 2, "bbox": [1, 1, -3, 5]},        # w<=0 → skip
+            {"category_id": 2, "bbox": [1, 1, -3, 5]},  # w<=0 → skip
             {"category_id": 2, "bbox": [2, 2, 4, 4], "score": 5.0},  # score 범위밖 → None
         ],
     }

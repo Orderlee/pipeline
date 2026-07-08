@@ -302,6 +302,34 @@ def fetch_kling_resource_packs(force: bool = False) -> list[dict]:
     return packs
 
 
+def detect_concurrency_from_packs(packs: list[dict]) -> int | None:
+    """활성(online) 요금제 이름의 `<N>Con` 에서 동시 작업 한도 추출. 여러 개면 최대.
+
+    Kling 은 동시성 숫자를 별도 필드로 안 주지만 resource_pack_name 에 박아 준다:
+      'Trial-Video-1000Units-5Con-1Months' → 5.
+    online 팩이 없거나(구독 만료) 파싱 불가면 None → 호출자가 기본값 fallback.
+    """
+    import re
+    best: int | None = None
+    for p in packs:
+        if p.get("status") != "online":
+            continue
+        m = re.search(r"(\d+)Con", str(p.get("resource_pack_name") or ""))
+        if m:
+            v = int(m.group(1))
+            best = v if best is None else max(best, v)
+    return best
+
+
+def kling_plan_concurrency() -> int | None:
+    """현재 활성 요금제의 동시 작업 한도 (API plan 이름 파싱). 실패 시 None.
+    fetch_kling_resource_packs 의 5분 캐시를 그대로 사용 (QPS<=1 보호)."""
+    try:
+        return detect_concurrency_from_packs(fetch_kling_resource_packs())
+    except Exception:
+        return None
+
+
 def summarize_resource_packs(packs: list[dict], now_ts: float,
                              expiry_warn_days: float = 7.0,
                              low_pct_warn: float = 15.0) -> dict:

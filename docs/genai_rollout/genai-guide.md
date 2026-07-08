@@ -75,7 +75,7 @@ URL : http://10.0.0.10:8088/   (staging)
   - **paired** (1:1, 이미지수==프롬프트수)
   - **cartesian** (N×M 전조합)
 - 우측 실시간 preview: batches/jobs/비용(Veo만 추정)/한도
-- 한도 **`GENAI_MAX_BULK_JOBS`=25** 초과 시 차단 → CLI 사용
+- 한도 **`GENAI_MAX_BULK_JOBS`=50** 초과 시 차단 → CLI 사용
 - 같은 제출은 `bulk_group_id` 로 묶임
 
 ### Batches (`/genai/batches`) — 목록·필터·결과
@@ -219,7 +219,7 @@ curl -s -X POST -H "X-Internal-Token: $TOKEN" :8088/internal/jobs/<job_id>/poll
 |------|-----|------|------|
 | 파일 크기 | `GENAI_MAX_BYTES_PER_FILE` | 50MB | 이미지 1장 상한 |
 | batch당 파일 | `GENAI_MAX_FILES_PER_BATCH` | 20 | |
-| bulk 1회 jobs | `GENAI_MAX_BULK_JOBS` | 25 | UI bulk 상한 (초과 시 CLI) |
+| bulk 1회 jobs | `GENAI_MAX_BULK_JOBS` | 50 | UI bulk 상한 (초과 시 CLI) |
 | Kling 동시 | `KLING_MAX_CONCURRENT` | 5 | 플랜 한도 |
 | rate limit | `GENAI_RATE_LIMIT_PER_MIN` | 0(off) | 60s sliding |
 | 일별 batch | `GENAI_DAILY_BATCH_LIMIT` | 0(off) | per-user |
@@ -349,7 +349,7 @@ NANOBANANA_MODEL=gemini-2.5-flash-image
 
 # 한도
 GENAI_MAX_BYTES_PER_FILE=52428800 / GENAI_MAX_FILES_PER_BATCH=20
-GENAI_MAX_BULK_JOBS=25 / GENAI_BULK_SLEEP_SECONDS=0.5
+GENAI_MAX_BULK_JOBS=50 / GENAI_BULK_SLEEP_SECONDS=0.5
 GENAI_RATE_LIMIT_PER_MIN=0 / GENAI_DAILY_BATCH_LIMIT=0 / GENAI_DAILY_BYTES_LIMIT=0
 
 # sensor (Dagster 측)

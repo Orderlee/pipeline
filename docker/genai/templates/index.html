@@ -180,10 +180,10 @@
         <section class="gs-section" id="gs-image-section">
           <div class="gs-section__head">
             <span class="gs-section__title">이미지</span>
-            <span class="gs-section__hint gs-mono">≤ 20장 · png/jpg/webp · ≤50MB</span>
+            <span class="gs-section__hint gs-mono">≤ {{ max_files_per_batch }}장 · png/jpg/webp · ≤50MB</span>
           </div>
           <label class="gs-dropzone" id="gs-dropzone-label" for="gs-files-input">
-            <span class="gs-dropzone__count" id="gs-dropzone-count" hidden>0/20</span>
+            <span class="gs-dropzone__count" id="gs-dropzone-count" hidden>0/{{ max_files_per_batch }}</span>
 
             <!-- 빈 상태 -->
             <div class="gs-dropzone__empty" id="gs-dropzone-empty">
@@ -191,7 +191,7 @@
               <span class="gs-dropzone__title">
                 이미지를 드래그하거나 <em>클릭하여 선택</em>
               </span>
-              <span class="gs-dropzone__hint-line">png · jpg · webp · 최대 20장 · 각 50MB 이내</span>
+              <span class="gs-dropzone__hint-line">png · jpg · webp · 최대 {{ max_files_per_batch }}장 · 각 50MB 이내</span>
             </div>
 
             <!-- 선택 후 미리보기 -->
@@ -443,7 +443,7 @@
   const emptyEl     = document.getElementById('gs-dropzone-empty');
   const thumbsEl    = document.getElementById('gs-dropzone-thumbs');
   const dzCountEl   = document.getElementById('gs-dropzone-count');
-  const MAX_FILES   = 20;
+  const MAX_FILES   = {{ max_files_per_batch }};
 
   // 누적 파일 보관 (DataTransfer 로 input.files 갱신)
   let dt = new DataTransfer();

@@ -4,6 +4,7 @@ post-receive 훅이 단일 rev 로 op 을 호출(운영 시)하고, reconciliati
 스캔해 누락분을 backstop 한다(멱등 — dataset_catalog UNIQUE). MinIO 객체 존재를 검증해서만
 status='available', 누락이면 'pending_missing_dvc_objects' (dvc push ≠ git commit 갭).
 """
+
 from __future__ import annotations
 
 import os

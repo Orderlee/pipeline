@@ -1,4 +1,5 @@
 """pseudo_label_qa — pure P/R/F1 scorer (bbox spatial + timestamp temporal). No infra."""
+
 from __future__ import annotations
 
 from vlm_pipeline.lib.pseudo_label_qa import score_bbox_quality, score_timestamp_quality

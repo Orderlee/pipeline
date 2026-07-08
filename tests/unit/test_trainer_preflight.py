@@ -20,9 +20,7 @@ _spec.loader.exec_module(trainer_lib)
 
 
 def test_preflight_passes_when_all_present() -> None:
-    trainer_lib.preflight_secrets(
-        {"HF_TOKEN": "x", "MINIO_ACCESS_KEY": "a", "MINIO_SECRET_KEY": "s"}
-    )  # no raise
+    trainer_lib.preflight_secrets({"HF_TOKEN": "x", "MINIO_ACCESS_KEY": "a", "MINIO_SECRET_KEY": "s"})  # no raise
 
 
 def test_preflight_lists_every_missing_secret() -> None:

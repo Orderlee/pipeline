@@ -1,4 +1,5 @@
 """insert_candidate_model_version threads mlflow_run_id into the INSERT (I3 reconciliation)."""
+
 from __future__ import annotations
 
 

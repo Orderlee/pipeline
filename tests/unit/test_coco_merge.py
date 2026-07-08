@@ -35,10 +35,16 @@ def test_union_remaps_ids_no_collision():
     assert all(a["image_id"] in img_ids for a in merged["annotations"])
     assert len(merged["annotations"]) == 4
     assert prov["projA"] == {
-        "images": 2, "annotations": 2, "orphan_annotations": 0, "dropped_unknown_category": 0,
+        "images": 2,
+        "annotations": 2,
+        "orphan_annotations": 0,
+        "dropped_unknown_category": 0,
     }
     assert prov["projB"] == {
-        "images": 1, "annotations": 2, "orphan_annotations": 0, "dropped_unknown_category": 0,
+        "images": 1,
+        "annotations": 2,
+        "orphan_annotations": 0,
+        "dropped_unknown_category": 0,
     }
 
 
@@ -53,9 +59,12 @@ def test_orphan_annotation_skipped_not_crash():
         "categories": [{"id": 1, "name": "fire"}],
     }
     merged, prov = merge_coco([("p", bad)])
-    assert len(merged["annotations"]) == 1            # orphan dropped, not crashed
+    assert len(merged["annotations"]) == 1  # orphan dropped, not crashed
     assert prov["p"] == {
-        "images": 1, "annotations": 1, "orphan_annotations": 1, "dropped_unknown_category": 0,
+        "images": 1,
+        "annotations": 1,
+        "orphan_annotations": 1,
+        "dropped_unknown_category": 0,
     }
 
 
@@ -74,14 +83,17 @@ def test_unknown_category_id_skipped_and_counted():
     merged, prov = merge_coco([("p", bad)])
     assert len(merged["annotations"]) == 1
     assert prov["p"] == {
-        "images": 1, "annotations": 1, "orphan_annotations": 0, "dropped_unknown_category": 1,
+        "images": 1,
+        "annotations": 1,
+        "orphan_annotations": 0,
+        "dropped_unknown_category": 1,
     }
 
 
 def test_allowlist_keeps_only_selected_classes():
     merged, _ = merge_coco([("projA", _A), ("projB", _B)], class_allowlist=["fire", "smoke"])
     names = {c["name"] for c in merged["categories"]}
-    assert names == {"fire", "smoke"}            # flame/person dropped
+    assert names == {"fire", "smoke"}  # flame/person dropped
     # only fire+smoke annotations survive (2 from A, 0 from B)
     assert len(merged["annotations"]) == 2
     # images still all present (negatives allowed)

@@ -55,5 +55,6 @@ def test_map_pools_across_images() -> None:
 
 def test_map_length_mismatch_raises() -> None:
     import pytest
+
     with pytest.raises(ValueError):
         mean_average_precision([{"a": []}], [], iou_thresholds=(0.5,))
