@@ -3,6 +3,17 @@
 {% from "_icons.html" import icon %}
 
 {% block body %}
+{% if new_veo_models %}
+<div class="gs-body" style="padding-bottom:0">
+  <div style="grid-column:1/-1;background:#1a2b1a;border:1px solid #4ade80;border-radius:8px;
+              padding:10px 14px;margin-bottom:12px;font-size:13px;line-height:1.6">
+    🆕 <b>새 Veo 모델 감지</b>: <span class="gs-mono">{{ new_veo_models|join(', ') }}</span>
+    — 아직 미등록입니다. 쓰려면 <code>docker/.env</code> 에 아래 한 줄 추가 후 genai recreate:
+    <div class="gs-mono" style="margin-top:6px;padding:6px 8px;background:#0a0a0c;border-radius:5px;
+         word-break:break-all;user-select:all">{{ veo_env_hint }}</div>
+  </div>
+</div>
+{% endif %}
 <div class="gs-body">
   <!-- LEFT — parameters / form -->
   <form action="/genai/batches" method="post" enctype="multipart/form-data" id="gs-submit-form"

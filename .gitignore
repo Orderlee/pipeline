@@ -123,6 +123,9 @@ docker/app/dagster_home*/.nux/
 docker/app/dagster_home*/.telemetry/
 docker/app/dagster_home*/schedules/
 docker/app/dagster_home*/ls_review_state.json
+# 런타임 아티팩트 — storage/ 밖으로 새어나온 것들 (env-var 이름으로 잘못 리다이렉트된 DuckDB, 타임스탬프 .bak)
+docker/app/dagster_home*/DATAOPS_DUCKDB_PATH
+docker/app/dagster_home*/*.bak*
 docker/.env.test.template
 
 # etc
@@ -174,6 +177,12 @@ scripts/recover_*_[0-9]*.py
 !tests/unit/test_dagster_yaml_concurrency_tags.py
 # R1 — model_registry candidate-row INSERT (mock connect/cursor)
 !tests/unit/test_register_candidate_model.py
+
+# bkit 플러그인 런타임 상태 (자동 재생성)
+.bkit/
+
+# 대용량 생성물 리포트
+/site_reports/
 # Section D — eval scoring + promotion gate (pure lib, stdlib+numpy)
 !tests/unit/test_box_map.py
 !tests/unit/test_recall_at_k.py
