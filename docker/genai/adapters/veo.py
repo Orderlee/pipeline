@@ -38,6 +38,9 @@ class VeoAdapter(BaseGenAIAdapter):
     DEFAULT_MODELS: tuple[str, ...] = (
         "veo-3.1-generate-001",        # GA, 표준
         "veo-3.1-fast-generate-001",   # GA, 빠른 버전 (저비용)
+        "veo-3.1-lite-generate-001",   # 저비용/고속 tier (2026-04, image2video O, 720p/1080p,
+                                       # 4K·영상확장 미지원). 상태 GA/Preview 모호 — 프로젝트
+                                       # allowlist 미승인 시 submit 거부될 수 있음(그땐 job failed).
         "veo-3.0-generate-001",        # 직전 GA (지원되면)
     )
 
@@ -311,6 +314,62 @@ class VeoAdapter(BaseGenAIAdapter):
                 raise RuntimeError(f"veo inline base64 디코드 실패: {exc}")
         # HTTPS URL fallback
         return download_bytes_with_retry(result_url, timeout=300)
+
+
+# ------------------------------------------------------------------
+# 새 모델 자동 감지 — Vertex publisher 모델 목록에서 veo-* ID 스캔.
+# UI 가 이 결과를 configured(available_models) 와 비교해 미등록 신모델을 배너로 알림.
+# client.models.list() 가 publishers/google/models/veo-... 를 반환함(실측). 캐시로 페이지
+# 로드마다 Vertex 안 치게 함. Kling 은 목록 API 가 없어 동일 방식 불가(수동/tech-scout).
+# ------------------------------------------------------------------
+_VEO_SCAN_CACHE: dict[str, Any] = {"ts": 0.0, "models": None}
+# ponytail: 6h 캐시 — 새 모델은 몇 달에 한 번이라 자주 칠 이유 없음.
+_VEO_SCAN_TTL = int(os.getenv("VEO_MODEL_SCAN_TTL", "21600"))
+
+
+def scan_available_veo_models(force: bool = False) -> list[str]:
+    """Vertex 에서 현재 가용한 veo-* 모델 ID 목록 (캐시). 실패/mock 시 [] 또는 직전 캐시."""
+    now = time.time()
+    c = _VEO_SCAN_CACHE
+    if not force and c["models"] is not None and now - c["ts"] < _VEO_SCAN_TTL:
+        return c["models"]
+    ad = VeoAdapter()
+    if ad.is_mock:
+        return []
+    try:
+        from google import genai as ggenai
+        client = ggenai.Client(vertexai=True, project=ad.project, location=ad.location)
+        found = sorted({
+            name.rsplit("/", 1)[-1]
+            for m in client.models.list()
+            for name in [getattr(m, "name", "") or ""]
+            if "veo" in name.lower()
+        })
+    except Exception:
+        return c["models"] or []  # 조회 실패 시 배너 안 띄움(직전값 유지)
+    c.update(ts=now, models=found)
+    return found
+
+
+def _veo_version(model_id: str) -> tuple[int, int]:
+    """'veo-3.1-fast-generate-001' -> (3,1). 파싱 실패 시 (0,0)."""
+    import re
+    m = re.search(r"veo-(\d+)\.(\d+)", model_id or "")
+    return (int(m.group(1)), int(m.group(2))) if m else (0, 0)
+
+
+def detect_new_veo_models(configured: list[str]) -> list[str]:
+    """Vertex 가용 모델 중 '진짜 새 것'만 반환 — 미등록 + 버전이 우리 최신 이상.
+
+    미등록 전부(옛 veo-2.0 등 포함)를 알리면 배너가 상시 떠서 무의미해지므로,
+    구성된 것들의 최고 버전 이상(>= )인 미등록 모델만 신모델로 본다. (예: 3.1 을 쓰면
+    veo-3.2/4 나 새 3.1-* 변형은 뜨고, veo-2.0·3.0-fast 는 안 뜸.)"""
+    conf = set(configured)
+    cur_max = max((_veo_version(m) for m in configured), default=(0, 0))
+    return sorted(
+        m for m in scan_available_veo_models()
+        if m not in conf and _veo_version(m) >= cur_max
+    )
 
 
 def _download_gcs(gcs_uri: str, project: str) -> bytes:

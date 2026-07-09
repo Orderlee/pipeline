@@ -150,6 +150,18 @@ def create_app() -> FastAPI:
         f_engine = (engine or "").strip() or None
         f_status = (status or "").strip() or None
         from lib.kling_pricing import pricing_table_json
+        # 새 Veo 모델 자동 감지 → 미등록분 배너 알림 (Vertex 조회는 6h 캐시). veo enable 시만.
+        new_veo_models: list[str] = []
+        veo_env_hint = ""
+        if "veo" in enabled_engines():
+            try:
+                from adapters.veo import VeoAdapter, detect_new_veo_models
+                configured = list(VeoAdapter().available_models)
+                new_veo_models = detect_new_veo_models(configured)
+                if new_veo_models:
+                    veo_env_hint = "VEO_AVAILABLE_MODELS=" + ",".join(configured + new_veo_models)
+            except Exception:
+                new_veo_models = []
         return templates.TemplateResponse(
             request=request,
             name="index.html",
@@ -166,6 +178,8 @@ def create_app() -> FastAPI:
                 "user": user,
                 "kling_pricing": pricing_table_json(),
                 "max_files_per_batch": _MAX_FILES_PER_BATCH,
+                "new_veo_models": new_veo_models,
+                "veo_env_hint": veo_env_hint,
             },
         )
 
@@ -881,6 +895,14 @@ def create_app() -> FastAPI:
             )
             return {"job_id": job_id, "status": "done", "action": "sync_finalized"}
         return {"job_id": job_id, "status": "submitted", "provider_job_id": sub.provider_job_id}
+
+    @app.post("/genai/batches/{batch_id}/cancel")
+    def cancel_batch_route(batch_id: str, user: str = Depends(_check_auth)):
+        """미완료(pending/submitted/running) job 을 일괄 취소. pending 정지 = drain 이 더 이상
+        제출 안 함(과금 차단). 이미 submitted 된 job 은 Kling 에 provider-cancel API 가 없어
+        DB 상에서만 abandon (계속 생성될 수 있음)."""
+        n = pg.cancel_batch(batch_id, f"cancelled by {user} (재작업)")
+        return {"batch_id": batch_id, "cancelled_jobs": n}
 
     # ----- Internal API (Dagster polling sensor 전용) -----------------
     # Phase 3.5: Dagster 이미지에 어댑터 코드를 COPY 하지 않고, HTTP 경유로
