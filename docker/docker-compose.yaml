@@ -440,7 +440,7 @@ services:
       HF_TOKEN: ${HF_TOKEN:-}
       MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-}
       MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-}
-      MINIO_ENDPOINT: ${MINIO_ENDPOINT:-http://nas-minio:9000}
+      MINIO_ENDPOINT: ${MINIO_ENDPOINT:-http://minio-host:9000}
       # 학습 추적(I): mlflow 서버를 service 이름으로 (pipeline-network). mlflow profile 미활성/unreachable 시
       # 로깅은 fail-soft(None) — 학습/승격 무영향 (§7.5).
       MLFLOW_TRACKING_URI: ${MLFLOW_TRACKING_URI:-http://mlflow:5000}

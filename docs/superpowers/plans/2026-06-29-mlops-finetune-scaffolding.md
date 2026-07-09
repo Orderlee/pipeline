@@ -4205,7 +4205,7 @@ cd /home/user/work_p/Datapipeline-Data-data_pipeline && git add -A && git commit
         HF_TOKEN: ${HF_TOKEN:-}
         MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-}
         MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-}
-        MINIO_ENDPOINT: ${MINIO_ENDPOINT:-http://nas-minio:9000}
+        MINIO_ENDPOINT: ${MINIO_ENDPOINT:-http://minio-host:9000}
         PYTORCH_CUDA_ALLOC_CONF: ${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}
         CUDA_VISIBLE_DEVICES: "1"
         NVIDIA_VISIBLE_DEVICES: "1"

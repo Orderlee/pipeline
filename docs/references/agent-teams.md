@@ -1,79 +1,128 @@
 # Agent Teams — VLM Data Pipeline
 
-> This document elaborates the 3-tier model roles from [`multi-agent.md`](multi-agent.md) (Opus orchestrator / Sonnet implementer / Codex validator) into **this project's concrete sub-agent layout**. It is a routing guide: given a task, which team to assemble.
+> This document maps the model-tier roles from [`multi-agent.md`](multi-agent.md) (Opus orchestrator / Sonnet implementers / Haiku observer / Codex cross-validator) onto **this project's concrete persona roster**. It is a routing guide: given a task, which persona owns it and who validates.
+>
+> Model versions are referenced by tier alias (`opus` / `sonnet` / `haiku`), never by version number — the `model:` field in each [`.claude/agents/*.md`](../../.claude/agents/) frontmatter is the source of truth and resolves to the current model.
 
-## 1. Team members (sub-agents)
+## 1. Team members (personas)
 
-| Sub-agent | Model | Mode | Role (multi-agent.md mapping) |
+The roster is organized by **plane**. Each persona maps to one model tier (multi-agent.md §2). It grew from the original 6-member set (main + qa-strategist + dagster-impl + pipeline-explorer + deploy-auditor + codex) into a domain-persona team as the pipeline gained a labeling/dataset track and an MLOps finetune track.
+
+### Decision / reasoning plane — Opus (multi-agent.md §2.1)
+
+| Persona | Mode | Role |
+|---|---|---|
+| (main session) | r/w | Acts as orchestrator directly when not spawning `cto`; carries the full codebase context |
+| [`cto`](../../.claude/agents/cto.md) | r/w | Lead architect / Opus orchestrator. Decomposes work, routes to personas, owns architecture & deploy-risk decisions and final pre-merge review. Delegates the typing (§2.1 — delegation of *decisions* prohibited) |
+| [`ai-modeler`](../../.claude/agents/ai-modeler.md) | r/w | Model **science**: experiment & fine-tune design, eval-gate design (per-metric margin + per-class non-regression floor), promote/reject decisions, GT policy. Statistical judgment |
+| [`qa-strategist`](../../.claude/agents/qa-strategist.md) | read-only | QA **architecture**: coverage gap analysis, test-plan design, regression risk. Authoring & execution are delegated |
+
+### Data plane — Sonnet (multi-agent.md §2.2)
+
+| Persona | Mode | Role |
+|---|---|---|
+| [`data-engineer`](../../.claude/agents/data-engineer.md) | r/w | Core ingest → dedup → dispatch → process; Postgres/DuckDB, MinIO, archive, NAS/NFS, Dagster orchestration plumbing. Everything the AI personas ride on |
+| [`dataops-engineer`](../../.claude/agents/dataops-engineer.md) | r/w | Data **correctness & completeness**: reconciliation (raw_files ↔ MinIO ↔ archive), backfills, dedup/checksum maintenance, migration-as-ops, retention, NAS quota. Operates the data `data-engineer` produces |
+| [`ai-data-engineer`](../../.claude/agents/ai-data-engineer.md) | r/w | Training-data side: Gemini per-event labeling, Label Studio finalization, GT projection (`image_label_annotations` / `v_finalized_labels`), dataset build, pseudo-label QA, DVC versioning |
+
+### Model plane — Sonnet (multi-agent.md §2.2)
+
+| Persona | Mode | Role |
+|---|---|---|
+| [`ai-engineer`](../../.claude/agents/ai-engineer.md) | r/w | Model **serving & inference**: SAM3 / YOLO-World / embedding-service containers, inference glue, GPU topology, maintenance-mode drain endpoints, promote/rollback mechanics (checkpoint → env → recreate) |
+| [`mlops-engineer`](../../.claude/agents/mlops-engineer.md) | r/w | Model **ops machinery**: trainer lifecycle (independent process, not in-run op), GPU maintenance windows, `model_registry` state, `promote_model.py` / `promote_pe_core.py` automation, MLflow, DVC infra, `clear_maintenance.sh` |
+
+### Implementation / research / audit plane — Sonnet (multi-agent.md §2.2)
+
+| Persona | Mode | Role |
+|---|---|---|
+| [`dagster-impl`](../../.claude/agents/dagster-impl.md) | r/w | General project-tuned Dagster implementation (assets/sensors/ops/resources). 5-layer import, `duckdb_writer` tag, fail-forward, MinIO keys built-in. **The default implementer when no single domain persona fits** |
+| [`pipeline-explorer`](../../.claude/agents/pipeline-explorer.md) | read-only | Project-specific **code** navigator. "Where is X / trace this flow" — compressed pointers (paths + line ranges), protects parent context |
+| [`deploy-auditor`](../../.claude/agents/deploy-auditor.md) | read-only | Deploy blast-radius auditor + prod/staging drift detector. Knows the two CI workflows, rsync + `git reset --hard` mechanism, `detect_image_rebuild` triggers, healthcheck endpoints |
+| [`tech-scout`](../../.claude/agents/tech-scout.md) | read-only | New/unfamiliar-tech first responder. Verifies against CURRENT docs (context7 + web), **never from memory**. Reports fit / integration cost / risk; `cto` decides adopt/reject |
+
+### Observation plane — Haiku (multi-agent.md §2.4)
+
+| Persona | Mode | Role |
+|---|---|---|
+| [`ops-engineer`](../../.claude/agents/ops-engineer.md) | read-only | **Runtime** health: `docker ps`, `failed/*.jsonl` triage, DB status snapshots, sensor/daemon liveness, MinIO object presence, deploy/drift status. Cheap & high-frequency. Reports & routes; **never fixes** |
+
+### Cross-validation — GPT-5.x (Codex) (multi-agent.md §2.3)
+
+| Persona | Mode | Role |
+|---|---|---|
+| [`codex`](../../.claude/agents/codex.md) | read-only | Different-family validator. Reviews implementer output (esp. security/auth, schema/migration, concurrency/locks, hard algorithms), or solves independently in Pattern B arbitration. **Never the first writer.** Effort matrix multi-agent.md §3.3 |
+
+In addition, **skills** in [`.agent/skill/`](../../.agent/skill/) are workflow macros that compose the above personas — `codex_collab`, `codex_arbitration`, `codex_refactor`, `codex_db_migration`, `mlops-finetune`, `dagster_lineage_fixer`, `staging_reset`, `duckdb_staging_wiper`, `daily_worklog`.
+
+### 1.1 Model allocation
+
+Persona count ≠ model usage. Fourteen personas collapse onto four model tiers:
+
+| Model | Personas | Assigned work (what/why · how · is-it-alive · is-it-correct) | Target call frequency |
 |---|---|---|---|
-| (main session) | Opus 4.7 | r/w | Tier 1 — orchestrator / architect (§2.1) |
-| [`qa-strategist`](../../.claude/agents/qa-strategist.md) | Opus 4.7 | read-only | Tier 1-style — QA strategy, coverage gap analysis, test plan design. Authoring and execution are delegated |
-| [`dagster-impl`](../../.claude/agents/dagster-impl.md) | Sonnet 4.6 | r/w | Tier 2 — main implementer (§2.2). Project rules built-in: 5-layer import, `duckdb_writer` tag, fail-forward, archive policy, MinIO key conventions |
-| [`pipeline-explorer`](../../.claude/agents/pipeline-explorer.md) | Sonnet 4.6 | read-only | Tier 2 — project-specific navigator. Compressed answers about code location and flow |
-| [`deploy-auditor`](../../.claude/agents/deploy-auditor.md) | Sonnet 4.6 | read-only | Tier 2 — CI/CD blast radius auditor + prod/staging drift detector |
-| [`codex`](../../.claude/agents/codex.md) | Sonnet 4.6 liaison → GPT-5.5 | read-only | Tier 2 — cross-validator (§2.3). Different family, second perspective. Effort matrix §3.3 |
-
-In addition, **skills** in `.agent/skill/` are workflow macros that compose the above sub-agents — `codex_collab`, `codex_arbitration`, `codex_refactor`, `codex_db_migration`, `dagster_lineage_fixer`, `staging_reset`, `duckdb_staging_wiper`, `daily_worklog`.
-
-### 1.1 Model allocation (reflecting multi-agent.md spirit)
-
-Agent count does not equal model usage. In actual workflow, models split as follows.
-
-| Model | Assigned work | Target call frequency | Call path |
-|---|---|---|---|
-| **Opus 4.7** | what & why — task decomposition, architecture decisions, QA strategy, final stage of difficult debugging, multi-model arbitration | ~10–20% | main session + `qa-strategist` |
-| **Sonnet 4.6** | how — implementation, unit test authoring, exploration, general auditing, review worker | ~60–70% | `dagster-impl`, `pipeline-explorer`, `deploy-auditor`, `codex` liaison shell |
-| **GPT-5.5 (Codex)** | is-it-correct — cross-validation, test code quality review (§3.3 `medium`), security/migration `extra_high` validation | ~15–25% | `codex` agent + `codex_*` skills |
+| **Opus** (§2.1) | `cto`, `ai-modeler`, `qa-strategist` + main session | **what & why** — decomposition, architecture, model-science & QA judgment, hard-debug final stage, arbitration | ~10–20% |
+| **Sonnet** (§2.2) | `data-engineer`, `dataops-engineer`, `ai-data-engineer`, `ai-engineer`, `mlops-engineer`, `dagster-impl`, `pipeline-explorer`, `deploy-auditor`, `tech-scout` | **how** — implementation, dataset/label plumbing, ops automation, exploration, auditing, tech recon | ~55–65% |
+| **Haiku** (§2.4) | `ops-engineer` | **is-it-alive** — runtime health, log triage, status snapshots. Cheap, no fixed target | as needed |
+| **GPT-5.x (Codex)** (§2.3) | `codex` + `codex_*` skills | **is-it-correct** — cross-validation, test-quality review (§3.3 `medium`), security/migration `extra_high` | ~15–20% |
 
 **Principles**:
-1. Decisions that require reasoning effort (architecture, QA strategy, security judgment) → Opus
-2. Pattern/implementation work → Sonnet
-3. Work that benefits from a different-family second look → Codex
-4. **what & why** questions ("where should this code live?" / "what tests should we add?") → Opus. **how** questions ("implement this function" / "write this test") → Sonnet. **is-it-correct** questions ("is this code safe?" / "does this test really catch the gap?") → Codex.
+1. Decisions that require reasoning effort (architecture, model science, QA strategy, security judgment) → Opus (`cto` / `ai-modeler` / `qa-strategist`).
+2. Pattern/implementation work → the Sonnet persona whose **domain** fits (data / model / general); `dagster-impl` when none fits cleanly.
+3. "Is the running system healthy?" → Haiku (`ops-engineer`) — never spend Opus/Sonnet budget on a status check.
+4. Work that benefits from a different-family second look → Codex.
+5. **what & why** ("where should this live?" / "which approach?") → Opus. **how** ("implement this") → domain Sonnet persona. **is-it-alive** ("is dispatch running?") → Haiku. **is-it-correct** ("is this safe / does the test catch the gap?") → Codex.
 
-## 2. Task type → team routing
+## 2. Task type → persona routing
 
-This is `multi-agent.md` §3.1's general matrix adapted to this project. The main session (Opus) consults this table at the start of each task to decide delegation.
+This is `multi-agent.md` §3.1's model-tier matrix resolved to this project's personas. The orchestrator (main session / `cto`) consults it at the start of each task to decide delegation.
 
 | Task type | Primary owner | Secondary / validator | Notes |
 |---|---|---|---|
-| **Test strategy / coverage gap analysis / plan design** | **`qa-strategist`** (Opus) | `codex` `medium` (second opinion on the plan) | "what to test / why" — what & why |
-| **Test code authoring** | `dagster-impl` (Sonnet) | `codex` `medium` review (multi-agent §3.3) | Start with P0 cases from the qa-strategist plan — how |
-| **Test quality review** | `codex` (`Effort: medium`) | — | "does this test actually catch the gap?" — is-it-correct |
-| **E2E / staging runtime validation** | `pipeline-explorer` (DuckDB row counts, MinIO object checks) | Manual `staging_test_dispatch.py` when needed | Read-only assertions, no mutations |
-| **Regression test execution + result analysis** | main or `dagster-impl` (`pytest -q`) | `codex` (if failure cause is ambiguous) | qa-strategist does not execute tests |
-| New Dagster asset / sensor / op | `dagster-impl` | `codex` (50+ line changes) + `qa-strategist` (test plan) | 5-layer rule self-validated by dagster-impl |
-| Single-file bug fix (trivial) | main directly | — | Calling codex is wasteful (`codex_collab` SKILL "handle directly" case) |
-| Single-file bug fix (non-trivial) | `dagster-impl` or `codex_collab` skill | `codex` review | Grep callers when signature changes |
+| Architecture decision / new resource / bucket / cross-cutting change | **`cto`** (Opus) | (optional) `codex` analysis | multi-agent.md §2.1 — decisions not delegated |
+| "Should we use X" / new library / version upgrade / migration guide | **`tech-scout`** (verify current docs) | `cto` (adopt/reject) | Never answer new-tech from memory |
+| **Ingest / dedup / dispatch / sensor / raw_files / manifest / ffprobe / phash / checksum** | **`data-engineer`** | `codex` (50+ lines) | Core ETL & orchestration plumbing |
+| **Postgres/DuckDB schema / migration authoring** | `data-engineer` + `codex_db_migration` skill | `codex` `extra_high` | one `DO $$` block per migration (runner applies the first only) — §3.3 subtle hazard |
+| **Reconciliation / backfill / dedup cleanup / checksum recompute / retention / NAS quota** | **`dataops-engineer`** | `codex` (if destructive) | Operates the data; doesn't write pipeline code |
+| **Labeling (Gemini) / Label Studio / GT curation / dataset build / pseudo-label QA / DVC** | **`ai-data-engineer`** | `ai-modeler` (if it feeds training) | `labels` = per-event; **0 rows ≠ failure** |
+| **Model serving / inference / SAM3 / YOLO / embedding-service / GPU alloc / maintenance drain / promote mechanics** | **`ai-engineer`** | `codex` `high` (contract) | Serves what `ai-modeler` decides |
+| **Fine-tune design / eval-gate / promote-reject decision / GT policy / experiment design** | **`ai-modeler`** (Opus) | `codex` (eval logic) | Decides what/whether; doesn't run the trainer |
+| **Trainer lifecycle / GPU maintenance window / model_registry state / promotion-rollback automation / MLflow / DVC infra** | **`mlops-engineer`** | `codex` (promotion path) | Runs the machinery `ai-modeler` decides |
+| **Runtime health / "is the pipeline healthy" / failed.jsonl triage / status snapshot / liveness / object presence** | **`ops-engineer`** (Haiku) | routes to owner on findings | Cheap, read-only, **never fixes** |
+| Test strategy / coverage gap / plan design | **`qa-strategist`** (Opus) | `codex` `medium` (plan) | "what to test / why" — what & why |
+| Test code authoring | domain Sonnet persona or `dagster-impl` | `codex` `medium` review | Start from qa-strategist P0 cases — how |
+| Test quality review | `codex` (`medium`) | — | "does this test actually catch the gap?" |
+| E2E / staging runtime validation | `pipeline-explorer` (row/object checks) + `ops-engineer` (liveness) | Manual `staging_test_dispatch.py` | Read-only assertions |
+| New Dagster asset / sensor / op (no clear domain) | `dagster-impl` | `codex` (50+ lines) + `qa-strategist` (plan) | General implementer fallback |
+| Single-file bug fix (trivial) | main / `cto` directly | — | Calling codex is wasteful |
+| Single-file bug fix (non-trivial) | domain persona or `codex_collab` skill | `codex` review | Grep callers when signature changes |
 | Module split / rename / structural rearrangement | `codex_refactor` skill | Byte-preservation required | Logic must not change |
-| DuckDB schema / migration | `dagster-impl` authoring + `codex_db_migration` skill | `codex` `extra_high` validation | multi-agent.md §3.3 — subtle consistency hazard |
-| Difficult algorithm / concurrency bug | `codex_arbitration` skill (Sonnet + Codex dual + Opus arbitration) | — | multi-agent.md §4.2 Pattern B |
-| "Where is it?" / code flow tracing | `pipeline-explorer` | — | Protects main context |
-| Pre-deploy change impact analysis | `deploy-auditor` | `codex` (if 🔴 detected) | Recommended right before dev→main merge |
-| Suspected prod/staging drift | `deploy-auditor` | — | Two-worktree comparison + `gh run list` |
-| Staging reset | `staging_reset` skill | — | Operational task — user approval required |
-| DuckDB host lock / stale WAL | `duckdb_staging_wiper` skill | — | For clean re-testing |
-| Dagster lineage validation / repair | `dagster_lineage_fixer` skill | Trace scope with `pipeline-explorer` then fix with `dagster-impl` | |
+| Difficult algorithm / concurrency bug | `codex_arbitration` skill (Sonnet + Codex dual → `cto` arbitration) | — | multi-agent.md §4.2 Pattern B |
+| "Where is it?" / code flow tracing | `pipeline-explorer` | — | Protects parent context |
+| Pre-deploy change impact analysis | `deploy-auditor` | `codex` (if 🔴 detected) | Recommended before dev→main merge |
+| Suspected prod/staging drift | `deploy-auditor` + `ops-engineer` | — | Two-worktree diff + `gh run list` + runtime |
+| Staging reset / clean re-test | `staging_reset` / `duckdb_staging_wiper` skill | — | Operational — user approval required |
+| Dagster lineage validation / repair | `dagster_lineage_fixer` skill | scope w/ `pipeline-explorer`, fix w/ `data-engineer` or `dagster-impl` | |
+| MLOps finetune run (end-to-end) | `mlops-finetune` skill | `ai-modeler` (decisions) + `mlops-engineer` (ops) | Weights promotion stays manual |
+| Security / auth / secrets | domain persona authoring | `codex` `extra_high` + `cto` final review | multi-agent.md §3.3 |
+| Label Studio / Slack / external API integration | `ai-data-engineer` (LS) or `data-engineer` | `codex` `high` (contract consistency) | Watch webhook URL, presigned URL expiry |
 | Daily work log | `daily_worklog` skill | — | Auto-organizes WORKLOG.md |
-| Architecture decision / new resource / new bucket | main (Opus) alone | (optional) `codex` analysis | multi-agent.md §2.1 — delegation prohibited |
-| Security / auth / secrets | `dagster-impl` authoring | `codex` `extra_high` + Opus final review | multi-agent.md §3.3 |
-| Label Studio / Slack / external API integration | `dagster-impl` | `codex` `high` (contract consistency) | Watch for webhook URL, presigned URL expiry |
-| Documentation / comments / README | `dagster-impl` (or main) | — | Default is "do not write" — CLAUDE.md rule |
+| Documentation / comments / README | domain persona (or main) | — | Default "do not write" — CLAUDE.md rule |
 
 ## 3. Team composition by scenario
 
-Flows the table alone cannot capture — for five commonly recurring scenarios, the calling order of members is specified.
+Flows the table alone cannot capture — for six recurring scenarios, the calling order of personas is specified.
 
 ### 3.1 Scenario A — Feature development (feature branch → dev → main)
 
 ```
-User request ("Add dry-run mode to this sensor")
+User request ("Add dry-run mode to this dispatch sensor")
   │
-  ├─ main: Requirements analysis, task decomposition
+  ├─ main / cto: Requirements analysis, task decomposition, pick the domain persona
   │     ↓
   ├─ pipeline-explorer: Identify affected files + summarize current behavior
   │     ↓
-  ├─ dagster-impl: Code implementation + unit tests
+  ├─ data-engineer: Code implementation + unit tests   (domain persona — ingest/dispatch)
   │     ↓
   ├─ codex: (optional) Pre-merge review — 50+ lines or external impact
   │     ↓
@@ -87,17 +136,17 @@ User request ("Add dry-run mode to this sensor")
 ```
 User request ("This dedup logic produces false negatives in some case")
   │
-  ├─ main: Problem abstraction + reproducibility check
+  ├─ main / cto: Problem abstraction + reproducibility check
   │     ↓
   ├─ pipeline-explorer: Compress relevant code + data flow
   │     ↓
   ├─ codex_arbitration skill (Pattern B):
-  │     ├─ dagster-impl: Solves independently
-  │     ├─ codex:        Solves independently (answers not shared between them)
+  │     ├─ data-engineer: Solves independently
+  │     └─ codex:         Solves independently (answers not shared between them)
   │     ↓
-  ├─ main: Compare two answers → pick better one or hybridize
+  ├─ cto: Compare two answers → pick better one or hybridize
   │     ↓
-  └─ dagster-impl: Apply final solution + regression tests
+  └─ data-engineer: Apply final solution + regression tests
 ```
 
 ### 3.3 Scenario C — Operational incident (staging stuck / Dagster halted)
@@ -105,17 +154,19 @@ User request ("This dedup logic produces false negatives in some case")
 ```
 User request ("staging pipeline is stuck")
   │
-  ├─ pipeline-explorer: Last sensor tick, most recent failed manifest
+  ├─ ops-engineer (Haiku): Cheap first triage — docker ps, last sensor tick,
+  │     recent failed.jsonl, run state, DB counts. Reports & routes (does not fix)
   │     ↓
-  ├─ (branch)
+  ├─ (branch on what ops-engineer surfaced)
   │     ├─ Suspected DuckDB lock → duckdb_staging_wiper skill
   │     ├─ Run state corrupted   → staging_reset skill
   │     ├─ Lineage broken        → dagster_lineage_fixer skill
-  │     └─ Other                 → main direct diagnosis
+  │     ├─ Data inconsistency    → dataops-engineer (reconcile / backfill)
+  │     └─ Code bug              → data-engineer / ai-engineer (by domain)
   │     ↓
-  ├─ (if fix needed) dagster-impl or codex_collab skill
+  ├─ (if fix needed) domain persona or codex_collab skill
   │     ↓
-  └─ Restart verification — Dagster UI :3031, MinIO :9003, DuckDB row counts
+  └─ ops-engineer: Restart verification — Dagster UI :3031, MinIO :9003, DB row counts
 ```
 
 ### 3.4 Scenario D — Migration (e.g., NAS 10.0.0.36 → 10.0.0.51)
@@ -123,11 +174,13 @@ User request ("staging pipeline is stuck")
 ```
 User request ("Make a PR moving incoming to the 10.0.0.51 NFS mount")
   │
-  ├─ main: Migration plan (including rollback path)
+  ├─ cto: Migration plan (including rollback path)
   │     ↓
   ├─ codex: Second opinion on the plan (extra_high — data model / path impact)
   │     ↓
-  ├─ dagster-impl: Apply compose / mount / config changes
+  ├─ data-engineer: Apply compose / mount / config changes
+  │     ↓
+  ├─ dataops-engineer: Post-cutover reconciliation (raw_files ↔ MinIO ↔ archive)
   │     ↓
   ├─ deploy-auditor: rsync impact + image rebuild + .env requirement check
   │     ↓
@@ -138,12 +191,12 @@ User request ("Make a PR moving incoming to the 10.0.0.51 NFS mount")
 
 ### 3.5 Scenario E — QA / coverage push (Opus + Sonnet + Codex natural split)
 
-**This scenario is where the 3-model team works most naturally** — reasoning, implementation, and validation each land in their own lane.
+**The 3-tier exemplar** — reasoning, implementation, and validation each land in their own lane.
 
 ```
 User request ("I want to strengthen test coverage of the dispatch module")
   │
-  ├─ main (Opus): Decompose — "strategy → authoring → review → validation" 4 steps
+  ├─ main / cto (Opus): Decompose — "strategy → authoring → review → validation" 4 steps
   │     ↓
   ├─ qa-strategist (Opus): Coverage gap analysis + P0/P1/P2 test plan
   │     │   - grep existing dispatch-related tests
@@ -154,65 +207,89 @@ User request ("I want to strengthen test coverage of the dispatch module")
   │     ↓
   ├─ main: Present plan to user + get approval
   │     ↓
-  ├─ dagster-impl (Sonnet): Write approved P0 cases — reuse fixtures, verify fail-forward
+  ├─ data-engineer (Sonnet): Write approved P0 cases — reuse fixtures, verify fail-forward
+  │     │   (domain persona for dispatch; use dagster-impl if the module has no domain owner)
   │     ↓
   ├─ codex (medium): Review the written test code — "does this test really defend the invariant?"
-  │     │   - multi-agent §3.3: test self-quality review is `medium` effort
   │     ↓
-  ├─ main: Re-invoke dagster-impl with codex feedback (if any)
+  ├─ main: Re-invoke the implementer persona with codex feedback (if any)
   │     ↓
   ├─ pytest tests/unit -q   (actually run — never trust the model's self-report)
   │     ↓
-  └─ pipeline-explorer (Sonnet): On staging, run dispatch once and verify DuckDB rows + MinIO objects
+  └─ pipeline-explorer + ops-engineer: On staging, run dispatch once → verify DB rows + MinIO objects + liveness
 ```
 
-**Why this scenario is the model-distribution exemplar**:
-- Opus spends its reasoning budget on *what & why* (which risks to defend)
-- Sonnet produces the *how* (actual test code) quickly
-- Codex looks at *is-it-correct* (does the test really catch the gap) from a different family
-- No model reviews its own work — the blind-spot pattern is avoided structurally (multi-agent §4.3 Pattern C)
+### 3.6 Scenario F — MLOps finetune track (the model-plane exemplar)
+
+**This is where the four AI personas split cleanly** — no persona both decides the science and serves its own model (blind-spot avoidance, multi-agent.md §4.3 Pattern C).
+
+```
+User request ("Fine-tune SAM3 on the confirmed fire/smoke GT and promote if it beats incumbent")
+  │
+  ├─ cto: Confirm this is a training window (shared GPU — prod deploy hold advised)
+  │     ↓
+  ├─ ai-data-engineer: Build the frozen train snapshot
+  │     (train_dataset_versions row + vlm-dataset/_trainsets/<id>/ immutable)
+  │     ↓
+  ├─ ai-modeler (Opus): Experiment design — fine-tune config, eval-gate margins, promotion criteria
+  │     ↓
+  ├─ mlops-engineer: GPU maintenance drain → run independent trainer process
+  │     (docker compose run --rm trainer, ENABLE_TRAINING=1) → candidate weights + model_registry row
+  │     ↓
+  ├─ ai-modeler: Read eval gate (per-metric margin + per-class non-regression floor) → promote / reject
+  │     ↓
+  ├─ mlops-engineer: promote_model.py (checkpoint → env → recreate)
+  │     ↓
+  ├─ ai-engineer: Confirm serving picks up new weights (resolved path + checksum in startup log)
+  │     ↓
+  └─ ops-engineer: Post-promote serving health + /warmup verification
+```
+
+**Why the personas split this way**: `ai-modeler` decides the science (what/whether), `mlops-engineer` runs the machinery (drain, trainer, promotion automation), `ai-engineer` owns the serving runtime, `ai-data-engineer` freezes the GT snapshot. The decider never serves its own result.
 
 ## 4. Calling rules (multi-agent.md §5–6 applied)
 
 ### 4.1 Context to pass
 
-When calling a sub-agent via `Agent({prompt: ...})`, always include in the prompt:
+When calling a persona via `Agent({subagent_type, prompt})`, always include in the prompt:
 
 1. **Task goal** — one sentence: "what / why"
-2. **Target file absolute paths** (for implementer / explorer agents)
-3. **Constraints** — backward compatibility, test pass criteria, behavior to preserve
-4. **Output format** — `dagster-impl` returns §6.1 JSON; `codex` may return markdown or JSON; `pipeline-explorer` and `deploy-auditor` use their own defined shapes; `qa-strategist` returns its plan JSON
+2. **Target file absolute paths** (for implementer / explorer personas)
+3. **Constraints** — backward compatibility, test pass criteria, behavior to preserve, environment (prod vs staging)
+4. **Output format** — implementer personas return §6.1 JSON; `codex` may return markdown or JSON; read-only personas (`pipeline-explorer`, `deploy-auditor`, `ops-engineer`, `tech-scout`, `qa-strategist`) use their own defined report shapes
 
 Never pass:
-- Another sub-agent's raw answer (pollution prevention — always relay through main as a summary)
+- Another persona's raw answer (pollution prevention — always relay through the orchestrator as a summary)
 - `.env` / `credentials/` / tokens / secrets
 - Unrelated file history
 
 ### 4.2 Parallel vs sequential
 
-- **Parallel allowed** — independent information gathering (e.g., `pipeline-explorer` + `deploy-auditor` simultaneously)
-- **Sequential required** — one agent's output is the next's input (e.g., `pipeline-explorer` → `dagster-impl`)
+- **Parallel allowed** — independent information gathering (e.g., `pipeline-explorer` + `deploy-auditor` + `ops-engineer` simultaneously)
+- **Sequential required** — one persona's output is the next's input (e.g., `pipeline-explorer` → `data-engineer`, or `ai-modeler` decision → `mlops-engineer` run)
 
-main decides. When in doubt, sequential is safer.
+The orchestrator decides. When in doubt, sequential is safer.
 
 ### 4.3 Escalation triggers (multi-agent.md §7)
 
-- `dagster-impl` returns `status: partial` → main routes to `codex` validation
-- `codex` and `dagster-impl` disagree meaningfully → `codex_arbitration` skill or Opus direct
-- Both models fail → main directly (Opus alone)
+- An implementer persona returns `status: partial` → orchestrator routes to `codex` validation
+- `codex` and the implementer disagree meaningfully → `codex_arbitration` skill or `cto` direct
+- Both models fail → `cto` directly (Opus alone)
+- An implementer hits a cross-domain / architecture need → STOP and escalate to `cto` (do not cross persona boundaries silently)
 
 ## 5. Opus absence fallback (multi-agent.md §8)
 
-When Opus is unavailable (quota / cost / availability), Sonnet 4.6 temporarily orchestrates:
+When the Opus personas (`cto` / `ai-modeler` / `qa-strategist`) are unavailable (quota / cost / availability), a Sonnet persona — usually `data-engineer` or `dagster-impl` — temporarily orchestrates:
 
-- Increase `pipeline-explorer` usage (protects Sonnet's smaller context window)
+- Increase `pipeline-explorer` usage (protects the smaller Sonnet context window)
 - Increase `codex` call frequency (compensate with validation density)
 - Get user confirmation before proceeding on:
   - Data model / migration
   - External API contract changes
   - Security / auth
   - Production deploy impact
-- Record deferred decisions in [`.agent/decisions.log`](../../.agent/decisions.log) (review when Opus returns)
+  - **Model promotion / eval-gate decisions** (normally `ai-modeler`'s — never auto-promote in fallback)
+- Record deferred decisions in [`.agent/decisions.log`](../../.agent/decisions.log) (review when the Opus personas return)
 
 ## 6. Monitoring / improvement (multi-agent.md §9)
 
@@ -237,10 +314,11 @@ python3 scripts/agent_stats.py --since 2026-02-01 --json    # JSON for further p
 
 What to look for:
 
-- **Model distribution drift** — if Codex (`sonnet-liaison`) is under 10% of calls, you're under-validating. If Opus is over 25%, you're over-decomposing.
-- **Empty agents** — a sub-agent with zero calls in a quarter is either redundant or routed wrong. Drop it or fix the routing matrix.
+- **Model distribution drift** — if Codex is under ~10% of calls, you're under-validating. If Opus (`cto` + `ai-modeler` + `qa-strategist`) is over ~25%, you're over-decomposing.
+- **Plane coverage, not per-persona** — with 14 personas a long tail is expected. Check that each *plane* (data / model / decision / observation / validation) sees traffic, not that every persona does. A persona with zero calls over a quarter is a candidate to fold into a sibling or to fix its routing/description.
+- **Haiku share** — `ops-engineer` should carry the cheap status checks. If Sonnet/Opus personas are being called for "is it healthy?", the routing is leaking upward and burning budget.
 - **Decisions log size** — many `revisit: Y` entries mean Sonnet fallback ran long; flag to user for batched re-review.
-- **Sub-agent error rate** — track manually for now (no instrumentation yet). If we see `status: failed` more than 10% of the time, tighten agent descriptions.
+- **Sub-agent error rate** — track manually for now. If `status: failed` exceeds ~10%, tighten the persona's description/triggers.
 
 Then update §2 (routing matrix) and §1.1 (model allocation targets) based on the data.
 
@@ -248,13 +326,15 @@ Then update §2 (routing matrix) and §1.1 (model allocation targets) based on t
 
 Before starting a new task:
 - [ ] Identified the task type in §2's routing table?
-- [ ] Is the primary owner sub-agent clear? If unclear, call `pipeline-explorer` first to scope.
-- [ ] Are all §4.1 context items in the prompt?
+- [ ] Is the primary owner persona clear? If unclear, call `pipeline-explorer` (code) or `ops-engineer` (runtime) first to scope.
+- [ ] For a status/health question, did it go to Haiku (`ops-engineer`) rather than a Sonnet/Opus persona?
+- [ ] Are all §4.1 context items in the prompt (including prod vs staging)?
 - [ ] Output format specified?
 
 Before wrapping up:
-- [ ] Did tests actually run + pass (not just the agent's self-report)?
-- [ ] For security / migration / external API per §3.3, was extra validation applied?
-- [ ] If change touches deploy, did `deploy-auditor` review?
+- [ ] Did tests actually run + pass (not just the persona's self-report)?
+- [ ] For security / migration / external API per §3.3, was `extra_high` validation applied?
+- [ ] If the change touches deploy, did `deploy-auditor` review?
 - [ ] **For new features / non-trivial fixes, did `qa-strategist` see the test plan?** (no safety net otherwise)
-- [ ] If in Opus absence mode, was `.agent/decisions.log` updated?
+- [ ] For a model promotion, did `ai-modeler` (not the orchestrator) own the eval-gate decision?
+- [ ] If in Opus-absence mode, was `.agent/decisions.log` updated?

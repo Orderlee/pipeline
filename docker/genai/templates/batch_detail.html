@@ -23,6 +23,13 @@
           </a>
         {% endif %}
       {% endif %}
+      {% if batch.status in ['running', 'pending'] %}
+        <button class="gs-retry"
+                hx-post="/genai/batches/{{ batch.batch_id }}/cancel"
+                hx-confirm="이 배치의 미완료 작업을 모두 취소할까요? 이미 Kling 에 제출된 건은 과금될 수 있습니다."
+                hx-swap="none"
+                hx-on::after-request="window.location.reload()">배치 취소</button>
+      {% endif %}
       <span class="gs-badge {{ batch.status }}">{{ batch.status }}</span>
     </div>
   </div>

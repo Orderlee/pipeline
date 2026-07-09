@@ -195,6 +195,22 @@ def update_job_status(
             )
 
 
+def cancel_batch(batch_id: str, reason: str) -> int:
+    """미완료(pending/submitted/running) job 을 failed 로 마킹하고 batch 도 failed 로.
+    pending 정지 = drain 이 더 이상 제출 안 함(과금 차단). 반환: 취소된 job 수.
+    ⚠️ 이미 submitted 된 건 Kling 에서 계속 생성될 수 있음(provider-cancel 없음)."""
+    with connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """UPDATE genai_jobs SET status='failed', error_message=%s, completed_at=now()
+                     WHERE batch_id=%s AND status IN ('pending','submitted','running')""",
+                (reason, batch_id),
+            )
+            n = cur.rowcount
+            cur.execute("UPDATE genai_batches SET status='failed' WHERE batch_id=%s", (batch_id,))
+    return n
+
+
 def recompute_batch_status(batch_id: str) -> str:
     """genai_jobs status 집계 → genai_batches.status / n_succeeded / n_failed 갱신.
 
