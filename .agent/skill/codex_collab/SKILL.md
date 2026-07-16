@@ -48,7 +48,7 @@ Agent(
   description="codex code change review",
   prompt="""
   Ask kind: general edit  # or analysis only (when only a code review is needed)
-  Effort: high  # for general fixes. extra_high for security/financial/migration. medium for <50 LoC changes.
+  Effort: max  # for general fixes. ultra for security/financial/migration. medium for <50 LoC changes.
   Target: <absolute file path>:<line range or function name>
   Current behavior: <1-3 lines summarizing what the main agent read from the code>
   Desired change: <the behavioral change the user wants>
@@ -65,7 +65,7 @@ Agent(
 
 - For a code review, change "Ask kind" in the prompt to `analysis only` and in place of "Desired change", specify the review angle ("performance", "security", "concurrency", "error handling").
 - Continue follow-up questions using `mcp__codex__codex-reply` + threadId to maintain thread continuity where possible.
-- Effort follows the multi-agent §3.3 matrix. If the caller (main agent) omits this hint, the codex sub-agent defaults to `high`.
+- Effort follows the multi-agent §3.3 matrix. If the caller (main agent) omits this hint, the codex sub-agent defaults to `max` (config.toml 상속 — effort 파라미터 미지정).
 
 ## 3. Review the Proposal
 - Output the sub-agent response to the user as-is.

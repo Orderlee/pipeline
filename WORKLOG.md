@@ -67,6 +67,122 @@
 
 
 
+
+
+
+
+
+## 2026-07-15
+
+### 1. 당일 코드 및 설정 정리
+- **문제**: 당일 변경이 여러 영역에 걸쳐 있어, 커밋 목록만 보면 실제 수정 범위와 운영 영향 지점을 파악하기 어려웠음.
+- **원인**: 자동 기록이 파일/커밋 나열 중심으로 작성되면 코드, 설정, 문서 변경이 어떤 의도로 묶였는지 드러나지 않음.
+- **조치**:
+    - 파이프라인 코드 변경을 정리함: `src/vlm_pipeline/sql/migrations/postgres/README.md`
+    - 인프라/설정 변경을 정리함: `docker/genai/app.py`, `docker/genai/db/pg.py`, `docker/genai/templates/batch_detail.html`
+    - 테스트 변경을 정리함: `tests/unit/test_genai_pg_recompute.py`
+    - 문서 변경을 정리함: `.agent/skill/codex_arbitration/SKILL.md`, `.agent/skill/codex_collab/SKILL.md`, `.agent/skill/codex_db_migration/SKILL.md`, `.agent/skill/codex_refactor/SKILL.md`, `... 외 5개`
+    - 기타 변경을 정리함: `.gitignore`
+    - 관련 커밋: `2b8b4f2e` feat(genai): done job 재생성(re-roll) 버튼 — 결과물 불만족 시 재생성, `5e380a7b` docs(agents): §3.3 effort 래더 잔존 참조 일괄 정합 — extra_high→ultra, 기본 max, `41941770` docs(agents): codex effort 래더 정합 — max/ultra 전달 방식·매트릭스 불일치 정정, `936fa014` fix(genai): batch 상태머신 경합·completed_at 오염 수정
+    - 관련 파일:
+      - `.agent/skill/codex_arbitration/SKILL.md`
+      - `.agent/skill/codex_collab/SKILL.md`
+      - `.agent/skill/codex_db_migration/SKILL.md`
+      - `.agent/skill/codex_refactor/SKILL.md`
+      - `.claude/agents/codex.md`
+      - `.claude/agents/deploy-auditor.md`
+      - `.claude/agents/qa-strategist.md`
+      - `.gitignore`
+      - `... 외 7개`
+
+### 2. 당일 정리
+- **변경 통계**:
+    - 변경 파일 **15개**, +168/-67줄.
+- **관련 커밋**:
+    - `2b8b4f2e`: feat(genai): done job 재생성(re-roll) 버튼 — 결과물 불만족 시 재생성
+    - `5e380a7b`: docs(agents): §3.3 effort 래더 잔존 참조 일괄 정합 — extra_high→ultra, 기본 max
+    - `41941770`: docs(agents): codex effort 래더 정합 — max/ultra 전달 방식·매트릭스 불일치 정정
+    - `936fa014`: fix(genai): batch 상태머신 경합·completed_at 오염 수정
+- **서비스 상태**: 파이프라인 서비스 3개 컨테이너 중 3개 정상 가동.
+- **작업 환경**: VSCode
+
+## 2026-07-14
+
+### 1. 당일 코드 및 설정 정리
+- **문제**: 당일 변경이 여러 영역에 걸쳐 있어, 커밋 목록만 보면 실제 수정 범위와 운영 영향 지점을 파악하기 어려웠음.
+- **원인**: 자동 기록이 파일/커밋 나열 중심으로 작성되면 코드, 설정, 문서 변경이 어떤 의도로 묶였는지 드러나지 않음.
+- **조치**:
+    - 당일 변경 파일과 커밋을 기준으로 작업 내용을 정리함.
+
+### 2. 당일 정리
+- **서비스 상태**: 파이프라인 서비스 3개 컨테이너 중 3개 정상 가동.
+- **작업 환경**: VSCode
+
+## 2026-07-13
+
+### 1. 당일 코드 및 설정 정리
+- **문제**: 당일 변경이 여러 영역에 걸쳐 있어, 커밋 목록만 보면 실제 수정 범위와 운영 영향 지점을 파악하기 어려웠음.
+- **원인**: 자동 기록이 파일/커밋 나열 중심으로 작성되면 코드, 설정, 문서 변경이 어떤 의도로 묶였는지 드러나지 않음.
+- **조치**:
+    - 인프라/설정 변경을 정리함: `docker/analysis/embedding_dashboard.py`, `docker/analysis/fiftyone_pgvector.py`
+    - 관련 커밋: `3b339d10` feat(dashboard): 텍스트 검색 — 매칭 이미지 총수 표시 + pivot 후 결과 복귀
+    - 관련 파일:
+      - `docker/analysis/embedding_dashboard.py`
+      - `docker/analysis/fiftyone_pgvector.py`
+
+### 2. 당일 정리
+- **변경 통계**:
+    - 변경 파일 **2개**, +102/-0줄.
+- **관련 커밋**:
+    - `3b339d10`: feat(dashboard): 텍스트 검색 — 매칭 이미지 총수 표시 + pivot 후 결과 복귀
+- **서비스 상태**: 파이프라인 서비스 3개 컨테이너 중 3개 정상 가동.
+- **작업 환경**: VSCode
+
+## 2026-07-10
+
+### 1. 당일 코드 및 설정 정리
+- **문제**: 당일 변경이 여러 영역에 걸쳐 있어, 커밋 목록만 보면 실제 수정 범위와 운영 영향 지점을 파악하기 어려웠음.
+- **원인**: 자동 기록이 파일/커밋 나열 중심으로 작성되면 코드, 설정, 문서 변경이 어떤 의도로 묶였는지 드러나지 않음.
+- **조치**:
+    - 당일 변경 파일과 커밋을 기준으로 작업 내용을 정리함.
+
+### 2. 당일 정리
+- **서비스 상태**: 파이프라인 서비스 3개 컨테이너 중 3개 정상 가동.
+- **작업 환경**: VSCode
+
+## 2026-07-09
+
+### 1. 당일 코드 및 설정 정리
+- **문제**: 당일 변경이 여러 영역에 걸쳐 있어, 커밋 목록만 보면 실제 수정 범위와 운영 영향 지점을 파악하기 어려웠음.
+- **원인**: 자동 기록이 파일/커밋 나열 중심으로 작성되면 코드, 설정, 문서 변경이 어떤 의도로 묶였는지 드러나지 않음.
+- **조치**:
+    - 인프라/설정 변경을 정리함: `docker/genai/adapters/veo.py`, `docker/genai/app.py`, `docker/genai/templates/index.html`
+    - 문서 변경을 정리함: `.claude/agents/ai-data-engineer.md`, `.claude/agents/ai-engineer.md`, `.claude/agents/ai-modeler.md`, `.claude/agents/codex.md`, `... 외 9개`
+    - 기타 변경을 정리함: `.gitignore`
+    - 관련 커밋: `601a33ac` feat(genai): Veo 새 모델 자동 감지 → UI 배너 알림 (detect→notify→env), `1de44760` feat(genai): veo-3.1-lite-generate-001 모델 등록 (저비용 tier), `930d10f2` chore(gitignore): 런타임/생성물 junk 무시 — .bkit/·site_reports/·dagster_home 런타임, `13c86ed1` feat(agents): 도메인 페르소나 9종 추가 + codex 페르소나-팀 반영
+    - 관련 파일:
+      - `.claude/agents/ai-data-engineer.md`
+      - `.claude/agents/ai-engineer.md`
+      - `.claude/agents/ai-modeler.md`
+      - `.claude/agents/codex.md`
+      - `.claude/agents/cto.md`
+      - `.claude/agents/data-engineer.md`
+      - `.claude/agents/dataops-engineer.md`
+      - `.claude/agents/mlops-engineer.md`
+      - `... 외 9개`
+
+### 2. 당일 정리
+- **변경 통계**:
+    - 변경 파일 **17개**, +634/-112줄.
+- **관련 커밋**:
+    - `601a33ac`: feat(genai): Veo 새 모델 자동 감지 → UI 배너 알림 (detect→notify→env)
+    - `1de44760`: feat(genai): veo-3.1-lite-generate-001 모델 등록 (저비용 tier)
+    - `930d10f2`: chore(gitignore): 런타임/생성물 junk 무시 — .bkit/·site_reports/·dagster_home 런타임
+    - `13c86ed1`: feat(agents): 도메인 페르소나 9종 추가 + codex 페르소나-팀 반영
+    - `ed42f71f`: docs(agents): 페르소나 14종 반영 — multi-agent/agent-teams 재정비
+- **서비스 상태**: 파이프라인 서비스 3개 컨테이너 중 3개 정상 가동.
+- **작업 환경**: VSCode
+
 ## 2026-07-08
 
 ### 1. Staging dispatch 서비스 분리 및 흐름 정리

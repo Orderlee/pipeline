@@ -1065,6 +1065,79 @@ def search_by_text(
     )
 
 
+def _count_within_by_vector(
+    vec: list[float],
+    max_dist: float,
+    model_name: str,
+    *,
+    source: str | None = None,
+    image_role: str | None = None,
+    daynight_type: str | None = None,
+    environment_type: str | None = None,
+) -> int:
+    """cosine_dist <= max_dist 인 frame 임베딩 수. 필터 조립은 _topk_by_vector 와 동일(같은 universe)."""
+    lit = "[" + ",".join(repr(float(x)) for x in vec) + "]"
+    need_vm_join = daynight_type is not None or environment_type is not None
+    where_clauses: list[str] = [
+        "e.entity_type = 'frame'",
+        "e.model_name = %(model)s",
+        "(e.embedding <=> %(q)s::vector) <= %(maxd)s",
+    ]
+    params: dict = {"q": lit, "model": model_name, "maxd": float(max_dist)}
+    if source is not None:
+        where_clauses.append("im.image_key LIKE %(source_prefix)s")
+        params["source_prefix"] = source + "%"  # prefix-only LIKE (suffix 와일드카드 금지)
+    if image_role is not None:
+        where_clauses.append("im.image_role = %(image_role)s")
+        params["image_role"] = image_role
+    if daynight_type is not None:
+        where_clauses.append("vm.daynight_type = %(daynight_type)s")
+        params["daynight_type"] = daynight_type
+    if environment_type is not None:
+        where_clauses.append("vm.environment_type = %(environment_type)s")
+        params["environment_type"] = environment_type
+    vm_join = (
+        "\n  JOIN video_metadata vm ON vm.asset_id = im.source_asset_id" if need_vm_join else ""
+    )
+    where_sql = "\n  AND ".join(where_clauses)
+    # ponytail: 임계값 이상 카운트 = range 쿼리라 HNSW 미가속 → 필터셋 full scan(row당 cosine).
+    #           prod ~18만 frame 기준 sub-초, 대시보드에서 캐시. 코퍼스가 수백만↑ 되면
+    #           top-N HNSW 샘플 기반 근사(approx count)로 전환.
+    sql = f"""
+        SELECT count(*) AS n
+        FROM image_embeddings e
+        JOIN image_metadata im ON im.image_id = e.image_id{vm_join}
+        WHERE {where_sql}
+    """
+    with _pg_conn() as conn, conn.cursor() as cur:
+        cur.execute(sql, params)
+        return int(cur.fetchone()[0])
+
+
+def count_by_text(
+    query: str,
+    threshold: float = 0.25,
+    model_name: str | None = None,
+    *,
+    source: str | None = None,
+    image_role: str | None = None,
+    daynight_type: str | None = None,
+    environment_type: str | None = None,
+) -> int:
+    """텍스트 쿼리와 cosine 유사도 >= threshold 인 frame 이미지 수 (search_by_text 와 동일 임베딩/번역/필터).
+
+    cosine_dist = 1 - sim 이므로 sim >= threshold ⟺ dist <= 1 - threshold.
+    top-k 검색과 같은 universe 의 '매칭 총수' — 이미지 다운로드 없이 숫자만.
+    """
+    if model_name is None:
+        model_name = _active_model_name()
+    return _count_within_by_vector(
+        _embed_text(translate_query_ko_en(query)), 1.0 - float(threshold), model_name,
+        source=source, image_role=image_role,
+        daynight_type=daynight_type, environment_type=environment_type,
+    )
+
+
 def search_captions_by_text(query: str, k: int = 20, model_name: str = DEFAULT_MODEL) -> list[dict]:
     """텍스트 → caption embeddings cosine top-k (한국어 도메인 용어는 영어로 치환 후 임베딩)."""
     vec = _embed_text(translate_query_ko_en(query))

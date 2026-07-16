@@ -109,6 +109,16 @@ def _search(
     return hits
 
 
+# 검색어 매칭 총수 (sim >= threshold) — 이미지 렌더 없이 숫자만. 캐시 키에 threshold+필터 포함.
+@st.cache_data(show_spinner="매칭 수 계산 중...")
+def _search_count(query: str, threshold: float, source: str, image_role: str, daynight: str, environment: str) -> int:
+    return fp.count_by_text(
+        query, threshold=threshold,
+        source=source.strip() or None, image_role=image_role or None,
+        daynight_type=daynight or None, environment_type=environment or None,
+    )
+
+
 DQ_CACHE_TTL_SEC = int(os.environ.get("DQ_CACHE_TTL_SEC", "300"))
 AL_CACHE_TTL_SEC = int(os.environ.get("AL_CACHE_TTL_SEC", "600"))
 HDBSCAN_CACHE_TTL_SEC = int(os.environ.get("HDBSCAN_CACHE_TTL_SEC", "300"))
@@ -416,6 +426,13 @@ if _active == "🔗 캡션↔이미지 정합":
             "또한 캡션이 한국어로 임베딩된 동안은 텍스트 인코더 degenerate 로 gap≈0 → 영어 재임베딩 후 분리됨."
         )
 if _active == "🔎 텍스트 검색":
+    # 모드 전환(텍스트→이미지ID pivot)시 렌더 안 된 위젯의 key 를 Streamlit 이 session_state 에서
+    # purge → "유사검색" 후 라디오를 텍스트로 되돌려도 검색어가 비어 이전 결과로 복귀 불가.
+    # 매 rerun 자기재대입으로 텍스트 검색 입력들을 살려두면, 복귀 시 동일 입력 → _search 캐시히트로 결과 즉시 복원.
+    for _persist_key in ("search_q", "search_et", "search_k", "cap_search_mode", "cap_sem_q", "match_thr"):
+        if _persist_key in st.session_state:
+            st.session_state[_persist_key] = st.session_state[_persist_key]
+
     search_mode = st.radio(
         "검색 방식",
         ["텍스트", "이미지 ID", "이미지 업로드"],
@@ -486,6 +503,18 @@ if _active == "🔎 텍스트 검색":
             if not hits:
                 st.info("결과 없음.")
             elif et2 == "frame":
+                # 매칭 총수: 이미지는 top-k 만 그리고, 검색어와 sim>=임계값인 '전체 갯수'는 숫자로만 표시.
+                mc1, mc2 = st.columns([1, 2])
+                match_thr = mc1.slider(
+                    "매칭 임계값 (cosine sim ≥)", 0.05, 0.60, 0.20, 0.01, key="match_thr",
+                    help="이 유사도 이상을 '매칭'으로 카운트. 낮추면 갯수↑, 높이면 갯수↓. 현재 필터도 함께 적용.",
+                )
+                try:
+                    n_match = _search_count(q.strip(), match_thr, flt_source, flt_role, flt_dn, flt_env)
+                    mc2.metric(f"'{q.strip()}' 매칭 이미지 (sim ≥ {match_thr:.2f})", f"{n_match:,} 개")
+                except Exception as exc:  # noqa: BLE001 — 카운트 실패해도 검색 결과는 표시
+                    mc2.caption(f"매칭 수 계산 실패: {exc}")
+                st.caption(f"아래는 가장 유사한 상위 {len(hits)}개 (임계값과 무관하게 최근접순).")
                 _render_frame_hits(hits, "txt")
             else:
                 # caption 결과 렌더링: mode에 따라 표시 필드 다름

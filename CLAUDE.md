@@ -172,10 +172,9 @@ git -C /home/user/work_p/Datapipeline-Data-data_pipeline_test status       # dev
 
 ## 핵심 운영 규칙 (코드에 안 드러나는 것)
 
-### DB write 동시성 (`duckdb_writer` 태그 — 이름만 legacy, 아직 유효)
-- 메타데이터 SoT는 PostgreSQL (2026-05-19 cutover) — 단일 파일 write lock 제약 자체는 사라짐
-- 단, `tags={"duckdb_writer": "true"}` + run_coordinator tag concurrency=1 게이트는 보수적 write 직렬화 안전마진으로 **현재도 유지** (`docker/app/dagster.yaml` `tag_concurrency_limits`, `definitions_common/jobs.py`의 10여 개 job에 태그 부착)
-- 걷어내려면 동시 write 경합 검증 후 job 태그와 coordinator 설정을 **함께** 제거할 것 (한쪽만 지우면 무의미)
+### DuckDB 동시성
+- DuckDB = 단일 파일 write lock ⇒ `tags={"duckdb_writer": "true"}` 필수
+- `run_coordinator`에서 `duckdb_writer` tag concurrency=1로 제한
 
 ### NFS/NAS 장애 대응
 - sensor에서 `OSError/PermissionError/TimeoutError` → graceful skip, 다음 tick 재시도
@@ -237,7 +236,7 @@ git -C /home/user/work_p/Datapipeline-Data-data_pipeline_test status       # dev
     - Python torch (Places365) → default `cuda:0` = 호스트 GPU 0 (CUDA cores)
     - ffmpeg NVENC → `REENCODE_NVENC_GPU_INDICES` (default "0,1") round-robin → 양 GPU 의 NVENC unit 활용 (RTX A4000 NVENC unit GPU 당 1개)
   - **SAM3 (별도 컨테이너)**: 호스트 GPU 1 의 CUDA cores 만 사용 (`CUDA_VISIBLE_DEVICES=1`). 컨테이너 view 에서는 `cuda:0` 로 보이지만 호스트는 GPU 1.
-    - workers=2 (`SAM3_WORKERS` env, compose default 2) — worker당 model ~3.7 GB. 2026-05-27 GPU1 OOM 인시던트로 4→2 하향 (`docker-compose.yaml` 주석 참조)
+    - workers=4 (`SAM3_WORKERS` env, default 4) — process 4개 model 로드 → memory ~15 GB / 16 GB
   - **YOLO (별도 컨테이너)**: 호스트 GPU 1 — 현재 `ENABLE_YOLO_DETECTION=false` 정책으로 비활성
   - **경합 분석**: dagster NVENC (GPU 0/1 의 NVENC unit) ↔ SAM3 (GPU 1 의 CUDA cores) — 별개 hardware unit 이라 같은 GPU 1 안에서도 동시 사용 OK
 - Places365 모델 캐시: `/data/models/places365` (auto_download=false, 고정 캐시만 사용)

@@ -63,7 +63,7 @@ Agent(
   description="codex independent attempt (Pattern B)",
   prompt="""
   Ask kind: independent solution (Pattern B from multi-agent spec §4.2)
-  Effort: extra_high  # Algorithm difficulty is the default trigger, so extra_high per §3.3 matrix
+  Effort: ultra  # Algorithm difficulty is the default trigger, so ultra per §3.3 matrix
 
   Problem: <spec from above — absolutely do not include the Sonnet answer>
   Inputs: ...
@@ -131,7 +131,7 @@ When the user selects "Opus arbitration" in Step 5:
 - **Ensemble integrity**: Do not include the Sonnet answer or any variation of it in the Codex call prompt. If the two models imitate each other, Pattern B loses its meaning. Mandatory prompt review.
 - **Show both answers to the user**: The main agent must not take sides or show only one answer. Present the comparison table together.
 - **Avoid Pattern B without tests**: Without a means of validating correctness, it's impossible to judge which answer is correct. First ask the user to write tests, then proceed.
-- **Cost awareness**: extra_high × Codex call + Sonnet attempt cost. Do not use for trivial problems. Same context as the spec §3.3 "no low" rule — it's better not to call at all than to call weakly.
+- **Cost awareness**: ultra × Codex call + Sonnet attempt cost. Do not use for trivial problems. Same context as the spec §3.3 "no low" rule — it's better not to call at all than to call weakly.
 - **Codex sub-agent must not directly Edit/Write** (codex sub-agent contract).
 - **No direct commits to main/dev**. Always use a feature/fix branch.
 - **Block secrets exposure risk**: If there is a risk of `.env`, credentials, `OPENAI_API_KEY`, etc. appearing in the prompt, block the call and notify the user.
