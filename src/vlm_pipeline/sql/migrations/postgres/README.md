@@ -50,7 +50,7 @@ NNN_<short_kebab_name>.sql
 - 시드 데이터는 별도 `NNN_seed_*.sql`로.
 
 ### 5. **Codex 1차 작성, Sonnet 적용**
-- `.agent/skill/codex_db_migration/SKILL.md`에 따라, 모든 신규 마이그레이션 파일은 Codex가 1차 작성한다(extra_high effort, T1 패턴).
+- `.agent/skill/codex_db_migration/SKILL.md`에 따라, 모든 신규 마이그레이션 파일은 Codex가 1차 작성한다(ultra effort, T1 패턴).
 - Sonnet/메인 에이전트는 받은 SQL을 적용·검증·테스트한다. 임의로 SQL을 다시 쓰지 않는다(이의는 Codex follow-up으로).
 
 ### 6. **검증 의무**
@@ -87,7 +87,7 @@ docker rm -f pg-validate
 ## 운영자가 새 마이그레이션을 추가할 때 (체크리스트)
 
 - [ ] 다음 시퀀스 번호 할당 (`ls migrations/postgres/ | sort | tail -n 1`로 확인)
-- [ ] `docs/references/multi-agent.md` §3.3에 따라 effort = `extra_high` 확정
+- [ ] `docs/references/multi-agent.md` §3.3에 따라 effort = `ultra` 확정
 - [ ] Codex에 T1 프롬프트로 SQL 1차 작성 위임 (`.agent/skill/codex_db_migration/SKILL.md` §2 참조)
 - [ ] 받은 SQL을 그대로 파일에 적용(임의 수정 금지, 의문은 codex-reply follow-up)
 - [ ] 위 §6 "검증 의무"의 (a)/(b)/(c) 모두 통과 확인
