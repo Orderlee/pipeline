@@ -63,7 +63,7 @@ Agent(
   description="codex DB-specific code authoring",
   prompt="""
   Ask kind: primary authorship — codex is the author for this diff
-  Effort: extra_high
+  Effort: ultra
   Project context: DuckDB → PostgreSQL migration (project-scoped override per
     .agent/skill/codex_db_migration/SKILL.md). Codex is the primary author for this task.
   Target: <absolute file path(s) — new or modified>

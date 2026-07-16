@@ -3,7 +3,7 @@
 Layer 1: 순수 Python, Dagster 의존 없음.
 
 표준 스펙 (MACS RTSP WebRTC 호환 + cv2 seek 안정성 통합):
-  - H.264 Baseline profile, level 4.2
+  - H.264 Baseline profile, level=인코더 auto-선택 (강제 안 함)
   - GOP 30 (I-frame 30프레임마다 고정, sc_threshold=0)
   - B-frame 없음 (bframes=0)
   - yuv420p, faststart, AAC 128kbps
@@ -64,13 +64,14 @@ def _next_nvenc_gpu_index() -> int:
 # ── 표준 인코딩 프리셋 ─────────────────────────────────────────────────────────
 STANDARD_PRESET_NAME = "standard"
 
+# 2026-07-16: `-level` 강제 삭제. baseline profile 만 고정하고 level 은 인코더가
+# 해상도/fps 에 맞춰 auto-선택하게 둔다. 이전엔 level 4.2 강제 → >1080p(4K/5MP) 및
+# fps 이상치 소스에서 NVENC 가 "Invalid Level" 로 거부 → reencode fallback(원본 미정규화).
 STANDARD_PRESET_FFMPEG_ARGS: list[str] = [
     "-c:v",
     "libx264",
     "-profile:v",
     "baseline",
-    "-level",
-    "4.2",
     "-pix_fmt",
     "yuv420p",
     "-g",
@@ -97,8 +98,8 @@ STANDARD_PRESET_FFMPEG_ARGS_NVENC_BASE: list[str] = [
     # 2026-05-22: `-gpu N` 은 _resolve_ffmpeg_preset_args() 에서 round-robin 동적 삽입.
     "-profile:v",
     "baseline",
-    "-level",
-    "4.2",
+    # 2026-07-16: `-level` 강제 삭제 (auto). level 4.2 강제 시 >1080p/fps이상 소스에서
+    # NVENC InitializeEncoder "Invalid Level" 거부 → 원본 fallback 되던 문제 근본 수정.
     "-pix_fmt",
     "yuv420p",
     "-g",

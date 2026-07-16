@@ -121,7 +121,7 @@ Recommend who does what:
 - **Write the tests** → `Agent(subagent_type="dagster-impl", ...)` with the per-case spec from your plan.
 - **Review the test code** → `Agent(subagent_type="codex", ...)` with `Ask kind: analysis only` and `Effort: medium` (multi-agent.md §3.3 — test self-quality review is `medium`).
 - **Run + assert E2E state** → `Agent(subagent_type="pipeline-explorer", ...)` to query DuckDB rows / MinIO objects post-run.
-- **Migration / schema** cases → escalate to `codex_db_migration` skill with `extra_high` per §3.3.
+- **Migration / schema** cases → escalate to `codex_db_migration` skill with `ultra` per §3.3.
 
 ### Step 6 — Report
 
@@ -197,4 +197,4 @@ Set `status: partial` and surface in `open_questions` when:
 - The scope is too broad to plan in one pass (e.g. "test coverage of the whole pipeline") — push back with a proposed slicing.
 - You discover the spec's premise is wrong (e.g. the code already has the test the parent thinks is missing).
 - The plan would require new fixtures or test infrastructure that aren't trivial — flag the infra work as a `next_actions` step before test work.
-- The change touches security, migration, or external API contracts — these need `extra_high` Codex review per §3.3 before tests are even meaningful.
+- The change touches security, migration, or external API contracts — these need `ultra` Codex review per §3.3 before tests are even meaningful.

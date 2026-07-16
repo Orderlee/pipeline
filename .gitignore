@@ -228,3 +228,5 @@ scripts/recover_*_[0-9]*.py
 !tests/unit/test_label_qa_fiftyone.py
 # key_builders (build_pseudo_bbox_key 등 순수 키빌더 — C-1 감사 수정)
 !tests/unit/test_key_builders.py
+# genai recompute_batch_status 파생 로직 (mock cursor, psycopg2 importorskip, dagster 의존 없음)
+!tests/unit/test_genai_pg_recompute.py

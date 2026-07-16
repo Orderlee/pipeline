@@ -766,6 +766,9 @@ def create_app() -> FastAPI:
             all_packs = fetch_kling_resource_packs()
             # 표는 현재 활성(online) 팩만 노출. 누적 합계는 이전(runOut/expired)+현재 전체 합산.
             online = [p for p in all_packs if p.get("status") == "online"]
+            # 최근 결제(구매) 순 — effective_time(개시 시각) 내림차순 → 방금 결제한 팩이 맨 위.
+            # effective_time 미보고 시 invalid_time(만료)로 fallback.
+            online.sort(key=lambda p: (p.get("effective_time") or p.get("invalid_time") or 0), reverse=True)
             packs_panel = summarize_resource_packs(online, _time.time())
             packs_panel["totals"] = resource_pack_totals(all_packs)
             packs_panel["error"] = None
@@ -813,12 +816,6 @@ def create_app() -> FastAPI:
                         status_code=409,
                         detail="job is not in 'failed' state (retry race or already in-flight)",
                     )
-                # batch.status 도 즉시 'running' 으로 복귀
-                cur.execute(
-                    "UPDATE genai_batches SET status='running', completed_at=NULL "
-                    "WHERE batch_id=%s",
-                    (cas[0],),
-                )
                 # 2) 메타 조회 (engine/prompt/options_json 은 batches 에)
                 cur.execute(
                     """
@@ -831,8 +828,10 @@ def create_app() -> FastAPI:
                 )
                 row = cur.fetchone()
         batch_id, seq = cas
+        # batch.status 'running' 복귀는 recompute 경유 — raw UPDATE 는 advisory lock
+        # 미참여라 동시 recompute 의 stale terminal 쓰기와 경합 (Codex round-2 HIGH)
+        pg.recompute_batch_status(batch_id)
         engine, prompt, options_json_raw = row
-        status = "submitted"  # CAS 통과 — 이미 전환됨
 
         # options_json 에서 mode 회수 — txt2video 면 NAS 원본 읽기 skip
         import json as _json
@@ -852,15 +851,11 @@ def create_app() -> FastAPI:
             # 원본 input image 를 NAS 에서 다시 읽어 어댑터 submit (공유 헬퍼)
             blob, orig_name = _load_nas_original_blob(batch_id, int(seq))
             if blob is None:
-                # CAS 한 status 를 'failed' 로 되돌림 (원본 없으면 retry 자체 불가)
-                with pg.connect() as conn:
-                    with conn.cursor() as cur:
-                        cur.execute(
-                            "UPDATE genai_jobs SET status='failed', "
-                            "error_message='original file gone (archive moved?)' "
-                            "WHERE job_id=%s",
-                            (job_id,),
-                        )
+                # CAS 한 status 를 'failed' 로 되돌림 (원본 없으면 retry 자체 불가).
+                # raw UPDATE 아닌 guarded helper — 동시 finalize 가 먼저 'done' 찍었으면 no-op.
+                pg.update_job_status(job_id, status="failed",
+                                     error_message="original file gone (archive moved?)")
+                pg.recompute_batch_status(batch_id)  # batch 를 'running' 으로 둔 채 이탈 방지
                 raise HTTPException(status_code=410, detail=f"original file gone: {orig_name}")
 
         try:
@@ -876,6 +871,7 @@ def create_app() -> FastAPI:
             # 외부 API 실패 시 status='failed' 로 되돌림
             pg.update_job_status(job_id, status="failed",
                                   error_message=f"retry adapter submit failed: {exc}")
+            pg.recompute_batch_status(batch_id)  # batch 를 'running' 으로 둔 채 이탈 방지
             raise HTTPException(status_code=502, detail=f"adapter submit failed: {exc}")
         pg.update_job_submitted(job_id, sub.provider_job_id)
         # 동기 엔진은 submit 시점에 결과 → finalize_sync_results 1건으로 호출
