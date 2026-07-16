@@ -115,6 +115,7 @@ def update_job_submitted(job_id: str, provider_job_id: str | None) -> None:
                        error_message = NULL,   -- deferred 등 이전 메시지 제거
                        submitted_at = COALESCE(submitted_at, %s)
                  WHERE job_id = %s
+                   AND status NOT IN ('done','failed')  -- terminal 불변: cancel 직후 drain 이 failed→submitted 로 못 뒤집음
                 """,
                 (provider_job_id, now, job_id),
             )
@@ -131,6 +132,7 @@ def mark_job_deferred(job_id: str, reason: str) -> None:
                    SET status = 'pending',
                        error_message = %s
                  WHERE job_id = %s
+                   AND status NOT IN ('done','failed')  -- terminal 불변: deferred 가 cancel(failed) 을 pending 으로 못 되살림
                 """,
                 (f"[deferred] {reason}"[:500], job_id),
             )
@@ -190,15 +192,18 @@ def update_job_status(
                        cost_units = COALESCE(%s, cost_units),
                        completed_at = COALESCE(%s, completed_at)
                  WHERE job_id = %s
+                   AND status NOT IN ('done','failed')  -- terminal 불변: 늦은 provider 완료가 cancel 을 못 되살림
                 """,
                 (status, error_message, cost_units, completed_at, job_id),
             )
 
 
 def cancel_batch(batch_id: str, reason: str) -> int:
-    """미완료(pending/submitted/running) job 을 failed 로 마킹하고 batch 도 failed 로.
-    pending 정지 = drain 이 더 이상 제출 안 함(과금 차단). 반환: 취소된 job 수.
-    ⚠️ 이미 submitted 된 건 Kling 에서 계속 생성될 수 있음(provider-cancel 없음)."""
+    """미완료(pending/submitted/running) job 을 failed 로 마킹. pending 정지 = drain 이
+    더 이상 제출 안 함(과금 차단). 반환: 취소된 job 수.
+    ⚠️ 이미 submitted 된 건 Kling 에서 계속 생성될 수 있음(provider-cancel 없음).
+    batch.status 는 하드코딩 대신 job 집계에서 파생(recompute) — 이미 종료된 batch 를
+    'failed' 로 오염시키지 않고, done+cancelled 혼재는 partial_success 로 반영."""
     with connect() as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -207,7 +212,17 @@ def cancel_batch(batch_id: str, reason: str) -> int:
                 (reason, batch_id),
             )
             n = cur.rowcount
-            cur.execute("UPDATE genai_batches SET status='failed' WHERE batch_id=%s", (batch_id,))
+    if recompute_batch_status(batch_id) == "pending":
+        # 0-job batch (submit 이 jobs insert 전에 죽은 잔재): 집계 파생 불가 + reconcile 도
+        # EXISTS(jobs) 라 안 줍는다 — 취소는 직접 종료. job 행 없인 다른 writer 가 이
+        # batch 를 안 건드리므로 raw UPDATE 안전.
+        with connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """UPDATE genai_batches SET status='failed', completed_at=COALESCE(completed_at, now())
+                         WHERE batch_id=%s AND status IN ('pending','running')""",
+                    (batch_id,),
+                )
     return n
 
 
@@ -215,14 +230,18 @@ def recompute_batch_status(batch_id: str) -> str:
     """genai_jobs status 집계 → genai_batches.status / n_succeeded / n_failed 갱신.
 
     derived:
-      - 모든 job done → 'succeeded'
       - 모든 job 끝났는데 failed 0 → 'succeeded'
       - 모든 job 끝났는데 done 0 → 'failed'
       - 모든 job 끝났는데 done > 0 and failed > 0 → 'partial_success'
       - 아직 끝나지 않은 job 있으면 → 'running'
+    completed_at 은 최초 terminal 전이 시각만 보존(반복 recompute 로 안 밀림),
+    running 복귀 시 NULL 로 초기화.
     """
     with connect() as conn:
         with conn.cursor() as cur:
+            # 동시 recompute(cancel/drain/finalize/reconcile) 직렬화 — 무락 SELECT→UPDATE 로
+            # stale 집계가 최신 상태를 덮어쓰는 역전 방지. 락은 트랜잭션 commit 시 해제.
+            cur.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", (batch_id,))
             cur.execute(
                 """
                 SELECT
@@ -238,26 +257,22 @@ def recompute_batch_status(batch_id: str) -> str:
                 return "pending"
             if n_done + n_failed < n_total:
                 new_status = "running"
-                completed_at = None
             elif n_failed == 0:
                 new_status = "succeeded"
-                completed_at = datetime.now()
             elif n_done == 0:
                 new_status = "failed"
-                completed_at = datetime.now()
             else:
                 new_status = "partial_success"
-                completed_at = datetime.now()
             cur.execute(
                 """
                 UPDATE genai_batches
                    SET status = %s,
                        n_succeeded = %s,
                        n_failed = %s,
-                       completed_at = COALESCE(%s, completed_at)
+                       completed_at = CASE WHEN %s THEN COALESCE(completed_at, now()) END
                  WHERE batch_id = %s
                 """,
-                (new_status, int(n_done), int(n_failed), completed_at, batch_id),
+                (new_status, int(n_done), int(n_failed), new_status != "running", batch_id),
             )
             return new_status
 

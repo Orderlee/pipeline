@@ -64,7 +64,7 @@ Persona count ≠ model usage. Fourteen personas collapse onto four model tiers:
 | **Opus** (§2.1) | `cto`, `ai-modeler`, `qa-strategist` + main session | **what & why** — decomposition, architecture, model-science & QA judgment, hard-debug final stage, arbitration | ~10–20% |
 | **Sonnet** (§2.2) | `data-engineer`, `dataops-engineer`, `ai-data-engineer`, `ai-engineer`, `mlops-engineer`, `dagster-impl`, `pipeline-explorer`, `deploy-auditor`, `tech-scout` | **how** — implementation, dataset/label plumbing, ops automation, exploration, auditing, tech recon | ~55–65% |
 | **Haiku** (§2.4) | `ops-engineer` | **is-it-alive** — runtime health, log triage, status snapshots. Cheap, no fixed target | as needed |
-| **GPT-5.x (Codex)** (§2.3) | `codex` + `codex_*` skills | **is-it-correct** — cross-validation, test-quality review (§3.3 `medium`), security/migration `extra_high` | ~15–20% |
+| **GPT-5.x (Codex)** (§2.3) | `codex` + `codex_*` skills | **is-it-correct** — cross-validation, test-quality review (§3.3 `medium`), security/migration `ultra` | ~15–20% |
 
 **Principles**:
 1. Decisions that require reasoning effort (architecture, model science, QA strategy, security judgment) → Opus (`cto` / `ai-modeler` / `qa-strategist`).
@@ -82,7 +82,7 @@ This is `multi-agent.md` §3.1's model-tier matrix resolved to this project's pe
 | Architecture decision / new resource / bucket / cross-cutting change | **`cto`** (Opus) | (optional) `codex` analysis | multi-agent.md §2.1 — decisions not delegated |
 | "Should we use X" / new library / version upgrade / migration guide | **`tech-scout`** (verify current docs) | `cto` (adopt/reject) | Never answer new-tech from memory |
 | **Ingest / dedup / dispatch / sensor / raw_files / manifest / ffprobe / phash / checksum** | **`data-engineer`** | `codex` (50+ lines) | Core ETL & orchestration plumbing |
-| **Postgres/DuckDB schema / migration authoring** | `data-engineer` + `codex_db_migration` skill | `codex` `extra_high` | one `DO $$` block per migration (runner applies the first only) — §3.3 subtle hazard |
+| **Postgres/DuckDB schema / migration authoring** | `data-engineer` + `codex_db_migration` skill | `codex` `ultra` | one `DO $$` block per migration (runner applies the first only) — §3.3 subtle hazard |
 | **Reconciliation / backfill / dedup cleanup / checksum recompute / retention / NAS quota** | **`dataops-engineer`** | `codex` (if destructive) | Operates the data; doesn't write pipeline code |
 | **Labeling (Gemini) / Label Studio / GT curation / dataset build / pseudo-label QA / DVC** | **`ai-data-engineer`** | `ai-modeler` (if it feeds training) | `labels` = per-event; **0 rows ≠ failure** |
 | **Model serving / inference / SAM3 / YOLO / embedding-service / GPU alloc / maintenance drain / promote mechanics** | **`ai-engineer`** | `codex` `high` (contract) | Serves what `ai-modeler` decides |
@@ -104,7 +104,7 @@ This is `multi-agent.md` §3.1's model-tier matrix resolved to this project's pe
 | Staging reset / clean re-test | `staging_reset` / `duckdb_staging_wiper` skill | — | Operational — user approval required |
 | Dagster lineage validation / repair | `dagster_lineage_fixer` skill | scope w/ `pipeline-explorer`, fix w/ `data-engineer` or `dagster-impl` | |
 | MLOps finetune run (end-to-end) | `mlops-finetune` skill | `ai-modeler` (decisions) + `mlops-engineer` (ops) | Weights promotion stays manual |
-| Security / auth / secrets | domain persona authoring | `codex` `extra_high` + `cto` final review | multi-agent.md §3.3 |
+| Security / auth / secrets | domain persona authoring | `codex` `ultra` + `cto` final review | multi-agent.md §3.3 |
 | Label Studio / Slack / external API integration | `ai-data-engineer` (LS) or `data-engineer` | `codex` `high` (contract consistency) | Watch webhook URL, presigned URL expiry |
 | Daily work log | `daily_worklog` skill | — | Auto-organizes WORKLOG.md |
 | Documentation / comments / README | domain persona (or main) | — | Default "do not write" — CLAUDE.md rule |
@@ -176,7 +176,7 @@ User request ("Make a PR moving incoming to the 10.0.0.51 NFS mount")
   │
   ├─ cto: Migration plan (including rollback path)
   │     ↓
-  ├─ codex: Second opinion on the plan (extra_high — data model / path impact)
+  ├─ codex: Second opinion on the plan (ultra — data model / path impact)
   │     ↓
   ├─ data-engineer: Apply compose / mount / config changes
   │     ↓
@@ -333,7 +333,7 @@ Before starting a new task:
 
 Before wrapping up:
 - [ ] Did tests actually run + pass (not just the persona's self-report)?
-- [ ] For security / migration / external API per §3.3, was `extra_high` validation applied?
+- [ ] For security / migration / external API per §3.3, was `ultra` validation applied?
 - [ ] If the change touches deploy, did `deploy-auditor` review?
 - [ ] **For new features / non-trivial fixes, did `qa-strategist` see the test plan?** (no safety net otherwise)
 - [ ] For a model promotion, did `ai-modeler` (not the orchestrator) own the eval-gate decision?

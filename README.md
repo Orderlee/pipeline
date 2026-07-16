@@ -239,7 +239,7 @@ test의 주요 특징:
 
 | 함수 | 검색 |
 |------|------|
-| `search_by_text(q, k, …filters)` | 텍스트 → 프레임 이미지 (cross-modal) |
+| `search_by_text(q, k, …filters)` / `count_by_text(q, threshold, …filters)` | 텍스트 → 프레임 이미지 top-k / 임계값 이상 전체 매칭 수 (cross-modal) |
 | `search_by_image(image_id, k)` | 프레임 → 유사 프레임 |
 | `search_by_uploaded_image(bytes, k)` | 업로드 이미지 → 유사 프레임 |
 | `search_captions(q, mode=…)` | 캡션 검색 — `keyword`(pg_trgm) / `semantic`(pgvector) / `hybrid`(RRF 융합) |

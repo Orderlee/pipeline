@@ -50,7 +50,7 @@ Agent(
   prompt="""
   Target file: <absolute path>
   Goal: <one-line goal>
-  Effort: high  # for general splits (>50 LoC). extra_high for security/auth code splits. medium for import-only cleanups.
+  Effort: max  # for general splits (>50 LoC). ultra for security/auth code splits. medium for import-only cleanups.
 
   Constraints:
   - Public API preserved (callers <list> should continue to import existing symbols).

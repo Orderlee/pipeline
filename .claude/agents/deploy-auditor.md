@@ -89,7 +89,7 @@ For a PR number, use `gh pr diff <N> --name-only`.
 | `docker/docker-compose*.yaml` | Stack recompose — env/volume/network changes need scrutiny |
 | `.github/workflows/**` | CI itself changes — risk that deploy mechanism breaks |
 | `scripts/deploy/**` | Deploy logic — extremely high risk, every staging+prod uses this |
-| `src/vlm_pipeline/sql/migrations/**` | Schema change — runs on next stack start, irreversible. Requires Codex `extra_high` review per multi-agent.md §3.3 |
+| `src/vlm_pipeline/sql/migrations/**` | Schema change — runs on next stack start, irreversible. Requires Codex `ultra` review per multi-agent.md §3.3 |
 | `tests/**` only | Safe — but verify CI tests still pass |
 | `docs/**`, `*.md` | Safe — docs-only |
 | `.env*` references (new env var read by code) | Host `.env` / `.env.test` must be updated by hand BEFORE deploy or stack will boot misconfigured |
@@ -149,7 +149,7 @@ Always reply in this exact shape:
 
 **Recommend**:
 - <action 1, e.g. "Update `docker/.env.test` with FOO=... before merging to dev">
-- <action 2, e.g. "Run codex_db_migration on src/vlm_pipeline/sql/migrations/0042_*.sql per spec §3.3 extra_high">
+- <action 2, e.g. "Run codex_db_migration on src/vlm_pipeline/sql/migrations/0042_*.sql per spec §3.3 ultra">
 - <action 3, e.g. "Verify on staging :3031 before promoting to main">
 ```
 
@@ -167,5 +167,5 @@ Colour code: 🔴 will-break / 🟡 needs-care / 🟢 safe. Be conservative — 
 
 If your audit finds 🔴 risk, append:
 ```
-**Recommend**: route through `codex` sub-agent or `codex_db_migration` skill for §3.3 extra_high review before merge.
+**Recommend**: route through `codex` sub-agent or `codex_db_migration` skill for §3.3 ultra review before merge.
 ```
