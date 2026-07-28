@@ -3,18 +3,35 @@
 문제 유형별 진단 및 즉시 조치 가이드.
 
 현재 branch-based runtime 기준:
-- `main` = production
-- `dev` = test
-- 이 문서에 남아 있는 과거 `staging` 표기는 특별한 언급이 없으면 현재 **test 데이터 plane** (`/data/staging.duckdb`, `/home/user/mou/staging/...`)를 뜻합니다.
+- `main` = production, `dev` = staging
+- 스테이징은 상시 기동이 아니라 필요할 때 올려서 검증하는 구조입니다
+
+> ## ⚠️ 이 문서를 읽기 전 — 용어/명령 치환표
+>
+> 이 런북에는 **DuckDB 시절(2026-05-19 Postgres cutover 전)** 의 명령과 경로가 많이 남아 있습니다.
+> 과거 장애 대응 지식 자체는 유효하므로 보존했지만, **명령을 그대로 복사하면 동작하지 않습니다.**
+> 아래로 치환해서 읽으세요.
+>
+> | 문서에 적힌 것 | 현재 실제 |
+> |---|---|
+> | `python3 scripts/query_local_duckdb.py --sql "…"` | `docker exec docker-postgres-1 psql -U airflow -d vlm_pipeline -c "…"` (스크립트는 `scripts/archive/` 로 이동됨) |
+> | `pipeline-dagster-1` / `pipeline-dagster-daemon-1` | `docker-dagster-1` / `docker-dagster-daemon-1` (스테이징은 `pipeline-test-*`) |
+> | `/data/pipeline.duckdb`, `/data/staging.duckdb` | Postgres `vlm_pipeline` / `vlm_pipeline_staging` |
+> | `/nas/incoming`, `/nas/archive` | `/nas/data/incoming`, `/nas/data/archive` (단일 부모 바인드 `/nas/data`) |
+> | `/home/user/mou/staging/...` | `/home/user/mou/nas_primary/staging/...` |
+> | `10.0.0.10` (호스트), `10.0.0.36`/`.51` (MinIO) | `10.0.0.10` (호스트), `10.0.0.51` (MinIO/NAS) |
+> | `duckdb_writer` / `duckdb_*_writer` 태그 경쟁 | **해당 태그 없음.** 현재는 `max_concurrent_runs: 20` + `gpu_trainer` limit 1 |
+> | MotherDuck 동기화 (§9) | **코드 제거됨** — `scripts/archive/` 에만 존재 |
+> | YOLO 검출 (§8) | `ENABLE_YOLO_DETECTION=false`, bbox 는 SAM3 담당 |
 
 **공통 도구:**
 ```bash
-# DuckDB 읽기 (락 회피)
-python3 scripts/query_local_duckdb.py --sql "<SQL>"
+# DB 읽기
+docker exec docker-postgres-1 psql -U airflow -d vlm_pipeline -c "<SQL>"
 
-# 호스트 DB 경로: ./docker/data/pipeline.duckdb
-# 컨테이너 DB 경로: /data/pipeline.duckdb
-# Manifest 경로: /nas/incoming/.manifests/pending | failed
+# 컨테이너 DSN: postgresql://airflow:***@docker-postgres-1:5432/vlm_pipeline (호스트 노출 :15433)
+# Manifest 경로: /nas/data/incoming/.manifests/pending | failed
+# 실패 로그:     /nas/data/incoming/.manifests/failed/*.jsonl
 ```
 
 ---
@@ -23,7 +40,7 @@ python3 scripts/query_local_duckdb.py --sql "<SQL>"
 
 ### Dagster UI 접속 불가 (포트 충돌, LOCATION_ERROR)
 ```bash
-docker logs pipeline-dagster-1 | tail -n 100
+docker logs docker-dagster-1 | tail -n 100
 docker compose restart dagster
 ss -tln | grep 3030
 ```
@@ -36,11 +53,16 @@ ss -tln | grep 3030
 - **확인:** 재기동 후 heartbeat 충돌 로그 없음, sensor tick 정상 순환
 
 ### STARTED/CANCELING run이 장시간 점유 (backpressure 문제)
-- **원인:** `duckdb_writer=true`(legacy dispatch) 또는 `duckdb_raw_writer` / `duckdb_label_writer` / `duckdb_yolo_writer` 슬롯 경쟁. worker 프로세스가 없는데 UI에 `STARTED` / `CANCELING` 잔류
+- **원인:** worker 프로세스가 없는데 UI에 `STARTED` / `CANCELING` 잔류 (고아 run).
+  ⚠️ 과거 원인이던 `duckdb_writer` / `duckdb_raw_writer` / `duckdb_label_writer` /
+  `duckdb_yolo_writer` **슬롯 경쟁은 현재 존재하지 않습니다** — 해당 태그가 코드에서 제거됨.
+  지금 남은 tag limit 은 `gpu_trainer`(1) 뿐이고 그 외엔 `max_concurrent_runs: 20` 만 적용됩니다.
+  즉 요즘 이 증상은 대개 gRPC 단절/컨테이너 재기동으로 생긴 고아 run 이며,
+  `stuck_run_guard_sensor` 가 자동 정리를 시도합니다.
 - **즉시 조치:**
   ```bash
   # 1) 비정상 run 상태 확인
-  docker exec pipeline-dagster-1 bash -lc "python3 - <<'PY'
+  docker exec docker-dagster-1 bash -lc "python3 - <<'PY'
   from dagster import DagsterInstance
   from dagster._core.storage.dagster_run import RunsFilter, DagsterRunStatus
 
@@ -54,7 +76,7 @@ ss -tln | grep 3030
   PY"
 
   # 2) 먼저 dry-run으로 terminalize 대상인지 점검
-  docker exec pipeline-dagster-1 bash -lc "
+  docker exec docker-dagster-1 bash -lc "
     python3 /src/vlm/scripts/repair_stale_dagster_runs.py --dry-run \
       41c4fe3d-0072-4a33-9af2-4acf0055c5f6 \
       3dc73214-d91b-48fb-8e67-aff3f8a7a717 \
@@ -62,7 +84,7 @@ ss -tln | grep 3030
   "
 
   # 3) 실제 복구 실행
-  docker exec pipeline-dagster-1 bash -lc "
+  docker exec docker-dagster-1 bash -lc "
     python3 /src/vlm/scripts/repair_stale_dagster_runs.py \
       41c4fe3d-0072-4a33-9af2-4acf0055c5f6 \
       3dc73214-d91b-48fb-8e67-aff3f8a7a717 \
@@ -70,7 +92,7 @@ ss -tln | grep 3030
   "
 
   # 4) 30~60초 뒤 queue가 다시 launch되는지 확인
-  docker exec pipeline-dagster-daemon-1 bash -lc "tail -n 200 /opt/dagster/logs/daemon.log | grep -E 'Launching run|QueuedRunCoordinator|backpressure' | tail -n 50"
+  docker exec docker-dagster-daemon-1 bash -lc "tail -n 200 /opt/dagster/logs/daemon.log | grep -E 'Launching run|QueuedRunCoordinator|backpressure' | tail -n 50"
   ```
 - **영구 조치:**
   ```
@@ -79,8 +101,9 @@ ss -tln | grep 3030
   STUCK_RUN_GUARD_TIMEOUT_SEC=10800
   STUCK_RUN_GUARD_ORPHANED_RUN_TIMEOUT_SEC=900
   STUCK_RUN_GUARD_AUTO_REQUEUE_ENABLED=true
-  STUCK_RUN_GUARD_TARGET_JOBS=mvp_stage_job,ingest_job,motherduck_sync_job
+  STUCK_RUN_GUARD_TARGET_JOBS=mvp_stage_job,ingest_job,dispatch_stage_job
   ```
+  (prod `.env` 에는 아직 `motherduck_sync_job` 이 남아 있으나 그런 job 은 존재하지 않는 무해한 잔재입니다.)
 - **디스크/빌드 캐시 점검:** `database or disk is full`, `disk I/O error`가 보이면 stale run 정리 전에 아래를 같이 확인
   ```bash
   df -h /
@@ -95,7 +118,13 @@ ss -tln | grep 3030
 
 ---
 
-## 2. DuckDB
+## 2. DuckDB (⚠️ 레거시 — 2026-05-19 Postgres cutover 이전 내용)
+
+> 이 섹션의 절차는 **현재 스택에 그대로 적용되지 않습니다.** 파일 기반 DuckDB 는 write path 에서
+> 제거됐고 `scripts/query_local_duckdb.py` 도 `scripts/archive/` 로 이동했습니다.
+> 스키마 문제는 `psql`(`\d <table>`) + `src/vlm_pipeline/sql/migrations/postgres/` 의 forward-only
+> 마이그레이션(`_pg_migrations` 테이블이 이력 추적)으로 진단하세요.
+> 아래는 과거 인시던트 기록으로만 보존합니다.
 
 ### raw_files 테이블 미존재
 - **대표 에러:** `Catalog Error: Table with name raw_files does not exist`
@@ -116,7 +145,7 @@ ss -tln | grep 3030
   ```bash
   lsof ./docker/data/pipeline.duckdb
   python3 scripts/query_local_duckdb.py --sql "SELECT COUNT(*) FROM raw_files;"
-  ls -1 /nas/incoming/.manifests/pending/retry_*.json 2>/dev/null | tail -n 20
+  ls -1 /nas/data/incoming/.manifests/pending/retry_*.json 2>/dev/null | tail -n 20
   ```
 - **조치:** writer run 종료 대기 → transient 오류는 retry manifest 자동 생성 확인 → queue 과적재 시 backpressure 값 조정
 - **완료 조건:** retry manifest로 흡수, `raw_files.failed` 누적 증가 없음
@@ -183,8 +212,8 @@ ss -tln | grep 3030
 ### pending queue 과적재
 - **확인:**
   ```bash
-  find /nas/incoming/.manifests/pending -maxdepth 1 -name '*.json' | wc -l
-  ls -lt /nas/incoming/.manifests/pending/*.json 2>/dev/null | head -n 20
+  find /nas/data/incoming/.manifests/pending -maxdepth 1 -name '*.json' | wc -l
+  ls -lt /nas/data/incoming/.manifests/pending/*.json 2>/dev/null | head -n 20
   ```
 - **권장 기본값:**
   ```
@@ -240,34 +269,33 @@ ss -tln | grep 3030
 
 ## 5. Ingest
 
+> 아래 `PSQL` 은 다음의 축약입니다:
+> `alias PSQL='docker exec docker-postgres-1 psql -U airflow -d vlm_pipeline -c'`
+> (스테이징은 `pipeline-test-postgres-1` / `vlm_pipeline_staging`)
+
 ### raw_files vs video_metadata 개수 불일치
 - **확인:**
   ```bash
-  python3 scripts/query_local_duckdb.py --sql "SELECT COUNT(*) FROM raw_files;"
-  python3 scripts/query_local_duckdb.py --sql "SELECT COUNT(*) FROM video_metadata;"
-  python3 scripts/query_local_duckdb.py --sql "
-    SELECT COUNT(*) AS missing FROM raw_files rf
-    LEFT JOIN video_metadata vm ON rf.asset_id = vm.asset_id
-    WHERE rf.media_type='video' AND vm.asset_id IS NULL;"
+  PSQL "SELECT COUNT(*) FROM raw_files;"
+  PSQL "SELECT COUNT(*) FROM video_metadata;"
+  PSQL "SELECT COUNT(*) AS missing FROM raw_files rf
+        LEFT JOIN video_metadata vm ON rf.asset_id = vm.asset_id
+        WHERE rf.media_type='video' AND vm.asset_id IS NULL;"
   ```
-- **조치:**
-  ```bash
-  # 호스트
-  python3 scripts/backfill_video_metadata.py --db ./docker/data/pipeline.duckdb --statuses completed --log-every 20
-  # 컨테이너
-  python3 /src/vlm/scripts/backfill_video_metadata.py --db /data/pipeline.duckdb --statuses completed --log-every 20
-  ```
-- **완료 조건:** `missing_video_meta=0`
+  같은 판정을 `raw_ingest` 의 asset check `raw_ingest_video_metadata_consistency` 와
+  `cross_table_consistency_sensor`(5분 주기)도 자동으로 수행한다.
+- **조치:** ⚠️ `scripts/backfill_video_metadata.py` 는 **DuckDB 레거시 스크립트**로
+  `ALLOW_LEGACY_DUCKDB_SCRIPT=1` 가드가 걸려 있어 현재 PG 스택에 바로 쓸 수 없다.
+  누락분은 해당 asset 을 재materialize 하거나 `video_env_backfill_job` 계열 경로를 쓴다.
+- **완료 조건:** `missing=0`
 
 ### failed 급증
 - **확인:**
   ```bash
-  python3 scripts/query_local_duckdb.py --sql "
-    SELECT ingest_status, COUNT(*) FROM raw_files GROUP BY 1 ORDER BY 1;"
-  python3 scripts/query_local_duckdb.py --sql "
-    SELECT COALESCE(error_message,'(null)') AS msg, COUNT(*) AS cnt
-    FROM raw_files WHERE ingest_status='failed' GROUP BY 1 ORDER BY cnt DESC LIMIT 30;"
-  ls -lt /nas/incoming/.manifests/failed/*.jsonl 2>/dev/null | head
+  PSQL "SELECT ingest_status, COUNT(*) FROM raw_files GROUP BY 1 ORDER BY 1;"
+  PSQL "SELECT COALESCE(error_message,'(null)') AS msg, COUNT(*) AS cnt
+        FROM raw_files WHERE ingest_status='failed' GROUP BY 1 ORDER BY cnt DESC LIMIT 30;"
+  ls -lt /nas/data/incoming/.manifests/failed/*.jsonl 2>/dev/null | head
   ```
 - **조치:** 파일 오류(`file_missing`, `empty_file`, `ffprobe_failed`)는 DB 미삽입 대상이므로 원본 파일 복구 후 재수집
 - **완료 조건:** 동일 오류 재발 없음, 실패 로그만 남고 DB 오염 없음
@@ -275,12 +303,23 @@ ss -tln | grep 3030
 ### archive 이동 실패
 - **확인:**
   ```bash
-  python3 scripts/query_local_duckdb.py --sql "
-    SELECT asset_id, source_path, archive_path, error_message
-    FROM raw_files WHERE ingest_status='failed' AND error_message LIKE 'archive_move_failed%'
-    ORDER BY updated_at DESC LIMIT 30;"
-  find /nas/archive -type f -name '<파일명>' | head
+  PSQL "SELECT asset_id, source_path, archive_path, error_message
+        FROM raw_files WHERE ingest_status='failed' AND error_message LIKE 'archive_move_failed%'
+        ORDER BY updated_at DESC LIMIT 30;"
+  find /nas/data/archive -type f -name '<파일명>' | head
   ```
+- **`archive_move_timeout` 인 경우:** 이동 op 에는 600초 제한(`ARCHIVE_MOVE_TIMEOUT_SEC`)이 있다.
+  타임아웃 시 run 을 실패시키지 않고 `complete_uploaded_assets_without_archive()` 로 넘어가
+  **`ingest_status='completed'` + `archive_path=NULL`** 로 확정한다.
+  즉 **failed 로 안 잡히고 조용히 archive 없는 completed 가 쌓인다.** 이것만 따로 확인:
+  ```bash
+  PSQL "SELECT COUNT(*) FROM raw_files WHERE ingest_status='completed' AND archive_path IS NULL;"
+  ```
+  같은 판정을 asset check `raw_ingest_archive_consistency` 가 WARN(non-blocking)으로 알려준다 —
+  blocking 이 아니므로 run 은 초록색이어도 이 카운트는 올라갈 수 있다.
+- **폴더 단위 이동이 갑자기 느려졌다면:** archive fast-path 는 `os.rename` 1회(~1s)로 끝나야 한다.
+  incoming 과 archive 가 **다른 마운트**에 있으면 `EXDEV` 로 전체 복사가 되어 타임아웃이 폭증한다.
+  `NAS_DATA_ROOT` 단일 부모 바인드(`/nas/data`)가 유지되고 있는지 확인할 것.
 - **조치:**
   - archive 실존 시 → `completed + archive_path`로 복구
   - archive 미존재 시 → manifest 재발행으로 재처리
@@ -293,13 +332,13 @@ ss -tln | grep 3030
 ### 0바이트 파일
 - **확인:**
   ```bash
-  find /nas/incoming/gcp -type f \( -iname '*.mp4' -o -iname '*.mov' -o -iname '*.jpg' \) -size 0 | head -n 30
+  find /nas/data/incoming/gcp -type f \( -iname '*.mp4' -o -iname '*.mov' -o -iname '*.jpg' \) -size 0 | head -n 30
   ```
 - **조치:**
   ```bash
   python3 gcp/download_from_gcs_rclone.py \
     --download --mode date-folders \
-    --download-dir /nas/incoming/gcp \
+    --download-dir /nas/data/incoming/gcp \
     --buckets source-a-rtsp-bucket \
     --zero-byte-retries 4
   ```
@@ -325,7 +364,7 @@ gsutil ls gs://source-a-rtsp-bucket/
 - **검증:**
   ```bash
   docker exec pipeline-app-1 python3 -c "import vertexai"
-  docker exec pipeline-dagster-1 python3 -c "from gemini.assets.config import VIDEO_PROMPT"
+  docker exec docker-dagster-1 python3 -c "from gemini.assets.config import VIDEO_PROMPT"
   ```
 
 ### Gemini credentials not found (test)
@@ -351,7 +390,24 @@ gsutil ls gs://source-a-rtsp-bucket/
 
 ---
 
-## 8. YOLO
+## 8. YOLO (⚠️ 현재 비활성 — bbox 는 SAM3 담당)
+
+> `ENABLE_YOLO_DETECTION=false` 이고 `docker-yolo-1` 컨테이너도 정지 상태입니다.
+> bbox 장애를 쫓고 있다면 여기가 아니라 **SAM3** 를 보세요:
+>
+> ```bash
+> curl -fsS http://127.0.0.1:8002/health              # model_loaded, device, gpu_memory
+> curl -fsS http://127.0.0.1:8002/maintenance/status  # 정비 모드로 막혀 있는지
+> docker logs --tail 100 docker-sam3-1
+> ```
+>
+> - SAM3 결과는 `vlm-labels/<source>/sam3_segmentations/*.json` + `image_labels`(`label_tool='sam3'`)
+> - SAM3 는 prod·staging 이 **같은 컨테이너를 공유**하므로 재기동 시 양쪽 영향
+> - `SAM3_WORKERS` 를 올리면 GPU1 OOM(503) 위험 — 2026-05-27 인시던트 이력 확인 후 조정
+> - ⚠️ 정비 플래그가 uvicorn worker 별 메모리라 `/maintenance/enter` 가 3개 worker 전부를
+>   막지 못한다 (drain 미완). 학습 전 drain 을 신뢰하기 전에 확인 필요
+>
+> 아래 YOLO 내용은 플래그를 다시 켤 때를 위한 참고용입니다.
 
 ### 모델/dependency 문제
 - **사용 모델:** `yolov8l-worldv2.pt` (`docker/data/models/yolo/yolov8l-worldv2.pt`)
@@ -376,62 +432,70 @@ gsutil ls gs://source-a-rtsp-bucket/
 
 ## 9. 데이터 정합성
 
-### Local vs MotherDuck 불일치
-- **확인:**
-  ```bash
-  # 로컬
-  python3 scripts/query_local_duckdb.py --sql "SELECT COUNT(*) FROM raw_files;"
-  python3 scripts/query_local_duckdb.py --sql "SELECT COUNT(*) FROM video_metadata;"
-  python3 scripts/query_local_duckdb.py --sql "SELECT COUNT(*) FROM raw_files WHERE ingest_status='failed';"
-  # MotherDuck: motherduck_sync_job 실행 후 동일 쿼리 재확인
-  ```
-- **조치:** sync 전에 로컬 이상치 먼저 정리 → sync 실행 → 동일 쿼리로 local/cloud 동시 검증
-- **MotherDuck 수동 동기화:**
-  ```bash
-  python3 /src/python/local_duckdb_to_motherduck_sync.py \
-    --db pipeline_db --local-db-path /data/pipeline.duckdb \
-    --share-update MANUAL --tables raw_files video_metadata
-  ```
+### ~~Local vs MotherDuck 불일치~~ — ❌ MotherDuck 동기화는 제거됨
 
-### archive / MinIO / DuckDB / MotherDuck 개수 불일치
+MotherDuck 동기화는 코드에서 완전히 사라졌습니다 (`grep motherduck src/` → 0 hits).
+`motherduck_sync_job` / `motherduck_*_sensor` / `motherduck_daily_schedule` / `defs/sync/` 전부 없고,
+스크립트는 `scripts/archive/local_duckdb_to_motherduck_sync.py` 에만 남아 있습니다.
+`.env` 의 `MOTHERDUCK_*` 변수도 잔재입니다.
+
+현재 DB 정합성 확인은 Postgres 에서 직접:
+
+```bash
+docker exec docker-postgres-1 psql -U airflow -d vlm_pipeline -c "
+  SELECT ingest_status, COUNT(*) FROM raw_files GROUP BY 1 ORDER BY 2 DESC;"
+docker exec docker-postgres-1 psql -U airflow -d vlm_pipeline -c "
+  SELECT COUNT(*) FROM raw_files r
+  LEFT JOIN video_metadata v USING (asset_id)
+  WHERE r.media_type='video' AND r.ingest_status='completed' AND v.asset_id IS NULL;"
+```
+
+> ⚠️ 스냅샷용 카운트는 `pg_stat_user_tables.n_live_tup` 를 믿지 말고 `COUNT(*)` 를 쓰세요
+> (autovacuum 통계가 크게 뒤처져 0 으로 보이는 사례 있음).
+> 상시 정합성 감시는 `cross_table_consistency_sensor` (5분) + `raw_ingest`/`clip_timestamp` 의
+> asset check 3종이 담당합니다.
+
+### archive / MinIO / DB 개수 불일치
 - **정렬 방법:**
   1. archive에서 DB에 없는 파일 전수 확인
   2. 초과 파일을 세 종류로 분리: 운영 marker(`_DONE`) / 잡파일(`.DS_Store`) / 실제 데이터
   3. 규칙: `_DONE`→유지, `.DS_Store`→삭제, 실제 데이터→checksum으로 duplicate 판단
 - **운영 기준:** "정합"은 archive 전체 물리 파일 수가 아니라 **archive 데이터 파일 수** 기준
 
-### MotherDuck 수동 동기화
-```bash
-python3 /src/python/local_duckdb_to_motherduck_sync.py \
-  --db pipeline_db --local-db-path /data/pipeline.duckdb \
-  --share-update MANUAL --tables raw_files video_metadata
-```
-
 ---
 
 ## 10. Test 초기화
 
-test 재테스트를 위한 완전 초기화 순서:
+staging 재테스트를 위한 완전 초기화 순서 (스테이징 clone 에서 실행):
+
 ```bash
-# 1. test runtime 중지
-# 2. test MinIO 객체 전부 삭제 (endpoint: 10.0.0.51:9002)
-#    - vlm-raw, vlm-labels, vlm-processed, vlm-dataset
-# 3. test DuckDB 삭제
-rm docker/data/staging.duckdb
-# 4. test Dagster runtime DB 삭제
-rm -rf docker/data/dagster_home_staging/storage
+# 1. staging 컨테이너 중지
+docker stop pipeline-test-dagster-1 pipeline-test-dagster-daemon-1 pipeline-test-dagster-code-server-1
+
+# 2. staging MinIO 객체 전부 삭제 (endpoint: 10.0.0.51:9002 / 콘솔 :9003)
+#    버킷 5개: vlm-raw, vlm-labels, vlm-processed, vlm-dataset, vlm-classification
+
+# 3. staging DB 초기화 — Postgres `vlm_pipeline_staging` @ pipeline-test-postgres-1
+#    (구 docker/data/staging.duckdb 파일은 write path 가 아니라 무관한 잔재)
+
+# 4. staging Dagster runtime 상태 삭제 (run·sensor·schedule 토글 초기화)
+rm -rf docker/app/dagster_home/storage
+
 # 5. 재기동
+./scripts/compose-staging.sh up -d
 ```
+
+> ⚠️ **4번을 하면 센서 ON/OFF 토글도 초기화된다.** `dispatch_sensor` 와
+> `production_agent_dispatch_sensor` 는 **코드 기본값이 STOPPED** 이므로,
+> 재기동 후 Dagster UI 에서 다시 켜지 않으면 자동 라벨링이 조용히 멈춘 상태가 된다.
 
 **절대 지우면 안 되는 것:**
-- `/home/user/mou/staging/incoming`
-- `/home/user/mou/staging/archive`
+- `/home/user/mou/nas_primary/staging/incoming`
+- `/home/user/mou/nas_primary/staging/archive`
 
-**test 데이터 plane 볼륨 마운트 필수:**
-```yaml
-- /home/user/mou/staging/incoming:/nas/staging/incoming
-- /home/user/mou/staging/archive:/nas/staging/archive
-```
+**staging 데이터 plane 마운트:** prod 와 동일하게 **단일 부모 바인드**를 쓴다 —
+`NAS_DATA_ROOT=/home/user/mou/nas_primary/staging` → `/nas/data`
+(incoming/archive 를 따로 마운트하면 archive 폴더 이동이 `EXDEV` 로 전체 복사가 된다).
 
 ---
 
@@ -456,8 +520,12 @@ python src/gemini/ls_tasks.py renew --project-name <project_name>
 ```
 
 ### ls_task_create_sensor 미동작
-- Dagster UI → Sensors → `ls_task_create_sensor` 수동 ON (default=STOPPED)
+- ⚠️ 이 센서는 **코드 기본값이 RUNNING** 이다 (`default_status=DefaultSensorStatus.RUNNING`).
+  "수동 ON 필요" 는 옛 정보 — 꺼져 있다면 누가 UI 에서 끈 것이거나 storage 초기화 후 상태다
 - `LS_API_KEY` 미설정 시 job 실패 → `.env` 확인
+- 대상 조건: `dispatch_requests` 에 `status='completed' AND ls_task_status='pending'` 행이 있어야 tick 이 일함
+- job 이 SUCCESS 인데도 태스크가 안 생기는 경우가 있다 — 서브프로세스 실패가 삼켜질 수 있으므로
+  run 로그에서 `ls_tasks.py create` 출력을 직접 확인할 것
 
 ### LS → MinIO 접근 불가 (presigned URL 오류)
 - presigned URL은 `MINIO_ENDPOINT` 기준 생성 → LS 컨테이너에서 해당 주소 도달 가능한지 확인
@@ -475,8 +543,8 @@ python src/gemini/ls_tasks.py renew --project-name <project_name>
 timeout 3 ping -c 3 10.0.0.51
 
 # NAS 파일 접근 테스트 (5초 타임아웃)
-timeout 5 stat /home/user/mou/incoming/
-timeout 5 ls /home/user/mou/archive/
+timeout 5 stat /home/user/mou/nas_primary/incoming/
+timeout 5 ls /home/user/mou/nas_primary/archive/
 
 # CIFS 연결 통계 (reconnect 횟수, open files, 에러 확인)
 cat /proc/fs/cifs/Stats
@@ -494,7 +562,7 @@ sudo dmesg | grep -i cifs | tail -20
 ```bash
 sudo umount -l /home/user/mou/incoming
 sudo umount -l /home/user/mou/archive
-sudo umount -l /home/user/mou/staging
+sudo umount -l /home/user/mou/nas_primary/staging
 sudo mount -a
 # 검증
 timeout 5 ls /home/user/mou/incoming/
