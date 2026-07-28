@@ -64,5 +64,4 @@ def test_cancel_batch_zero_jobs_terminates_batch(monkeypatch):
     monkeypatch.setattr(pg, "connect", lambda: nullcontext(conn))
     monkeypatch.setattr(pg, "recompute_batch_status", lambda b: "pending")
     assert pg.cancel_batch("b1", "op cancel") == 0
-    assert any("UPDATE genai_batches" in c[0][0] and "'failed'" in c[0][0]
-               for c in cur.execute.call_args_list)
+    assert any("UPDATE genai_batches" in c[0][0] and "'failed'" in c[0][0] for c in cur.execute.call_args_list)

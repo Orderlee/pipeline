@@ -10,7 +10,7 @@ NAS에 있는 이미지/비디오 미디어를 수집하고, 중복을 정리한
 현재 기준으로 이 저장소는 **branch-based runtime** 으로 운영합니다.
 
 - **`main` = production**: Dagster `http://10.0.0.10:3030/`, MinIO Console `http://10.0.0.51:9001/`, runtime MinIO endpoint `http://10.0.0.51:9000`, Postgres `docker-postgres-1:15433/vlm_pipeline`
-- **`dev` = test(staging)**: Dagster `http://10.0.0.10:3031/`, MinIO Console `http://10.0.0.51:9003/`, runtime MinIO endpoint `http://10.0.0.51:9002`, Postgres `pipeline-test-postgres-1:15432/vlm_pipeline_staging`
+- **`dev` = test(staging)**: Dagster `http://10.0.0.10:3031/`, MinIO Console `http://10.0.0.51:9003/`, runtime MinIO endpoint `http://10.0.0.51:9002`, Postgres `pipeline-test-postgres-1:15432/vlm_pipeline_staging` — **상시 기동 아님** (필요 시 `./scripts/compose-staging.sh up -d`)
 - test는 staging 데이터 plane(Postgres `vlm_pipeline_staging`, `/home/user/mou/nas_primary/staging/...`)을 재사용하지만, **코드 로직은 production과 동일**합니다.
 
 문서 운영 기준은 역할을 분리합니다.
@@ -252,13 +252,13 @@ test의 주요 특징:
 
 ### 분석 surface (`analysis` profile)
 
-`COMPOSE_PROFILES=analysis`로 `analysis` 컨테이너를 기동하면 임베딩 시각화/검색 도구가 뜹니다.
+`COMPOSE_PROFILES=analysis`로 `analysis` 컨테이너를 기동하면 임베딩 시각화/검색 도구가 뜹니다. ⚠️ 컨테이너는 **JupyterLab만 자동 기동**합니다 — FiftyOne App과 Streamlit은 `docker exec`로 수동 기동하는 백그라운드 프로세스라 restart/recreate 후 재기동이 필요합니다 ([docs/runbook/fiftyone-operations.md](docs/runbook/fiftyone-operations.md) §3 참고).
 
-| 도구 | 포트 | 설명 |
+| 도구 | 포트 (컨테이너 / prod 호스트) | 설명 |
 |------|------|------|
 | JupyterLab | `8888` | `fiftyone_pgvector` 헬퍼로 검색·클러스터·UMAP/PCA/MDS 시각화 (token=`JUPYTER_TOKEN`) |
-| FiftyOne App | `5151` | `frames` / `captions` 데이터셋 projection 탐색 + SAM3 bbox/캡션 overlay |
-| Streamlit | `8501` | `embedding_dashboard.py` — 검색(텍스트/이미지ID/이미지 업로드 + facet 필터, 캡션 keyword/semantic/hybrid), near-duplicate·class separability·label suspect·active-learning 큐 |
+| FiftyOne App | `5151` / `5153` | `frames` / `captions` 데이터셋 projection 탐색 + SAM3 bbox/캡션 overlay |
+| Streamlit | `8501` / `8503` | `embedding_dashboard.py` — 검색(텍스트/이미지ID/이미지 업로드 + facet 필터, 캡션 keyword/semantic/hybrid), near-duplicate·class separability·label suspect·active-learning 큐 |
 
 ```bash
 COMPOSE_PROFILES=analysis ./scripts/compose-prod.sh up -d analysis
@@ -350,6 +350,8 @@ COMPOSE_PROFILES=analysis ./scripts/compose-prod.sh up -d analysis
 │   ├── docker-compose.yaml
 │   ├── docker-compose.dev.yaml         # 로컬 dev overlay
 │   ├── docker-compose.labelstudio.yaml # Label Studio overlay
+│   ├── docker-compose.labelstudio.local.yaml # LS 커스텀 포크 로컬 스택 (소스빌드)
+│   ├── labelstudio/# LS 커스텀 포크 overlay (assign-flow 등 커스터마이즈)
 │   ├── .env / .env.test
 │   ├── app/        # Dagster code-server 이미지
 │   ├── sam3/       # SAM3.1 segmentation 서버
@@ -380,8 +382,8 @@ Docker Compose(`docker/docker-compose.yaml`)로 서비스를 실행합니다. �
 | `grafana` | `3000` | - | 운영 대시보드 |
 | `dispatch-webhook` | `8090` | `webhook` | dispatch webhook 수신 서버 |
 | `sam3` | `8002` | `sam3` | SAM3.1 segmentation 서버 (GPU 1, 단일 공유 컨테이너) |
-| `embedding-service` | `8003` | `embedding` | PE-Core-L14-336 임베딩 서비스 (GPU 0) |
-| `genai` | `8088` | `genai` | GenAI Studio (Kling/Veo/Higgsfield 등) |
+| `embedding-service` | `8003` (prod 호스트 `8004`) | `embedding` | PE-Core-L14-336 임베딩 서비스 (GPU 0) |
+| `genai` | `8088` (prod 호스트 `8089`) | `genai` | GenAI Studio (Kling/Veo/Higgsfield 등) |
 | `pg-backup` | - | `backup` | pg_dump + restic 일일 백업 sidecar |
 | `analysis` | `8888`/`5151`/`8501` | `analysis` | JupyterLab + FiftyOne + Streamlit |
 | `fiftyone-mongo` | - | `analysis` | FiftyOne 메타데이터 MongoDB sidecar |
@@ -404,7 +406,7 @@ Docker Compose(`docker/docker-compose.yaml`)로 서비스를 실행합니다. �
 - `vlm-labels`만 라벨 JSON의 source of truth로 사용합니다.
 - 파일 단위 오류는 fail-forward로 처리하고, `<manifest_dir>/failed/*.jsonl`로 남깁니다.
 - archive 이동 후 source 폴더가 비면 incoming 쪽 빈 부모 폴더도 정리합니다.
-- PostgreSQL 전환으로 단일-파일 write lock 제약은 사라졌지만, run-coordinator(`QueuedRunCoordinator`, `max_concurrent_runs: 4`)의 `duckdb_writer` tag concurrency=1 게이트는 보수적 write 직렬화 안전마진으로 아직 유지됩니다 (`docker/app/dagster.yaml`, `src/vlm_pipeline/definitions_common/jobs.py` — 태그 이름만 legacy).
+- PostgreSQL 전환으로 단일-파일 write lock 제약이 사라지면서 `duckdb_writer` 계열 태그 게이트는 **폐기**됐습니다 (`build_asset_job(writer_tag=...)` 인자는 하위 호환 시그니처만 남은 no-op). 현재 run-coordinator(`QueuedRunCoordinator`)는 `max_concurrent_runs: 20`에 `gpu_trainer` limit 1(실사용)·`pg_writer` limit 1(설정만 있고 태그를 붙인 asset 없음 — 현재 no-op)입니다.
 
 ## GenAI Studio (영상·이미지 생성 웹 UI)
 
@@ -569,7 +571,7 @@ pytest tests/integration -q
 | `frame_embedding_backlog_sensor` / `caption_embedding_backlog_sensor` | STOPPED (`ENABLE_EMBEDDING`) | 미임베딩 backlog → embedding job |
 | `gcs_download_schedule` | - | 매일 04:00 KST GCS 수집 |
 | `sourcea_download_schedule` | RUNNING | 매일 06:00 KST source-a 사이트 일일 수집 |
-| `ls_presign_renew_schedule` | - | 매일 05:00 KST LS presigned URL 갱신 |
+| `ls_presign_renew_schedule` | STOPPED | 매일 05:00 KST LS presigned URL 갱신 (renew 중복재생성 버그픽스 배포 전까지 OFF 유지) |
 
 ## Query Examples
 

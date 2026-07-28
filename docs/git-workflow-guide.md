@@ -36,7 +36,7 @@
 git push origin dev
 
 # 2) 3–10분 대기 후 스테이징에서 검증
-#    http://10.0.0.10:3031/  (Dagster UI)
+#    http://10.0.0.10:3031/  (Dagster UI — 스테이징 스택을 먼저 올려야 함)
 #    + 관련 센서 tick·asset 재실행·MinIO 결과물 등 수동 확인
 
 # 3) 프로덕션 반영
@@ -75,12 +75,25 @@ git checkout dev && git merge main && git push origin dev
 
 ### CI 트리거 규칙 (언제 CI가 돌고 안 돌고)
 
-| 바뀐 파일 | CI 트리거? | 이미지 재빌드? |
+| 바뀐 파일 | 배포 트리거? | 이미지 재빌드? |
 |---|---|---|
-| `*.md` (루트) / `docs/**` / `tests/**` / `.cursor/**` / `.agent/**` | ❌ (paths-ignore) | — |
-| `src/vlm_pipeline/**` | ✅ | ❌ (rsync만, 빠름) |
-| `Dockerfile` / `docker/app/**` / `configs/**` / `scripts/**` / `gcp/**` / `split_dataset/**` / `src/python/**` | ✅ | ✅ (느림) |
-| `.env` / `.env.test` | git 미추적 — 트리거 불가. 호스트에서 직접 편집 + 해당 환경 `docker compose restart` |
+| `*.md` (루트) / `docs/**` / `tests/**` / `.cursor/**` / `.agent/**` / `.github/copilot-instructions.md` / `.github/workflows/claude*.yml` | ❌ (paths-ignore) | — |
+| `src/vlm_pipeline/**` | ✅ | **✅ (느림)** |
+| `src/gemini/**` / `src/python/**` | ✅ | ✅ (느림) |
+| `docker/Dockerfile` / `docker/app/**` / `configs/**` / `scripts/**` / `gcp/**` / `split_dataset/**` | ✅ | ✅ (느림) |
+| `docker/{sam3,pg-backup,genai,embedding,trainer,mlflow,curation}/**` | ✅ | ✅ (해당 서비스) |
+| `docker/docker-compose.yaml` / 배포 workflow 파일 자체 | ✅ | ✅ (느림) |
+| `.env` / `.env.test` | git 미추적 — 트리거 불가. 호스트에서 직접 편집 + 해당 환경 재기동 |
+
+> ⚠️ **`src/vlm_pipeline/**` 는 이미지 재빌드를 트리거합니다.** 예전에 "rsync만 되고 빠름"으로
+> 적혀 있었지만 `detect_image_rebuild` 잡의 실제 경로 목록에 포함되어 있습니다.
+>
+> ⚠️ `paths-ignore` 에 걸리지 않는 push 는 **재빌드 여부와 무관하게** dagster 3종 컨테이너를
+> stop→rm→recreate 하므로 진행 중인 라벨링·수집 run 이 끊깁니다.
+>
+> ⚠️ **배포는 `origin`(Orderlee) 의 `dev`/`main` push 에서만 트리거됩니다.** self-hosted runner 가
+> Orderlee 에만 등록돼 있고 두 워크플로에 `if: github.repository == 'Orderlee/...'` 가드가 있어,
+> `upstream`(upstream-org) 쪽 머지는 배포를 일으키지 않습니다 — 기여용 경로일 뿐입니다.
 
 ### 확인 URL 모음
 
@@ -88,9 +101,12 @@ git checkout dev && git merge main && git push origin dev
 |---|---|
 | GitHub Actions | https://github.com/Orderlee/Datapipeline-Data-data_pipeline/actions |
 | PROD Dagster UI | http://10.0.0.10:3030/ |
-| STAGING Dagster UI | http://10.0.0.10:3031/ |
+| STAGING Dagster UI | http://10.0.0.10:3031/ (상시 기동 아님) |
 | PROD MinIO Console | http://10.0.0.51:9001/ (S3 :9000) |
 | STAGING MinIO Console | http://10.0.0.51:9003/ (S3 :9002) |
+
+> 구 `10.0.0.x` 주소는 전부 도달 불가입니다 (2026-07-06 IP 개편).
+> 호스트 = `10.0.0.10`, MinIO/NAS = `10.0.0.51`.
 
 ### 자주 하는 실수
 

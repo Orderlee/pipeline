@@ -19,26 +19,47 @@
 
 - 설계/명세
   - [Auto_Labeling_기능_명세서](logic/Auto_Labeling_기능_명세서.md)
+  - [명세 대비 현행 갭 및 수정사항](logic/Auto_Labeling_명세_대비_현행_갭_및_수정사항.md)
   - [Dispatch_Labeling_Method_체계_및_Skip_Import_설계안](logic/Dispatch_Labeling_Method_체계_및_Skip_Import_설계안.md)
-  - [YOLO_World_자연어_프롬프트_연결_설계안](logic/YOLO_World_자연어_프롬프트_연결_설계안.md)
-- 실행 계획
-  - [운영-테스트 환경 분리 및 자동 배포 계획](exec-plans/운영_테스트_환경_분리_자동배포_계획.md)
+  - [Dagster pgvector 임베딩 설계](design-docs/2026-06-15-dagster-pgvector-embeddings-design.md)
+  - [MLOps 파인튜닝 스캐폴딩 설계](superpowers/specs/2026-06-29-mlops-finetune-scaffolding-design.md)
+  - [SourceA 일일 수집 설계](superpowers/specs/2026-07-06-sourcea-daily-download-design.md)
+- 실행 계획 / 로드맵
+  - [Streamlit/FiftyOne 분석 스택 — 추가 개발 계획](analysis-stack-fiftyone-streamlit-roadmap-2026-07-27.md)
+  - [준지도 학습 도입 타당성](semi-supervised-feasibility-2026-07-27.md)
+  - [프로덕션 PG 롤아웃 계획](exec-plans/active/production-pg-rollout-plan.md)
+  - [QA 시나리오 플레이북](exec-plans/active/qa-scenarios-playbook.md)
   - [PLAN](PLAN.md)
+- 감사 / 상태 리포트
+  - [파이프라인 흐름 감사 — 코어](pipeline-flow-audit-2026-07-01-core.md)
+  - [파이프라인 흐름 감사 — MLOps/DVC](pipeline-flow-audit-2026-07-01.md)
+  - [파이프라인 상태 리포트](pipeline-status-report-2026-07-01.md)
+  - [Pseudo-label QA 타당성](pseudo-label-qa-feasibility.md)
 - 운영 참고
   - [배포 가이드](references/deployment-guide.md)
-  - [운영 트러블슈팅 런북](runbook.md)
+  - [Git 워크플로 가이드](git-workflow-guide.md)
+  - [운영 트러블슈팅 런북](runbook.md) — 및 주제별 런북 모음 [`runbook/`](runbook/)
   - [Label Studio 운영 가이드](references/label-studio-ops-guide.md)
-  - [RUN_2f50c9bb_MOTHERDUCK_QUERY](RUN_2f50c9bb_MOTHERDUCK_QUERY.md)
-  - [QA_PHASE3_REPORT](QA_PHASE3_REPORT.md)
-  - [QA_PHASE4_REPORT](QA_PHASE4_REPORT.md)
+  - [Label Studio 운영 런북](runbook/labelstudio-ops.md)
+  - [FiftyOne 운영](runbook/fiftyone-operations.md), [HNSW 튜닝](runbook/hnsw-tuning.md)
+  - [PG 복구 드릴](runbook/pg-restore-drill.md), [임베딩 백업/복구](runbook/embedding-backup-restore.md)
+  - [NAS 10.0.0.36 → 10.0.0.51 마이그레이션](references/minio-host-endpoint-migration.md)
   - [Production source-a/source-b 라벨·전처리 정리 Runbook](references/production-label-preprocess-cleanup-runbook.md)
+  - [에이전트 라우팅](references/multi-agent.md), [에이전트 팀](references/agent-teams.md)
+- GenAI Studio
+  - [사용설명서·운영 가이드 모음](genai_rollout/)
 
 ## 역사 문서
 
-- branch-based `dev=test`, `main=production` 전환 전의 `staging` 명칭 문서는 역사 기록으로 유지합니다.
-- 대표 예시:
-  - [staging_agent_api_dispatch_plan](staging_agent_api_dispatch_plan.md)
-  - [PRODUCTION_VS_STAGING](PRODUCTION_VS_STAGING.md)
+브랜치 기반 `dev=staging` / `main=production` 전환 전, 그리고 **DuckDB → PostgreSQL cutover
+(2026-05-19) 전**에 작성된 문서는 역사 기록으로만 유지합니다. 현재 스택 설명으로 읽지 마세요.
+
+- [MVP 아키텍처 (2026-02-20, DuckDB 시절)](design-docs/mvp-architecture-2026-02-20.md)
+- [DuckDB 락 경합 분석](design-docs/duckdb-lock-contention-analysis.md) ·
+  [DuckDB 락 수정 계획](exec-plans/duckdb-lock-fix-plan.md)
+- [DB 마이그레이션 토폴로지 (cutover 전 결정 문서)](references/db_migration_topology.md)
+- [운영-테스트 환경 분리 및 자동 배포 계획](exec-plans/운영_테스트_환경_분리_자동배포_계획.md)
+  — 문서 내 상태값("runner 설치 대기")은 stale, CI/CD 는 이미 가동 중
 
 ## 새 문서 작성 규칙
 

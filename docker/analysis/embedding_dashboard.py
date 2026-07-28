@@ -10,9 +10,23 @@ from __future__ import annotations
 import math
 import os
 
+# BLAS/OpenMP/numba 스레드를 코어 절반으로 캡 — HDBSCAN·능동학습 등 무거운 계산이 호스트 CPU 를
+# 전부 점유해 Streamlit websocket 이 끊기는 문제 방지. numpy 로드 전에 설정해야 유효.
+_MAX_THREADS = int(os.environ.get("DASHBOARD_MAX_THREADS", str(max(1, (os.cpu_count() or 2) // 2))))
+for _v in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS",
+           "NUMEXPR_NUM_THREADS", "NUMBA_NUM_THREADS", "VECLIB_MAXIMUM_THREADS"):
+    os.environ.setdefault(_v, str(_MAX_THREADS))
+
 import streamlit as st
 
 import fiftyone_pgvector as fp
+
+try:  # 이미 로드된 BLAS/OpenMP 풀에도 적용 (env 캡 보강). 참조 유지 필수 — GC 되면 캡 해제됨.
+    import threadpoolctl
+
+    _tp_limiter = threadpoolctl.threadpool_limits(_MAX_THREADS)
+except Exception:  # noqa: BLE001 — threadpoolctl 없어도 env 캡은 유효
+    _tp_limiter = None
 
 st.set_page_config(page_title="Embedding Dashboard", layout="wide")
 REFRESH_SEC = int(os.environ.get("DASHBOARD_REFRESH_SEC", "60"))
