@@ -1,10 +1,12 @@
 """PG TRAIN domain — frozen-trainset candidate queries + version writer.
 
 Read path joins the human-confirmed bbox projection (image_label_annotations,
-migration 011) through finalized image_labels. AL contribution is the intersection
-of an AL-queue membership and existence in image_label_annotations; today that
-table is empty so al_confirmed_count is honestly 0 (design §7.2). No model-derived
-labels are ever selected (no auto_generated, no vlm-classification).
+migration 011) through finalized image_labels. No model-derived labels are ever
+selected (no auto_generated, no vlm-classification).
+
+al_confirmed_count is reported as 0: active-learning selection is not persisted
+anywhere, so there is no round membership to intersect with. See
+find_al_confirmed_image_ids().
 """
 
 from __future__ import annotations
@@ -95,26 +97,25 @@ class PostgresTrainMixin:
             return self._rows_to_dicts(rows, columns)
 
     def find_al_confirmed_image_ids(self, image_ids: list[str]) -> set[str]:
-        """Subset of image_ids that have ≥1 human-confirmed annotation box.
+        """Image IDs whose human annotation is attributable to an AL round — always empty.
 
-        AL-queue membership ∩ image_label_annotations. Honestly empty while the
-        per-box projection table has 0 rows (design §7.2).
+        AL selection is never persisted: active_learning_queue() (analysis container)
+        ranks candidates in memory and hands them to a dashboard, so no (round, asset)
+        membership exists to intersect with. 0 is the truthful floor — someone may pick
+        from the queue by eye, but that is unrecorded and therefore unmeasurable.
+
+        The previous body queried image_label_annotations with no AL predicate, so it
+        returned *every* image carrying a human box. That table now holds 1,558 rows
+        (248 images, prod 2026-07-27), which would have made al_confirmed_count equal
+        the total image count — a 100% overstatement sealed into an immutable
+        train_dataset_versions row.
+
+        ponytail: restore the real join once an al_candidates table exists —
+            SELECT DISTINCT ila.image_id FROM image_label_annotations ila
+            JOIN al_candidates ac ON ac.asset_id = ila.image_id
+            WHERE ila.image_id = ANY(%s) AND ac.outcome = 'annotated'
         """
-        ids = [str(i) for i in (image_ids or []) if i]
-        if not ids:
-            return set()
-        with self.connect() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    SELECT DISTINCT ila.image_id
-                    FROM image_label_annotations ila
-                    WHERE ila.image_id = ANY(%s)
-                    """,
-                    (ids,),
-                )
-                rows = cur.fetchall()
-            return {str(r[0]) for r in rows}
+        return set()
 
     def train_dataset_version_exists(self, task: str, content_checksum: str) -> bool:
         """True if a sealed version with this (task, content_checksum) already exists."""

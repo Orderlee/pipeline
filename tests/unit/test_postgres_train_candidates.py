@@ -59,16 +59,15 @@ def test_finalized_bbox_candidates_maps_columns():
     assert "review_status = 'finalized'" in sql
 
 
-def test_al_confirmed_empty_when_no_annotations():
-    m = _Mixin([])  # no annotation rows -> honest empty set
-    confirmed = m.find_al_confirmed_image_ids(["img-1", "img-2"])
-    assert confirmed == set()
-
-
-def test_al_confirmed_returns_subset():
-    m = _Mixin([("img-2",)])
-    confirmed = m.find_al_confirmed_image_ids(["img-1", "img-2"])
-    assert confirmed == {"img-2"}
+def test_al_confirmed_always_empty_without_al_persistence():
+    """Regression: the old body queried image_label_annotations with no AL predicate,
+    so it returned every image carrying a human box (al_confirmed_count == total).
+    AL selection is not persisted -> the honest answer is the empty set, with no
+    DB round-trip at all. Fails loudly if a predicate-less query is reintroduced.
+    """
+    m = _Mixin([("img-1",), ("img-2",)])  # rows any naive query would return
+    assert m.find_al_confirmed_image_ids(["img-1", "img-2"]) == set()
+    assert m.executed == []
 
 
 def test_insert_train_dataset_version_uses_on_conflict():

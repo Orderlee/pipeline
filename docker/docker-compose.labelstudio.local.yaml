@@ -1,0 +1,17 @@
+# ===== 내부용 커스텀 LS 이미지 핀 (untracked local override) =====
+# GitHub 미경유 배포: CI(rsync --delete + git reset --hard)는 tracked 파일만 초기화하므로
+# 이 파일과 docker/labelstudio/ 는 배포 후에도 살아남는다 (.env 와 같은 원리).
+# 사용(기존 두 -f 뒤에 반드시 추가):
+#   docker compose -p pipeline --env-file .env \
+#     -f docker-compose.yaml -f docker-compose.labelstudio.yaml -f docker-compose.labelstudio.local.yaml up -d ...
+# 롤백: 이 -f 를 빼고 up (원본 compose = 순정 :latest) 또는 아래 image 라인을 되돌림.
+# 배경: docs/runbook/labelstudio-ops.md, docs/design-docs/gcpls/gcpls-adoption-inventory.md
+services:
+  labelstudio:
+    # = GCP 외주 LS 실배포본 (v1.23.0/2a9bfbc 기반)
+    # -c4: 2026-07-24 10:30 빌드 반입 — 단축키 n 키 추가. FE 번들 1개만, 백엔드·마이그레이션 0
+    # -c3: 2026-07-24 09:33 빌드 반입 — 구간 단축키 변경 (생성 m→a, 시작수정 s, 끝수정 f). 롤백 시 이 태그로.
+    # -c2: 2026-07-22 16:54 빌드 — 반려 "한 단계 되돌림" / -c1: 2026-07-21 빌드 — 최초 채택본
+    image: labelstudio-internal:1.23.0-c4
+    build:
+      context: ./labelstudio

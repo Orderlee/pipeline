@@ -5,8 +5,8 @@ Layer 4: Dagster @asset. Delegates pure logic to lib/dataset_split + lib/trainse
 stratified, deterministic 3-way split frozen to vlm-dataset/_trainsets/<id>/ and
 records a train_dataset_versions row. Idempotent on (task, content_checksum).
 
-No model-derived labels are ever used (design §2). AL contribution = AL-queue ∩
-image_label_annotations; honestly 0 today.
+No model-derived labels are ever used (design §2). al_confirmed_count is always 0
+until AL selection is persisted — see PostgresTrainMixin.find_al_confirmed_image_ids.
 """
 
 from __future__ import annotations
@@ -64,7 +64,7 @@ def _run_build_trainset(
     force_new: bool,
     log,
 ) -> dict:
-    # ---- 1. candidates (LS finalized boxes; AL∩annotations honest count) ----
+    # ---- 1. candidates (LS finalized boxes; al_confirmed always 0 — no AL persistence) ----
     candidates = db.find_sam3_finalized_bbox_candidates(folder_name=folder_name)
     ls_count = len(candidates)
     image_ids = sorted({str(c["image_id"]) for c in candidates})

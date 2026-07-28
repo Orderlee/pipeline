@@ -72,6 +72,106 @@
 
 
 
+
+
+
+
+
+
+
+
+## 2026-07-27
+
+### 1. 당일 코드 및 설정 정리
+- **문제**: 당일 변경이 여러 영역에 걸쳐 있어, 커밋 목록만 보면 실제 수정 범위와 운영 영향 지점을 파악하기 어려웠음.
+- **원인**: 자동 기록이 파일/커밋 나열 중심으로 작성되면 코드, 설정, 문서 변경이 어떤 의도로 묶였는지 드러나지 않음.
+- **조치**:
+    - 파이프라인 코드 변경을 정리함: `src/vlm_pipeline/defs/train/dataset.py`, `src/vlm_pipeline/resources/postgres_train.py`
+    - 테스트 변경을 정리함: `tests/unit/test_genai_pg_recompute.py`, `tests/unit/test_postgres_train_candidates.py`
+    - 문서 변경을 정리함: `docs/analysis-stack-fiftyone-streamlit-roadmap-2026-07-27.md`, `docs/index.md`
+    - 관련 커밋: `6ac87f40` docs(analysis): Streamlit/FiftyOne 분석 스택 추가 개발 계획 문서 추가, `9ce0eb41` style(tests): main Lint 빨강 해소 — test_genai_pg_recompute ruff format 정정, `30da593c` fix(train): al_confirmed_count 100% 과대보고 — AL 조건 없는 쿼리 제거
+    - 관련 파일:
+      - `docs/analysis-stack-fiftyone-streamlit-roadmap-2026-07-27.md`
+      - `docs/index.md`
+      - `src/vlm_pipeline/defs/train/dataset.py`
+      - `src/vlm_pipeline/resources/postgres_train.py`
+      - `tests/unit/test_genai_pg_recompute.py`
+      - `tests/unit/test_postgres_train_candidates.py`
+
+### 2. 당일 정리
+- **변경 통계**:
+    - 변경 파일 **6개**, +137/-37줄.
+- **관련 커밋**:
+    - `6ac87f40`: docs(analysis): Streamlit/FiftyOne 분석 스택 추가 개발 계획 문서 추가
+    - `9ce0eb41`: style(tests): main Lint 빨강 해소 — test_genai_pg_recompute ruff format 정정
+    - `30da593c`: fix(train): al_confirmed_count 100% 과대보고 — AL 조건 없는 쿼리 제거
+- **서비스 상태**: 파이프라인 서비스 3개 컨테이너 중 3개 정상 가동.
+- **작업 환경**: VSCode
+
+## 2026-07-24
+
+### 1. 당일 코드 및 설정 정리
+- **문제**: 당일 변경이 여러 영역에 걸쳐 있어, 커밋 목록만 보면 실제 수정 범위와 운영 영향 지점을 파악하기 어려웠음.
+- **원인**: 자동 기록이 파일/커밋 나열 중심으로 작성되면 코드, 설정, 문서 변경이 어떤 의도로 묶였는지 드러나지 않음.
+- **조치**:
+    - 당일 변경 파일과 커밋을 기준으로 작업 내용을 정리함.
+
+### 2. 당일 정리
+- **서비스 상태**: 파이프라인 서비스 3개 컨테이너 중 3개 정상 가동.
+- **작업 환경**: VSCode
+
+## 2026-07-23
+
+### 1. 당일 코드 및 설정 정리
+- **문제**: 당일 변경이 여러 영역에 걸쳐 있어, 커밋 목록만 보면 실제 수정 범위와 운영 영향 지점을 파악하기 어려웠음.
+- **원인**: 자동 기록이 파일/커밋 나열 중심으로 작성되면 코드, 설정, 문서 변경이 어떤 의도로 묶였는지 드러나지 않음.
+- **조치**:
+    - 당일 변경 파일과 커밋을 기준으로 작업 내용을 정리함.
+
+### 2. 당일 정리
+- **서비스 상태**: 파이프라인 서비스 3개 컨테이너 중 3개 정상 가동.
+- **작업 환경**: VSCode
+
+## 2026-07-22
+
+### 1. 당일 코드 및 설정 정리
+- **문제**: 당일 변경이 여러 영역에 걸쳐 있어, 커밋 목록만 보면 실제 수정 범위와 운영 영향 지점을 파악하기 어려웠음.
+- **원인**: 자동 기록이 파일/커밋 나열 중심으로 작성되면 코드, 설정, 문서 변경이 어떤 의도로 묶였는지 드러나지 않음.
+- **조치**:
+    - 당일 변경 파일과 커밋을 기준으로 작업 내용을 정리함.
+
+### 2. 당일 정리
+- **서비스 상태**: 파이프라인 서비스 3개 컨테이너 중 3개 정상 가동.
+- **작업 환경**: VSCode
+
+## 2026-07-21
+
+- (당일 커밋/파일 변경 없음)
+## 2026-07-20
+
+- (당일 커밋/파일 변경 없음)
+## 2026-07-17
+
+- (당일 커밋/파일 변경 없음)
+## 2026-07-16
+
+### 1. 당일 코드 및 설정 정리
+- **문제**: 당일 변경이 여러 영역에 걸쳐 있어, 커밋 목록만 보면 실제 수정 범위와 운영 영향 지점을 파악하기 어려웠음.
+- **원인**: 자동 기록이 파일/커밋 나열 중심으로 작성되면 코드, 설정, 문서 변경이 어떤 의도로 묶였는지 드러나지 않음.
+- **조치**:
+    - 파이프라인 코드 변경을 정리함: `src/vlm_pipeline/lib/video_reencode.py`
+    - 관련 커밋: `739abadd` fix(ingest): reencode 프리셋 강제 -level 4.2 제거 → NVENC "Invalid Level" fallback 근본 수정
+    - 관련 파일:
+      - `src/vlm_pipeline/lib/video_reencode.py`
+
+### 2. 당일 정리
+- **변경 통계**:
+    - 변경 파일 **1개**, +6/-5줄.
+- **관련 커밋**:
+    - `739abadd`: fix(ingest): reencode 프리셋 강제 -level 4.2 제거 → NVENC "Invalid Level" fallback 근본 수정
+- **서비스 상태**: 파이프라인 서비스 3개 컨테이너 중 3개 정상 가동.
+- **작업 환경**: VSCode
+
 ## 2026-07-15
 
 ### 1. 당일 코드 및 설정 정리
