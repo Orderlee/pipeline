@@ -75,21 +75,23 @@ ss -tln | grep 3030
       print(run.run_id, run.job_name, run.status)
   PY"
 
-  # 2) 먼저 dry-run으로 terminalize 대상인지 점검
-  docker exec docker-dagster-1 bash -lc "
-    python3 /src/vlm/scripts/repair_stale_dagster_runs.py --dry-run \
-      41c4fe3d-0072-4a33-9af2-4acf0055c5f6 \
-      3dc73214-d91b-48fb-8e67-aff3f8a7a717 \
-      8e455842-55d5-4c4f-b90e-4200d682cf70
-  "
+  # 2) 강제 종료 (⚠️ repair_stale_dagster_runs.py 스크립트는 삭제되어 더 이상 없음)
+  #    Dagster GraphQL terminateRun — 워커가 이미 죽은 좀비는 FORCE 정책으로만 정리된다
+  docker exec docker-dagster-1 bash -lc "python3 - <<'PY'
+  import requests
+  RUN_IDS = ['<run_id_1>', '<run_id_2>']
+  MUT = '''mutation(\$runId: String!) {
+    terminateRun(runId: \$runId, terminatePolicy: MARK_AS_CANCELED_IMMEDIATELY) {
+      __typename ... on TerminateRunSuccess { run { runId status } }
+      ... on PythonError { message }
+    } }'''
+  for rid in RUN_IDS:
+      r = requests.post('http://localhost:3030/graphql', json={'query': MUT, 'variables': {'runId': rid}})
+      print(rid, r.json()['data']['terminateRun'])
+  PY"
 
-  # 3) 실제 복구 실행
-  docker exec docker-dagster-1 bash -lc "
-    python3 /src/vlm/scripts/repair_stale_dagster_runs.py \
-      41c4fe3d-0072-4a33-9af2-4acf0055c5f6 \
-      3dc73214-d91b-48fb-8e67-aff3f8a7a717 \
-      8e455842-55d5-4c4f-b90e-4200d682cf70
-  "
+  # 3) 필요 시 실패 지점부터 재실행 (Dagster UI: run → Re-execute → From failure,
+  #    또는 GraphQL launchPipelineReexecution FROM_FAILURE)
 
   # 4) 30~60초 뒤 queue가 다시 launch되는지 확인
   docker exec docker-dagster-daemon-1 bash -lc "tail -n 200 /opt/dagster/logs/daemon.log | grep -E 'Launching run|QueuedRunCoordinator|backpressure' | tail -n 50"

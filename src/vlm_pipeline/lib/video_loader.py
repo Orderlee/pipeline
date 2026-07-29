@@ -13,7 +13,14 @@ from tempfile import SpooledTemporaryFile
 from vlm_pipeline.lib.env_utils import float_env, int_env
 
 from .checksum import sha256sum
+from .video_angle_dav2 import classify_camera_angle
 from .video_env import classify_video_environment
+from .video_scene import classify_video_scene
+
+# 인라인(ingest 중) 씬 분류 호출 타임아웃. 백필의 기본값(300s)보다 짧게 잡는다 —
+# ingest 는 스레드 병렬 hot path 라 Gemini/DAv2 서버가 hang 하면 수집 전체가 밀린다.
+INLINE_SCENE_TIMEOUT_SEC = float_env("INGEST_SCENE_TIMEOUT_SEC", 30.0, 1.0)
+INLINE_ANGLE_TIMEOUT_SEC = float_env("INGEST_ANGLE_TIMEOUT_SEC", 30.0, 1.0)
 
 
 def _run_ffprobe_with_retry(cmd: list[str], timeout_sec: int) -> subprocess.CompletedProcess:
@@ -139,6 +146,7 @@ def load_video_once(
     path: str | Path,
     include_file_stream: bool = False,
     include_env_metadata: bool = True,
+    include_scene_metadata: bool = False,
 ) -> dict:
     """ffprobe 1회 호출로 비디오 메타데이터 + checksum 추출.
 
@@ -238,6 +246,75 @@ def load_video_once(
             "env_method": "deferred",
         }
 
+    # 카메라 씬 6축(camera_angle/subject_scale/occlusion_state/environment_type/daynight_type/
+    # weather) — Places365 가 쓰던 ingest 분류 슬롯을 대신 쓴다(각자 프레임을 자체 추출하므로
+    # frame_extract stage 에 의존하지 않는다).
+    #
+    # camera_angle 은 나머지 5축과 완전히 다른 라벨러(DAv2 서비스, video_angle_dav2.py)가
+    # 담당한다 — 사람 GT 98편 실측 plan-vs-rest AUC 0.947, 같은 조건 Gemini 는 오검출 26/94
+    # 로 분리했다. 두 라벨러는 각자 try/except 로 절대 ingest 를 깨지 않으며 서로 독립적으로
+    # 실패한다 — 한쪽이 실패해도 다른 쪽은 그대로 반영되고, 실패한 쪽만 'deferred' 로 남아
+    # scene_backfill 이 재시도한다.
+    # 각자 자기 프레임을 ffmpeg 로 따로 추출한다 — 영상당 ffmpeg 2회는 허용 비용이며,
+    # 공유 캐시를 두면 video_scene.py/video_angle_dav2.py 두 lib 모듈 사이에 결합이 생겨
+    # 만들지 않는다.
+    # design: docs/design-docs/camera-angle-grouping-2026-07-29.md §3.2, §7
+    if include_scene_metadata:
+        try:
+            gemini_scene = classify_video_scene(file_path, timeout=INLINE_SCENE_TIMEOUT_SEC)
+        except Exception:
+            gemini_scene = {
+                "subject_scale": None,
+                "occlusion_state": None,
+                "environment_type": None,
+                "daynight_type": None,
+                "weather": None,
+                "env_method": None,
+            }
+
+        try:
+            angle_result = classify_camera_angle(file_path, timeout=INLINE_ANGLE_TIMEOUT_SEC)
+        except Exception:
+            angle_result = {"camera_angle": None, "angle_method": None}
+        if angle_result.get("angle_method") is None:
+            angle_result = {"camera_angle": None, "angle_method": "deferred"}
+
+        scene_meta = {
+            "camera_angle": angle_result.get("camera_angle"),
+            "subject_scale": gemini_scene.get("subject_scale"),
+            "occlusion_state": gemini_scene.get("occlusion_state"),
+            "environment_type": gemini_scene.get("environment_type"),
+            "daynight_type": gemini_scene.get("daynight_type"),
+            "weather": gemini_scene.get("weather"),
+            "env_method": gemini_scene.get("env_method"),
+            "angle_method": angle_result.get("angle_method"),
+        }
+    else:
+        scene_meta = {
+            "camera_angle": None,
+            "subject_scale": None,
+            "occlusion_state": None,
+            "environment_type": None,
+            "daynight_type": None,
+            "weather": None,
+            "env_method": None,
+            "angle_method": "deferred",
+        }
+
+    # Places365 가 일시정지된 상태(include_env_metadata=False)면 environment_type/daynight_type/
+    # env_method 의 소유권을 Gemini 씬 호출로 넘긴다 — "Places365 가 했던 역할을 Gemini 가 대신한다".
+    # 두 게이트가 동시에 켜진 경우엔 Places365 값을 유지해 이중 기록을 막는다.
+    # 실측(2026-07-29): environment_type 23/24, daynight_type 20/24 → 대체 가능.
+    # outdoor_score/avg_brightness 는 None 으로 남는다 — Gemini 는 캘리브레이션된 연속값을 주지
+    # 못한다. 이 두 컬럼이 필요해지면 프레임에서 밝기만 따로 계산해 붙이면 된다.
+    if not include_env_metadata and scene_meta.get("env_method"):
+        env_meta = {
+            **env_meta,
+            "environment_type": scene_meta.get("environment_type"),
+            "daynight_type": scene_meta.get("daynight_type"),
+            "env_method": scene_meta.get("env_method"),
+        }
+
     result = {
         "file_size": file_size,
         "checksum": checksum,
@@ -259,6 +336,11 @@ def load_video_once(
             "outdoor_score": env_meta.get("outdoor_score"),
             "avg_brightness": env_meta.get("avg_brightness"),
             "env_method": env_meta.get("env_method"),
+            "camera_angle": scene_meta.get("camera_angle"),
+            "subject_scale": scene_meta.get("subject_scale"),
+            "occlusion_state": scene_meta.get("occlusion_state"),
+            "weather": scene_meta.get("weather"),
+            "angle_method": scene_meta.get("angle_method"),
             "extracted_at": datetime.now(),
         },
     }

@@ -241,6 +241,7 @@ def _phase_a_extract_metadata(
     candidate_records: list[dict],
     meta_workers: int,
     defer_video_env_classification: bool,
+    defer_video_scene_classification: bool = True,
 ) -> list[dict]:
     """병렬 NAS I/O: checksum + ffprobe + reencode 판정.
 
@@ -260,6 +261,7 @@ def _phase_a_extract_metadata(
                     filepath,
                     include_file_stream=False,
                     include_env_metadata=not defer_video_env_classification,
+                    include_scene_metadata=not defer_video_scene_classification,
                 )
                 # inline DQ #1: duration_sec 가 None/0/<1.0s 면 fail 처리.
                 # silent 통과시 다운스트림(Gemini 청크 분할, frame_extract) 에서
@@ -602,6 +604,7 @@ def normalize_and_archive(
     ingest_rejections: list[dict] | None = None,
     retry_candidates: list[dict] | None = None,
     defer_video_env_classification: bool = False,
+    defer_video_scene_classification: bool = True,
     upload_enabled: bool = True,
 ) -> list[dict]:
     """1-pass 로딩 → checksum → verify → image/video_metadata → MinIO 업로드.
@@ -625,6 +628,7 @@ def normalize_and_archive(
         candidate_records,
         meta_workers=meta_workers,
         defer_video_env_classification=defer_video_env_classification,
+        defer_video_scene_classification=defer_video_scene_classification,
     )
 
     # ── Phase B ──────────────────────────────────────────────────

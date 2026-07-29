@@ -11,6 +11,7 @@ from vlm_pipeline.lib.env_utils import bool_env, int_env
 @dataclass(frozen=True)
 class IngestFeatureSettings:
     defer_video_env_classification: bool
+    defer_video_scene_classification: bool
 
 
 @dataclass(frozen=True)
@@ -38,6 +39,13 @@ class ProductionAgentPollingSettings:
 def load_ingest_feature_settings() -> IngestFeatureSettings:
     return IngestFeatureSettings(
         defer_video_env_classification=bool_env("INGEST_DEFER_VIDEO_ENV_CLASSIFICATION", False),
+        # 씬 6축(camera_angle 계열 + environment_type/daynight_type/weather) 은 Places365 가
+        # 쓰던 ingest 분류 슬롯을 대신 쓴다. 기본 True(=deferred)로 두는 이유: camera_angle
+        # 라벨러(Qwen 제로샷)가 아직 미검증(bin 붕괴 83~92%)이라 인라인으로 켜면 신규 유입분에
+        # 즉시 오라벨이 박힌다. 라벨러 검증 후 .env 에서 false 로 뒤집으면 ingest 시점 분류가 켜진다.
+        # 그 전까지는 deferred → video_scene_backfill 이 배치로 처리.
+        # design: docs/design-docs/camera-angle-grouping-2026-07-29.md §3.2, §7
+        defer_video_scene_classification=bool_env("INGEST_DEFER_VIDEO_SCENE_CLASSIFICATION", True),
     )
 
 

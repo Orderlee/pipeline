@@ -117,6 +117,7 @@ def _step_register_and_upload(context, db, minio, *, config, state, runtime_poli
     state.stage = "upload"
     context.log.info(
         f"upload_prepare:start defer_video_env_classification={runtime_policy.defer_video_env_classification} "
+        f"defer_video_scene_classification={runtime_policy.defer_video_scene_classification} "
         f"upload_enabled={upload_enabled}"
     )
     state.uploaded = normalize_and_archive(
@@ -128,6 +129,7 @@ def _step_register_and_upload(context, db, minio, *, config, state, runtime_poli
         ingest_rejections=state.ingest_rejections,
         retry_candidates=state.retry_candidates,
         defer_video_env_classification=runtime_policy.defer_video_env_classification,
+        defer_video_scene_classification=runtime_policy.defer_video_scene_classification,
         upload_enabled=upload_enabled,
     )
     context.log.info(

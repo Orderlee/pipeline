@@ -268,23 +268,28 @@ COMPOSE_PROFILES=analysis ./scripts/compose-prod.sh up -d analysis
 
 | 스크립트 | 설명 |
 |----------|------|
-| `fiftyone_full_build.py` | 대용량(188K+) `frames` 초기 빌드 — 병렬 미디어 다운로드(`FFB_WORKERS`)·청크 add(`FFB_CHUNK`)·UMAP sample-fit(`FFB_FIT`)·표본 상한(`FFB_LIMIT`)으로 OOM 방지 |
-| `fiftyone_relaunch.py` | 이미 빌드된 데이터셋을 빌드 없이 앱만 재기동 + keep-alive |
-| `fiftyone_umap_only.py` | 기존 데이터셋에 UMAP/PCA brain run만 재실행 |
+| `fiftyone_full_build.py` | 대용량(188K+) `frames` 초기 빌드 — keyset pagination·청크 add(`FFB_CHUNK`)·UMAP sample-fit(`FFB_FIT`)·IncrementalPCA·`MemAvailable` floor 가드로 OOM 방지, 중단 시 `FFB_RESUME=1`(기본)로 재개 |
+| `fiftyone_relaunch.py` | 이미 빌드된 데이터셋(`FO_DATASET`)을 빌드 없이 앱만 재기동 + keep-alive |
+| `fiftyone_umap_only.py` / `recompute_viz.py` | 기존 데이터셋에 UMAP/PCA brain run만 재실행/재계산 |
 | `label_qa_fiftyone.py` | 사람 GT 이미지를 격리 `pseudo_qa` 데이터셋으로 빌드 → FiftyOne `evaluate_detections`로 SAM3 pseudo-label FP/FN 육안 QA |
+| `backfill_caption_keyframes.py` | 캡션 샘플의 placeholder 썸네일을 presigned URL + ffmpeg keyframe 추출로 실제 프레임으로 교체 |
+| `merge_frames_captions.py` / `enrich_frames_captions.py` | `frames` + `captions` 통합 `frames_captions` 데이터셋(~200K, `modality` 필드) 빌드 및 임베딩/정합도 필드 보강 |
+| `reembed_captions_en.py` | 한국어 캡션을 영문 번역 후 재임베딩 — PE-Core 텍스트 타워의 한국어 변별력 한계 대응 (`caption_embedding_ko` 보존, A/B 비교) |
+
+FiftyOne Embeddings 패널의 OSS 제한(대용량 시각화·색상 조합·좌표 export)은 커스텀 플러그인 `docker/analysis/plugins/user-embeddings/`로 우회합니다 (세부는 [docker/analysis/README.md](docker/analysis/README.md)).
 
 > ⚠️ FiftyOne App에서 이미지(presigned URL)가 브라우저에 뜨려면 `ANALYSIS_MINIO_ENDPOINT`를 host-reachable 주소(예: `http://10.0.0.10:9000`)로 설정해야 합니다. 내부 docker 명(`minio:9000`)은 브라우저에서 미도달합니다. 세부는 [docker/analysis/README.md](docker/analysis/README.md) 참고.
 
 ## Database Schema
 
-주요 테이블/뷰는 `src/vlm_pipeline/sql/schema_postgres.sql`에 정의되고, 증분 변경은 `src/vlm_pipeline/sql/migrations/postgres/`(`001`~`016`)로 관리됩니다.
+주요 테이블/뷰는 `src/vlm_pipeline/sql/schema_postgres.sql`에 정의되고, 증분 변경은 `src/vlm_pipeline/sql/migrations/postgres/`(`001`~`017`)로 관리됩니다.
 
 ### 운영 핵심 테이블/뷰
 
 | 테이블/뷰 | 설명 |
 |-----------|------|
 | `raw_files` | 원본 미디어 메타, checksum, MinIO raw 위치 |
-| `video_metadata` | ffprobe 기반 비디오 메타, Gemini 상태, 재인코딩 추적 |
+| `video_metadata` | ffprobe 기반 비디오 메타, Gemini 상태, 재인코딩 추적 + 씬 6축 분류 컬럼 (`camera_angle`/`subject_scale`/`occlusion_state`/`weather` 등, `angle_method`·`env_method` provenance — migration 017) |
 | `image_metadata` | 이미지/프레임 메타, `image_caption_text`, `image_caption_score` |
 | `labels` | 이벤트 단위 timestamp / caption / classification 라벨 |
 | `processed_clips` | clip 기반 전처리 산출물 |
@@ -345,13 +350,15 @@ COMPOSE_PROFILES=analysis ./scripts/compose-prod.sh up -d analysis
 │       │   └── shared/                 # 공용 helper
 │       ├── lib/                        # prompts, frame planning, sam3/yolo/embedding client, key_builders, env helpers
 │       ├── resources/                  # postgres_* (base/migration/ingest/labeling/process/detection/embedding/genai/train/maintenance) + minio + config + runtime_settings
-│       └── sql/                        # schema_postgres.sql, migrations/postgres/ (001-016)
+│       └── sql/                        # schema_postgres.sql, migrations/postgres/ (001-017)
 ├── docker/
 │   ├── docker-compose.yaml
 │   ├── docker-compose.dev.yaml         # 로컬 dev overlay
 │   ├── docker-compose.labelstudio.yaml # Label Studio overlay
 │   ├── docker-compose.labelstudio.local.yaml # LS 커스텀 포크 로컬 스택 (소스빌드)
+│   ├── docker-compose.angle.yaml       # 카메라 앵글 추정 서비스 overlay (별도 compose project)
 │   ├── labelstudio/# LS 커스텀 포크 overlay (assign-flow 등 커스터마이즈)
+│   ├── angle/      # Depth Anything V2 카메라 앵글 추정 서버 (FastAPI, :8005)
 │   ├── .env / .env.test
 │   ├── app/        # Dagster code-server 이미지
 │   ├── sam3/       # SAM3.1 segmentation 서버
@@ -540,6 +547,8 @@ pytest tests/integration -q
 | `post_review_clip_job` | LS 검수 확정 후 `clip_to_frame`(clip 분할 + 프레임 추출) |
 | `sam3_shadow_compare_job` | YOLO vs SAM3 benchmark |
 | `ls_presign_renew_job` | LS presigned URL 갱신 |
+| `video_env_backfill_job` | Places365 환경 분류(indoor/outdoor·주야) `deferred` 백필 |
+| `video_scene_backfill_job` | 씬 6축 분류 백필 — Gemini 5축(subject_scale/occlusion/environment/daynight/weather) + Depth Anything V2 `camera_angle` (`angle_method='deferred'` 큐 드레인) |
 
 ### Jobs (feature flag로 등록)
 
@@ -572,6 +581,8 @@ pytest tests/integration -q
 | `gcs_download_schedule` | - | 매일 04:00 KST GCS 수집 |
 | `sourcea_download_schedule` | RUNNING | 매일 06:00 KST source-a 사이트 일일 수집 |
 | `ls_presign_renew_schedule` | STOPPED | 매일 05:00 KST LS presigned URL 갱신 (renew 중복재생성 버그픽스 배포 전까지 OFF 유지) |
+| `video_env_backfill_schedule` | STOPPED | 평일 19:00 KST 환경 분류 백필. 백로그 소진 후 다시 OFF 권장 |
+| `video_scene_backfill_schedule` | STOPPED | 평일 20:00 KST 씬 6축 백필 (env와 GPU 0 경합 회피용 1h 스태거). `camera_angle` 육안 GT 검증 게이트 통과 전까지 OFF 유지 |
 
 ## Query Examples
 
