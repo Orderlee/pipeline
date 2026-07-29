@@ -789,23 +789,31 @@ def create_app() -> FastAPI:
 
     @app.post("/genai/jobs/{job_id}/retry")
     def retry_job(job_id: str, user: str = Depends(_check_auth)):
-        """실패한 job 1건을 재시도. input_asset_id 와 prompt 는 보존, 새 provider_job_id 발급.
+        """job 1건을 재제출. 두 용도 겸용 (동일 기계로직 — 시작 status 만 다름):
+          - retry  : status='failed' job 을 복구 재시도 (실패 회복)
+          - re-roll : status='done' job 을 폐기 후 재생성 (결과물 불만족 → 새 영상).
+            Kling 은 비결정적이라 같은 prompt/원본이라도 다른 결과. finalize 가 seq 별
+            결정적 파일명으로 덮어쓰므로 기존 출력은 in-place 교체됨.
+        input_asset_id 와 prompt 는 보존, 새 provider_job_id 발급.
 
-        Codex Q3 HIGH: atomic CAS — status='failed' → 'submitted' RETURNING. RETURNING
-        이 빈 row 면 다른 retry 가 이미 채갔거나 status 변동 → 409. 외부 API 중복 호출 방지.
+        Codex Q3 HIGH: atomic CAS — status(failed|done) → 'submitted' RETURNING. RETURNING
+        이 빈 row 면 다른 retry/reroll 가 이미 채갔거나 in-flight → 409. 외부 API 중복 호출 방지.
         """
         with pg.connect() as conn:
             with conn.cursor() as cur:
-                # 1) atomic transition (status='failed' 만 통과)
+                # 1) atomic transition (failed=재시도 / done=재생성 만 통과 — in-flight 중복 차단)
+                #    cost_units 도 NULL 로 — done→reroll 시 in-flight 동안 stale 비용 표기 방지,
+                #    finalize 가 새 cost 로 다시 채움. failed 는 원래 NULL 이라 무영향.
                 cur.execute(
                     """
                     UPDATE genai_jobs
                        SET status = 'submitted',
                            error_message = NULL,
                            provider_job_id = NULL,
+                           cost_units = NULL,
                            submitted_at = CURRENT_TIMESTAMP,
                            completed_at = NULL
-                     WHERE job_id = %s AND status = 'failed'
+                     WHERE job_id = %s AND status IN ('failed', 'done')
                     RETURNING batch_id, seq_in_batch
                     """,
                     (job_id,),
@@ -814,7 +822,7 @@ def create_app() -> FastAPI:
                 if cas is None:
                     raise HTTPException(
                         status_code=409,
-                        detail="job is not in 'failed' state (retry race or already in-flight)",
+                        detail="job is not in 'failed'/'done' state (retry/reroll race or already in-flight)",
                     )
                 # 2) 메타 조회 (engine/prompt/options_json 은 batches 에)
                 cur.execute(

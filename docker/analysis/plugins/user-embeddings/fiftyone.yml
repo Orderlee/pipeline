@@ -1,0 +1,9 @@
+name: "@user/embeddings"
+description: Embeddings 패널 보강 — OSS compute_visualization 버튼 + 2-필드 Color by
+version: 1.4.0
+fiftyone:
+  version: ">=1.4"
+operators:
+  - compute_visualization
+  - combine_color_fields
+  - save_visualization_coords

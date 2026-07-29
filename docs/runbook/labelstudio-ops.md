@@ -46,6 +46,23 @@ print('promoted:', n)"
 
 `docker-compose.labelstudio.local.yaml`의 image 라인을 `heartexlabs/label-studio@sha256:aa461572e8f9d86a1bf9520c1db620204e86160fd2f80dd7e9d40ac84a8828ea`로 바꾸고 (또는 세 번째 `-f`를 빼고) 같은 `up -d --no-deps labelstudio` 1회. 마이그레이션이 전부 가산적이라 데이터 무손실(잔여 컬럼/테이블은 순정이 무시). DB 복원은 최후 수단.
 
+## 조직 소유자(created_by) 함정 — export 500
+
+LS의 export 는 미디어 다운로드용 토큰을 **조직 소유자 계정의 legacy 토큰**에서 가져온다
+(`data_export/models.py`: `project.organization.created_by.auth_token.key`). 따라서:
+
+- **조직 소유자 계정의 legacy 토큰을 지우면 로그인 사용자와 무관하게 전 사용자 export 가 500**
+  (`User has no auth_token`). 2026-07-29 실발생 — 퇴사자(eng-c) 토큰 무효화 시 그가 org owner 였던 탓.
+- 현재 소유자는 **svc-ls@example.com** 로 이전 완료(legacy 토큰 보유). 소유자를 다시 바꾸거나 토큰을
+  정리할 때는 **반드시 새 소유자에게 legacy 토큰이 있는지 먼저 확인**할 것:
+  ```bash
+  docker exec pipeline-labelstudio-1 python3 /label-studio/label_studio/manage.py shell -c "
+  from organizations.models import Organization
+  o = Organization.objects.first()
+  print(o.created_by.email, bool(getattr(o.created_by, 'auth_token', None)))"
+  ```
+- 권한 스모크 시 `export/formats`(목록) 200 만으로는 불충분 — **실제 `?exportType=JSON` 실행**까지 확인.
+
 ## 역할(role) 운영 — 함정 주의
 
 - **신규 조직 멤버의 기본 role은 `labeler`** = 기본거부 미들웨어로 거의 전면 403. 내부 인원 가입 시 즉시 승격:

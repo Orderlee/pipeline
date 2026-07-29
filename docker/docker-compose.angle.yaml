@@ -1,0 +1,66 @@
+# camera_angle 서비스 — Depth Anything V2-S + 바닥평면 피팅.
+# 2026-07-29 벤치마크 결과 Qwen2.5-VL(vLLM) 을 이 서비스로 교체했다.
+#   근거: 사람 GT 98편에서 plan-vs-rest AUC — DAv2 0.947 / PerspectiveFields 0.698 /
+#         GeoCalib 0.207(역상관) / Qwen 7% 정확도. 상세는 Notion 작업트래커 보고서.
+#
+# ⚠️ 이미지는 **새로 받지 않는다**. `datapipeline-angle:dav2-s` 는 폐기한 vLLM 이미지
+#    (vllm/vllm-openai:v0.26.0) 를 `docker tag` 로 재태그한 것이다 — 같은 레이어를 공유하므로
+#    디스크 추가 소비 0. torch 2.11 + transformers 5.14 + fastapi/uvicorn 이 이미 들어 있어
+#    그대로 쓰고 entrypoint 만 덮어쓴다. 루트 디스크가 95% 라 새 torch 이미지를 받으면 위험하다.
+#    → 후속 과제: python:3.12-slim + torch-CPU 로 재베이스하면 약 17GB 회수 가능.
+#
+# GPU: vLLM 을 지워 GPU 0 에 10.8GB 가 비었으므로 GPU 로 돌린다(DAv2-S 는 ~25M 파라미터라
+#    VRAM 수백MB 수준). ANGLE_DEVICE=cpu 로 두면 GPU 없이도 동작한다 — 실측 0.34s/프레임.
+#
+# 기동:
+#   docker compose -f docker/docker-compose.angle.yaml up -d
+#   curl localhost:8005/info
+#   curl -F file=@frame.jpg localhost:8005/angle
+# 중지:
+#   docker compose -f docker/docker-compose.angle.yaml down
+#
+# ⚠️ 이 파일은 git 미추적 유지 (docker-compose.labelstudio.local.yaml 과 동일 패턴).
+#    tracked compose 를 건드리면 CI 배포의 `git reset --hard` 로 소실 + dagster 재기동 유발.
+name: angle
+
+services:
+  dav2:
+    image: datapipeline-angle:dav2-s
+    entrypoint: ["python3", "/app/app.py"]
+    ports:
+      - "${ANGLE_PORT:-8005}:8000"
+    environment:
+      ANGLE_MODEL_ID: ${ANGLE_MODEL_ID:-depth-anything/Depth-Anything-V2-Small-hf}
+      ANGLE_DEVICE: ${ANGLE_DEVICE:-cuda}
+      # CPU 모드 동시성용 노브. 0=torch 기본(코어수). GPU 모드에서는 무관.
+      ANGLE_TORCH_THREADS: ${ANGLE_TORCH_THREADS:-0}
+      # 실측 근거(사람 GT 98편): 30° → plan 재현 2/3, 오검출 3/95.
+      # 검수 후보 전량 수집이 목적이면 20° (재현 3/3, 오검출 17/95).
+      ANGLE_PLAN_THRESHOLD_DEG: ${ANGLE_PLAN_THRESHOLD_DEG:-30}
+      HF_HOME: /models/hf
+      CUDA_VISIBLE_DEVICES: "${ANGLE_GPU:-0}"
+    volumes:
+      - ./angle/app.py:/app/app.py:ro
+      - ./data/models/qwen:/models   # 기존 HF 캐시 볼륨 재사용 (DAv2-S 는 ~100MB)
+    networks:
+      - pipeline-network
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "python3", "-c",
+             "import urllib.request;urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 10s
+      start_period: 180s
+      retries: 3
+    restart: unless-stopped
+
+networks:
+  pipeline-network:
+    external: true
+    name: pipeline-network
