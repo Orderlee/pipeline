@@ -230,3 +230,20 @@ scripts/recover_*_[0-9]*.py
 !tests/unit/test_key_builders.py
 # genai recompute_batch_status 파생 로직 (mock cursor, psycopg2 importorskip, dagster 의존 없음)
 !tests/unit/test_genai_pg_recompute.py
+# 카메라 씬 분류(camera-angle-grouping-2026-07-29 design) — Gemini 5축 lib 파싱은 ffmpeg/Vertex
+# mock, 헬퍼는 순수 함수(dagster 의존 없음), PG CRUD 는 db_resource fixture(DATAOPS_TEST_POSTGRES_DSN
+# 미설정 시 skip), 인라인 게이트(video_loader)는 ffprobe 만 mock.
+!tests/unit/test_video_scene.py
+!tests/unit/test_scene_backfill_helpers.py
+# video_scene_backfill op 스레드풀 병렬화 — process_one_video 는 monkeypatch, DB 는 fake
+# double, build_op_context 사용(dagster 의존, direct invocation. test_frame_embedding_
+# active_default.py 와 동일 패턴).
+!tests/unit/test_scene_backfill_op.py
+!tests/unit/test_postgres_video_scene.py
+!tests/unit/test_video_loader_scene_gate.py
+# camera_angle 전용 DAv2(Depth Anything V2-S + 평면 피팅) HTTP 라벨러(video_angle_dav2.py) —
+# ffmpeg/urllib 는 mock.
+!tests/unit/test_video_angle_dav2.py
+# run 실패 전역 Slack 센서 — 메시지 조립 순수 함수 + definitions 등록 회귀.
+# dagster 는 pytest.importorskip 가드 뒤에서만 import (test_definitions_train_loads 와 동일 패턴).
+!tests/unit/test_run_failure_alert.py

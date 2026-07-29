@@ -71,7 +71,7 @@ def _row_to_dict(cur, row) -> dict[str, Any]:
     return dict(zip(cols, row))
 
 
-def select_promotable_row(cur, *, model: str, model_version_id: int | None) -> dict[str, Any]:
+def select_promotable_row(cur, *, model: str, model_version_id: str | None) -> dict[str, Any]:
     """status='promotable' 행 한 개를 선택. 명시 id 없으면 최신(created_at desc) 1개."""
     if model_version_id is not None:
         cur.execute(
@@ -228,7 +228,9 @@ def _make_minio():
 def _parse_args(argv=None) -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Promote/rollback a model_registry weight.")
     p.add_argument("--model", required=True, choices=sorted(_SERVING))
-    p.add_argument("--model-version-id", type=int, default=None)
+    # model_registry.model_version_id 는 TEXT ("mv-3f9a2b1c4d5e" 형태) — type=int 이면
+    # 실제 ID 를 넘길 때 argparse 가 죽는다. 문자열 그대로 받는다.
+    p.add_argument("--model-version-id", default=None)
     p.add_argument("--env", choices=["prod", "staging"], default="prod")
     p.add_argument("--rollback", action="store_true", help="이전 promoted 행 재승격.")
     p.add_argument("--dsn", default=None, help="PG DSN. fallback DATAOPS_POSTGRES_DSN.")

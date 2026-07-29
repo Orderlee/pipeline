@@ -72,9 +72,14 @@ prod/staging 은 같은 compose 서비스 정의를 쓰고, branch 와 env 파�
 
 ## 문서 운영 원칙
 
+git 추적되는 문서 (팀 공유):
+
 - `README.md`: 제품/운영 개요
 - `AGENTS.md`: 에이전트용 진입점
-- `CLAUDE.md` / `ANTIGRAVITY.md`: 도구별 상세 컨텍스트 (내용 변경 시 서로 동기화)
+- `CLAUDE.md`: 운영 맥락·금기사항
 - `REVIEW.md`: PR 리뷰 기준
 - `docs/`: 설계, 계획, 참고 문서의 기록 시스템
-- 로컬 전용 메모나 IDE 설정은 보조 수단일 뿐, 핵심 source of truth 가 아닙니다
+
+`.gitignore` 로 제외된 **로컬 전용** 메모 (fresh clone 에 없음 — 인용/링크 금지):
+`WORKLOG.md`, `CLAUDE2.md`, `LABEL_STORAGE_POLICY.md`, `ANTIGRAVITY.md`.
+공유가 필요한 내용이면 `docs/` 로 옮기세요.

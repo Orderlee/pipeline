@@ -14,8 +14,10 @@ from vlm_pipeline.definitions_production import (
     build_production_assets,
     build_production_sensors,
     build_video_env_backfill_schedule,
+    build_video_scene_backfill_schedule,
 )
 from vlm_pipeline.defs.ingest.env_backfill import video_env_backfill_job
+from vlm_pipeline.defs.ingest.scene_backfill import video_scene_backfill_job
 from vlm_pipeline.defs.gcp.assets import gcs_download_to_incoming
 from vlm_pipeline.defs.ingest.asset_checks import PHASE_3C_ASSET_CHECKS
 from vlm_pipeline.defs.ingest.assets import raw_ingest
@@ -152,6 +154,7 @@ if _enable_embedding:
 
 _jobs.append(ls_presign_renew_job)
 _jobs.append(video_env_backfill_job)
+_jobs.append(video_scene_backfill_job)
 
 defs = Definitions(
     assets=build_production_assets(
@@ -167,6 +170,7 @@ defs = Definitions(
         build_sourcea_download_schedule(_sourcea_download_job),
         ls_presign_renew_schedule,
         build_video_env_backfill_schedule(video_env_backfill_job),
+        build_video_scene_backfill_schedule(video_scene_backfill_job),
     ],
     sensors=build_production_sensors(
         dispatch_target_jobs=[_dispatch_stage_job, _ingest_job],

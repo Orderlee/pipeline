@@ -19,6 +19,7 @@ class IngestRuntimePolicy:
     runtime_profile: RuntimeProfile
     is_staging: bool
     defer_video_env_classification: bool
+    defer_video_scene_classification: bool
 
 
 def resolve_ingest_runtime_policy(
@@ -33,6 +34,9 @@ def resolve_ingest_runtime_policy(
         runtime_profile=profile,
         is_staging=is_staging,
         defer_video_env_classification=(not is_staging and settings.defer_video_env_classification),
+        # env 와 달리 staging 예외를 두지 않는다 — staging 에서도 미검증 라벨러(camera_angle)를
+        # 조용히 켜면 안 되므로 env 값을 그대로 존중한다.
+        defer_video_scene_classification=settings.defer_video_scene_classification,
     )
 
 

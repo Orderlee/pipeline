@@ -77,7 +77,12 @@
                     hx-on::after-request="window.location.reload()">retry</button>
           {% elif j.status == "done" %}
             <a href="{{ out_url }}" target="_blank" class="gs-pill" style="margin-right:4px">미리보기</a>
-            <a href="{{ out_url }}?download=true" class="gs-pill muted">다운로드</a>
+            <a href="{{ out_url }}?download=true" class="gs-pill muted" style="margin-right:4px">다운로드</a>
+            <button class="gs-retry"
+                    hx-post="/genai/jobs/{{ j.job_id }}/retry"
+                    hx-confirm="이 영상을 폐기하고 새로 생성할까요? Kling 비용이 발생하고 기존 파일을 덮어씁니다. (결과는 비결정적 — 다른 영상이 나옵니다)"
+                    hx-swap="none"
+                    hx-on::after-request="window.location.reload()">↻ 재생성</button>
           {% endif %}</td>
         </tr>
         {% if j.status == 'done' %}

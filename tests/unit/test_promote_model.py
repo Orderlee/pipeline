@@ -248,3 +248,20 @@ def test_h5_commits_registry_before_docker_recreate(monkeypatch):
         "env_write",
         "recreate",
     ], f"commit must precede env write and recreate (H-5), got {order}"
+
+
+def test_cli_accepts_text_model_version_id():
+    """model_registry.model_version_id 는 TEXT ("mv-<hex>") — argparse 가 그대로 받아야 한다.
+
+    회귀 가드: 예전에 `--model-version-id` 가 `type=int` 로 선언돼 있어서 실제 ID 를 넘기면
+    argparse 가 `invalid int value` 로 죽었다. 이 테스트가 그 재발을 막는다.
+    (기존 테스트들이 정수 ID(7/99/5)만 써서 버그가 통과했던 이력.)
+    """
+    args = promote_model._parse_args(["--model", "sam3", "--model-version-id", "mv-3f9a2b1c4d5e"])
+    assert args.model_version_id == "mv-3f9a2b1c4d5e"
+    assert args.dry_run is True, "기본은 dry-run 이어야 한다 (--apply 없이는 무변경)"
+
+
+def test_cli_apply_flag_disables_dry_run():
+    args = promote_model._parse_args(["--model", "pe_core", "--model-version-id", "mv-deadbeef0001", "--apply"])
+    assert args.dry_run is False

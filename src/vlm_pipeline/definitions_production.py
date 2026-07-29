@@ -179,6 +179,33 @@ def build_video_env_backfill_schedule(job) -> ScheduleDefinition:
     )
 
 
+def build_video_scene_backfill_schedule(job) -> ScheduleDefinition:
+    """평일 20:00 KST 카메라 씬 6축 통합 분류 백필 스케줄 (env_backfill 형제, 19:00 다음 시간대).
+
+    GPU 0 를 공유하는 env_backfill(Places365, 19:00)과 겹치지 않도록 1시간 스태거.
+    default_status=STOPPED — video_env_backfill_schedule 과 동일 정책을 그대로 따른다.
+    camera_angle 축은 아직 미검증(설계 §7 롤아웃 게이트 미충족)이므로, 이 스케줄은 §7 의
+    육안 GT 검증(50편, 최대 bin 점유율 <70%)이 끝나기 전까지 STOPPED 상태를 유지해야
+    한다 — 운영자가 Dagster UI 에서 수동으로 활성화하는 것을 절대 요건으로 삼는다.
+    """
+    return ScheduleDefinition(
+        name="video_scene_backfill_schedule",
+        job=job,
+        cron_schedule="0 20 * * 1-5",
+        execution_timezone="Asia/Seoul",
+        default_status=DefaultScheduleStatus.STOPPED,
+        run_config={
+            "ops": {
+                "video_scene_backfill": {
+                    "config": {
+                        "limit": 1000,
+                    }
+                }
+            }
+        },
+    )
+
+
 def build_gcs_download_schedule(job) -> ScheduleDefinition:
     return ScheduleDefinition(
         name="gcs_download_schedule",

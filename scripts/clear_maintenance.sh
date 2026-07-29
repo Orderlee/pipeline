@@ -9,9 +9,15 @@
 set -euo pipefail
 
 TARGET="${1:-all}"
-SAM3_API_URL="${SAM3_API_URL:-http://10.0.0.10:8002}"
-EMBEDDING_API_URL="${EMBEDDING_API_URL:-http://10.0.0.10:8000}"
+# 호스트에서 실행하는 운영자 스크립트라 기본값은 localhost + **호스트** 포트.
+# (컨테이너 포트와 다름: embedding-service 는 컨테이너 8003 → 호스트 8004)
+# 이전 기본값은 2026-07-06 IP 개편 전 대역 + 잘못된 포트라 도달 불가였고,
+# curl -sf 가 타임아웃을 WARN 으로 삼켜 "아무것도 안 했는데 성공처럼" 보였다.
+SAM3_API_URL="${SAM3_API_URL:-http://localhost:8002}"
+EMBEDDING_API_URL="${EMBEDDING_API_URL:-http://localhost:8004}"
+CURL_MAX_TIME="${CURL_MAX_TIME:-10}"
 DSN="${PIPELINE_DSN:-${DATAOPS_POSTGRES_DSN:-}}"
+FAILURES=0
 
 clear_pg() {
   local tgt="$1"
@@ -27,9 +33,19 @@ clear_pg() {
 clear_serving() {
   local name="$1" base="$2"
   echo "[serving] ${name} (${base}) exit+warmup"
-  curl -sf -X POST "${base%/}/maintenance/exit"  >/dev/null && echo "  exit ok"   || echo "  exit WARN"
-  curl -sf -X POST "${base%/}/warmup"            >/dev/null && echo "  warmup ok" || echo "  warmup WARN"
-  echo "  status: $(curl -sf "${base%/}/maintenance/status" || echo '<unreachable>')"
+  if curl -sf --max-time "${CURL_MAX_TIME}" -X POST "${base%/}/maintenance/exit" >/dev/null; then
+    echo "  exit ok"
+  else
+    echo "  exit FAIL — ${base} 도달 불가/거부. 정비락이 서버측에 남아있다."
+    FAILURES=$((FAILURES + 1))
+  fi
+  if curl -sf --max-time "${CURL_MAX_TIME}" -X POST "${base%/}/warmup" >/dev/null; then
+    echo "  warmup ok"
+  else
+    echo "  warmup FAIL — 모델 재로딩 안 됨 (첫 요청이 느리거나 503 일 수 있음)."
+    FAILURES=$((FAILURES + 1))
+  fi
+  echo "  status: $(curl -sf --max-time "${CURL_MAX_TIME}" "${base%/}/maintenance/status" || echo '<unreachable>')"
 }
 
 do_target() {
@@ -45,5 +61,13 @@ if [[ "${TARGET}" == "all" ]]; then
   do_target pe_core
 else
   do_target "${TARGET}"
+fi
+
+# 서빙 호출이 하나라도 실패했으면 non-zero — "조용히 아무것도 안 함" 을 성공으로 오인하지 않도록.
+if (( FAILURES > 0 )); then
+  echo "done with ${FAILURES} serving failure(s) — 정비락이 실제로 해제되지 않았을 수 있다." >&2
+  echo "SAM3_API_URL / EMBEDDING_API_URL 을 확인하고 재실행하라. 예:" >&2
+  echo "  SAM3_API_URL=http://localhost:8002 EMBEDDING_API_URL=http://localhost:8004 $0 ${TARGET}" >&2
+  exit 1
 fi
 echo "done."

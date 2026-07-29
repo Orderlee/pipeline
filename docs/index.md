@@ -26,7 +26,6 @@
   - [SourceA 일일 수집 설계](superpowers/specs/2026-07-06-sourcea-daily-download-design.md)
 - 실행 계획 / 로드맵
   - [Streamlit/FiftyOne 분석 스택 — 추가 개발 계획](analysis-stack-fiftyone-streamlit-roadmap-2026-07-27.md)
-  - [준지도 학습 도입 타당성](semi-supervised-feasibility-2026-07-27.md)
   - [프로덕션 PG 롤아웃 계획](exec-plans/active/production-pg-rollout-plan.md)
   - [QA 시나리오 플레이북](exec-plans/active/qa-scenarios-playbook.md)
   - [PLAN](PLAN.md)
@@ -40,7 +39,6 @@
   - [Git 워크플로 가이드](git-workflow-guide.md)
   - [운영 트러블슈팅 런북](runbook.md) — 및 주제별 런북 모음 [`runbook/`](runbook/)
   - [Label Studio 운영 가이드](references/label-studio-ops-guide.md)
-  - [Label Studio 운영 런북](runbook/labelstudio-ops.md)
   - [FiftyOne 운영](runbook/fiftyone-operations.md), [HNSW 튜닝](runbook/hnsw-tuning.md)
   - [PG 복구 드릴](runbook/pg-restore-drill.md), [임베딩 백업/복구](runbook/embedding-backup-restore.md)
   - [NAS 10.0.0.36 → 10.0.0.51 마이그레이션](references/minio-host-endpoint-migration.md)
@@ -48,6 +46,17 @@
   - [에이전트 라우팅](references/multi-agent.md), [에이전트 팀](references/agent-teams.md)
 - GenAI Studio
   - [사용설명서·운영 가이드 모음](genai_rollout/)
+
+## 호스트 로컬 전용 문서 (git 미추적 — fresh clone 에 없음)
+
+작성자가 **의도적으로 untracked 로 운영 중**이며 정식 반영은 별도 PR 예정입니다.
+이 인덱스에서 링크하지 않는 이유이기도 합니다. prod 호스트에서만 열람 가능:
+
+- `docs/runbook/labelstudio-ops.md` — labelstudio-internal 커스텀 이미지 운영 런북
+  (⚠️ LS 재기동은 반드시 이 런북의 `-f` 3개 명령으로 — 2개만 쓰면 순정 이미지로 롤백됨)
+- `docs/design-docs/gcpls/` — GCP 외주 LS 도입 인벤토리·검증 기록
+- `docs/semi-supervised-feasibility-2026-07-27.md` — 준지도 학습 도입 타당성 검토
+- `docker/labelstudio/`, `docker/docker-compose.labelstudio.local.yaml` — 커스텀 이미지 빌드·핀
 
 ## 역사 문서
 
