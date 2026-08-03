@@ -247,3 +247,6 @@ scripts/recover_*_[0-9]*.py
 # run 실패 전역 Slack 센서 — 메시지 조립 순수 함수 + definitions 등록 회귀.
 # dagster 는 pytest.importorskip 가드 뒤에서만 import (test_definitions_train_loads 와 동일 패턴).
 !tests/unit/test_run_failure_alert.py
+
+# MinIO vlm-raw/source-h 로컬 사본 (7.9GiB, git 추적 금지)
+/source-h/
