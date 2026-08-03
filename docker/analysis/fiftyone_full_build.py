@@ -440,6 +440,28 @@ if TEXT_SEARCH:
     except Exception as exc:  # noqa: BLE001
         log(f"text_search skipped: {exc!r}")
 
+# ── 표시층 자동 정리 ──────────────────────────────────────────────────────
+# 빌드하면 필드가 평평하게 40~70개 쏟아져 필터 사이드바에서 분석이 불가능하다.
+# fiftyone_presentation 이 필드별 카디널리티를 실측해 역할을 자동 판정하고
+#   ① 사이드바 그룹(순서·접힘)  ② 노이즈 제외 저장뷰 `00_analysis`  ③ 워크스페이스
+# 를 만든다. 멱등이라 매 빌드마다 다시 불러도 안전하다.
+# ⚠️ 사이드바 그룹만으로는 필드가 숨겨지지 않는다(FiftyOne 이 미배정 필드를 자동
+#    PRIMITIVES 그룹으로 되살린다) — 분석은 `00_analysis` 뷰를 선택해서 시작할 것.
+try:
+    import fiftyone_presentation as fpres
+
+    fpres.apply(
+        ds,
+        dry_run=False,
+        workspaces=[
+            ("explore", "emb_viz", "project"),
+            ("explore-class", "emb_viz", "normalized_class"),
+        ],
+    )
+    log("presentation(사이드바 그룹 + 00_analysis 뷰 + 워크스페이스) 적용 완료")
+except Exception as exc:  # noqa: BLE001 — 표시층 실패가 빌드를 깨뜨리지 않게
+    log(f"presentation skipped: {exc!r}")
+
 if LAUNCH:
     log("launching app on :5151")
     fo.launch_app(ds, address="0.0.0.0", port=5151)

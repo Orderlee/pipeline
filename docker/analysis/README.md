@@ -236,3 +236,16 @@ pairwise cos 0.951. **절대 cosine 수준이 아니라 격차를 봐야 한다.
 
 번역·임베딩은 **고유 문장 단위**로 1회만 한다 (11,978건 → 고유 6,999건, 중복 42%).
 디스크 캐시(`_caption_en.json`, `_en_vectors/*.npy`)로 중단 후 재개 가능.
+
+## frames_captions 프롬프트 뱅크 평가 (frames_bank_eval.sh)
+
+- 전체 사이클: `./docker/analysis/frames_bank_eval.sh` — 매핑이 비어 있으면 0단계(스탬프만)로
+  정직하게 끝난다. 도메인을 열려면 `bank_domain_map.yaml` 의 `domains:` 를 노션
+  "프롬프트 버전/관리 체계 구축" 페이지 기준으로 시드하고 뱅크 CSV 를 `--bank` 로 등록.
+- GT(LS finalized)가 늘었을 때: 재채점 불필요 —
+  `frames_bank_ledger.py` → `gtsync` → `report` 만 재실행 (래퍼 주석 참조).
+- sourcej GT(patient/person)는 `class_crosswalk` 에 사상을 등재해야 GT 축에 편입된다.
+- ⚠️ `slim` 스테이지는 source-h 전용(코드 가드 있음). frames_captions 의 필드 정리는 수동으로만.
+- 산출: FiftyOne 필드 6개(bank_*), 뷰 `bank: <도메인> scored/shifted/review-queue`,
+  워크스페이스 `bank-eval`, 리포트 `/data/fiftyone/frames_bank/report/bank_eval_report.md`,
+  런 원장 `/data/fiftyone/frames_bank/work/geometry/runs.jsonl`.
