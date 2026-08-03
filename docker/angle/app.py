@@ -9,7 +9,8 @@
   GET  /health                            → {"status","model_loaded","device"}
   GET  /info                              → 모델·임계값 정보
 
-CPU 로 충분하다(실측 0.78s/프레임). GPU 를 점유하지 않으므로 embedding-service·SAM3 와 경합 없음.
+기본 배선은 GPU 0 (compose 가 ANGLE_DEVICE=cuda 로 덮는다, ~1.4GB VRAM — embedding-service 와 GPU 0 공유).
+CPU 로도 충분하다(실측 0.34~0.78s/프레임) — 경합을 피하려면 ANGLE_DEVICE=cpu 로 재기동.
 """
 
 from __future__ import annotations
