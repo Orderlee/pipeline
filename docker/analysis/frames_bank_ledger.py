@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """frames_captions → 뱅크 평가 원장 생산자.
 
-분석기(sourceh_prompt_geometry.py --profile frames)는 이 출력만 소비하고 DB 를 모른다 —
+분석기(prompt_geometry.py --profile frames)는 이 출력만 소비하고 DB 를 모른다 —
 source-h 의 ledger.jsonl/embed.npz 데이터 계약을 그대로 미러 (스펙 §4·§5-2).
 
 GT: image_id → image_labels(review_status='finalized') **좌조인** + annotations.category

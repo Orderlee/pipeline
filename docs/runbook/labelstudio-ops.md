@@ -126,7 +126,24 @@ LS_API_KEY=<스테이징 발급>  LS_WEBHOOK_SECRET=<스테이징 값>  MINIO_*=
 - 이 오버레이는 **외주(GCP) LS와 동일 코드** — 내부/외주 분기는 코드가 아니라 역할(role) 데이터로만 존재한다. 외주 쪽 소스는 워크스테이션 eng-a 계정 로컬 레포가 원본(포크는 고정 방침).
 - **출구 경로**: 포크를 다시 활발히 개발하거나 upstream(Label Studio) 버전업을 결정하는 시점이 오면, 그때 eng-a 소스+이력을 기반으로 **독립 포크 레포**(work_p 아래)로 승격한다. 그 전까지는 이 overlay가 내부/외주 공용 재현 소스.
 
-## presign 갱신 (2026-07-22 인시던트 후 임시 운영)
+## presign 갱신 (2026-08-04 정상화 완료)
+
+**`ls_presign_renew_schedule` RUNNING (05:00 KST)** — 버그픽스가 배포·검증되어 자동 갱신 복귀.
+임시 크론(05:20)은 제거됨. 상세 이력: [presign-renew-bugfix](../design-docs/gcpls/presign-renew-bugfix.md).
+
+⚠️ **로컬 머지 시 이미지 리빌드 필수**: dagster 계열은 `src` 를 마운트하지 않고 **이미지에 구운 코드**를
+쓴다. GitHub push 없이 로컬에서 main 머지하면 CI 가 안 돌아 **이미지가 낡은 채로 남는다**
+(2026-08-04 실발생 — 워크트리 소스만 최신, 갱신 잡은 구버전 실행 직전이었음). 로컬 머지 후에는:
+```bash
+cd /home/user/work_p/Datapipeline-Data-data_pipeline
+docker tag datapipeline:gpu-cu124 datapipeline:gpu-cu124-bak-$(date +%Y%m%d)   # 롤백용
+./scripts/compose-prod.sh build app          # ⚠️ 빌드 주체는 dagster 가 아니라 app 서비스
+./scripts/compose-prod.sh up -d --no-deps --force-recreate dagster-code-server dagster dagster-daemon
+```
+`ls-webhook` 은 `src` 를 마운트하므로 리빌드 불요(재기동만으로 반영). 스테이징도 같은 태그를
+공유하니 리빌드 전 백업 태그를 남길 것.
+
+## (구) 임시 운영 기록
 
 **`ls_presign_renew_schedule`은 STOPPED 상태** — 갱신 잡의 3중 버그(프로젝트 이름 조회 30개 제한→빈 중복 자동 생성, 이미지 프로젝트 인덱스 붕괴, data 전체 교체)로 인해 코드 수정 배포 전까지 정지. 상세·수정 diff: [presign-renew-bugfix](../design-docs/gcpls/presign-renew-bugfix.md).
 

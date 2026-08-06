@@ -247,6 +247,16 @@ scripts/recover_*_[0-9]*.py
 # run 실패 전역 Slack 센서 — 메시지 조립 순수 함수 + definitions 등록 회귀.
 # dagster 는 pytest.importorskip 가드 뒤에서만 import (test_definitions_train_loads 와 동일 패턴).
 !tests/unit/test_run_failure_alert.py
+# prod PG 이미지 pgvector 버전 핀 (HNSW vacuum corruption >= 0.8.3) — pathlib/re 만 의존.
+!tests/unit/test_postgres_dockerfile_pgvector_pin.py
+# source-h 비정규 raw_key 복구 — 객체키→raw_key 매핑 (lib.sanitizer 만 의존).
+!tests/unit/test_repair_unsanitized_raw_keys.py
+# MinIO 스트림 checksum 백필 헬퍼 (hashlib/io 만 의존).
+!tests/unit/test_sha256_stream.py
+# presign 갱신 버그 3종 회귀 테스트 — mock 기반(requests 패치), dagster import 없음.
+!tests/unit/test_ls_presign_renew_fixes.py
+# LS submit 폴러 테스트 — mock 기반(requests/state/finalize 패치), dagster import 없음.
+!tests/unit/test_ls_submit_poll.py
 
 # MinIO vlm-raw/source-h 로컬 사본 (7.9GiB, git 추적 금지)
 /source-h/

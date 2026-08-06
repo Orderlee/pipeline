@@ -121,6 +121,56 @@ def test_timestamp_qa_missing_snapshot_is_recall_miss():
     assert r["per_class"]["event"]["recall"] == 0.0
 
 
+def test_abstains_when_no_gt_item_has_a_pseudo_snapshot():
+    """스냅샷이 하나도 없으면 macro_f1=0.0 이 나오는데 그건 '성능 0' 이 아니라 '측정 불가'다.
+
+    실측(2026-07-29): prod GT 248장 전부가 이 상태 — write-once 스냅샷 writer 는
+    2026-07-07 배포분이고 GT 는 그 이전 검출분이라 원본이 소실됐다. 구분이 없으면
+    이 asset 을 눌러본 사람이 SAM3 가 망가졌다고 오독한다.
+    """
+    db = _DB(bbox_rows=[_gt_box("fire", 0, 0, 10, 10), _gt_box("fire", 5, 5, 10, 10, image_id="img2")])
+    r = _run_bbox_label_qa(db, _MinIO({}))
+    assert r["gt_items"] == 2
+    assert r["missing_pseudo"] == 2
+    assert r["scorable_items"] == 0
+    assert r["abstained"] is True
+
+    md = format_qa_report_md(r)
+    assert "ABSTAIN" in md
+    assert "성능 0 이 아니다" in md
+
+
+def test_does_not_abstain_when_at_least_one_snapshot_exists():
+    key = build_pseudo_bbox_key("src/a/frames/f1.jpg")
+    db = _DB(
+        bbox_rows=[
+            _gt_box("fire", 0, 0, 10, 10),  # f1.jpg — 스냅샷 있음
+            _gt_box("fire", 5, 5, 10, 10, image_key="src/a/frames/f2.jpg", image_id="img2"),  # 스냅샷 없음
+        ]
+    )
+    r = _run_bbox_label_qa(db, _MinIO({key: _coco("fire", [0, 0, 10, 10])}))
+    assert r["missing_pseudo"] == 1
+    assert r["scorable_items"] == 1
+    assert r["abstained"] is False
+    assert "ABSTAIN" not in format_qa_report_md(r)
+
+
+def test_timestamp_qa_also_abstains_without_snapshots():
+    db = _DB(
+        ts_rows=[
+            {"labels_key": "x/events/v.json", "asset_id": "a", "timestamp_start_sec": 0.0, "timestamp_end_sec": 5.0}
+        ]
+    )
+    r = _run_timestamp_label_qa(db, _MinIO({}))
+    assert r["scorable_items"] == 0 and r["abstained"] is True
+
+
+def test_empty_gt_abstains_rather_than_reporting_zero_f1():
+    """GT 자체가 0 이어도 macro_f1=0.0 이 나온다 — 이것도 성능 0 이 아니다."""
+    r = _run_bbox_label_qa(_DB(bbox_rows=[]), _MinIO({}))
+    assert r["gt_items"] == 0 and r["abstained"] is True
+
+
 def test_format_qa_report_md_renders_table():
     key = build_pseudo_bbox_key("src/a/frames/f1.jpg")
     db = _DB(bbox_rows=[_gt_box("fire", 0, 0, 10, 10)])

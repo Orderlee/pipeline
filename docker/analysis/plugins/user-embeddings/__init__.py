@@ -14,11 +14,20 @@
    재실행마다 바뀌어 해석 불가라 의도된 설계). 좌표가 필요하면 brain 결과의 points 를
    `<key>_x`/`<key>_y` FloatField 로 꺼낸다 — 사이드바 슬라이더 필터·Color by 그라디언트로
    쓸 수 있다.
+
+4. `move_media` / `delete_media` — App 은 **디스크 파일을 건드리는 버튼이 없다.**
+   기본 `delete_selected_samples` 는 DB 샘플만 지우고 파일은 남기고, 이동은 아예 없다.
+   선택한 샘플(또는 현재 뷰)의 미디어를 실제로 옮기거나 지운다. 이동은 `filepath` 까지
+   갱신해 데이터셋이 안 깨지게 한다.
+
+로직 자체 검증: 컨테이너에서 `python __init__.py` (파일 이동/충돌 처리 assert).
 """
 
 import contextlib
 import gc
+import os
 import random
+import shutil
 
 import numpy as np
 
@@ -460,7 +469,250 @@ class SaveVisualizationCoords(foo.Operator):
         return types.Property(outputs, view=types.View(label="완료"))
 
 
+# ── 미디어 파일 이동/삭제 ────────────────────────────────────────────────────
+# App 오퍼레이터는 App 프로세스 안에서 **동기로** 돈다. 20만 장 파일 I/O 를 걸면
+# 앱이 그대로 멈춘다 → 상한을 두고 뷰를 좁히게 만든다.
+# ponytail: 상한 초과를 나누어 처리하고 싶으면 delegated execution
+# (`fiftyone delegated launch` 별도 프로세스) 으로 올릴 것.
+MAX_FILE_OPS = 20_000
+
+DIR_PROBE = 200  # 이동 후보 디렉토리를 찾을 때 훑는 샘플 수
+
+
+def _target_view(ctx):
+    if ctx.params.get("target") != "CURRENT_VIEW" and ctx.selected:
+        return ctx.dataset.select(ctx.selected)
+    return ctx.view if ctx.view is not None else ctx.dataset.view()
+
+
+def _target_input(ctx, inputs):
+    """선택이 있을 때만 '선택 vs 현재 뷰' 를 묻는다 (없으면 현재 뷰 뿐)."""
+    n = len(ctx.selected)
+    if not n:
+        return
+    radio = types.RadioGroup()
+    radio.add_choice("SELECTED", label=f"선택한 {n}장")
+    radio.add_choice("CURRENT_VIEW", label="현재 뷰 전체")
+    inputs.enum(
+        "target", radio.values(), default="SELECTED", required=True, view=radio
+    )
+
+
+def _media_dirs(view):
+    """이동 후보 = 대상 파일이 실제 들어있는 디렉토리 + 그 형제 디렉토리.
+
+    임의 경로 입력을 막는 게 목적이다 — filepath 로 보이는 미디어 트리 안에서만
+    옮긴다 (예: `frames/falldown` → `frames/normal` 오분류 정정).
+    후보 수집은 앞 DIR_PROBE 장만 훑는다 (dynamic 폼이 매 입력마다 재계산되므로).
+    """
+    here = {os.path.dirname(p) for p in view.limit(DIR_PROBE).values("filepath")}
+    out = set(here)
+    for d in here:
+        with contextlib.suppress(OSError):
+            out.update(e.path for e in os.scandir(os.path.dirname(d)) if e.is_dir())
+    return sorted(out), sorted(here)
+
+
+def _move_files(samples, dst):
+    """대상에 같은 이름이 있으면 덮어쓰지 않고 건너뛴다."""
+    moved = skipped = 0
+    for s in samples:
+        new = os.path.join(dst, os.path.basename(s.filepath))
+        if new == s.filepath or os.path.exists(new):
+            skipped += 1
+            continue
+        shutil.move(s.filepath, new)
+        s.filepath = new  # 안 하면 데이터셋이 깨진 경로를 가리킨다
+        moved += 1
+    return moved, skipped
+
+
+def _check_count(view):
+    n = len(view)
+    if n > MAX_FILE_OPS:
+        raise ValueError(
+            f"{n:,}장은 한 번에 너무 많습니다 (상한 {MAX_FILE_OPS:,}) — 뷰를 좁히세요"
+        )
+    return n
+
+
+class MoveMedia(foo.Operator):
+    @property
+    def config(self):
+        return foo.OperatorConfig(
+            name="move_media", label="미디어 파일 이동", dynamic=True
+        )
+
+    def resolve_placement(self, ctx):
+        return types.Placement(
+            types.Places.SAMPLES_GRID_SECONDARY_ACTIONS,
+            types.Button(
+                label="미디어 파일 이동", icon="drive_file_move", prompt=True
+            ),
+        )
+
+    def resolve_input(self, ctx):
+        inputs = types.Object()
+        _target_input(ctx, inputs)
+        view = _target_view(ctx)
+        choices, here = _media_dirs(view)
+        if not choices:
+            inputs.view("none", types.Error(label="대상 샘플이 없습니다"))
+            return types.Property(inputs)
+
+        dropdown = types.DropdownView()
+        for d in choices:
+            dropdown.add_choice(d, label=d)
+        inputs.enum(
+            "dst",
+            choices,
+            required=True,
+            label="대상 디렉토리",
+            description="현재 위치: " + ", ".join(here),
+            view=dropdown,
+        )
+
+        n = len(view)
+        if n > MAX_FILE_OPS:
+            inputs.view(
+                "cap",
+                types.Warning(label=f"{n:,}장 — 상한 {MAX_FILE_OPS:,} 초과, 뷰를 좁히세요"),
+            )
+        else:
+            inputs.view(
+                "info",
+                types.Notice(label=f"{n:,}장 이동 + filepath 갱신 (데이터셋 유지)"),
+            )
+        return types.Property(inputs, view=types.View(label="미디어 파일 이동"))
+
+    def execute(self, ctx):
+        view = _target_view(ctx)
+        dst = ctx.params["dst"]
+        allowed, _ = _media_dirs(view)
+        if dst not in allowed:  # 폼 밖에서 들어온 임의 경로 차단
+            raise ValueError(f"허용되지 않은 대상입니다: {dst}")
+        _check_count(view)
+
+        moved, skipped = _move_files(view.iter_samples(autosave=True), dst)
+        ctx.trigger("reload_samples")
+        return {"dst": dst, "moved": moved, "skipped": skipped}
+
+    def resolve_output(self, ctx):
+        outputs = types.Object()
+        outputs.str("dst", label="대상 디렉토리")
+        outputs.int("moved", label="이동한 파일")
+        outputs.int("skipped", label="건너뜀 (같은 이름 존재)")
+        return types.Property(outputs, view=types.View(label="이동 완료"))
+
+
+class DeleteMedia(foo.Operator):
+    @property
+    def config(self):
+        return foo.OperatorConfig(
+            name="delete_media", label="미디어 파일 삭제", dynamic=True
+        )
+
+    def resolve_placement(self, ctx):
+        return types.Placement(
+            types.Places.SAMPLES_GRID_SECONDARY_ACTIONS,
+            types.Button(
+                label="미디어 파일 삭제", icon="delete_forever", prompt=True
+            ),
+        )
+
+    def resolve_input(self, ctx):
+        inputs = types.Object()
+        _target_input(ctx, inputs)
+        n = len(_target_view(ctx))
+        inputs.view(
+            "warn",
+            types.Warning(
+                label=f"{n:,}장 — 샘플과 디스크 파일이 함께 영구 삭제됩니다 (복구 불가)"
+            ),
+        )
+        inputs.bool(
+            "confirm",
+            default=False,
+            label="삭제를 확인합니다",
+            view=types.CheckboxView(),
+        )
+        return types.Property(inputs, view=types.View(label="미디어 파일 삭제"))
+
+    def execute(self, ctx):
+        if not ctx.params.get("confirm"):
+            raise ValueError("확인 체크박스를 켜야 삭제합니다")
+        view = _target_view(ctx)
+        _check_count(view)
+
+        paths = view.values("filepath")
+        ctx.dataset.delete_samples(view)
+        removed = 0
+        for p in paths:
+            try:
+                os.remove(p)
+                removed += 1
+            except OSError:  # 이미 없거나 권한 없음 — 샘플은 이미 지워졌다
+                pass
+
+        ctx.trigger("clear_selected_samples")
+        ctx.trigger("reload_dataset")
+        return {"samples": len(paths), "removed": removed}
+
+    def resolve_output(self, ctx):
+        outputs = types.Object()
+        outputs.int("samples", label="삭제한 샘플")
+        outputs.int("removed", label="삭제한 파일")
+        return types.Property(outputs, view=types.View(label="삭제 완료"))
+
+
 def register(p):
     p.register(ComputeVisualization)
     p.register(CombineColorFields)
     p.register(SaveVisualizationCoords)
+    p.register(MoveMedia)
+    p.register(DeleteMedia)
+
+
+def _self_check():
+    """파일 이동/후보 디렉토리 로직만 검증 (App·mongo 없이)."""
+    import tempfile
+
+    class FakeSample:
+        def __init__(self, path):
+            self.filepath = path
+
+    class FakeView:
+        def __init__(self, paths):
+            self._paths = paths
+
+        def limit(self, n):
+            return FakeView(self._paths[:n])
+
+        def values(self, _field):
+            return self._paths
+
+    with tempfile.TemporaryDirectory() as tmp:
+        fall = os.path.join(tmp, "frames", "falldown")
+        normal = os.path.join(tmp, "frames", "normal")
+        os.makedirs(fall)
+        os.makedirs(normal)
+        for name in ("a.jpg", "b.jpg"):
+            open(os.path.join(fall, name), "w").close()
+        open(os.path.join(normal, "b.jpg"), "w").close()  # 이름 충돌 유발
+
+        paths = [os.path.join(fall, n) for n in ("a.jpg", "b.jpg")]
+        choices, here = _media_dirs(FakeView(paths))
+        assert here == [fall], here
+        assert choices == sorted([fall, normal]), choices  # 형제 디렉토리가 후보에 들어온다
+
+        samples = [FakeSample(p) for p in paths]
+        assert _move_files(samples, normal) == (1, 1)
+        assert samples[0].filepath == os.path.join(normal, "a.jpg")
+        assert not os.path.exists(os.path.join(fall, "a.jpg"))
+        assert os.path.exists(os.path.join(fall, "b.jpg"))  # 충돌 건은 그대로
+
+    print("self-check OK")
+
+
+if __name__ == "__main__":
+    _self_check()

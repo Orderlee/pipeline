@@ -4,7 +4,7 @@
 
 **Goal:** source-h 뱅크 기하 분석을 `--profile frames`로 FiftyOne `frames_captions`(프레임 187,994장)에 확장 — 뱅크·GT가 축적될수록 열리는 사다리 구조 + FiftyOne 시각화.
 
-**Architecture:** 기존 `sourceh_prompt_geometry.py`를 단일 파일 프로필 파라미터화하고, PG 조인은 신규 `frames_bank_ledger.py`가 source-h과 동일 포맷 `ledger.jsonl`+`embed.npz`로 생산한다(분석기는 DB를 모름). 채점은 도메인 샤드 단위 스트리밍 리덕션(유사도 행렬 미상주), FiftyOne에는 버전 중립 필드 6개만 publish.
+**Architecture:** 기존 `prompt_geometry.py`를 단일 파일 프로필 파라미터화하고, PG 조인은 신규 `frames_bank_ledger.py`가 source-h과 동일 포맷 `ledger.jsonl`+`embed.npz`로 생산한다(분석기는 DB를 모름). 채점은 도메인 샤드 단위 스트리밍 리덕션(유사도 행렬 미상주), FiftyOne에는 버전 중립 필드 6개만 publish.
 
 **Tech Stack:** Python 3.10 (analysis 컨테이너), numpy fp32, FiftyOne 1.19, psycopg2 2.9.12, PyYAML, bash 래퍼(`docker cp`+`docker exec`).
 
@@ -21,7 +21,7 @@
 - **커버리지 스탬프** — 모든 스테이지 첫 줄에 `[stamp] ...` 출력, 자격 미달 시 이유+hard-skip.
 - **clear-then-set** — 매 score 런마다 6필드 전체 clear 후 현재 매핑 분만 set (stale 값 방지).
 - **메모리** — `--mem-budget-gb`(기본 4) preflight: `MemAvailable < 2×budget`이면 시작 거부. 래퍼가 `OMP_NUM_THREADS=4` 강제. 공유 호스트(스왑 쓰래싱 이력).
-- **source-h 무손상** — `--profile` 기본값 `sourceh`, 기존 `sourceh_bank_eval.sh` 호출 무변경. Task 1 회귀로 증명.
+- **source-h 무손상** — `--profile` 기본값 `sourceh`, 기존 `bank_eval.sh` 호출 무변경. Task 1 회귀로 증명.
 - **운영 금기** — 호스트 src/ 수동 수정 금지(이 작업은 전부 `docker/analysis/`+`docs/`, git 경로로만). prod DB는 읽기 전용 쿼리만. `docker compose` 직접 호출 금지.
 - **개발/실행 분리** — 코드는 호스트 repo(feature 브랜치)에서 편집·커밋, 실행은 래퍼가 `docker cp`로 컨테이너 반입 후 `docker exec`. ambient `/workspace` 의존 금지(필요 파일 전부 명시 복사).
 
@@ -29,7 +29,7 @@
 
 | 파일 | 책임 |
 |---|---|
-| `docker/analysis/sourceh_prompt_geometry.py` (수정) | 프로필 전환, 스트리밍 채점, frames 전용 스테이지(score/gap/viz/gtsync/report), selftest, slim 가드 |
+| `docker/analysis/prompt_geometry.py` (수정) | 프로필 전환, 스트리밍 채점, frames 전용 스테이지(score/gap/viz/gtsync/report), selftest, slim 가드 |
 | `docker/analysis/frames_bank_ledger.py` (신규) | FiftyOne+PG → `ledger.jsonl`/`embed.npz`/`gt_snapshot.json` 생산. 유일하게 DB를 아는 파일 |
 | `docker/analysis/bank_domain_map.yaml` (신규) | project→도메인→뱅크쌍 + class crosswalk + unsupported (fail-closed 설정) |
 | `docker/analysis/frames_bank_eval.sh` (신규) | 원커맨드: 파일 반입 → ledger → score → gap → viz → gtsync → report |
@@ -42,7 +42,7 @@
 ### Task 1: 프로필 기반 구조 + 메모리 preflight + slim 가드
 
 **Files:**
-- Modify: `docker/analysis/sourceh_prompt_geometry.py:34-46` (상수부), `:831` (stage_slim), `:1007-1030` (main)
+- Modify: `docker/analysis/prompt_geometry.py:34-46` (상수부), `:831` (stage_slim), `:1007-1030` (main)
 
 **Interfaces:**
 - Produces: `PROFILES` dict, `set_profile(name)` (모듈 전역 `ROOT/WORK/GEO/REPORT_DIR/PROMPT_DIR/CLASS_NAMES/PROFILE` 재설정), `assert_mem_budget(budget_gb: float)`, main의 `--profile {sourceh,frames}` / `--mem-budget-gb` 인자. 이후 모든 Task가 이 전역을 사용.
@@ -50,7 +50,7 @@
 
 - [ ] **Step 1: 상수부를 프로필화**
 
-`sourceh_prompt_geometry.py:34-38`의 상수 5줄을 다음으로 교체 (기존 값은 `sourceh` 프로필로 이동, `VERSIONS`/`V0`/`V4`/`EVENT_CLASSES`/`SEEDS`는 그대로 둔다):
+`prompt_geometry.py:34-38`의 상수 5줄을 다음으로 교체 (기존 값은 `sourceh` 프로필로 이동, `VERSIONS`/`V0`/`V4`/`EVENT_CLASSES`/`SEEDS`는 그대로 둔다):
 
 ```python
 PROFILES = {
@@ -209,8 +209,8 @@ def stage_selftest() -> None:
 REPO=/home/user/work_p/Datapipeline-Data-data_pipeline
 # 기준값 백업 후 재실행
 docker exec docker-analysis-1 cp /data/fiftyone/sourceh_v2/work/geometry/geometry.json /tmp/geometry_before.json
-docker cp $REPO/docker/analysis/sourceh_prompt_geometry.py docker-analysis-1:/workspace/
-docker exec docker-analysis-1 python3 /workspace/sourceh_prompt_geometry.py analyze
+docker cp $REPO/docker/analysis/prompt_geometry.py docker-analysis-1:/workspace/
+docker exec docker-analysis-1 python3 /workspace/prompt_geometry.py analyze
 docker exec docker-analysis-1 python3 -c "
 import json
 a=json.load(open('/tmp/geometry_before.json')); b=json.load(open('/data/fiftyone/sourceh_v2/work/geometry/geometry.json'))
@@ -224,8 +224,8 @@ Expected: `source-h 회귀 OK: 0.910...` (시드 고정이라 완전 일치)
 - [ ] **Step 5: 게이팅 동작 확인**
 
 ```bash
-docker exec docker-analysis-1 python3 /workspace/sourceh_prompt_geometry.py slim --profile frames; echo "exit=$?"
-docker exec docker-analysis-1 python3 /workspace/sourceh_prompt_geometry.py score; echo "exit=$?"
+docker exec docker-analysis-1 python3 /workspace/prompt_geometry.py slim --profile frames; echo "exit=$?"
+docker exec docker-analysis-1 python3 /workspace/prompt_geometry.py score; echo "exit=$?"
 ```
 
 Expected: 첫 줄 `slim 은 source-h 전용 ...` exit=1 / 둘째 `score 는 frames 프로필 전용` exit=1
@@ -233,8 +233,8 @@ Expected: 첫 줄 `slim 은 source-h 전용 ...` exit=1 / 둘째 `score 는 fram
 - [ ] **Step 6: Commit**
 
 ```bash
-git add docker/analysis/sourceh_prompt_geometry.py
-git commit -m "refactor(analysis): sourceh_prompt_geometry 프로필 파라미터화 + slim 가드 + 메모리 preflight"
+git add docker/analysis/prompt_geometry.py
+git commit -m "refactor(analysis): prompt_geometry 프로필 파라미터화 + slim 가드 + 메모리 preflight"
 ```
 
 ---
@@ -242,7 +242,7 @@ git commit -m "refactor(analysis): sourceh_prompt_geometry 프로필 파라미�
 ### Task 2: 스트리밍 채점 + min-n/crosswalk 헬퍼 + selftest
 
 **Files:**
-- Modify: `docker/analysis/sourceh_prompt_geometry.py` (`class_sims` 아래에 추가; `class_sims` 자체는 sourceh `analyze`가 통계 재표집에 전체 행렬을 쓰므로 **삭제하지 않는다**)
+- Modify: `docker/analysis/prompt_geometry.py` (`class_sims` 아래에 추가; `class_sims` 자체는 sourceh `analyze`가 통계 재표집에 전체 행렬을 쓰므로 **삭제하지 않는다**)
 
 **Interfaces:**
 - Produces: `bank_best_stream(X, bank, batch=1024, block=2048) -> (best: dict[int, np.ndarray[N]], arg: dict[int, np.ndarray[N]])` — arg 는 뱅크 전역 프롬프트 인덱스. `crosswalk_class(cw: dict, category: str) -> str | None`. `minn_tier(n: int) -> str` (`no_gt|counts_only|exploratory|reportable`). `stage_selftest()` 실구현(스텁 교체).
@@ -282,8 +282,8 @@ def stage_selftest() -> None:
 - [ ] **Step 2: 실패 확인**
 
 ```bash
-docker cp $REPO/docker/analysis/sourceh_prompt_geometry.py docker-analysis-1:/workspace/
-docker exec docker-analysis-1 python3 /workspace/sourceh_prompt_geometry.py selftest
+docker cp $REPO/docker/analysis/prompt_geometry.py docker-analysis-1:/workspace/
+docker exec docker-analysis-1 python3 /workspace/prompt_geometry.py selftest
 ```
 
 Expected: `NameError: name 'bank_best_stream' is not defined` (구현 전)
@@ -339,9 +339,9 @@ def minn_tier(n: int) -> str:
 - [ ] **Step 4: selftest 통과 확인**
 
 ```bash
-docker cp $REPO/docker/analysis/sourceh_prompt_geometry.py docker-analysis-1:/workspace/
-docker exec docker-analysis-1 python3 /workspace/sourceh_prompt_geometry.py selftest
-docker exec docker-analysis-1 python3 /workspace/sourceh_prompt_geometry.py selftest --profile frames
+docker cp $REPO/docker/analysis/prompt_geometry.py docker-analysis-1:/workspace/
+docker exec docker-analysis-1 python3 /workspace/prompt_geometry.py selftest
+docker exec docker-analysis-1 python3 /workspace/prompt_geometry.py selftest --profile frames
 ```
 
 Expected: 양쪽 다 `selftest OK`
@@ -349,7 +349,7 @@ Expected: 양쪽 다 `selftest OK`
 - [ ] **Step 5: Commit**
 
 ```bash
-git add docker/analysis/sourceh_prompt_geometry.py
+git add docker/analysis/prompt_geometry.py
 git commit -m "feat(analysis): 스트리밍 뱅크 채점 + crosswalk/min-n 헬퍼 + selftest 스테이지"
 ```
 
@@ -359,7 +359,7 @@ git commit -m "feat(analysis): 스트리밍 뱅크 채점 + crosswalk/min-n 헬�
 
 **Files:**
 - Create: `docker/analysis/bank_domain_map.yaml`
-- Modify: `docker/analysis/sourceh_prompt_geometry.py` (로더 추가)
+- Modify: `docker/analysis/prompt_geometry.py` (로더 추가)
 
 **Interfaces:**
 - Produces: `load_domain_map() -> dict` — 키 `domains`(dict), `class_crosswalk`(dict), `unsupported_classes`(list), `project_to_domain`(dict, 파생), `crosswalk_version`. `NAME_TO_ID: dict[str, int]` 모듈 상수.
@@ -391,7 +391,7 @@ class_crosswalk:
 unsupported_classes: [smoking]   # 뱅크에 프롬프트 0개 → status=unsupported ("0% recall" 표시 금지)
 ```
 
-- [ ] **Step 2: 로더 + 상수 추가** — `sourceh_prompt_geometry.py`의 `minn_tier` 아래:
+- [ ] **Step 2: 로더 + 상수 추가** — `prompt_geometry.py`의 `minn_tier` 아래:
 
 ```python
 NAME_TO_ID = {"normal": 0, "falldown": 1, "fire": 2, "smoke": 3, "smoking": 4}
@@ -420,10 +420,10 @@ def load_domain_map() -> dict:
 
 ```bash
 docker cp $REPO/docker/analysis/bank_domain_map.yaml docker-analysis-1:/workspace/
-docker cp $REPO/docker/analysis/sourceh_prompt_geometry.py docker-analysis-1:/workspace/
+docker cp $REPO/docker/analysis/prompt_geometry.py docker-analysis-1:/workspace/
 docker exec docker-analysis-1 python3 -c "
 import sys; sys.path.insert(0,'/workspace')
-import sourceh_prompt_geometry as g
+import prompt_geometry as g
 g.set_profile('frames')
 m = g.load_domain_map()
 assert m['domains'] == {} and m['project_to_domain'] == {}
@@ -438,7 +438,7 @@ Expected: `map OK (0단계 상태)`
 - [ ] **Step 4: Commit**
 
 ```bash
-git add docker/analysis/bank_domain_map.yaml docker/analysis/sourceh_prompt_geometry.py
+git add docker/analysis/bank_domain_map.yaml docker/analysis/prompt_geometry.py
 git commit -m "feat(analysis): 도메인 뱅크 매핑 YAML(fail-closed crosswalk) + 로더"
 ```
 
@@ -462,7 +462,7 @@ git commit -m "feat(analysis): 도메인 뱅크 매핑 YAML(fail-closed crosswal
 #!/usr/bin/env python3
 """frames_captions → 뱅크 평가 원장 생산자.
 
-분석기(sourceh_prompt_geometry.py --profile frames)는 이 출력만 소비하고 DB 를 모른다 —
+분석기(prompt_geometry.py --profile frames)는 이 출력만 소비하고 DB 를 모른다 —
 source-h 의 ledger.jsonl/embed.npz 데이터 계약을 그대로 미러 (스펙 §4·§5-2).
 
 GT: image_id → image_labels(review_status='finalized') **좌조인** + annotations.category
@@ -643,7 +643,7 @@ git commit -m "feat(analysis): frames_captions 원장 생산자 — PG finalized
 ### Task 5: stage_score — 도메인 샤드 GT-free 채점 + 필드 publish
 
 **Files:**
-- Modify: `docker/analysis/sourceh_prompt_geometry.py` (Task 1 스텁 `stage_score` 교체 + 헬퍼 추가)
+- Modify: `docker/analysis/prompt_geometry.py` (Task 1 스텁 `stage_score` 교체 + 헬퍼 추가)
 
 **Interfaces:**
 - Consumes: `bank_best_stream`, `predict`, `load_domain_map`, `WORK/ledger.jsonl`, `WORK/embed.npz`, `PROMPT_DIR/<ver>.npz`
@@ -792,9 +792,9 @@ def _score_domain(ds, m: dict, dom: str, drows: list, key2i: dict,
 - [ ] **Step 2: 0단계 hard-skip 검증**
 
 ```bash
-docker cp $REPO/docker/analysis/sourceh_prompt_geometry.py docker-analysis-1:/workspace/
+docker cp $REPO/docker/analysis/prompt_geometry.py docker-analysis-1:/workspace/
 docker exec -e BANK_DOMAIN_MAP=/workspace/bank_domain_map.yaml docker-analysis-1 \
-  python3 /workspace/sourceh_prompt_geometry.py score --profile frames
+  python3 /workspace/prompt_geometry.py score --profile frames
 ```
 
 Expected: `[stamp] score: 전체 187,994 / 매핑 0 (0개 도메인) / GT 0` → `hard-skip (0단계)` — 예외 없이 정상 종료, FiftyOne 필드 미생성.
@@ -815,7 +815,7 @@ EOF'
 docker exec -e BANK_DOMAIN_MAP=/tmp/map_test.yaml docker-analysis-1 \
   python3 /workspace/frames_bank_ledger.py
 docker exec -e BANK_DOMAIN_MAP=/tmp/map_test.yaml docker-analysis-1 \
-  python3 /workspace/sourceh_prompt_geometry.py score --profile frames
+  python3 /workspace/prompt_geometry.py score --profile frames
 docker exec docker-analysis-1 python3 -c "
 import fiftyone as fo
 from fiftyone import ViewField as F
@@ -833,7 +833,7 @@ Expected: `score _test: n=288 ...` 로그 후 `score e2e OK: 288 score-...`
 docker exec -e BANK_DOMAIN_MAP=/workspace/bank_domain_map.yaml docker-analysis-1 \
   python3 /workspace/frames_bank_ledger.py
 docker exec -e BANK_DOMAIN_MAP=/workspace/bank_domain_map.yaml docker-analysis-1 \
-  python3 /workspace/sourceh_prompt_geometry.py score --profile frames
+  python3 /workspace/prompt_geometry.py score --profile frames
 docker exec docker-analysis-1 python3 -c "
 import fiftyone as fo
 from fiftyone import ViewField as F
@@ -847,7 +847,7 @@ Expected: `hard-skip (0단계)` 로그 후 `clear-then-set OK (stale 없음)`
 - [ ] **Step 5: Commit**
 
 ```bash
-git add docker/analysis/sourceh_prompt_geometry.py
+git add docker/analysis/prompt_geometry.py
 git commit -m "feat(analysis): frames score 스테이지 — 도메인 샤드 스트리밍 채점 + clear-then-set publish"
 ```
 
@@ -856,7 +856,7 @@ git commit -m "feat(analysis): frames score 스테이지 — 도메인 샤드 �
 ### Task 6: stage_gap_frames + stage_viz_frames — 공백지도·리뷰큐·시각화
 
 **Files:**
-- Modify: `docker/analysis/sourceh_prompt_geometry.py` (Task 1 스텁 2개 교체)
+- Modify: `docker/analysis/prompt_geometry.py` (Task 1 스텁 2개 교체)
 
 **Interfaces:**
 - Consumes: `GEO/<dom>_score.npz` (Task 5), `WORK/embed.npz`, `load_domain_map`, `WEAK_TO_BANK`
@@ -1001,15 +1001,15 @@ def stage_viz_frames() -> None:
 
 ```bash
 # (a) 0단계: hard-skip
-docker cp $REPO/docker/analysis/sourceh_prompt_geometry.py docker-analysis-1:/workspace/
+docker cp $REPO/docker/analysis/prompt_geometry.py docker-analysis-1:/workspace/
 docker exec -e BANK_DOMAIN_MAP=/workspace/bank_domain_map.yaml docker-analysis-1 \
-  python3 /workspace/sourceh_prompt_geometry.py gap --profile frames
+  python3 /workspace/prompt_geometry.py gap --profile frames
 # (b) Task 5 Step 3 의 /tmp/map_test.yaml 로 ledger+score 재생성 후:
 docker exec -e BANK_DOMAIN_MAP=/tmp/map_test.yaml docker-analysis-1 \
   sh -c "python3 /workspace/frames_bank_ledger.py && \
-         python3 /workspace/sourceh_prompt_geometry.py score --profile frames && \
-         python3 /workspace/sourceh_prompt_geometry.py gap --profile frames && \
-         python3 /workspace/sourceh_prompt_geometry.py viz --profile frames"
+         python3 /workspace/prompt_geometry.py score --profile frames && \
+         python3 /workspace/prompt_geometry.py gap --profile frames && \
+         python3 /workspace/prompt_geometry.py viz --profile frames"
 docker exec docker-analysis-1 python3 -c "
 import fiftyone as fo
 ds = fo.load_dataset('frames_captions')
@@ -1025,14 +1025,14 @@ Expected: (a) `hard-skip`, (b) `gap+viz OK ...` + `http://10.0.0.10:5153/dataset
 ```bash
 docker exec -e BANK_DOMAIN_MAP=/workspace/bank_domain_map.yaml docker-analysis-1 \
   sh -c "python3 /workspace/frames_bank_ledger.py && \
-         python3 /workspace/sourceh_prompt_geometry.py score --profile frames"
+         python3 /workspace/prompt_geometry.py score --profile frames"
 docker exec docker-analysis-1 python3 -c "
 import fiftyone as fo
 ds = fo.load_dataset('frames_captions')
 for v in [v for v in ds.list_saved_views() if v.startswith('bank: _test')]:
     ds.delete_saved_view(v)
 print('테스트 뷰 정리 완료')"
-git add docker/analysis/sourceh_prompt_geometry.py
+git add docker/analysis/prompt_geometry.py
 git commit -m "feat(analysis): frames gap/viz 스테이지 — 저확신 군집 + 리뷰큐 + margin 산점도"
 ```
 
@@ -1041,7 +1041,7 @@ git commit -m "feat(analysis): frames gap/viz 스테이지 — 저확신 군집 
 ### Task 7: stage_gtsync + stage_report_frames — GT 오버레이·min-n·리포트
 
 **Files:**
-- Modify: `docker/analysis/sourceh_prompt_geometry.py` (Task 1 스텁 2개 교체)
+- Modify: `docker/analysis/prompt_geometry.py` (Task 1 스텁 2개 교체)
 
 **Interfaces:**
 - Consumes: `GEO/<dom>_score.npz`, `WORK/ledger.jsonl`, `WORK/gt_snapshot.json`, `minn_tier`, `recalls`, `_append_run`
@@ -1186,10 +1186,10 @@ def stage_report_frames() -> None:
 - [ ] **Step 3: 검증 (0단계 리포트)**
 
 ```bash
-docker cp $REPO/docker/analysis/sourceh_prompt_geometry.py docker-analysis-1:/workspace/
+docker cp $REPO/docker/analysis/prompt_geometry.py docker-analysis-1:/workspace/
 docker exec -e BANK_DOMAIN_MAP=/workspace/bank_domain_map.yaml docker-analysis-1 \
-  sh -c "python3 /workspace/sourceh_prompt_geometry.py gtsync --profile frames && \
-         python3 /workspace/sourceh_prompt_geometry.py report --profile frames && \
+  sh -c "python3 /workspace/prompt_geometry.py gtsync --profile frames && \
+         python3 /workspace/prompt_geometry.py report --profile frames && \
          cat /data/fiftyone/frames_bank/report/bank_eval_report.md"
 ```
 
@@ -1198,7 +1198,7 @@ Expected: `[stamp] gtsync: GT 0 ...` → 리포트에 `없음 — 0단계` + `no
 - [ ] **Step 4: Commit**
 
 ```bash
-git add docker/analysis/sourceh_prompt_geometry.py
+git add docker/analysis/prompt_geometry.py
 git commit -m "feat(analysis): frames gtsync/report — GT 오버레이 분리 + min-n 게이트 + 교집합 델타"
 ```
 
@@ -1231,7 +1231,7 @@ REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 C="${ANALYSIS_CONTAINER:-docker-analysis-1}"
 
 # ambient /workspace 의존 금지 — 필요 파일 전부 명시 반입 (drift 차단, 스펙 §10 불채택 항목의 해소)
-for f in sourceh_prompt_geometry.py frames_bank_ledger.py bank_domain_map.yaml fiftyone_presentation.py; do
+for f in prompt_geometry.py frames_bank_ledger.py bank_domain_map.yaml fiftyone_presentation.py; do
   docker cp "$REPO/docker/analysis/$f" "$C:/workspace/" >/dev/null
 done
 
@@ -1242,13 +1242,13 @@ if [[ "${1:-}" == "--bank" ]]; then
   VER="${2:?사용법: --bank <버전> <CSV경로>}"
   CSV="${3:?CSV 경로 필요}"
   docker cp "$CSV" "$C:/tmp/bank_new.csv"
-  run /workspace/sourceh_prompt_geometry.py bank --profile frames --csv /tmp/bank_new.csv --version "$VER"
+  run /workspace/prompt_geometry.py bank --profile frames --csv /tmp/bank_new.csv --version "$VER"
 fi
 
-run /workspace/sourceh_prompt_geometry.py selftest --profile frames
+run /workspace/prompt_geometry.py selftest --profile frames
 run /workspace/frames_bank_ledger.py
 for st in score gap viz gtsync report; do
-  run /workspace/sourceh_prompt_geometry.py "$st" --profile frames
+  run /workspace/prompt_geometry.py "$st" --profile frames
 done
 
 echo
@@ -1286,8 +1286,8 @@ Expected: selftest OK → ledger 187,994 스탬프 → score/gap/viz `hard-skip 
 - [ ] **Step 4: source-h 최종 회귀 (마지막 안전망)**
 
 ```bash
-docker exec docker-analysis-1 python3 /workspace/sourceh_prompt_geometry.py selftest
-docker exec docker-analysis-1 python3 /workspace/sourceh_prompt_geometry.py report
+docker exec docker-analysis-1 python3 /workspace/prompt_geometry.py selftest
+docker exec docker-analysis-1 python3 /workspace/prompt_geometry.py report
 ```
 
 Expected: `selftest OK` + source-h 리포트 재생성 정상 (기존 geometry.json 소비 경로 무손상)

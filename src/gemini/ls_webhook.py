@@ -436,6 +436,10 @@ def main() -> int:
         print(f"[INFO] LS 연결: {LS_URL}")
         print(f"[INFO] Slack: {'설정됨' if SLACK_WEBHOOK_URL else '미설정 (로그만 출력)'}")
         print(f"[INFO] PostgreSQL: {'설정됨' if PG_DSN else '미설정'}")
+        # LS 최종 submit(F1) 감지 → sync+finalize 자동화 (Slack /sync-approve 는 수동 폴백으로 병행)
+        from gemini.ls_webhook_submit_poll import start_submit_poller
+
+        start_submit_poller(lambda: resolve_auth_headers(API_KEY))
         uvicorn.run(app, host=args.host, port=args.port, log_level="warning")
 
     elif args.command == "register":
