@@ -2,8 +2,8 @@
 
 - 날짜: 2026-07-31
 - 상태: 사용자 승인됨 (접근안 1: 프로필 확장 + 원장 어댑터)
-- 선행 작업: source-h 뱅크 기하 분석 (`docker/analysis/sourceh_prompt_geometry.py`,
-  `docs/source-h-prompt-analysis-report-2026-07-31.md`)
+- 선행 작업: source-h 뱅크 기하 분석 (`docker/analysis/prompt_geometry.py`,
+  `docs/prompt-analysis-report-2026-07-31.md`)
 - 토론: cto 페르소나 + codex 2차 의견 — 수렴 (아키텍처 이견 없음, 사실 정정 반영)
 
 ## 1. 목표 / 비목표
@@ -57,7 +57,7 @@ GT(사람 검수)와 뱅크(도메인별 CSV)가 파이프라인에서 축적될
    ledger.jsonl  ──────┐                                        bank 스테이지 → <ver>.npz
    (source-h과 동일 포맷)  │                                                │
                        ▼                                                ▼
-        sourceh_prompt_geometry.py --profile frames    ← bank_domain_map.yaml
+        prompt_geometry.py --profile frames    ← bank_domain_map.yaml
                        │  score / gap / viz / report
                        ▼
         FiftyOne frames_captions: 필드 6개 덮어쓰기
@@ -70,7 +70,7 @@ PG 조인(frames)이든 `ledger.jsonl` 포맷이 같으므로 검증된 수학�
 
 ## 5. 구성요소
 
-### 5-1. `sourceh_prompt_geometry.py` 수정
+### 5-1. `prompt_geometry.py` 수정
 
 - `--profile sourceh|frames` → `{DATASET, ROOT, PROMPT_DIR, CLASS_NAMES, 뱅크쌍}` 교체.
   기본값 `sourceh` (기존 호출 무변경).
@@ -99,7 +99,7 @@ PG 조인(frames)이든 `ledger.jsonl` 포맷이 같으므로 검증된 수학�
 ### 5-3. `frames_bank_eval.sh` 신규 (원커맨드 래퍼)
 
 - `./frames_bank_eval.sh [도메인...]` → ledger → bank → score → gap → viz → report.
-- `sourceh_bank_eval.sh` 컨벤션 유지: 파일 단위 `docker cp`, 이번엔 geometry + ledger
+- `bank_eval.sh` 컨벤션 유지: 파일 단위 `docker cp`, 이번엔 geometry + ledger
   어댑터 + YAML 3개를 복사 (ambient `/workspace` import 의존 금지).
 
 ### 5-4. `bank_domain_map.yaml` 신규 — 3중 매핑, fail-closed

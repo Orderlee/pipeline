@@ -331,6 +331,7 @@ git -C /home/user/work_p/Datapipeline-Data-data_pipeline_test status       # dev
 | `scripts/promote_pe_core.py` | PE-Core 포인터 전환 + partial-HNSW + 서빙 교체 (승격/롤백) | MLOps (만들되 기본 미실행; `--dry-run`) |
 | `scripts/dataset_pull.py` | dataset_catalog pin 해석 → `dvc get` (DVC 버전 데이터셋 pull) | MLOps (기본 dry-run) |
 | `scripts/clear_maintenance.sh` | GPU 정비락 수동 강제 해제 + `/maintenance/exit` + `/warmup` | MLOps 복구 (`.agent/skill/mlops-finetune/SKILL.md` §9) |
+| `scripts/repair_unsanitized_raw_keys.py` | 비정규 MinIO 키(`source-h/<한글>`) → 정본 `raw_key`(`source-h/<sanitize>`) 서버사이드 복사 | 복구 (기본 dry-run, `--apply`). source-h 804건 대기 중 |
 
 ### Deprecated (scripts/archive/ 로 이동됨)
 

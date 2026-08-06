@@ -32,6 +32,7 @@ from vlm_pipeline.defs.ingest.sensor import (
     stale_state_reaper_sensor,
     stuck_run_guard_sensor,
 )
+from vlm_pipeline.defs.shared.sensor_run_alert import run_failure_alert_sensor
 from vlm_pipeline.defs.train.sensor_maintenance_guard import maintenance_guard_sensor
 from vlm_pipeline.defs.train.catalog_ingest import dataset_catalog_reconciliation_sensor
 from vlm_pipeline.defs.train.dataset import build_trainset
@@ -299,6 +300,9 @@ def build_production_sensors(
         build_dispatch_sensor(jobs=dispatch_target_jobs),
         build_production_agent_dispatch_sensor(jobs=dispatch_target_jobs),
         *COMMON_DISPATCH_STATUS_SENSORS,
+        # dispatch 태그 없는 job(SAM3 detection·embed·clip·build·GCS) 실패는
+        # COMMON_DISPATCH_STATUS_SENSORS 가 걸러내므로 전역 알림 센서로 따로 받는다.
+        run_failure_alert_sensor,
         ls_task_create_sensor,
         build_dataset_on_finalize_sensor,
         genai_poll_sensor,

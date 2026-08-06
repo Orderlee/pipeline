@@ -9,7 +9,7 @@ stable pre-sort that makes assignment independent of input row order.
 
 from __future__ import annotations
 
-import random
+import hashlib
 from collections import OrderedDict
 from typing import Callable
 
@@ -54,9 +54,14 @@ def _split_groups(
     for rec in records:
         grouped.setdefault(str(key_fn(rec)), []).append(rec)
 
-    keys = sorted(grouped.keys())  # stable pre-sort
-    rng = random.Random(seed)
-    rng.shuffle(keys)
+    # 키별 독립 해시로 정렬한다 (STABLE ORDERING).
+    # random.Random(seed).shuffle(keys) 를 쓰면 안 된다 — Fisher-Yates 는 리스트 길이만큼
+    # 난수를 소비하므로 그룹이 하나만 늘어도 seed 가 같아도 전체 순열이 바뀐다.
+    # 실측(2026-07-29): 12→13 그룹 추가 시 이전 test 31장 중 이월 0장.
+    # 그 결과 v1 의 train 그룹이 v2 의 test 로 넘어와 incumbent 점수를 부풀리고
+    # candidate 를 부당하게 탈락시킬 수 있다 (sealed split 의 전제가 깨짐).
+    # 해시 정렬은 각 키의 위치가 독립이라, 그룹 추가 시 경계 근처만 이동한다.
+    keys = sorted(grouped.keys(), key=lambda k: hashlib.sha256(f"{seed}:{k}".encode()).hexdigest())
 
     n = len(keys)
     out: dict[str, list[dict]] = {name: [] for name in SPLIT_NAMES}

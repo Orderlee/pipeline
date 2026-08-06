@@ -249,3 +249,152 @@ pairwise cos 0.951. **절대 cosine 수준이 아니라 격차를 봐야 한다.
 - 산출: FiftyOne 필드 6개(bank_*), 뷰 `bank: <도메인> scored/shifted/review-queue`,
   워크스페이스 `bank-eval`, 리포트 `/data/fiftyone/frames_bank/report/bank_eval_report.md`,
   런 원장 `/data/fiftyone/frames_bank/work/geometry/runs.jsonl`.
+
+## 프롬프트 관점 데이터셋 — `source-h-prompts` (promptmap)
+
+프레임 관점(`top_prompt_*`, `winner_*`)의 뒤집힌 짝. **점 하나 = 문장 하나**라서 프롬프트를
+카테고리별로 보고, 그 문장이 실제로 어떤 이미지에 붙는지 확인하는 용도.
+
+```bash
+docker cp docker/analysis/prompt_geometry.py docker-analysis-1:/workspace/prompt_geometry.py
+docker exec docker-analysis-1 nice -n 10 python /workspace/prompt_geometry.py promptmap
+# → http://10.0.0.10:5153/datasets/source-h-prompts  (워크스페이스 `prompts` 선택)
+```
+
+- 좌표(UMAP `emb_viz`)는 **문장끼리의 기하만** 뜻한다. 문장+이미지를 한 UMAP 에 올리는 건
+  실측으로 기각돼 있다 (text↔image cos 중앙 0.147 vs text↔text 0.631 vs image↔image 0.756
+  → modality 두 덩이가 되고 최근접 질의가 엔티티 타입 분류기가 된다. `stage_atlas` 도크스트링).
+- 이미지 연결은 좌표가 아니라 표본 속성으로 준다: 썸네일 = 그 문장의 **최근접 프레임**,
+  `match`(최근접 프레임 GT == 문장 클래스), `nearest_gt.confidence`(=cos), `nearest_key`.
+- `wins`/`purity`/`n_cameras` 는 `prompt_frames_*.csv` 와 같은 정의(클래스별 best 의 전역
+  argmax). 제품 판정규칙인 top-K 다수결(`RULE`)과는 다른 값이다.
+- 색칠은 `category`·`match`·`adopted`·`purity_tier`(전부 Classification → `.label`).
+  `purity`/`wins` 는 연속값이라 App 에서 색이 안 나온다 — 정렬·필터용.
+- brain_key 가 `emb_viz` 로 고정인 이유: Embeddings 패널이 키를 기억해서 다른 이름이면
+  Color by 까지 죽는다.
+- ⚠️ 뱅크 2벌(`BANK_A`/`BANK_B`)이 한 데이터셋에 같이 들어간다 — `bank_version` 으로 필터.
+  같은 문장이 두 뱅크에 다 있으면 점이 겹치는데, 그 자체가 "무엇이 유지됐나" 신호다.
+
+### 판정규칙 2벌 — top-k 다수결 vs 분포 IoU(wave)
+
+`source-h-prompts` 는 **같은 문장 점 위에 두 규칙의 값을 나란히** 올린다.
+
+| 규칙 | 스테이지 | 정체 | 문장별 지표 |
+|---|---|---|---|
+| top-k 다수결 | `vote`/`atlas` | 전역 top-k 문장의 클래스 다수결 (`RULE`/`RULE_K`) | `wins`·`purity`·`adopted` |
+| 분포 IoU (wave) | `wave` | 제품 `pe_inference/01_TuningFree_v2.py`. 클래스별 cos 히스토그램 vs normal 히스토그램의 면적 IoU < `WAVE_THR` → 발화 | `wave_gain`·`wave_role` |
+
+```bash
+docker exec docker-analysis-1 nice -n 10 python /workspace/prompt_geometry.py wave
+docker exec docker-analysis-1 nice -n 10 python /workspace/prompt_geometry.py promptmap   # wave 축 흡수
+```
+
+- env: `WAVE_BINS=80` `WAVE_THR=0.15` (pe_inference README 권장 실행값). `iou_mode='std'` 는 미구현.
+- **모수가 다르다**: top-k 는 이긴 문장만 값이 있고(v080 채택 201/12,480 = 1.6%), wave 는 분포
+  전체가 판정에 들어가 **모든 문장에 값이 있다**. "뱅크 실사용률 1.6%" 는 top-k 한정 결론이다.
+- 문장별 wave 기여도 = LOO ΔIoU. **부호 해석이 역할에 따라 뒤집힌다** (이벤트 문장은 IoU 를
+  낮춰야 유익, normal 문장은 높여야 유익) → raw float 은 `wave_gain`, 해석은 `wave_role` 이 담당.
+  층화는 클래스 내 백분위 — 클래스별 문장 수 차이(normal 10,703 vs falldown 160)가 ΔIoU 절대
+  크기를 바꾸므로 전역 임계는 클래스를 오분류한다.
+- 12,480회 LOO 가 가능한 이유: IoU 는 히스토그램만 보므로 **같은 bin 의 문장은 ΔIoU 가 같다**
+  → 프레임×클래스×bin(80) 만 계산한다. 이 지름길은 `selftest` 가 브루트포스와 대조한다.
+- ⚠️ 디바운스(최근 5중 3↑) 미재현 — source-h 은 키프레임 집합이라 시간 이웃이 없다.
+  프레임 필드 IoU 는 디바운스 **이전** 신호.
+- 프레임 쪽 필드: `wave_pred_<vt>` · `wave_iou_<cls>_<tag>` · `wave_vs_topk_<tag>`
+  (두 규칙이 갈린 프레임의 `topk→wave` 라벨) + slim 워크스페이스 `wave`.
+
+## 이미지별 속성 (attrs) — 현재 1축: 실내/실외
+
+```bash
+docker exec docker-analysis-1 python /workspace/prompt_geometry.py attrs        # sourceh
+BANK_PROFILE=frames docker exec ... python /workspace/prompt_geometry.py attrs  # frames_captions
+```
+
+- 기존 프레임 임베딩 + `/embed_text` 프로브만 쓴다 (새 모델·GPU 불필요). 축을 늘리려면
+  `ATTR_AXES` dict 에 항목 추가 — **라벨당 문장 수를 같게** 유지할 것(사전확률 누수).
+- 왜 DB 가 아닌가: `video_metadata.environment_type` 슬롯은 있지만 source-h 871편 전부
+  `env_method='deferred'`/NULL 이다 (Places365 정지 + Gemini 씬 백필 미실행). 게다가 영상 단위.
+- 필드: `environment`(Classification, confidence=margin) · `environment_margin`(1위−2위 cos).
+- **자기검증 = 카메라 내 일관성** (고정 카메라니 갈리면 잡음). source-h 실측:
+  폐기물보관장 outdoor 99.9%(margin +0.031) · 폐촉매보관장 outdoor 99.8%(+0.044) ·
+  **ODC폐기물보관장 54%(+0.0035 = 동전던지기)**. ODC 는 분류 실패가 아니라 장면 자체가
+  창고 셔터 정면 + 옥외 아스팔트라 축이 정의되지 않는다 → margin 낮은 순 정렬로 걸러낼 것.
+- ⚠️ source-h 에서 이 축의 정보량은 사실상 0 — 카메라 3대뿐이라 실내/실외는 `camera` 의 함수다
+  (slim 이 `camera_angle`/`tilt_bin` 을 지운 것과 같은 이유). 도메인이 섞인 `frames` 에서 의미가 생긴다.
+
+### attrs 축 4개 + 조건별 오탐·미탐 크로스탭 (노션 「데이터 임베딩 회의 내용 정리」 §3)
+
+축: `environment`(실내/실외) · `daynight`(주간/야간) · `person`(사람 유/무) ·
+`weather`(맑음/흐림/비/눈). 이상상황 카테고리는 `ground_truth` 담당.
+산출: 필드 축마다 2개(`<축>` + `<축>_margin`) + `report/attrs_cross.md` + `work/geometry/attrs.json`.
+
+**검증 결과 — 축마다 신뢰도가 다르다. 섞어 쓰면 안 된다.**
+
+| 축 | 검증 | 판정 |
+|---|---|---|
+| `daynight` | 파일명 시각(`_YYYYMMDD_HHMMSS`) 대조 **98.6% 일치** (n=13,144) | ✅ 신뢰 |
+| `person` | GT falldown **246/246 = 100% yes** (정의상 사람 있음), fire 96% | ✅ 신뢰 |
+| `environment` | 카메라 내 99.8~99.9% (2대) / **ODC 54%** (margin +0.0035) | ⚠️ ODC 는 셔터정면+옥외아스팔트라 축 자체가 미정의 |
+| `weather` | **날짜 내 일관성 65.8%** (같은 날 rain/overcast 50/50 분할) | ❌ rain↔overcast 는 노이즈. `clear` 만 날짜와 정합 |
+
+- `weather` 는 게이트(`ATTR_GATES`)로 `daynight=day` + `environment=outdoor` 밖을 전부
+  `undetermined`(47.1%) 처리한다. 게이트 없이 돌리면 **날씨가 아니라 밝기를 읽는다** —
+  실측으로 야간 clear 0장, 야간 5,579장이 rain/overcast 로 임의 분할됐다.
+- 게이트 축은 자기보다 **먼저** 계산돼야 한다 (`ATTR_AXES` dict 삽입순 = 계산순).
+- 축 추가 시 라벨당 문장 수를 같게 (사전확률 누수). `person` 은 zero-shot 이 가장 약한 축 —
+  작고 먼 인물은 전역 임베딩에 안 남는다. 부족하면 SAM3 `/segment` 로 교체(코드에 ponytail 주석).
+
+**크로스탭에서 나온 것 (`report/attrs_cross.md`)**
+
+- ⚠️ **acc 를 슬라이스끼리 비교 금지** — GT 이벤트/정상 구성이 슬라이스마다 다르다.
+  비교 가능한 건 이벤트 대비 `FN%`, 정상 대비 `FP%`. 표에 `이벤트/정상` 열을 같이 낸다.
+- **야간 5,579장 = 이벤트 0 / 정상 5,579.** 이벤트 프레임이 전부 주간이다 → "야간 정확도
+  97.7~99.9%" 는 탐지할 게 없는 구간의 숫자다. **야간 이벤트 데이터가 없는 것이 최대 공백.**
+- 실내 631장에서 wave v080 48.0% vs topk v084 86.8% — **실내에서 wave 가 크게 불리**.
+- FN 은 `person=yes`(1,235~1,290) 와 `weather=clear`(1,000~1,156) 에 몰린다. clear 는
+  주간 화재 촬영분이 몰린 구간이라 사실상 "밝은 주간 이벤트" 슬라이스로 읽어야 한다.
+- 카메라별 최악은 ODC(wave v080 56.0%) — 실내 슬라이스와 같은 프레임군이다(ODC=실내 판정).
+
+## 현대백화점 실내 데이터셋 — `Hyundai` (hyundai_build.py)
+
+노션 「데이터 임베딩 회의 내용 정리」 §1(실내 데이터로 이동) 적용. 이벤트 구간만 프레임화.
+
+```bash
+docker cp docker/analysis/hyundai_build.py docker-analysis-1:/workspace/
+docker exec docker-analysis-1 python /workspace/hyundai_build.py all   # segments→frames→sam3→embed→build
+# 뱅크 분석은 prompt_geometry 재사용 (v1.0.8.0 단일 뱅크)
+BANK_A=v1.0.8.0 BANK_B=v1.0.8.0 ... prompt_geometry.py attach --profile hyundai
+#   허용 스테이지: attach / vote / wave / promptmap / attrs (그 외는 코드가 거부)
+```
+
+**⚠️ 이건 recall 벤치마크가 아니라 오탐(FP) 스트레스 테스트다.** DB 실측 810 이벤트/109편에서
+4클래스 GT 는 falldown 57 / fire 5 / smoke 6 **구간**뿐이고(fire 는 총 10초) normal 721 구간이
+모수다. 대부분이 4클래스 어디에도 없는 실내 장면 → 뱅크가 여기서 이벤트를 부르면 그게 오탐이다.
+**recall/F1 을 인용하면 안 된다.**
+
+- **"넘어질 뻔함"(near_miss) 509건은 falldown 이 아니다** → 기본 GT normal. falldown 으로 세면
+  없는 FN 을 만든다. 판단을 코드에 묻지 않고 `event_kind` 필드로 남기니 App 에서 뒤집어 볼 수 있다.
+- GT 우선순위: 폴더(`/esfalldown|falldown|fire|smoke|normal/`, v2 만 있음) → 캡션 정규식 → 없음.
+  캡션 규칙은 **`뻔` 을 `넘어지` 보다 먼저** 본다. `Hyundai_v3` 102 이벤트는 캡션이 NULL +
+  파일명이 uuid → `event_kind=unknown`, GT normal 로 들어간다 (모수로만 쓸 것).
+- **영상을 내려받지 않는다** — presigned URL + ffmpeg `-ss/-to` Range 요청.
+  실측: 3,600초 원격 mp4 에서 5초 구간 추출 **0.4초**. 789구간/3,844초 → 7,498장 **167초, 실패 0**.
+  호스트 루트가 98%(여유 19GB)라 8.4GB 영상 사본을 만들 여유가 없었다. 프레임만 1.9GB.
+- fps=2 는 제품 `pe_inference --model_input_fps 2` 와 맞춘 값. 구간 경계 ±0.5s 패딩.
+- SAM3.1: **프레임을 지우지 않고 `sam3_hit` 플래그만** 남긴다 (미검출도 오탐 분석의 모수).
+  "이벤트 구간만" 을 더 좁히려면 App 에서 `sam3_hit=hit` 필터.
+- ⚠️ SAM3 응답 스키마: 라벨 `prompt_class` · 박스 `mask_bbox`(xyxy) · 크기 `image_size=[w,h]`.
+  `prompt`/`label`/`width`/`height` 는 **없다** (처음 이 키로 파싱해 라벨을 통째로 잃었다).
+- ⚠️ **공유 `docker-sam3-1` VRAM 누적 누수** — 장기 배치 중 워커 3개의 PyTorch 캐시가 16.85/16.88GB 까지 찬다.
+  다 차면 **모든** `/segment` 가 `OOM → HTTP 500`(503 아님) 이 된다. CLAUDE.md 의
+  "workers 3 ≈ 11.1GB" 는 stale.
+  - **해상도 문제로 오진하지 말 것** — 1280/1024/896 어느 배율로 줄여도 40장 중 39~40장
+    실패했고, 직전까지 성공했던 프레임도 전부 실패했다. 프레임·배율을 바꿔도 실패가
+    유지되면 서비스 상태 문제다.
+  - 복구: `POST /unload` **4~6회**(워커 3개라 1회는 한 워커만) → 16.85GB→6.35GB.
+    다음 요청이 lazy reload 하므로 **prod 컨테이너 재시작 불필요**.
+  - 예방: `SAM3_UNLOAD_EVERY=500` (500프레임마다 `/unload ×4`).
+    실측 효과 **실패율 17%→0%, 1.36→0.52 s/frame**.
+  - `SAM3_MAX_SIDE=1024` 는 피크 완화용으로 남긴다. **바꾸면 검출 민감도가 바뀌므로**
+    데이터셋 안에서 섞지 말고 `sam3.jsonl` 을 지우고 전량 재처리할 것 (레코드에 `max_side` 기록).
+- bbox 는 **축소 좌표계 그대로** 저장하고 `image_size` 로 정규화한다 (원본 복원 불필요).
