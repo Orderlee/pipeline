@@ -16,7 +16,7 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
-from vlm_pipeline.lib.dvc_pull import build_dvc_get_argv, verify_pulled_md5  # noqa: E402
+from vlm_pipeline.lib.dvc_pull import build_dvc_get_argv, compute_dvc_md5, verify_pulled_md5  # noqa: E402
 
 
 def _repo_path() -> str:
@@ -65,17 +65,19 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     _run_dvc_get(get_argv)
-    # md5 verify is a best-effort post-step at operation time (dvc writes <dest>.dvc with the md5).
-    if not verify_pulled_md5(row.get("dvc_md5"), _computed_md5(args.dest)):
-        print("[dataset-pull] md5 mismatch — pulled bytes do not match catalog dvc_md5", file=sys.stderr)
+    # 받은 바이트를 DVC 와 동일한 규칙으로 재해시해 카탈로그의 dvc_md5 와 대조한다
+    # (파일=내용 md5, 디렉토리=<hash>.dir). 검증은 lib.dvc_pull 에 있고 dvc 3.67.1 출력과
+    # 일치함을 확인했다. 카탈로그에 dvc_md5 가 없으면 verify_pulled_md5 가 통과시킨다.
+    expected = row.get("dvc_md5")
+    computed = compute_dvc_md5(args.dest)
+    if not verify_pulled_md5(expected, computed):
+        print(
+            f"[dataset-pull] md5 mismatch — expected={expected} computed={computed} (dest={args.dest})",
+            file=sys.stderr,
+        )
         return 3
-    print(f"[dataset-pull] OK → {args.dest}")
+    print(f"[dataset-pull] OK → {args.dest} (md5={computed or 'not-in-catalog'})")
     return 0
-
-
-def _computed_md5(dest: str) -> str | None:
-    """Operation-time md5 of the pulled tree (None in scaffolding — real impl reads <dest>.dvc)."""
-    return None
 
 
 if __name__ == "__main__":

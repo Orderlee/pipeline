@@ -1,0 +1,573 @@
+- generic [ref=e2]:
+  - generic [ref=e5]:
+    - generic [ref=e6]:
+      - generic [ref=e7] [cursor=pointer]: FiftyOne
+      - generic "Select dataset" [ref=e10]:
+        - textbox "Select dataset" [ref=e12]: source-h
+    - generic [ref=e13]:
+      - textbox "+ add stage" [ref=e1388]
+      - link [ref=e23] [cursor=pointer]:
+        - /url: https://docs.voxel51.com/user_guide/app.html#using-the-view-bar
+    - link [ref=e28] [cursor=pointer]:
+      - /url: https://voxel51.com/why-upgrade?utm_source=FiftyOneApp
+      - button [ref=e29]:
+        - img "Gradient"
+        - text: Explore Enterprise
+    - generic [ref=e33]:
+      - button "Light mode" [ref=e34] [cursor=pointer]
+      - link "Discord" [ref=e37] [cursor=pointer]:
+        - /url: https://community.voxel51.com/
+      - link "GitHub" [ref=e40] [cursor=pointer]:
+        - /url: https://github.com/voxel51/fiftyone
+      - link "Documentation" [ref=e43] [cursor=pointer]:
+        - /url: https://docs.voxel51.com/user_guide/app.html
+  - generic [ref=e49]:
+    - generic [ref=e50]:
+      - generic [ref=e51]:
+        - generic [ref=e54]:
+          - combobox [ref=e55] [cursor=pointer]:
+            - paragraph [ref=e58]: Unsaved view
+          - textbox: "1"
+          - group
+        - generic [ref=e59] [cursor=pointer]: FILTER
+      - generic [ref=e71]:
+        - generic "TAGS" [ref=e78] [cursor=pointer]:
+          - textbox: TAGS
+        - generic "No fields" [ref=e83] [cursor=pointer]
+        - generic [ref=e91] [cursor=pointer]:
+          - generic "Drag to reorder" [ref=e92]
+          - generic [ref=e94]:
+            - generic "Show tags" [ref=e95]:
+              - checkbox [ref=e96]
+            - generic [ref=e99]: sample tags
+        - generic [ref=e105] [cursor=pointer]:
+          - generic "Drag to reorder" [ref=e106]
+          - generic [ref=e108]:
+            - generic "Show _label_tags" [ref=e109]:
+              - checkbox [ref=e110]
+            - generic [ref=e113]: label tags
+        - generic [ref=e120] [cursor=pointer]:
+          - generic "Drag to reorder" [ref=e121]
+          - generic "METADATA" [ref=e123]:
+            - textbox: METADATA
+        - generic "No fields" [ref=e128] [cursor=pointer]
+        - generic [ref=e136] [cursor=pointer]:
+          - generic "Drag to reorder" [ref=e137]
+          - generic [ref=e139]:
+            - generic "Show metadata.size_bytes" [ref=e140]:
+              - checkbox [ref=e141]
+            - generic [ref=e144]: metadata.size_bytes
+        - generic [ref=e150] [cursor=pointer]:
+          - generic "Drag to reorder" [ref=e151]
+          - generic [ref=e153]:
+            - generic "Show metadata.mime_type" [ref=e154]:
+              - checkbox [ref=e155]
+            - generic [ref=e158]: metadata.mime_type
+        - generic [ref=e164] [cursor=pointer]:
+          - generic "Drag to reorder" [ref=e165]
+          - generic [ref=e167]:
+            - generic "Show metadata.width" [ref=e168]:
+              - checkbox [ref=e169]
+            - generic [ref=e172]: metadata.width
+        - generic [ref=e178] [cursor=pointer]:
+          - generic "Drag to reorder" [ref=e179]
+          - generic [ref=e181]:
+            - generic "Show metadata.height" [ref=e182]:
+              - checkbox [ref=e183]
+            - generic [ref=e186]: metadata.height
+        - generic [ref=e192] [cursor=pointer]:
+          - generic "Drag to reorder" [ref=e193]
+          - generic [ref=e195]:
+            - generic "Show metadata.num_channels" [ref=e196]:
+              - checkbox [ref=e197]
+            - generic [ref=e200]: metadata.num_channels
+        - generic [ref=e207] [cursor=pointer]:
+          - generic "Drag to reorder" [ref=e208]
+          - generic "LABELS" [ref=e210]:
+            - textbox: LABELS
+            - generic [ref=e211]: "7"
+        - generic "No fields" [ref=e219] [cursor=pointer]
+        - generic [ref=e227] [cursor=pointer]:
+          - generic "Drag to reorder" [ref=e228]
+          - generic [ref=e230]:
+            - generic "Show ground_truth" [ref=e231]:
+              - checkbox [checked] [ref=e232]
+            - generic [ref=e235]: ground_truth
+        - generic [ref=e241] [cursor=pointer]:
+          - generic "Drag to reorder" [ref=e242]
+          - generic [ref=e244]:
+            - generic "Show relabel_transition" [ref=e245]:
+              - checkbox [checked] [ref=e246]
+            - generic [ref=e249]: relabel_transition
+        - generic [ref=e255] [cursor=pointer]:
+          - generic "Drag to reorder" [ref=e256]
+          - generic [ref=e258]:
+            - generic "Show pred_v1_0_8_0" [ref=e259]:
+              - checkbox [checked] [ref=e260]
+            - generic [ref=e263]: pred_v1_0_8_0
+        - generic [ref=e269] [cursor=pointer]:
+          - generic "Drag to reorder" [ref=e270]
+          - generic [ref=e272]:
+            - generic "Show winner_del_effect_v080" [ref=e273]:
+              - checkbox [checked] [ref=e274]
+            - generic [ref=e277]: winner_del_effect_v080
+        - generic [ref=e283] [cursor=pointer]:
+          - generic "Drag to reorder" [ref=e284]
+          - generic [ref=e286]:
+            - generic "Show winner_site_scope_v080" [ref=e287]:
+              - checkbox [checked] [ref=e288]
+            - generic [ref=e291]: winner_site_scope_v080
+        - generic [ref=e297] [cursor=pointer]:
+          - generic "Drag to reorder" [ref=e298]
+          - generic [ref=e300]:
+            - generic "Show winner_purity_v080" [ref=e301]:
+              - checkbox [ref=e302]
+            - generic [ref=e305]: winner_purity_v080
+        - generic [ref=e311] [cursor=pointer]:
+          - generic "Drag to reorder" [ref=e312]
+          - generic [ref=e314]:
+            - generic "Show winner_loo_v080" [ref=e315]:
+              - checkbox [ref=e316]
+            - generic [ref=e319]: winner_loo_v080
+        - generic [ref=e325] [cursor=pointer]:
+          - generic "Drag to reorder" [ref=e326]
+          - generic [ref=e328]:
+            - generic "Show winner_purity_v084" [ref=e329]:
+              - checkbox [ref=e330]
+            - generic [ref=e333]: winner_purity_v084
+        - generic [ref=e339] [cursor=pointer]:
+          - generic "Drag to reorder" [ref=e340]
+          - generic [ref=e342]:
+            - generic "Show winner_loo_v084" [ref=e343]:
+              - checkbox [ref=e344]
+            - generic [ref=e347]: winner_loo_v084
+        - generic [ref=e353] [cursor=pointer]:
+          - generic "Drag to reorder" [ref=e354]
+          - generic [ref=e356]:
+            - generic "Show winner_pair_cos" [ref=e357]:
+              - checkbox [ref=e358]
+            - generic [ref=e361]: winner_pair_cos
+        - generic [ref=e367] [cursor=pointer]:
+          - generic "Drag to reorder" [ref=e368]
+          - generic [ref=e370]:
+            - generic "Show gen_stratum_v080" [ref=e371]:
+              - checkbox [ref=e372]
+            - generic [ref=e375]: gen_stratum_v080
+        - generic [ref=e381] [cursor=pointer]:
+          - generic "Drag to reorder" [ref=e382]
+          - generic [ref=e384]:
+            - generic "Show gen_pick_v080" [ref=e385]:
+              - checkbox [ref=e386]
+            - generic [ref=e389]: gen_pick_v080
+        - generic [ref=e395] [cursor=pointer]:
+          - generic "Drag to reorder" [ref=e396]
+          - generic [ref=e398]:
+            - generic "Show gap_cluster" [ref=e399]:
+              - checkbox [ref=e400]
+            - generic [ref=e403]: gap_cluster
+        - generic [ref=e409] [cursor=pointer]:
+          - generic "Drag to reorder" [ref=e410]
+          - generic [ref=e412]:
+            - generic "Show flip" [ref=e413]:
+              - checkbox [ref=e414]
+            - generic [ref=e417]: flip
+        - generic [ref=e423] [cursor=pointer]:
+          - generic "Drag to reorder" [ref=e424]
+          - generic [ref=e426]:
+            - generic "Show flip_reason" [ref=e427]:
+              - checkbox [ref=e428]
+            - generic [ref=e431]: flip_reason
+        - generic [ref=e437] [cursor=pointer]:
+          - generic "Drag to reorder" [ref=e438]
+          - generic [ref=e440]:
+            - generic "Show vote_v1_0_8_0" [ref=e441]:
+              - checkbox [ref=e442]
+            - generic [ref=e445]: vote_v1_0_8_0
+        - generic [ref=e451] [cursor=pointer]:
+          - generic "Drag to reorder" [ref=e452]
+          - generic [ref=e454]:
+            - generic "Show rule_flip_v080" [ref=e455]:
+              - checkbox [ref=e456]
+            - generic [ref=e459]: rule_flip_v080
+        - generic [ref=e465] [cursor=pointer]:
+          - generic "Drag to reorder" [ref=e466]
+          - generic [ref=e468]:
+            - generic "Show vote_v1_0_8_4" [ref=e469]:
+              - checkbox [ref=e470]
+            - generic [ref=e473]: vote_v1_0_8_4
+        - generic [ref=e479] [cursor=pointer]:
+          - generic "Drag to reorder" [ref=e480]
+          - generic [ref=e482]:
+            - generic "Show rule_flip_v084" [ref=e483]:
+              - checkbox [ref=e484]
+            - generic [ref=e487]: rule_flip_v084
+        - generic [ref=e493] [cursor=pointer]:
+          - generic "Drag to reorder" [ref=e494]
+          - generic [ref=e496]:
+            - generic "Show pinpoint_pred" [ref=e497]:
+              - checkbox [checked] [ref=e498]
+            - generic [ref=e501]: pinpoint_pred
+        - generic [ref=e507] [cursor=pointer]:
+          - generic "Drag to reorder" [ref=e508]
+          - generic [ref=e510]:
+            - generic "Show pinpoint_effect" [ref=e511]:
+              - checkbox [checked] [ref=e512]
+            - generic [ref=e515]: pinpoint_effect
+        - generic [ref=e521] [cursor=pointer]:
+          - generic "Drag to reorder" [ref=e522]
+          - generic [ref=e524]:
+            - generic "Show environment" [ref=e525]:
+              - checkbox [ref=e526]
+            - generic [ref=e529]: environment
+        - generic [ref=e535] [cursor=pointer]:
+          - generic "Drag to reorder" [ref=e536]
+          - generic [ref=e538]:
+            - generic "Show wave_pred_v1_0_8_0" [ref=e539]:
+              - checkbox [ref=e540]
+            - generic [ref=e543]: wave_pred_v1_0_8_0
+        - generic [ref=e549] [cursor=pointer]:
+          - generic "Drag to reorder" [ref=e550]
+          - generic [ref=e552]:
+            - generic "Show wave_vs_topk_v080" [ref=e553]:
+              - checkbox [ref=e554]
+            - generic [ref=e557]: wave_vs_topk_v080
+        - generic [ref=e563] [cursor=pointer]:
+          - generic "Drag to reorder" [ref=e564]
+          - generic [ref=e566]:
+            - generic "Show wave_pred_v1_0_8_4" [ref=e567]:
+              - checkbox [ref=e568]
+            - generic [ref=e571]: wave_pred_v1_0_8_4
+        - generic [ref=e577] [cursor=pointer]:
+          - generic "Drag to reorder" [ref=e578]
+          - generic [ref=e580]:
+            - generic "Show wave_vs_topk_v084" [ref=e581]:
+              - checkbox [ref=e582]
+            - generic [ref=e585]: wave_vs_topk_v084
+        - generic [ref=e591] [cursor=pointer]:
+          - generic "Drag to reorder" [ref=e592]
+          - generic [ref=e594]:
+            - generic "Show daynight" [ref=e595]:
+              - checkbox [ref=e596]
+            - generic [ref=e599]: daynight
+        - generic [ref=e605] [cursor=pointer]:
+          - generic "Drag to reorder" [ref=e606]
+          - generic [ref=e608]:
+            - generic "Show person" [ref=e609]:
+              - checkbox [ref=e610]
+            - generic [ref=e613]: person
+        - generic [ref=e619] [cursor=pointer]:
+          - generic "Drag to reorder" [ref=e620]
+          - generic [ref=e622]:
+            - generic "Show weather" [ref=e623]:
+              - checkbox [ref=e624]
+            - generic [ref=e627]: weather
+        - generic [ref=e634] [cursor=pointer]:
+          - generic "Drag to reorder" [ref=e635]
+          - generic "PRIMITIVES" [ref=e637]:
+            - textbox: PRIMITIVES
+            - generic [ref=e638]: "1"
+        - generic "No fields" [ref=e646] [cursor=pointer]
+        - generic [ref=e654] [cursor=pointer]:
+          - generic "Drag to reorder" [ref=e655]
+          - generic [ref=e657]:
+            - generic "Show id" [ref=e658]:
+              - checkbox [ref=e659]
+            - generic [ref=e662]: id
+        - generic [ref=e670] [cursor=pointer]:
+          - generic "Drag to reorder" [ref=e671]
+          - generic [ref=e673]:
+            - generic "Show filepath" [ref=e674]:
+              - checkbox [ref=e675]
+            - generic [ref=e678]: filepath
+        - generic [ref=e686] [cursor=pointer]:
+          - generic "Drag to reorder" [ref=e687]
+          - generic [ref=e689]:
+            - generic "Show created_at" [ref=e690]:
+              - checkbox [ref=e691]
+            - generic [ref=e694]: created_at
+        - generic [ref=e702] [cursor=pointer]:
+          - generic "Drag to reorder" [ref=e703]
+          - generic [ref=e705]:
+            - generic "Show last_modified_at" [ref=e706]:
+              - checkbox [ref=e707]
+            - generic [ref=e710]: last_modified_at
+        - generic [ref=e718] [cursor=pointer]:
+          - generic "Drag to reorder" [ref=e719]
+          - generic [ref=e721]:
+            - generic "Show src_video" [ref=e722]:
+              - checkbox [ref=e723]
+            - generic [ref=e726]: src_video
+        - generic [ref=e732] [cursor=pointer]:
+          - generic "Drag to reorder" [ref=e733]
+          - generic [ref=e735]:
+            - generic "Show frame_index" [ref=e736]:
+              - checkbox [ref=e737]
+            - generic [ref=e740]: frame_index
+        - generic [ref=e746] [cursor=pointer]:
+          - generic "Drag to reorder" [ref=e747]
+          - generic [ref=e749]:
+            - generic "Show camera" [ref=e750]:
+              - checkbox [checked] [ref=e751]
+            - generic [ref=e754]: camera
+        - generic [ref=e760] [cursor=pointer]:
+          - generic "Drag to reorder" [ref=e761]
+          - generic [ref=e763]:
+            - generic "Show embedding" [ref=e764]:
+              - checkbox [ref=e765]
+            - generic [ref=e768]: embedding
+        - generic [ref=e774] [cursor=pointer]:
+          - generic "Drag to reorder" [ref=e775]
+          - generic [ref=e777]:
+            - generic "Show top_prompt_v1_0_8_0" [ref=e778]:
+              - checkbox [ref=e779]
+            - generic [ref=e782]: top_prompt_v1_0_8_0
+        - generic [ref=e788] [cursor=pointer]:
+          - generic "Drag to reorder" [ref=e789]
+          - generic [ref=e791]:
+            - generic "Show pred_margin_v080" [ref=e792]:
+              - checkbox [ref=e793]
+            - generic [ref=e796]: pred_margin_v080
+        - generic [ref=e802] [cursor=pointer]:
+          - generic "Drag to reorder" [ref=e803]
+          - generic [ref=e805]:
+            - generic "Show winner_gidx_v080" [ref=e806]:
+              - checkbox [ref=e807]
+            - generic [ref=e810]: winner_gidx_v080
+        - generic [ref=e816] [cursor=pointer]:
+          - generic "Drag to reorder" [ref=e817]
+          - generic [ref=e819]:
+            - generic "Show gap_deficit" [ref=e820]:
+              - checkbox [ref=e821]
+            - generic [ref=e824]: gap_deficit
+        - generic [ref=e830] [cursor=pointer]:
+          - generic "Drag to reorder" [ref=e831]
+          - generic [ref=e833]:
+            - generic "Show margin_delta" [ref=e834]:
+              - checkbox [ref=e835]
+            - generic [ref=e838]: margin_delta
+        - generic [ref=e844] [cursor=pointer]:
+          - generic "Drag to reorder" [ref=e845]
+          - generic [ref=e847]:
+            - generic "Show why_before" [ref=e848]:
+              - checkbox [ref=e849]
+            - generic [ref=e852]: why_before
+        - generic [ref=e858] [cursor=pointer]:
+          - generic "Drag to reorder" [ref=e859]
+          - generic [ref=e861]:
+            - generic "Show why_after" [ref=e862]:
+              - checkbox [ref=e863]
+            - generic [ref=e866]: why_after
+        - generic [ref=e872] [cursor=pointer]:
+          - generic "Drag to reorder" [ref=e873]
+          - generic [ref=e875]:
+            - generic "Show vote_margin_v080" [ref=e876]:
+              - checkbox [ref=e877]
+            - generic [ref=e880]: vote_margin_v080
+        - generic [ref=e886] [cursor=pointer]:
+          - generic "Drag to reorder" [ref=e887]
+          - generic [ref=e889]:
+            - generic "Show vote_margin_v084" [ref=e890]:
+              - checkbox [ref=e891]
+            - generic [ref=e894]: vote_margin_v084
+        - generic [ref=e900] [cursor=pointer]:
+          - generic "Drag to reorder" [ref=e901]
+          - generic [ref=e903]:
+            - generic "Show probe_bar_v080" [ref=e904]:
+              - checkbox [ref=e905]
+            - generic [ref=e908]: probe_bar_v080
+        - generic [ref=e914] [cursor=pointer]:
+          - generic "Drag to reorder" [ref=e915]
+          - generic [ref=e917]:
+            - generic "Show probe_out_v080" [ref=e918]:
+              - checkbox [ref=e919]
+            - generic [ref=e922]: probe_out_v080
+        - generic [ref=e928] [cursor=pointer]:
+          - generic "Drag to reorder" [ref=e929]
+          - generic [ref=e931]:
+            - generic "Show probe_votes_v080" [ref=e932]:
+              - checkbox [ref=e933]
+            - generic [ref=e936]: probe_votes_v080
+        - generic [ref=e942] [cursor=pointer]:
+          - generic "Drag to reorder" [ref=e943]
+          - generic [ref=e945]:
+            - generic "Show probe_topc_v080" [ref=e946]:
+              - checkbox [ref=e947]
+            - generic [ref=e950]: probe_topc_v080
+        - generic [ref=e956] [cursor=pointer]:
+          - generic "Drag to reorder" [ref=e957]
+          - generic [ref=e959]:
+            - generic "Show environment_margin" [ref=e960]:
+              - checkbox [ref=e961]
+            - generic [ref=e964]: environment_margin
+        - generic [ref=e970] [cursor=pointer]:
+          - generic "Drag to reorder" [ref=e971]
+          - generic [ref=e973]:
+            - generic "Show wave_iou_falldown_v080" [ref=e974]:
+              - checkbox [ref=e975]
+            - generic [ref=e978]: wave_iou_falldown_v080
+        - generic [ref=e984] [cursor=pointer]:
+          - generic "Drag to reorder" [ref=e985]
+          - generic [ref=e987]:
+            - generic "Show wave_iou_fire_v080" [ref=e988]:
+              - checkbox [ref=e989]
+            - generic [ref=e992]: wave_iou_fire_v080
+        - generic [ref=e998] [cursor=pointer]:
+          - generic "Drag to reorder" [ref=e999]
+          - generic [ref=e1001]:
+            - generic "Show wave_iou_smoke_v080" [ref=e1002]:
+              - checkbox [ref=e1003]
+            - generic [ref=e1006]: wave_iou_smoke_v080
+        - generic [ref=e1012] [cursor=pointer]:
+          - generic "Drag to reorder" [ref=e1013]
+          - generic [ref=e1015]:
+            - generic "Show wave_iou_falldown_v084" [ref=e1016]:
+              - checkbox [ref=e1017]
+            - generic [ref=e1020]: wave_iou_falldown_v084
+        - generic [ref=e1026] [cursor=pointer]:
+          - generic "Drag to reorder" [ref=e1027]
+          - generic [ref=e1029]:
+            - generic "Show wave_iou_fire_v084" [ref=e1030]:
+              - checkbox [ref=e1031]
+            - generic [ref=e1034]: wave_iou_fire_v084
+        - generic [ref=e1040] [cursor=pointer]:
+          - generic "Drag to reorder" [ref=e1041]
+          - generic [ref=e1043]:
+            - generic "Show wave_iou_smoke_v084" [ref=e1044]:
+              - checkbox [ref=e1045]
+            - generic [ref=e1048]: wave_iou_smoke_v084
+        - generic [ref=e1054] [cursor=pointer]:
+          - generic "Drag to reorder" [ref=e1055]
+          - generic [ref=e1057]:
+            - generic "Show daynight_margin" [ref=e1058]:
+              - checkbox [ref=e1059]
+            - generic [ref=e1062]: daynight_margin
+        - generic [ref=e1068] [cursor=pointer]:
+          - generic "Drag to reorder" [ref=e1069]
+          - generic [ref=e1071]:
+            - generic "Show person_margin" [ref=e1072]:
+              - checkbox [ref=e1073]
+            - generic [ref=e1076]: person_margin
+        - generic [ref=e1082] [cursor=pointer]:
+          - generic "Drag to reorder" [ref=e1083]
+          - generic [ref=e1085]:
+            - generic "Show weather_margin" [ref=e1086]:
+              - checkbox [ref=e1087]
+            - generic [ref=e1090]: weather_margin
+        - textbox "+ add group" [ref=e1097]
+    - generic [ref=e1099]:
+      - button [ref=e1100] [cursor=pointer]
+      - generic [ref=e1107]:
+        - generic [ref=e1109]:
+          - generic [ref=e1111]:
+            - button [ref=e1112] [cursor=pointer]:
+              - paragraph [ref=e1116]: Samples
+            - button "New panel" [ref=e1119] [cursor=pointer]
+          - generic [ref=e1123]:
+            - generic [ref=e1391]:
+              - generic "Click to expand" [ref=e1131]:
+                - generic:
+                  - 'generic "ground_truth: falldown" [ref=e1133]': falldown
+                  - 'generic "relabel_transition: falldown→falldown" [ref=e1134]': falldown→falldown
+                  - 'generic "pred_v1_0_8_0: falldown" [ref=e1135]': falldown
+                  - 'generic "winner_del_effect_v080: 미영향 (판정 유지)" [ref=e1136]': 미영향 (판정 유지)
+                  - 'generic "winner_site_scope_v080: 공통 (3대+)" [ref=e1137]': 공통 (3대+)
+                  - 'generic "pinpoint_pred: falldown" [ref=e1138]': falldown
+                  - 'generic "pinpoint_effect: 변화 없음" [ref=e1139]': 변화 없음
+                  - 'generic "camera: area-a" [ref=e1140]': area-a
+              - generic "Click to expand" [ref=e1143]:
+                - generic:
+                  - 'generic "ground_truth: normal" [ref=e1145]': normal
+                  - 'generic "relabel_transition: falldown→normal" [ref=e1146]': falldown→normal
+                  - 'generic "pred_v1_0_8_0: normal" [ref=e1147]': normal
+                  - 'generic "winner_del_effect_v080: 안전교체 (정답 유지)" [ref=e1148]': 안전교체 (정답 유지)
+                  - 'generic "winner_site_scope_v080: 공통 (2대)" [ref=e1149]': 공통 (2대)
+                  - 'generic "pinpoint_pred: normal" [ref=e1150]': normal
+                  - 'generic "pinpoint_effect: 변화 없음" [ref=e1151]': 변화 없음
+                  - 'generic "camera: area-b" [ref=e1152]': area-b
+              - generic "Click to expand" [ref=e1155]:
+                - generic:
+                  - 'generic "ground_truth: normal" [ref=e1157]': normal
+                  - 'generic "relabel_transition: falldown→normal" [ref=e1158]': falldown→normal
+                  - 'generic "pred_v1_0_8_0: falldown" [ref=e1159]': falldown
+                  - 'generic "winner_del_effect_v080: 미영향 (판정 유지)" [ref=e1160]': 미영향 (판정 유지)
+                  - 'generic "winner_site_scope_v080: 공통 (3대+)" [ref=e1161]': 공통 (3대+)
+                  - 'generic "pinpoint_pred: falldown" [ref=e1162]': falldown
+                  - 'generic "pinpoint_effect: 변화 없음" [ref=e1163]': 변화 없음
+                  - 'generic "camera: area-b" [ref=e1164]': area-b
+              - generic "Click to expand" [ref=e1167]:
+                - generic:
+                  - 'generic "ground_truth: normal" [ref=e1169]': normal
+                  - 'generic "relabel_transition: falldown→normal" [ref=e1170]': falldown→normal
+                  - 'generic "pred_v1_0_8_0: falldown" [ref=e1171]': falldown
+                  - 'generic "winner_del_effect_v080: 미영향 (판정 유지)" [ref=e1172]': 미영향 (판정 유지)
+                  - 'generic "winner_site_scope_v080: 공통 (3대+)" [ref=e1173]': 공통 (3대+)
+                  - 'generic "pinpoint_pred: falldown" [ref=e1174]': falldown
+                  - 'generic "pinpoint_effect: 변화 없음" [ref=e1175]': 변화 없음
+                  - 'generic "camera: area-a" [ref=e1176]': area-a
+              - generic "Click to expand" [ref=e1179]:
+                - generic:
+                  - 'generic "ground_truth: falldown" [ref=e1181]': falldown
+                  - 'generic "relabel_transition: falldown→falldown" [ref=e1182]': falldown→falldown
+                  - 'generic "pred_v1_0_8_0: falldown" [ref=e1183]': falldown
+                  - 'generic "winner_del_effect_v080: 미영향 (판정 유지)" [ref=e1184]': 미영향 (판정 유지)
+                  - 'generic "winner_site_scope_v080: 공통 (3대+)" [ref=e1185]': 공통 (3대+)
+                  - 'generic "pinpoint_pred: falldown" [ref=e1186]': falldown
+                  - 'generic "pinpoint_effect: 변화 없음" [ref=e1187]': 변화 없음
+                  - 'generic "camera: area-a" [ref=e1188]': area-a
+              - generic "Click to expand" [ref=e1191]:
+                - generic:
+                  - 'generic "ground_truth: falldown" [ref=e1193]': falldown
+                  - 'generic "relabel_transition: falldown→falldown" [ref=e1194]': falldown→falldown
+                  - 'generic "pred_v1_0_8_0: falldown" [ref=e1195]': falldown
+                  - 'generic "winner_del_effect_v080: 미영향 (판정 유지)" [ref=e1196]': 미영향 (판정 유지)
+                  - 'generic "winner_site_scope_v080: 공통 (3대+)" [ref=e1197]': 공통 (3대+)
+                  - 'generic "pinpoint_pred: falldown" [ref=e1198]': falldown
+                  - 'generic "pinpoint_effect: 변화 없음" [ref=e1199]': 변화 없음
+                  - 'generic "camera: area-a" [ref=e1200]': area-a
+              - generic "Click to expand" [ref=e1203]:
+                - generic:
+                  - 'generic "ground_truth: falldown" [ref=e1205]': falldown
+                  - 'generic "relabel_transition: falldown→falldown" [ref=e1206]': falldown→falldown
+                  - 'generic "pred_v1_0_8_0: falldown" [ref=e1207]': falldown
+                  - 'generic "winner_del_effect_v080: 미영향 (판정 유지)" [ref=e1208]': 미영향 (판정 유지)
+                  - 'generic "winner_site_scope_v080: 공통 (3대+)" [ref=e1209]': 공통 (3대+)
+                  - 'generic "pinpoint_pred: falldown" [ref=e1210]': falldown
+                  - 'generic "pinpoint_effect: 변화 없음" [ref=e1211]': 변화 없음
+                  - 'generic "camera: area-a" [ref=e1212]': area-a
+            - generic [ref=e1213]:
+              - generic [ref=e1215]:
+                - generic:
+                  - generic [ref=e1406] [cursor=pointer]: merge
+                  - generic [ref=e1408] [cursor=pointer]: science
+                  - generic [ref=e1410] [cursor=pointer]: add_chart
+                  - generic [ref=e1412] [cursor=pointer]: drive_file_move
+                  - generic [ref=e1414] [cursor=pointer]: delete_forever
+              - generic [ref=e1253]:
+                - generic [ref=e1254]: 13,144 samples
+                - generic "Sort by" [ref=e1258]:
+                  - textbox "Sort by" [ref=e1260]
+                - generic [ref=e1261]:
+                  - generic "Spacing" [ref=e1262]
+                  - generic "Reset spacing" [ref=e1268] [cursor=pointer]
+                - generic [ref=e1271]:
+                  - generic "Zoom" [ref=e1272]
+                  - generic "Reset zoom" [ref=e1278] [cursor=pointer]
+        - generic [ref=e1282]:
+          - generic [ref=e1284]:
+            - button [ref=e1285] [cursor=pointer]:
+              - paragraph [ref=e1289]: Embeddings
+              - button "Close" [ref=e1290]
+            - button "New panel" [ref=e1295] [cursor=pointer]
+          - generic [ref=e1300]:
+            - generic "Select brain key" [ref=e1301]:
+              - textbox "Select brain key" [ref=e1303]: prompt_viz_v080
+            - generic "Color by" [ref=e1416]:
+              - textbox "Color by" [ref=e1418]
+            - generic "Compute visualization" [ref=e1304] [cursor=pointer]
+            - generic "Reset zoom (Esc)" [ref=e1353] [cursor=pointer]
+            - generic "Select (s)" [ref=e1356] [cursor=pointer]
+            - generic "Pan (g)" [ref=e1359] [cursor=pointer]
+            - link "Help" [ref=e1362] [cursor=pointer]:
+              - /url: https://docs.voxel51.com/user_guide/app.html#embeddings-panel
+            - generic "Color by 2 fields" [ref=e1307] [cursor=pointer]: palette
+            - generic "좌표를 필드로 저장" [ref=e1309] [cursor=pointer]: straighten

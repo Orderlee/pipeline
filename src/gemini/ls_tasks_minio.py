@@ -155,7 +155,9 @@ def find_or_create_project(
     label_config: str | None = None,
 ) -> tuple[int, bool]:
     """project_name으로 프로젝트 조회, 없으면 생성. (project_id, is_new) 반환."""
-    resp = requests.get(f"{ls_url}/api/projects/", headers=headers)
+    # page_size 미지정 시 LS 는 최신 30개만 반환 → 오래된 프로젝트가 "없음"으로 판정되어
+    # 빈 중복 프로젝트가 매일 생성되던 버그 (2026-07-14~22, 63개 증식 후 정리).
+    resp = requests.get(f"{ls_url}/api/projects/", headers=headers, params={"page_size": 1000})
     resp.raise_for_status()
     data = resp.json()
     projects = data if isinstance(data, list) else data.get("results", [])
@@ -234,20 +236,31 @@ def fetch_existing_task_stems(ls_url: str, headers: dict, project_id: int) -> di
         if not tasks:
             break
         for task in tasks:
-            video_url = task.get("data", {}).get("video", "")
-            stem = Path(urlparse(video_url).path).stem
-            index[stem] = task
+            data = task.get("data", {}) or {}
+            media_url = data.get("video", "") or data.get("image", "")
+            stem = Path(urlparse(media_url).path).stem
+            # 미디어 URL 이 없거나 stem 이 비면 task id 로 격리 — 이미지 프로젝트 전 태스크가
+            # 빈 stem 한 키로 붕괴해 renew/dedup 이 1건만 처리하던 버그 방지.
+            index[stem or f"__task_{task['id']}"] = task
         if isinstance(data, list) or not data.get("next"):
             break
         page += 1
     return index
 
 
-def update_task_url(ls_url: str, headers: dict, task_id: int, new_url: str, folder: str) -> None:
+def update_task_url(ls_url: str, headers: dict, task: dict, new_url: str) -> None:
+    """task.data 의 미디어 키(video/image)만 교체.
+
+    data 를 통째로 교체하면 이미지 태스크에서 image 키가 video 로 덮여 유실된다
+    (2026-07-22 실발생) — 기존 키를 전부 보존하고 해당 미디어 키만 갱신한다.
+    """
+    data = dict(task.get("data") or {})
+    media_key = "video" if data.get("video") else "image"
+    data[media_key] = new_url
     resp = requests.patch(
-        f"{ls_url}/api/tasks/{task_id}/",
+        f"{ls_url}/api/tasks/{task['id']}/",
         headers={**headers, "Content-Type": "application/json"},
-        json={"data": {"video": new_url, "folder": folder}},
+        json={"data": data},
     )
     resp.raise_for_status()
 
@@ -268,14 +281,14 @@ def cmd_renew(args, minio, auth_headers: dict) -> None:
 
     for stem, task in existing.items():
         task_id = task["id"]
-        video_url = task.get("data", {}).get("video", "")
-        folder = task.get("data", {}).get("folder", "")
+        data = task.get("data", {}) or {}
+        media_url = data.get("video", "") or data.get("image", "")
 
-        if not is_url_expiring(video_url, args.threshold):
+        if not is_url_expiring(media_url, args.threshold):
             skipped += 1
             continue
 
-        parsed = urlparse(video_url)
+        parsed = urlparse(media_url)
         path_parts = parsed.path.lstrip("/").split("/", 1)
         if len(path_parts) < 2:
             print(f"[SKIP]     task {task_id} URL 파싱 실패")
@@ -284,8 +297,12 @@ def cmd_renew(args, minio, auth_headers: dict) -> None:
 
         bucket, key = path_parts[0], path_parts[1]
         try:
+            # JWT access(~5분) 수명 대비 주기 재발급 — 대형 프로젝트(>5분) 순회 중
+            # 만료로 중간부터 401 나던 버그 방지. static Token 이면 no-op.
+            if (renewed + error) % 400 == 0:
+                auth_headers = resolve_auth_headers(args.ls_url, args.api_key)
             new_url = generate_presigned_url(minio, bucket, key, DEFAULT_PRESIGN_EXPIRES)
-            update_task_url(args.ls_url, auth_headers, task_id, new_url, folder)
+            update_task_url(args.ls_url, auth_headers, task, new_url)
             expiry = get_presigned_expiry(new_url)
             print(
                 f"[RENEWED]  task {task_id} ← {stem} (만료: {expiry.strftime('%Y-%m-%d %H:%M UTC') if expiry else '?'})"

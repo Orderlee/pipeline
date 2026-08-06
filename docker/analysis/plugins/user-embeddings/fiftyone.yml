@@ -1,9 +1,11 @@
 name: "@user/embeddings"
-description: Embeddings 패널 보강 — OSS compute_visualization 버튼 + 2-필드 Color by
-version: 1.4.0
+description: Embeddings 패널 보강 + 미디어 파일 이동/삭제 버튼
+version: 1.5.0
 fiftyone:
   version: ">=1.4"
 operators:
   - compute_visualization
   - combine_color_fields
   - save_visualization_coords
+  - move_media
+  - delete_media

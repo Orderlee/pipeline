@@ -37,38 +37,115 @@ _idle_stop_event = threading.Event()
 
 # ─── GPU 정비 게이트 (server-side, fail-safe) ────────────────────────────────
 # maintenance 활성 동안 /segment·/warmup 은 503, lazy-reload 거부.
-# 프로세스-로컬 in-memory store 가 진실 (컨테이너는 vlm_pipeline-free).
-_maintenance: dict[str, Any] = {
-    "active": False,
-    "owner_run_id": None,
-    "entered_at": None,
-    "heartbeat_at": None,
-    "ttl_seconds": int(os.environ.get("MAINTENANCE_DEFAULT_TTL_SECONDS", "1800")),
-    "note": None,
-}
+#
+# ⚠️ 상태는 반드시 프로세스 간 공유돼야 한다. uvicorn 은 `--workers N` 으로 fork 된
+# 독립 프로세스를 띄우므로, 모듈 전역 dict 를 쓰면 `/maintenance/enter` 요청을 받은
+# 워커 1개만 멈추고 나머지는 계속 /segment 를 서빙한다 — drain 이 구조적으로 불가능했다
+# (2026-07-29 확인, prod SAM3_WORKERS=3). 워커는 모두 같은 컨테이너 안이라 파일 하나로
+# 충분하며, 컨테이너를 vlm_pipeline-free 로 유지한다 (PG 드라이버 같은 새 의존성 없음).
+#
+# 파일은 컨테이너 재시작 시 사라진다 = 재시작하면 정비 해제. 기존 in-memory 동작과
+# 동일하므로 회귀는 아니지만, 재시작을 가로질러 유지하려면 PG gpu_maintenance_lock 이
+# 필요하다 (현재 그 쓰기 경로는 미배선).
+_MAINTENANCE_STATE_PATH = os.environ.get("SAM3_MAINTENANCE_STATE_PATH", "/tmp/sam3_maintenance.json")
+_DEFAULT_TTL_SECONDS = int(os.environ.get("MAINTENANCE_DEFAULT_TTL_SECONDS", "1800"))
 _maintenance_lock = threading.Lock()
 
 
+def _inactive_state() -> dict[str, Any]:
+    return {
+        "active": False,
+        "owner_run_id": None,
+        "entered_at": None,
+        "heartbeat_at": None,
+        "ttl_seconds": _DEFAULT_TTL_SECONDS,
+        "note": None,
+    }
+
+
+def _is_expired(state: dict[str, Any]) -> bool:
+    """heartbeat + ttl 초과 여부.
+
+    TTL 은 원래 저장만 되고 검사되지 않아 장식이었다. 그 탓에 `/maintenance/exit` 를
+    잊으면 SAM3 가 무기한 503 이었다. 여기서 강제해 정비가 스스로 풀리게 한다.
+    """
+    if not state.get("active"):
+        return False
+    heartbeat_at = state.get("heartbeat_at")
+    if heartbeat_at is None:
+        return False
+    ttl = float(state.get("ttl_seconds") or _DEFAULT_TTL_SECONDS)
+    return (time.time() - float(heartbeat_at)) > ttl
+
+
+def _read_maintenance() -> dict[str, Any]:
+    """공유 파일에서 정비 상태를 읽는다. 읽기 실패·손상·TTL 만료는 전부 '비활성'.
+
+    fail-open 인 이유: 게이트가 닫히면 SAM3 전면 503 이다. 파일 하나 깨졌다고 서빙을
+    통째로 죽이는 것보다, 시끄럽게 로깅하고 서빙을 유지하는 편이 낫다 (기존 동작과도 일치).
+    """
+    try:
+        with open(_MAINTENANCE_STATE_PATH, encoding="utf-8") as fh:
+            loaded = json.load(fh)
+    except FileNotFoundError:
+        return _inactive_state()
+    except (OSError, ValueError) as exc:
+        logger.warning("SAM3 maintenance state 읽기 실패 (%s) — 비활성으로 간주: %s", _MAINTENANCE_STATE_PATH, exc)
+        return _inactive_state()
+
+    if not isinstance(loaded, dict):
+        logger.warning("SAM3 maintenance state 형식 오류 — 비활성으로 간주")
+        return _inactive_state()
+
+    state = _inactive_state()
+    state.update(loaded)
+    if _is_expired(state):
+        logger.warning(
+            "SAM3 maintenance TTL 만료 (ttl=%ss, owner_run_id=%s) — 자동 해제",
+            state.get("ttl_seconds"),
+            state.get("owner_run_id"),
+        )
+        return _inactive_state()
+    return state
+
+
+def _write_maintenance(state: dict[str, Any]) -> None:
+    """상태를 원자적으로 기록. 실패는 삼키지 않는다.
+
+    조용히 실패하면 운영자가 '정비 진입 완료'로 믿는데 실제로는 서빙이 계속된다 —
+    학습 중 GPU 경합으로 이어지는, 이 수정이 없애려는 바로 그 실패 모드다.
+    """
+    tmp_path = f"{_MAINTENANCE_STATE_PATH}.tmp"
+    try:
+        with open(tmp_path, "w", encoding="utf-8") as fh:
+            json.dump(state, fh)
+        os.replace(tmp_path, _MAINTENANCE_STATE_PATH)
+    except OSError as exc:
+        logger.error("SAM3 maintenance state 기록 실패 (%s): %s", _MAINTENANCE_STATE_PATH, exc)
+        raise HTTPException(status_code=500, detail="maintenance_state_write_failed") from exc
+
+
 def _maintenance_active() -> bool:
-    return bool(_maintenance.get("active"))
+    return bool(_read_maintenance().get("active"))
 
 
 def _set_maintenance(active: bool, **fields: Any) -> dict[str, Any]:
     with _maintenance_lock:
-        _maintenance["active"] = bool(active)
-        if active:
-            now = time.time()
-            _maintenance["owner_run_id"] = fields.get("owner_run_id")
-            _maintenance["entered_at"] = now
-            _maintenance["heartbeat_at"] = now
-            _maintenance["ttl_seconds"] = int(fields.get("ttl_seconds") or _maintenance["ttl_seconds"])
-            _maintenance["note"] = fields.get("note")
+        if not active:
+            state = _inactive_state()
         else:
-            _maintenance["owner_run_id"] = None
-            _maintenance["entered_at"] = None
-            _maintenance["heartbeat_at"] = None
-            _maintenance["note"] = None
-        return dict(_maintenance)
+            now = time.time()
+            previous_ttl = _read_maintenance().get("ttl_seconds") or _DEFAULT_TTL_SECONDS
+            state = {
+                "active": True,
+                "owner_run_id": fields.get("owner_run_id"),
+                "entered_at": now,
+                "heartbeat_at": now,
+                "ttl_seconds": int(fields.get("ttl_seconds") or previous_ttl),
+                "note": fields.get("note"),
+            }
+        _write_maintenance(state)
+        return dict(state)
 
 
 def _load_torch():
@@ -550,15 +627,20 @@ async def maintenance_exit() -> dict[str, Any]:
 
 @app.post("/maintenance/heartbeat")
 async def maintenance_heartbeat() -> dict[str, Any]:
+    """TTL 연장. 정비가 이미 만료/해제됐으면 되살리지 않는다."""
     with _maintenance_lock:
-        if _maintenance["active"]:
-            _maintenance["heartbeat_at"] = time.time()
-        return dict(_maintenance)
+        state = _read_maintenance()
+        if not state.get("active"):
+            return state
+        state["heartbeat_at"] = time.time()
+        _write_maintenance(state)
+        return dict(state)
 
 
 @app.get("/maintenance/status")
 async def maintenance_status() -> dict[str, Any]:
-    return dict(_maintenance)
+    # _read_maintenance() 가 TTL 만료를 반영하므로, 만료된 정비는 여기서도 비활성으로 보인다.
+    return _read_maintenance()
 
 
 if __name__ == "__main__":
