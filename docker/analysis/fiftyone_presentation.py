@@ -36,7 +36,7 @@
 멱등이라 매 빌드/리프레시마다 다시 불러도 안전하다.
 현재 배선: `fiftyone_full_build.py` (frames_captions 전체 빌드) 끝.
 
-**손으로 짠 버전과의 관계**: `sourceh_prompt_eval.py` 는 자체 `_configure_sidebar`/`_save_workspace`
+**손으로 짠 버전과의 관계**: `prompt_eval.py` 는 자체 `_configure_sidebar`/`_save_workspace`
 를 갖고 있다. 그쪽은 도메인 지식이 들어간 그룹명("⑥ 원점수 (버전간 직접비교 금지)" 처럼
 **왜 접었는지**가 이름에 담긴)을 쓰므로 자동 판정으로 대체하지 않는다. 이 모듈은 도메인
 지식이 없는 임의 데이터셋용 기본값이다.

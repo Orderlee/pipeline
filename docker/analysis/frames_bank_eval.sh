@@ -14,7 +14,7 @@ REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 C="${ANALYSIS_CONTAINER:-docker-analysis-1}"
 
 # ambient /workspace 의존 금지 — 필요 파일 전부 명시 반입 (drift 차단, 스펙 §10 불채택 항목의 해소)
-for f in sourceh_prompt_geometry.py frames_bank_ledger.py bank_domain_map.yaml fiftyone_presentation.py; do
+for f in prompt_geometry.py frames_bank_ledger.py bank_domain_map.yaml fiftyone_presentation.py; do
   docker cp "$REPO/docker/analysis/$f" "$C:/workspace/" >/dev/null
 done
 
@@ -25,13 +25,13 @@ if [[ "${1:-}" == "--bank" ]]; then
   VER="${2:?사용법: --bank <버전> <CSV경로>}"
   CSV="${3:?CSV 경로 필요}"
   docker cp "$CSV" "$C:/tmp/bank_new.csv"
-  run /workspace/sourceh_prompt_geometry.py bank --profile frames --csv /tmp/bank_new.csv --version "$VER"
+  run /workspace/prompt_geometry.py bank --profile frames --csv /tmp/bank_new.csv --version "$VER"
 fi
 
-run /workspace/sourceh_prompt_geometry.py selftest --profile frames
+run /workspace/prompt_geometry.py selftest --profile frames
 run /workspace/frames_bank_ledger.py
 for st in score gap viz gtsync report; do
-  run /workspace/sourceh_prompt_geometry.py "$st" --profile frames
+  run /workspace/prompt_geometry.py "$st" --profile frames
 done
 
 echo

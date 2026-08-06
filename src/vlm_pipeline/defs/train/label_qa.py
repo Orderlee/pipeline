@@ -29,10 +29,37 @@ from vlm_pipeline.resources.postgres import PostgresResource
 _LABELS_BUCKET = "vlm-labels"
 
 
+def annotate_scorability(report: dict[str, Any]) -> dict[str, Any]:
+    """채점 가능 표본 수를 계산해 붙이고, 0 이면 abstain 으로 표시한다.
+
+    GT 는 있는데 pseudo 스냅샷이 하나도 없으면 모든 GT 가 FN 으로 잡혀 macro_f1=0.0 이 나온다.
+    그건 "모델 성능이 0" 이 아니라 "측정 불가" 인데 숫자만 보면 구분이 안 된다.
+
+    실측(2026-07-29): GT 248장 **전부** 스냅샷이 없다 — write-once 스냅샷 writer 는
+    2026-07-07 배포분이고 현재 GT 는 그 이전 검출분이라 원본이 이미 소실됐다.
+    즉 지금 이 asset 을 materialize 하면 macro_f1=0.0 만 나온다. 정기 스케줄을 걸면
+    "SAM3 성능 0" 을 매일 리포트하는 오독 생산기가 되므로, 스케줄은 `scorable_items` 가
+    0 을 벗어난 뒤에 붙인다.
+    """
+    scorable = int(report.get("gt_items") or 0) - int(report.get("missing_pseudo") or 0)
+    report["scorable_items"] = scorable
+    report["abstained"] = scorable <= 0
+    return report
+
+
 def format_qa_report_md(report: dict[str, Any]) -> str:
     """리포트 → Dagster UI 가 렌더하는 markdown 표 (per-class P/R/F1 + micro). 별도 대시보드 불필요."""
+    if report.get("abstained"):
+        return (
+            f"**{report.get('modality', '?')} QA — ABSTAIN (채점 가능 표본 0)**\n\n"
+            f"items={report.get('gt_items', '?')}, missing_pseudo={report.get('missing_pseudo', '?')}, "
+            f"scorable_items={report.get('scorable_items', '?')}\n\n"
+            f"GT 전체에 pseudo 스냅샷이 없어 모든 GT 가 FN 으로 집계된다. "
+            f"`macro_f1={report.get('macro_f1')}` 은 **측정 불가를 뜻하며 성능 0 이 아니다.**"
+        )
     head = (
         f"**{report.get('modality', '?')} QA** — items={report.get('gt_items', '?')}, "
+        f"scorable={report.get('scorable_items', '?')}, "
         f"missing_pseudo={report.get('missing_pseudo', '?')}, "
         f"macro_f1={report.get('macro_f1')} (thr={report.get('threshold')})"
     )
@@ -101,7 +128,7 @@ def _run_bbox_label_qa(
             per_pred.append(pred)
     report = score_bbox_quality(per_gt, per_pred, iou_threshold=iou_threshold, score_threshold=score_threshold)
     report.update(modality="bbox", folder=folder, gt_items=len(per_gt), missing_pseudo=missing)
-    return report
+    return annotate_scorability(report)
 
 
 def _fetch_pseudo_events(minio: MinIOResource, bucket: str, labels_key: str) -> list | None:
@@ -146,7 +173,7 @@ def _run_timestamp_label_qa(
             per_pred.append({"event": pseudo})
     report = score_timestamp_quality(per_gt, per_pred, tiou_threshold=tiou_threshold)
     report.update(modality="timestamp", folder=folder, gt_items=len(per_gt), missing_pseudo=missing)
-    return report
+    return annotate_scorability(report)
 
 
 _QA_CONFIG = {
@@ -170,16 +197,28 @@ def pseudo_label_bbox_qa(context, db: PostgresResource, minio: MinIOResource) ->
         iou_threshold=float(cfg.get("iou_threshold", 0.5)),
         score_threshold=float(cfg.get("score_threshold", 0.0)),
     )
-    context.log.info(
-        "pseudo_label_bbox_qa: gt_items=%s macro_f1=%s micro=%s",
-        report["gt_items"],
-        report["macro_f1"],
-        report["micro"],
-    )
+    if report["abstained"]:
+        context.log.warning(
+            "pseudo_label_bbox_qa: ABSTAIN — 채점 가능 표본 0 (gt_items=%s, missing_pseudo=%s). "
+            "macro_f1=%s 는 측정 불가이며 성능 0 이 아니다.",
+            report["gt_items"],
+            report["missing_pseudo"],
+            report["macro_f1"],
+        )
+    else:
+        context.log.info(
+            "pseudo_label_bbox_qa: gt_items=%s scorable=%s macro_f1=%s micro=%s",
+            report["gt_items"],
+            report["scorable_items"],
+            report["macro_f1"],
+            report["micro"],
+        )
     context.add_output_metadata(
         {
             "macro_f1": report["macro_f1"],
             "gt_items": report["gt_items"],
+            "scorable_items": report["scorable_items"],
+            "abstained": report["abstained"],
             "missing_pseudo": report["missing_pseudo"],
             "per_class": MetadataValue.md(format_qa_report_md(report)),
         }
@@ -198,16 +237,28 @@ def pseudo_label_timestamp_qa(context, db: PostgresResource, minio: MinIOResourc
     report = _run_timestamp_label_qa(
         db, minio, folder=cfg.get("folder"), tiou_threshold=float(cfg.get("tiou_threshold", 0.5))
     )
-    context.log.info(
-        "pseudo_label_timestamp_qa: gt_items=%s macro_f1=%s missing_pseudo=%s",
-        report["gt_items"],
-        report["macro_f1"],
-        report["missing_pseudo"],
-    )
+    if report["abstained"]:
+        context.log.warning(
+            "pseudo_label_timestamp_qa: ABSTAIN — 채점 가능 표본 0 (gt_items=%s, missing_pseudo=%s). "
+            "macro_f1=%s 는 측정 불가이며 성능 0 이 아니다.",
+            report["gt_items"],
+            report["missing_pseudo"],
+            report["macro_f1"],
+        )
+    else:
+        context.log.info(
+            "pseudo_label_timestamp_qa: gt_items=%s scorable=%s macro_f1=%s missing_pseudo=%s",
+            report["gt_items"],
+            report["scorable_items"],
+            report["macro_f1"],
+            report["missing_pseudo"],
+        )
     context.add_output_metadata(
         {
             "macro_f1": report["macro_f1"],
             "gt_items": report["gt_items"],
+            "scorable_items": report["scorable_items"],
+            "abstained": report["abstained"],
             "missing_pseudo": report["missing_pseudo"],
             "per_class": MetadataValue.md(format_qa_report_md(report)),
         }

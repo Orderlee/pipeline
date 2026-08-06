@@ -1,5 +1,5 @@
 > ⚠️ 이 파일은 사본이다. **원본은 `docker/data/fiftyone/sourceh_v2/report/prompt_authoring_guide.md`** 이며
-> `sourceh_prompt_geometry.py guide` 스테이지가 실행될 때마다 재생성된다.
+> `prompt_geometry.py guide` 스테이지가 실행될 때마다 재생성된다.
 
 # 프롬프트 작성 가이드 (자동 생성, 기준 뱅크: v1.0.8.4)
 

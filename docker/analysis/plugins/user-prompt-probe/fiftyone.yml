@@ -1,0 +1,7 @@
+name: "@user/prompt-probe"
+description: 후보 프롬프트를 App 안에서 즉시 채점 — top-k 진입률·순이득·배경 코사인
+version: 1.0.0
+fiftyone:
+  version: ">=1.4"
+operators:
+  - probe_prompt
