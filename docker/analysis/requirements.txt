@@ -1,5 +1,5 @@
 jupyterlab
-fiftyone==1.19.0
+fiftyone
 psycopg2-binary
 boto3
 pandas
