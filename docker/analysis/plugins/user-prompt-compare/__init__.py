@@ -452,17 +452,17 @@ class PromptComparePanel(foo.Panel):
         })
 
     def _refresh(self, ctx, update_plot=True):
-        """update_plot=False (2026-08-10 리로드 버그 fix): 프레임→문장 방향 훅에서는 플롯
-        상태(scatter_data/layout)를 다시 쓰지 않는다 — 표(top_table)·컨트롤만 갱신.
+        """update_plot=False = 성능 옵션: 플롯 상태(scatter_data/layout, 12k점)를 다시 쓰지
+        않고 표(top_table)·컨트롤만 갱신한다. 선택 계열 훅은 뷰 변경이 어차피 재렌더를
+        유발하므로 이중 재렌더를 피하려 False를 쓴다.
 
-        실측 인과(프로브 3단 이분): scatter_data 상태가 바뀌면 클라이언트가 12k점 scattergl
-        플롯을 풀 재렌더하고, 그 재렌더가 네이티브 Embeddings 패널의 extendedSelection을
-        수 초 뒤 파괴한다 (emb_viz lasso → 그리드 필터+문장 표까지 정상 → ~10초 뒤 전부
-        리셋되는 사용자 리포트). 같은 상태 값이 스키마에 실려 재전송되는 것은 무해 —
-        top_table만 갱신한 프로브에서는 선택이 60초+ 유지됐다. 따라서 emb_viz 선택을
-        소비하는 방향(on_change_selected/on_change_extended_selection)에서는 플롯을 건드리지
-        않는 것이 유일한 안전 경로다 (트레이드오프: 이 방향에선 산점도 문장 하이라이트가
-        안 그려진다 — 핵심 정보는 승자 문장 표가 전달).
+        ⚠️ 리로드 버그의 최종 진단(2026-08-10, on_change_extended_selection 주석 참고):
+        emb_viz extendedSelection 파괴의 트리거는 재렌더도 상태 쓰기도 아니고 **이 패널에
+        on_change 훅이 등록돼 있어 selection 변화 시 발생하는 훅 EXEC 왕복 그 자체**다
+        (훅 바디 no-op이어도 파괴, 등록 제거 프로브만 생존). 한때 update_plot=False가
+        파괴를 막는 것처럼 보였던 실측은 호스트 load 190 교란(파괴 측 서버 왕복이 부하로
+        실패)이었다 — update_plot은 파괴 방지 수단이 아니다. 방어는 "받은 선택을 즉시
+        뷰로 승격 + 빈 에코 무시" (_select_frames_view / on_change_extended_selection).
         """
         self._sync_controls(ctx)
         # 과거 set_data(patch_panel_data)로 심어진 패널 데이터가 세션에 영속되어, 있으면
@@ -567,14 +567,26 @@ class PromptComparePanel(foo.Panel):
     def on_change_extended_selection(self, ctx):
         ext = ctx.extended_selection or {}
         ids = ext.get("selection") or []
+        if not ids:
+            # 빈 전이 무시 (2026-08-10 리로드 버그 최종 진단): 이 패널에 on_change 훅이
+            # 등록돼 있으면 **훅 EXEC 왕복 자체가** (바디가 no-op이어도) 네이티브 emb_viz의
+            # extendedSelection을 수 초 내 소거한다 — 훅 등록을 지운 프로브만 생존, App
+            # 버그라 Python에서 못 막는다. 그래서 ① 아래에서 받은 ids를 즉시 뷰(Select
+            # stage)로 승격해 소거와 무관한 진실을 만들고 ② 소거가 만드는 빈 에코는 여기서
+            # 삼킨다. 진짜 해제는 플롯 더블클릭·그리드 체크 해제 경로가 담당.
+            return
         if _dedup_guard(ctx, "ext_sel_seen", ids):
             return
         ctx.panel.state.join_field_missing = None
         frames_name = ctx.dataset.name if ctx.dataset is not None else FRAMES_DATASET
         winner_field = _current_winner_field(ctx)
         ctx.panel.state.selected_gidx = \
-            frame_ids_to_gidx(ids, dataset_name=frames_name, winner_field=winner_field) if ids else []
-        self._refresh(ctx, update_plot=False)   # 플롯 재쓰기 금지 — _refresh docstring(리로드 버그)
+            frame_ids_to_gidx(ids, dataset_name=frames_name, winner_field=winner_field)
+        # 뷰 승격: extendedSelection은 이 훅의 EXEC 응답이 돌아올 즈음 App이 소거한다(위
+        # 주석) — 같은 프레임 집합을 Select 뷰로 다시 걸면 그리드 필터·emb_viz 반영이
+        # 안정적으로 유지된다 (역방향과 동일 종착 상태, 해제=더블클릭).
+        self._select_frames_view(ctx, sorted(ids))
+        self._refresh(ctx, update_plot=False)   # 성능: 표·컨트롤만 갱신 (뷰 변경이 재렌더 유발)
 
     # ── 문장 → 프레임 ──
     def on_plot_click(self, ctx):
@@ -611,7 +623,10 @@ class PromptComparePanel(foo.Panel):
             ids = gidx_to_frame_ids(g, dataset_name=frames_name, winner_field=join_field)
             if ids:
                 self._select_frames_view(ctx, ids)   # 뷰 기반 반영 — 헬퍼 docstring 참고
-        self._refresh(ctx, update_plot=False)   # 플롯 재쓰기 금지 — on_plot_selected 주석
+        # 전체 갱신(하이라이트 포함) — 이 방향은 뷰 기반이라 재렌더가 파괴할 extended
+        # selection이 없다 (사용자 피드백: 선택했으면 시각적으로 표시돼야 한다).
+        # emb_viz 선택을 소비하는 on_change_* 훅과 달리 update_plot=False가 불필요.
+        self._refresh(ctx)
 
     # ── 문장 → 프레임 : Plotly lasso/box select (modebar 로 드래그 모드 전환) ──
     # 네이티브 Embeddings 패널의 g/s 단축키는 App 번들 React 컴포넌트 내부 하드코딩이라
@@ -668,9 +683,10 @@ class PromptComparePanel(foo.Panel):
             frame_ids = sorted(set(frame_ids))
             if frame_ids:
                 self._select_frames_view(ctx, frame_ids)
-        # update_plot=False: 플롯 재쓰기(12k점 재렌더)는 App 전역 상태를 흔든다 (_refresh
-        # docstring). 선택 시각 피드백은 plotly 자체 선택 dim + 표가 담당.
-        self._refresh(ctx, update_plot=False)
+        # 전체 갱신(하이라이트 포함) — 뷰 기반이라 재렌더가 파괴할 extended selection이
+        # 없다 (사용자 피드백: box select 후 선택 표시가 보여야 한다). update_plot=False는
+        # emb_viz의 extended selection을 소비하는 on_change_* 훅에만 필요 (_refresh docstring).
+        self._refresh(ctx)
 
     def _select_frames_view(self, ctx, frame_ids):
         """문장→프레임 반영은 extended selection이 아니라 **뷰(Select stage)** 로 건다.
@@ -696,7 +712,7 @@ class PromptComparePanel(foo.Panel):
         ctx.panel.state.join_field_missing = None
         ctx.panel.state.set("ext_sel_seen", [])   # 빈 에코 선점 (그리드 해제와 동일 규약)
         ctx.ops.clear_view()
-        self._refresh(ctx, update_plot=False)   # 플롯 재쓰기 금지 — on_plot_selected 주석
+        self._refresh(ctx)   # 전체 갱신 — 하이라이트 링 즉시 제거 (뷰 기반이라 재렌더 무해)
 
     # ── 컨트롤 드롭다운 핸들러 (2026-08-10 피드백: 토글 버튼 → 드롭다운 통일).
     #    값은 ctx.params["value"] (아래 on_group_field_change 주석의 실측 계약과 동일).
@@ -1186,9 +1202,8 @@ def selftest():
     panel_instance.on_mode_change(hctx)
     assert hctx.panel.state.mode == "A"
 
-    # 리로드 버그 가드 (2026-08-10): 프레임→문장 방향(update_plot=False)은 플롯 상태를
-    # 다시 쓰지 않아야 한다 — scatter_data 갱신 = 12k점 plotly 풀 재렌더 = 네이티브
-    # Embeddings 패널의 extendedSelection 파괴 (프로브 3단 이분 실측, _refresh docstring).
+    # update_plot=False 계약 (성능): 플롯 상태를 다시 쓰지 않고 표만 갱신한다
+    # (파괴 방지 수단 아님 — _refresh docstring의 최종 진단 참고).
     prev_scatter = render_ctx.panel.state.scatter_data
     render_ctx.panel.state.selected_gidx = [g]
     panel_instance._refresh(render_ctx, update_plot=False)
@@ -1219,6 +1234,13 @@ def selftest():
     panel_instance.on_plot_double_click(hctx)
     assert hctx.panel.state.selected_gidx == []
     assert hctx.ops.calls == ["clear_view"]   # 해제 = 뷰 초기화 (extended selection 안 씀)
+
+    # 빈 extendedSelection 에코 무시 (리로드 버그 방어 — on_change_extended_selection 주석):
+    # 훅 EXEC가 유발한 App의 extendedSelection 소거 잔향이 표/선택을 지우면 안 된다.
+    hctx.panel.state.selected_gidx = [g]
+    hctx.extended_selection = {"selection": []}
+    panel_instance.on_change_extended_selection(hctx)
+    assert hctx.panel.state.selected_gidx == [g], "회귀: 빈 extendedSelection 에코가 선택을 지움"
 
     # ── Task 12: 프롬프트 짝이 없는 데이터셋에서 모드 A가 크래시 대신 안내를 낸다 ──
     # frames_captions는 실측상 "frames_captions-prompts"가 없다(fo.list_datasets() 확인,

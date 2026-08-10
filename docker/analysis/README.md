@@ -250,6 +250,28 @@ pairwise cos 0.951. **절대 cosine 수준이 아니라 격차를 봐야 한다.
   워크스페이스 `bank-eval`, 리포트 `/data/fiftyone/frames_bank/report/bank_eval_report.md`,
   런 원장 `/data/fiftyone/frames_bank/work/geometry/runs.jsonl`.
 
+### min-n tier — 리포트의 `tier` 컬럼이 뜻하는 것
+
+리포트에 도메인별 `tier` 가 찍히는데, 이건 **GT 표본이 그 숫자를 말할 자격이 있는지**를
+게이팅한 결과다 (`prompt_geometry.py` `minn_tier()`). GT 가 적을 때 백분율을 그대로 보여주면
+"2/3 = 66.7%" 같은 숫자가 실제 성능처럼 읽히는 것을 막기 위한 장치다.
+
+| tier | 조건 (GT 이미지 수 `n`) | 리포트 표기 |
+|---|---|---|
+| `no_gt` | `n = 0` | **% 표시 금지** — 스탬프만 |
+| `counts_only` | `0 < n < 30` | 건수만 (백분율 금지) |
+| `exploratory` | `30 ≤ n < 100` | % 표시하되 탐색용 — 결론 근거로 쓰지 말 것 |
+| `reportable` | `n ≥ 100` **그리고 소스영상 ≥ 30** | 보고 가능 |
+
+⚠️ **`reportable` 에는 이미지 수 외에 두 번째 조건이 있다.** 이미지가 100장을 넘어도
+소스영상이 30편 미만이면 `gtsync` 단계에서 `exploratory` 로 **강등**된다
+(`prompt_geometry.py` 의 `reportable→exploratory 캡` 로그). 한두 영상에서 프레임을 많이 뽑아
+100장을 채운 경우를 "충분한 표본"으로 오인하지 않기 위한 것 — 같은 영상의 프레임은 서로
+독립 표본이 아니기 때문이다.
+
+즉 `tier` 가 `reportable` 이 아니면 그 도메인의 수치는 **아직 근거로 인용할 수 없다.**
+올리는 방법은 채점 재실행이 아니라 GT 를 늘리는 것뿐이다(사람 검수 확정 → `ledger` → `gtsync`).
+
 ## 프롬프트 관점 데이터셋 — `source-h-prompts` (promptmap)
 
 프레임 관점(`top_prompt_*`, `winner_*`)의 뒤집힌 짝. **점 하나 = 문장 하나**라서 프롬프트를
@@ -398,3 +420,73 @@ BANK_A=v1.0.8.0 BANK_B=v1.0.8.0 ... prompt_geometry.py attach --profile sourcei
   - `SAM3_MAX_SIDE=1024` 는 피크 완화용으로 남긴다. **바꾸면 검출 민감도가 바뀌므로**
     데이터셋 안에서 섞지 말고 `sam3.jsonl` 을 지우고 전량 재처리할 것 (레코드에 `max_side` 기록).
 - bbox 는 **축소 좌표계 그대로** 저장하고 `image_size` 로 정규화한다 (원본 복원 불필요).
+
+## source-i 실내 데이터셋 (`sourcei` / `sourcei-prompts`)
+
+`sourcei`(프레임 7,498) ↔ `sourcei-prompts`(문장 12,480)는 `sourcei.winner_gidx_v080` ↔
+`sourcei-prompts.gidx` 조인으로 연결된다 (`sum(sourcei-prompts.wins) = 7,498 = sourcei.count()`).
+
+- 프레임 필드 `wave_gain`/`wave_role`은 승자 문장 값의 **복사본**이다(실측 15/15 표본 바이트 일치,
+  `winner_gidx_v080`↔`gidx` 조인) — 원 산출은 컨테이너 라이브 `/workspace/prompt_geometry.py:2523-2524`
+  (`stage_promptmap`, 문장 단위 LOO gain), 프레임 복사는 git 미추적 1회성 스크립트
+  `/tmp/symmetric.py:85`가 수행. 분석/Panel 은 `sourcei-prompts` 쪽 필드를 정본으로 읽을 것.
+- ⚠️ 이 worktree의 `docker/analysis/prompt_geometry.py`(git HEAD)는 `stage_wave`/`stage_promptmap`
+  자체가 없는 별개 버전이다(`git log --all` 에도 부재) — 위 두 스테이지는 컨테이너 `/workspace`에만
+  존재하는 git-미추적 코드이므로, 이 필드들의 grep 근거는 반드시 라이브 컨테이너 경로여야 한다.
+
+## FiftyOne App 설정 정본화 (`fiftyone_app_setup.py`, 색상/워크스페이스)
+
+정본 `docker/analysis/fiftyone_app_setup.py` (git). 배포·실행:
+
+```bash
+docker cp docker/analysis/fiftyone_app_setup.py docker-analysis-1:/workspace/
+docker exec docker-analysis-1 python /workspace/fiftyone_app_setup.py selftest              # 팔레트 위생 검사
+docker exec docker-analysis-1 python /workspace/fiftyone_app_setup.py colors [ds1,ds2,...]   # 기본: sourcei,sourcei-prompts,source-h,source-h-prompts
+docker exec docker-analysis-1 python /workspace/fiftyone_app_setup.py workspace              # sourcei: rules (Samples | Embeddings, rule_cross 불일치)
+docker exec docker-analysis-1 python /workspace/fiftyone_app_setup.py workspace-compare       # sourcei: compare (Samples | Embeddings | Prompt Compare, H1)
+```
+
+컨테이너 recreate 시 `/workspace` 는 매번 소실되므로(위 "운영 주의" 절 참고) 재배포 후 위 4개
+명령을 다시 실행해야 한다.
+
+- **색상 스킴(R3)**: `CLASS_COLORS`(Okabe-Ito 색맹 안전 팔레트 기반) 를 전 데이터셋에 고정 적용.
+  ⚠️ **App UI("Color settings" → 필드/값 색 수동 조정)로 바꾼 색은 기본적으로 세션 한정이며,
+  사용자가 모달 안의 "Save as default" 를 직접 눌러야만 `dataset.app_config.color_scheme` 에
+  영속되어 우리 Python 기본값을 덮어쓴다** (실측 확인, 2026-08-07 — 모달 하단에
+  `Reset` / `Save as default` / `Clear default` 3버튼 존재). 즉 누군가 "Save as default" 를
+  누르면 CLASS_COLORS 가 조용히 무효화될 수 있다 — **커스텀을 원상복구하려면 `CLASS_COLORS` 를
+  코드에서 고친 뒤 `colors` 서브커맨드를 재실행**할 것 (App UI 로는 되돌릴 수 없음, Python
+  쪽이 유일한 정본).
+- **워크스페이스**: `rules`(Task 3, 판정규칙 불일치 프레임 탐색) / `compare`(Task 10, H1 확정안 —
+  아래 user-prompt-compare 절 참고). 둘 다 `sourcei` 데이터셋에 저장됨.
+
+### user-prompt-compare — 교차 데이터셋 비교 패널 (2026-08)
+
+- 정본 `docker/analysis/plugins/user-prompt-compare/` → 배포:
+  `docker cp docker/analysis/plugins/user-prompt-compare/. docker-analysis-1:/data/fiftyone/datasets/__plugins__/user-prompt-compare/`
+- 워크스페이스 `compare`(sourcei): Samples | Embeddings | Prompt Compare 3-패널(H1 확정안).
+  모드 A=프레임↔문장(argmax_k1 조인, dist_iou 모드는 클릭 무효), 모드 B=같은
+  데이터셋 그룹 overlay(frames_captions에서 project 비교).
+- selftest(조인 불변식 3개): `docker exec docker-analysis-1 python /data/fiftyone/datasets/__plugins__/user-prompt-compare/__init__.py`
+  — FiftyOne 업그레이드 전 필수 게이트. 실패 시 producer drift 의심.
+- 색상/워크스페이스 재설정: `python /workspace/fiftyone_app_setup.py colors|workspace|workspace-compare|workspace-fix`
+  (`workspace-fix` = 전 데이터셋 워크스페이스 일괄 정규화 — Space>Panel 래핑/active_child=None 레거시가 빈 화면을 만든다. 멱등)
+  (컨테이너 recreate 후 재실행 필요 — 이 디렉토리 전체가 그렇듯)
+- **브라우저 검증**(2026-08-07, playwright): 워크스페이스 선택기의 기본 목록은 최근 항목만
+  보여준다 — 새로 저장한 워크스페이스(`compare`)가 목록에 안 보이면 F5 로도 해결 안 되고,
+  선택기의 "Search workspaces.." 검색창에 이름을 직접 타이핑해야 나온다(서버 조회는 정상,
+  프론트 기본 목록만 최근 N개로 제한됨). 검색 결과 클릭 → 3-패널(Samples | Embeddings |
+  Prompt Compare) 정상 렌더 + Samples 그리드 체크 → 우측 Prompt Compare 패널에 "선택"
+  하이라이트(검정 circle-open 마커) 실시간 반영 확인.
+  ⚠️ 워크스페이스 전환 직후 드물게 프론트엔드 Relay 스토어 레이스(`Error: entry is loading`,
+  App 번들 자체 버그)로 패널 3개가 전부 빈 화면으로 뜨는 경우가 있었다 — 브라우저 탭을 완전히
+  새로 열거나 페이지를 한 번 더 새로고침하면 해소된다. 서버(백엔드) 쪽 데이터·워크스페이스
+  정의는 매번 정상이었음 (`fo.load_dataset("sourcei").list_workspaces()` 로 확인 가능) — 이
+  현상이 나오면 재시도만 하면 되고 재작업 불필요.
+- **RSS 실측**(App 서버 프로세스 `main.py --port 5151`, Task 5 와 동일 측정법):
+  기존 세션에서 이미 Prompt Compare 패널을 열어 `load_prompt_bundle()` 캐시(`_CACHE`, 64MB
+  상한)가 데워진 상태에서 `compare` 워크스페이스를 새 브라우저 세션으로 재오픈 →
+  2,764,116 KB → 2,766,256 KB (**+2.1MB**, 예산 100MB 이내, 재오픈 후 3초 대기해도 추가 증가
+  없음 = 누수 없음). `workspace-compare` 는 기존 3개 패널 타입(Samples/네이티브
+  Embeddings/기존 구현된 Prompt Compare)을 배치만 할 뿐 새 서버측 캐싱을 추가하지 않으므로,
+  콜드 캐시 최초 1회 비용은 Task 5 가 이미 실측한 **+35.0MB**(예산 이내)가 그대로 상한이다.
