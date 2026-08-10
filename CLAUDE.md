@@ -308,9 +308,15 @@ git -C /home/user/work_p/Datapipeline-Data-data_pipeline_test status       # dev
   `embedding-service` 8003→**8004**, `genai` 8088→**8089**, `mlflow` 5000→**5500**,
   `analysis` FiftyOne 5151→**5153** / Streamlit 8501→**8503**, `postgres` 5432→**15433**
 - **`docker-analysis-1` 은 JupyterLab 만 자동 기동**한다. FiftyOne(:5153)·Streamlit(:8503) 은
-  포트만 열려 있고 프로세스는 안 뜨므로 **prod 재배포마다 `docker exec` 로 다시 띄워야 한다**
-  (절차는 `docker/analysis/README.md`). 컨테이너 `/workspace` 코드는 이미지에 2개 파일만
-  COPY 되고 나머지는 수동 복사본이라 git 과 drift 한다.
+  포트만 열려 있고 프로세스는 안 뜨므로 **컨테이너 재시작·recreate·호스트 재부팅 때마다
+  `docker exec` 로 다시 띄워야 한다** (절차는 `docker/analysis/README.md`).
+  컨테이너 `/workspace` 코드는 이미지에 2개 파일만 COPY 되고 나머지는 수동 복사본이라
+  git 과 drift 한다 — 위 "단일 진리 원칙"은 `src/` 에만 적용되고 **이 컨테이너엔 적용되지 않는다**.
+- ⚠️ **배포는 analysis 컨테이너를 건드리지 않는다** (2026-08-10 실측: `deploy-stack.sh` 에
+  `analysis` 분기 0회, 재빌드 트리거에 `docker/analysis/` 0회, analysis 컨테이너가 dagster
+  recreate 를 생존). 그래서 역방향 함정이 있다 — `docker/analysis/**` 는 `paths-ignore` **밖**이라
+  main push 가 **dagster 3종만 recreate 시켜 라벨링을 끊고** analysis 에는 아무 효과가 없다.
+  **분석 코드만 담은 main push 금지** — `dev` 로 보내거나 다른 배포와 묶고, 반영은 `docker cp`.
 - prod MinIO 는 compose 의 `minio` 서비스가 아니라 **NAS 박스의 MinIO**(`10.0.0.51:9000`)다.
   로컬 `minio` 컨테이너는 prod 에서 기동하지 않는다.
 
@@ -462,7 +468,7 @@ git -C /home/user/work_p/Datapipeline-Data-data_pipeline_test status       # dev
   `.agent/skill/mlops-finetune/SKILL.md` §9 의 예시 호출(`--env prod`)도 같은 이유로 틀렸다.
 - **⚠️ prod-GPU 주의**: prod main push(docs/tests 제외)는 dagster 무조건 재가동(memory `project_prod_deploy_dagster_restart`). 학습 윈도우 중에는 prod 배포 보류 권장 — 재배포가 정비 상태/in-run op 를 흔든다.
 
-### DVC 큐레이션 데이터 버저닝 (선택)
+### DVC 데이터셋 버저닝 (선택)
 
 - 큐레이션 데이터셋은 bare git repo(`/srv/data-repos/dvc-datasets.git`, 앱 배포 경로와 격리) + MinIO `vlm-dataset/_dvc/` (5-버킷 정책). 커밋 = `dataset_catalog` 1행(커밋 메시지 보존).
 - ⚠️ **아직 dagster 컨테이너에 배선되지 않았다**: `/srv/data-repos/` 는 호스트에 실재하지만
