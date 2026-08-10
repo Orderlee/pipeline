@@ -1,0 +1,7 @@
+name: "@user/prompt-compare"
+description: "Cross-dataset prompt/frame embeddings comparison (spec 2026-08-07)"
+version: "0.1.0"
+fiftyone:
+  version: ">=1.19,<1.20"
+operators:
+  - user_prompt_compare
