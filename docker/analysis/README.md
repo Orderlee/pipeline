@@ -24,7 +24,14 @@ COMPOSE_PROFILES=analysis ./scripts/compose-prod.sh up -d analysis
 JupyterLab token = `JUPYTER_TOKEN`, 미설정 시 토큰 없음 — 내부망 전용.
 
 > ⚠️ **JupyterLab 만 자동 기동**한다. FiftyOne 과 Streamlit 은 포트만 열려 있고 프로세스는 안 뜬다.
-> **prod 재배포마다 컨테이너가 recreate 되므로 배포 후 다시 띄워야 한다.**
+> **컨테이너 재시작·recreate·호스트 재부팅 때마다 다시 띄워야 한다.**
+>
+> ⚠️ **배포는 이 컨테이너를 건드리지 않는다.** `deploy-stack.sh` 에 `analysis` 분기가 없고
+> 재빌드 트리거 경로에도 `docker/analysis/` 가 없다 (2026-08-10 실측: analysis 컨테이너가
+> dagster recreate 를 생존). 그래서 역방향 함정이 있다 — `docker/analysis/**` 는
+> `paths-ignore` **밖**이라 이 디렉토리만 고쳐 main 에 push 하면 **dagster 3종만
+> stop/rm/recreate 돼 라벨링이 끊기고 analysis 에는 아무 효과가 없다.**
+> 분석 변경은 `dev` 로 보내거나 다른 배포와 묶고, 반영은 `docker cp` 로 한다.
 
 ```bash
 docker exec -d docker-analysis-1 \
@@ -100,6 +107,18 @@ docker exec docker-analysis-1 fiftyone plugins list   # 확인
 | 새 시각화(brain key) 추가 | Embeddings 툴바의 **Compute visualization (OSS)** 버튼 (또는 백틱 `` ` `` → 오퍼레이터 브라우저) |
 | Color by 를 **두 필드 조합**으로 | 툴바의 **Color by 2 fields** 버튼 → 두 필드 선택 → `<a>__x__<b>` StringField 생성 후 Color by 에서 선택 |
 | **축 좌표값**을 보고 싶을 때 | 툴바의 **좌표를 필드로 저장** 버튼 → `<key>_x`/`<key>_y` FloatField 생성 |
+| 선택 샘플의 **미디어 파일 이동** | 오퍼레이터 `move_media` — ⚠️ **디스크 파일을 실제로 옮긴다** |
+| 선택 샘플의 **미디어 파일 삭제** | 오퍼레이터 `delete_media` — ⛔ **디스크에서 영구 삭제, 되돌릴 수 없다** |
+
+⚠️ **`move_media`/`delete_media` 는 파괴적이다.** 샘플만 지우는 것이 아니라 **원본 미디어 파일
+자체**를 옮기거나 지운다. 한 번에 `MAX_FILE_OPS = 20_000` 건까지만 허용되고 확인 체크박스가
+있지만 되돌리는 기능은 없다 — 뷰 필터를 먼저 확인하고 실행할 것.
+
+로직 검증(자체 selftest): 두 플러그인 모두 컨테이너에서 직접 실행하면 불변식을 검사한다.
+```bash
+docker exec docker-analysis-1 python /data/fiftyone/datasets/__plugins__/user-embeddings/__init__.py
+docker exec docker-analysis-1 python /data/fiftyone/datasets/__plugins__/user-prompt-probe/__init__.py
+```
 
 #### 축 눈금이 없는 이유
 
@@ -237,6 +256,36 @@ pairwise cos 0.951. **절대 cosine 수준이 아니라 격차를 봐야 한다.
 번역·임베딩은 **고유 문장 단위**로 1회만 한다 (11,978건 → 고유 6,999건, 중복 42%).
 디스크 캐시(`_caption_en.json`, `_en_vectors/*.npy`)로 중단 후 재개 가능.
 
+## FiftyOne 플러그인 — 프롬프트 프로브 (`user-prompt-probe`)
+
+오퍼레이터 `probe_prompt`. 문장 하나를 넣고 **그 문장이 실제로 어떤 프레임을 끌어오는지**
+즉석에서 보는 도구. 배경 코사인(`bg_cos`)이 함께 나오는데, 이게 높으면 그 문장이 클래스가
+아니라 **배경을 읽고 있다는 신호**("배경 자석")다.
+
+- 설치는 `user-embeddings` 와 동일한 `docker cp` 패턴 (위 설치 절 참조).
+- ⚠️ **선행 조건**: `probecache` 스테이지가 만든 `probe_bank_*`/`probe_bar_*` dataset.info·필드가
+  없으면 "probe 캐시가 없습니다" 로 거부한다. 먼저 아래를 돌릴 것.
+
+```bash
+docker exec docker-analysis-1 nice -n 10 python /workspace/prompt_geometry.py probecache
+```
+
+## 스크립트 지도 — 어느 데이터셋이 어디서 나오는가
+
+README 본문은 여러 데이터셋을 전제로 설명하는데, 그것들을 **만드는** 스크립트가 정리돼 있지
+않으면 재현이 불가능하다. 진입점은 다음 4개다.
+
+| 스크립트 | 만드는 것 | 스테이지 | 비고 |
+|---|---|---|---|
+| `prompt_eval.py` | 영상 단위 데이터셋 (871편) | `prompts` `media` `angle` `embed` `score` `dbwrite` `build` `report` `all` | 각 스테이지 멱등, 중단 후 재실행 가능 |
+| `frames_eval.py` | 프레임 단위 재라벨 데이터셋 | `scan` `copy` `angle` `embed` `score` `build` `report` `all` | `--limit` 지원 |
+| `bank_eval.sh` | 뱅크 **버전 비교** 원커맨드 | `analyze`→`gap`→`flips`→`prune`→`atlas`→`viz`→`guide`→`slim`→`report` | **순서 고정** — 앞 단계 산출을 뒤가 읽는다 |
+| `ablate_fields.py` | 절/구/단어 절제 측정 | – | env `AB_PROFILE` `AB_TOPN` `AB_WORDS` `AB_RETRY`. `user-prompt-probe` 와 지표 정의를 공유 |
+
+- `bank_eval.sh` 사용례: `./docker/analysis/bank_eval.sh <기준버전> <신버전> [신버전 CSV경로]`
+- `bank_eval.sh` 의 `flips`/`prune` 단계가 만드는 뷰(`30_fixed`/`31_broken`)와 산출물
+  `prompt_authoring_guide.md` 는 개별 스테이지만 돌리면 생기지 않는다 — 버전 비교는 래퍼로 돌릴 것.
+
 ## frames_captions 프롬프트 뱅크 평가 (frames_bank_eval.sh)
 
 - 전체 사이클: `./docker/analysis/frames_bank_eval.sh` — 매핑이 비어 있으면 0단계(스탬프만)로
@@ -289,7 +338,8 @@ docker exec docker-analysis-1 nice -n 10 python /workspace/prompt_geometry.py pr
 - 이미지 연결은 좌표가 아니라 표본 속성으로 준다: 썸네일 = 그 문장의 **최근접 프레임**,
   `match`(최근접 프레임 GT == 문장 클래스), `nearest_gt.confidence`(=cos), `nearest_key`.
 - `wins`/`purity`/`n_cameras` 는 `prompt_frames_*.csv` 와 같은 정의(클래스별 best 의 전역
-  argmax). 제품 판정규칙인 top-K 다수결(`RULE`)과는 다른 값이다.
+  argmax). 제품 판정규칙인 top-K 다수결(스테이지 `vote`, env `VOTE_K`)과는 다른 값이다
+  — 위 「판정규칙 3벌」 표 참조. (`RULE`/`RULE_K` 는 프레임 예측 헬퍼용 별개 스코프.)
 - 색칠은 `category`·`match`·`adopted`·`purity_tier`(전부 Classification → `.label`).
   `purity`/`wins` 는 연속값이라 App 에서 색이 안 나온다 — 정렬·필터용.
 - brain_key 가 `emb_viz` 로 고정인 이유: Embeddings 패널이 키를 기억해서 다른 이름이면
@@ -297,14 +347,26 @@ docker exec docker-analysis-1 nice -n 10 python /workspace/prompt_geometry.py pr
 - ⚠️ 뱅크 2벌(`BANK_A`/`BANK_B`)이 한 데이터셋에 같이 들어간다 — `bank_version` 으로 필터.
   같은 문장이 두 뱅크에 다 있으면 점이 겹치는데, 그 자체가 "무엇이 유지됐나" 신호다.
 
-### 판정규칙 2벌 — top-k 다수결 vs 분포 IoU(wave)
+### 판정규칙 3벌 — argmax vs top-K 다수결 vs 분포 IoU(wave)
 
-`source-h-prompts` 는 **같은 문장 점 위에 두 규칙의 값을 나란히** 올린다.
+`source-h-prompts` 는 **같은 문장 점 위에 여러 규칙의 값을 나란히** 올린다.
 
-| 규칙 | 스테이지 | 정체 | 문장별 지표 |
-|---|---|---|---|
-| top-k 다수결 | `vote`/`atlas` | 전역 top-k 문장의 클래스 다수결 (`RULE`/`RULE_K`) | `wins`·`purity`·`adopted` |
-| 분포 IoU (wave) | `wave` | 제품 `pe_inference/01_TuningFree_v2.py`. 클래스별 cos 히스토그램 vs normal 히스토그램의 면적 IoU < `WAVE_THR` → 발화 | `wave_gain`·`wave_role` |
+⚠️ **`wins`/`purity`/`adopted` 는 top-K 다수결이 아니다.** 이 셋을 만드는 `atlas`/`promptmap` 은
+`prompt_geometry.py` 의 `M.argmax(axis=1)` 로 **K=1 argmax 를 하드코딩**하고 있고 `RULE`/`RULE_K`
+환경변수를 읽지 않는다. 제품의 top-K 다수결은 **별도 스테이지 `vote`** 이고 필드도 다르다.
+표를 잘못 읽고 `wins`/`adopted` 를 "제품 규칙 결과"로 인용하면 **뱅크 버전 채택 판단이 틀어진다.**
+
+| 규칙 | 스테이지 | 정체 | env | 문장별 지표 |
+|---|---|---|---|---|
+| **argmax (K=1)** | `atlas` · `promptmap` | 클래스별 best 의 전역 argmax. 옛 단일 체계 | 없음 (하드코딩) | `wins`·`purity`·`adopted` |
+| **top-K 다수결** | `vote` | 상위 K개 문장의 클래스 다수결 = 제품 APO 규칙 | `VOTE_K`(기본 10) · `VOTE_KS`(1,3,5,10,20,50) | `vote_<k>`·`vote_margin_*`·`rule_flip_*` |
+| **분포 IoU (wave)** | `wave` | 제품 `pe_inference/01_TuningFree_v2.py`. 클래스별 cos 히스토그램 vs normal 히스토그램의 면적 IoU < `WAVE_THR` → 발화 | `WAVE_BINS`(80) · `WAVE_THR`(0.15) | `wave_gain`·`wave_role` |
+
+- `rule_flip_*` 는 **K=1 판정과 K=K 판정이 갈린 프레임**에 `"argmax→vote"` 형태로 붙는다 —
+  두 규칙의 불일치를 눈으로 찾는 용도.
+- `RULE`/`RULE_K` 환경변수는 위 3벌과 **다른 스코프**다: 문장 단위 스테이지가 아니라
+  **프레임 예측 헬퍼**(`prompt_geometry.py` 의 "현재 판정규칙으로 프레임 예측")가 쓴다.
+  `RULE=argmax` 로 두면 옛 동작으로 회귀 비교가 가능하다.
 
 ```bash
 docker exec docker-analysis-1 nice -n 10 python /workspace/prompt_geometry.py wave

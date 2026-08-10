@@ -1,0 +1,510 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>프롬프트↔프레임 조인 이후 — 다음 분석 설계</title>
+<style>
+  :root{
+    --bg:#fbfbf9; --fg:#1a1a18; --muted:#6b6b64; --line:#e2e1db;
+    --card:#ffffff; --accent:#b8542a; --accent-soft:#f5e9e2;
+    --ok:#2d6a4f; --ok-soft:#e6f0ea; --warn:#8a6d1f; --warn-soft:#f7f0dc;
+    --bad:#9b2c2c; --bad-soft:#f9e8e8; --code:#f2f1ec;
+  }
+  @media (prefers-color-scheme:dark){
+    :root:not([data-theme="light"]){
+      --bg:#16161a; --fg:#e8e8e3; --muted:#9a9a92; --line:#2e2e34;
+      --card:#1d1d22; --accent:#e08b5f; --accent-soft:#2e2119;
+      --ok:#7fc7a0; --ok-soft:#1a2620; --warn:#d6b45c; --warn-soft:#2a2418;
+      --bad:#e08585; --bad-soft:#2b1c1c; --code:#232329;
+    }
+  }
+  :root[data-theme="dark"]{
+    --bg:#16161a; --fg:#e8e8e3; --muted:#9a9a92; --line:#2e2e34;
+    --card:#1d1d22; --accent:#e08b5f; --accent-soft:#2e2119;
+    --ok:#7fc7a0; --ok-soft:#1a2620; --warn:#d6b45c; --warn-soft:#2a2418;
+    --bad:#e08585; --bad-soft:#2b1c1c; --code:#232329;
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0; background:var(--bg); color:var(--fg);
+    font-family:-apple-system,BlinkMacSystemFont,"Pretendard","Apple SD Gothic Neo","Noto Sans KR",Segoe UI,sans-serif;
+    line-height:1.65; font-size:15.5px; -webkit-text-size-adjust:100%;
+  }
+  .wrap{max-width:1000px; margin:0 auto; padding:48px 24px 120px}
+  header{border-bottom:2px solid var(--fg); padding-bottom:20px; margin-bottom:40px}
+  .kicker{font-size:12.5px; letter-spacing:.14em; text-transform:uppercase; color:var(--accent); font-weight:700; margin:0 0 10px}
+  h1{font-size:31px; line-height:1.25; margin:0 0 12px; letter-spacing:-.02em}
+  .sub{color:var(--muted); font-size:14px; margin:0}
+  h2{font-size:21px; margin:52px 0 4px; letter-spacing:-.01em; padding-top:14px; border-top:1px solid var(--line)}
+  h2 .n{color:var(--accent); font-variant-numeric:tabular-nums; margin-right:10px}
+  h2+.lede{color:var(--muted); font-size:14px; margin:0 0 20px}
+  h3{font-size:16.5px; margin:30px 0 8px}
+  p{margin:0 0 14px}
+  ul,ol{margin:0 0 14px; padding-left:22px}
+  li{margin:5px 0}
+  code{background:var(--code); padding:1.5px 5px; border-radius:4px; font-size:.87em;
+    font-family:ui-monospace,SFMono-Regular,"SF Mono",Menlo,monospace; word-break:break-word}
+  pre{background:var(--code); padding:14px 16px; border-radius:8px; overflow-x:auto;
+    font-family:ui-monospace,SFMono-Regular,"SF Mono",Menlo,monospace; font-size:13px; line-height:1.55;
+    border:1px solid var(--line); margin:0 0 16px}
+  pre code{background:none; padding:0}
+  .scroll{overflow-x:auto; margin:0 0 18px; border:1px solid var(--line); border-radius:8px}
+  table{border-collapse:collapse; width:100%; font-size:13.8px; min-width:560px}
+  th,td{text-align:left; padding:9px 12px; border-bottom:1px solid var(--line); vertical-align:top}
+  th{background:var(--code); font-weight:660; white-space:nowrap; font-size:12.5px;
+     letter-spacing:.02em; text-transform:uppercase; color:var(--muted)}
+  tr:last-child td{border-bottom:none}
+  td.num{font-variant-numeric:tabular-nums; white-space:nowrap}
+  .card{background:var(--card); border:1px solid var(--line); border-radius:10px; padding:20px 22px; margin:0 0 18px}
+  .card h3{margin-top:0}
+  .verdict{background:var(--accent-soft); border:1px solid var(--accent); border-radius:10px; padding:20px 22px; margin:0 0 26px}
+  .verdict p:last-child{margin-bottom:0}
+  .verdict strong{color:var(--accent)}
+  .tag{display:inline-block; font-size:11.5px; font-weight:700; padding:2px 8px; border-radius:20px;
+    letter-spacing:.03em; white-space:nowrap; vertical-align:2px}
+  .t-do{background:var(--ok-soft); color:var(--ok)}
+  .t-later{background:var(--warn-soft); color:var(--warn)}
+  .t-dont{background:var(--bad-soft); color:var(--bad)}
+  .note{border-left:3px solid var(--accent); background:var(--accent-soft); padding:12px 16px; border-radius:0 8px 8px 0; margin:0 0 18px; font-size:14px}
+  .warn{border-left:3px solid var(--bad); background:var(--bad-soft); padding:12px 16px; border-radius:0 8px 8px 0; margin:0 0 18px; font-size:14px}
+  .warn strong,.note strong{font-weight:700}
+  .who{font-size:12px; color:var(--muted); font-weight:600; letter-spacing:.03em}
+  .grid{display:grid; grid-template-columns:repeat(auto-fit,minmax(210px,1fr)); gap:12px; margin:0 0 20px}
+  .stat{background:var(--card); border:1px solid var(--line); border-radius:8px; padding:14px 16px}
+  .stat .v{font-size:23px; font-weight:700; font-variant-numeric:tabular-nums; letter-spacing:-.02em}
+  .stat .k{font-size:12px; color:var(--muted); margin-top:2px}
+  .stat .d{font-size:11.5px; color:var(--muted); margin-top:6px; line-height:1.4}
+  footer{margin-top:70px; padding-top:20px; border-top:1px solid var(--line); color:var(--muted); font-size:12.5px}
+  hr{border:none; border-top:1px solid var(--line); margin:26px 0}
+  .small{font-size:13px; color:var(--muted)}
+  @media(max-width:640px){ .wrap{padding:32px 16px 80px} h1{font-size:25px} body{font-size:15px} }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <p class="kicker">분석 설계 · 2026-08-10</p>
+  <h1>프롬프트 문장 ↔ 프레임 조인 이후,<br>다음 분석을 어떻게 진행할 것인가</h1>
+  <p class="sub">FiftyOne <code>sourcei</code> / <code>source-h</code> 프롬프트 뱅크 분석 스택 · 페르소나 3(ai-modeler · ai-data-engineer · cto) + OpenAI Codex 병렬 검토 종합</p>
+</header>
+
+<div class="verdict">
+  <p><strong>한 줄 판정 — 다음에 필요한 건 "새 분석"이 아니라 "분모"다.</strong></p>
+  <p>sourcei의 GT는 사람 검수가 아니라 <b>Gemini 캡션·파일명·폴더명에서 파생</b>됐다. 그래서 지금 화면에 뜨는
+  <code>0.6942</code>(argmax_k1) / <code>0.6599</code>(dist_iou)는 정확도가 아니라 <b>"Gemini 캡션과의 일치율"</b>이다.
+  4개 검토자가 <b>독립적으로 같은 결론</b>에 도달했다 — 이 위에서 뱅크를 더 튜닝하면 Gemini의 편향을 최적화하게 된다.</p>
+  <p>다만 GT 작업은 리드타임이 길다. 그동안 <b>GT에 의존하지 않는 분석 2건</b>(크로스도메인 전이, 디바운스 재현)을
+  병렬로 돌릴 수 있고, 둘 다 <b>추가 코드 없이</b> 오늘 시작 가능하다.</p>
+</div>
+
+<div class="grid">
+  <div class="stat"><div class="v">7,498</div><div class="k">sourcei 프레임</div>
+    <div class="d">normal 4,323 / smoke 1,542 / falldown 1,404 / fire 229</div></div>
+  <div class="stat"><div class="v">58%</div><div class="k">GT가 캡션 파생</div>
+    <div class="d">caption 4,356 · filename 1,695 · folder 1,288 · none 159</div></div>
+  <div class="stat"><div class="v">12,480</div><div class="k">뱅크 문장 (v1.0.8.0)</div>
+    <div class="d">채택 314 (2.5%) / 미채택 12,166 — 단 top-k 규칙 한정</div></div>
+  <div class="stat"><div class="v">2 fps</div><div class="k">추출 = 제품 추론 fps</div>
+    <div class="d">디바운스 재현이 처음으로 가능해진 이유</div></div>
+</div>
+
+<!-- ═══════════════════════════════════════ -->
+<h2><span class="n">01</span>지금 실제로 열린 것 — 그리고 그 경계</h2>
+<p class="lede">"조인이 됐다"를 정확히 정의해야 다음 분석의 사거리가 나온다. <span class="who">근거: Codex 코드 실사</span></p>
+
+<p>완성된 조인의 정확한 정의는 이것이다:</p>
+<pre><code>(bank_version, K=1 승자 gidx)  ↔  frame id</code></pre>
+
+<div class="scroll"><table>
+<thead><tr><th style="width:44%">되는 것</th><th>안 되는 것 / 경계</th></tr></thead>
+<tbody>
+<tr><td>프레임 선택 → 그 프레임들의 K=1 승자 문장 하이라이트 (그리드 체크박스 + Embeddings 선택 모두)</td>
+    <td>"전체 버전" 상태의 프레임→문장 조인은 무조건 레거시 <code>winner_gidx_v080</code>로 폴백. 여러 버전 합산 역조인 없음</td></tr>
+<tr><td>문장 클릭·lasso → 그 문장을 K=1 승자로 가진 프레임 뷰로 전환 (다중 문장 일괄)</td>
+    <td>해당 버전에 <code>winner_gidx_*</code>가 없으면 조인 실패. 문장→프레임은 안내가 뜨지만 <b>프레임→문장은 조용히 빈 결과</b></td></tr>
+<tr><td><code>&lt;dataset&gt;-prompts</code> 짝 자동 유도 (sourcei→sourcei-prompts)</td>
+    <td>임의의 두 데이터셋 조인은 불가. 짝이 없으면 안내만</td></tr>
+<tr><td><code>argmax_k1</code>에서 실제 승자 문장 귀속 확인</td>
+    <td><b><code>dist_iou</code>(제품 규칙)는 프레임 귀속이 원리적으로 없다</b> — 전역 LOO 기여도라 클릭·lasso 조인을 코드가 의도적으로 차단</td></tr>
+<tr><td>문장별 최근접 프레임 썸네일(<code>filepath</code>)</td>
+    <td>이건 "그 문장이 이긴 프레임"이 아니라 <b>코사인 최근접 예시 1장</b>. 통계량으로 쓰면 안 됨</td></tr>
+</tbody></table></div>
+
+<div class="note">
+<strong>가장 큰 신규 자산은 아무도 아직 안 쓰고 있다.</strong> <code>sourcei-prompts</code>와 <code>source-h-prompts</code>가
+<b>같은 뱅크 v1.0.8.0을 공유한다</b>(12,480 = 12,480, 결손 0). 즉 <code>gidx</code>가 두 도메인을 잇는 조인키다 —
+문장 단위 완전 대응 비교가 처음으로 가능해졌다. <span class="who">발견: ai-modeler</span>
+</div>
+
+<!-- ═══════════════════════════════════════ -->
+<h2><span class="n">02</span>먼저 정정할 것 — 패널 배너가 안내하는 "제품 규칙"이 틀렸다</h2>
+<p class="lede">이걸 안 고치면 다음 분석의 대조군 자체가 잘못 잡힌다.</p>
+
+<p>현재 Prompt Compare 패널 배너는 대조 대상을 <b>"제품 판정규칙 = topk_vote K=10 다수결"</b>로 안내한다.
+그런데 실제 제품 추론 코드(<code>pe_inference/01_TuningFree_v2.py</code>)를 확인한 결과:</p>
+
+<div class="scroll"><table>
+<thead><tr><th>제품이 실제로 하는 것</th><th class="num">파라미터</th></tr></thead>
+<tbody>
+<tr><td>클래스별 코사인 <b>히스토그램</b> → <code>IoU(normal, event) = Σmin/Σmax</code></td><td class="num"><code>--iou_mode hist --iou_hist_bins 80</code></td></tr>
+<tr><td>IoU가 임계 미만이면 그 이벤트 발화 (다중라벨)</td><td class="num"><code>--iou_threshold 0.15</code></td></tr>
+<tr><td><b>시간 디바운스</b> — 최근 5프레임 중 3 이상</td><td class="num"><code>--queue_size 5 --alarm_duration_threshold 3</code></td></tr>
+<tr><td>추론 샘플링</td><td class="num"><code>--model_input_fps 2</code></td></tr>
+<tr><td colspan="2"><b>top-k / argmax / 다수결 — 코드에 0 hits.</b> <code>grep -n "topk\|top_k\|argmax"</code> → 없음</td></tr>
+</tbody></table></div>
+
+<div class="warn">
+<strong>결론:</strong> 제품 규칙은 <code>dist_iou</code>다. <code>topk_vote K=10</code>은 2026-08-05 이전의 오해가 남은 <b>stale 배너</b>다.
+이 한 줄 문구 수정이 이번 작업에서 가장 비용 대비 효과가 큰 수정이다 — 안 고치면 앞으로의 모든 대조 실험이 잘못된 기준을 쓴다.
+</div>
+
+<p>그리고 여기서 <b>뜻밖의 수확</b>이 나온다. 제품 추론 fps가 2인데 <code>sourcei_build.py</code>도 정확히 <b>fps=2로 프레임을 추출</b>했다.
+게다가 sourcei에는 <code>src_video</code> · <code>event_index</code> · <code>frame_in_event</code> · <code>t_sec</code>이 전부 있다.
+source-h은 키프레임 집합이라 시간 이웃이 없어 디바운스를 코드가 명시적으로 포기했는데 —
+<b>sourcei에서는 제품 규칙을 처음으로 끝까지(디바운스 포함) 재현할 수 있다.</b></p>
+
+<!-- ═══════════════════════════════════════ -->
+<h2><span class="n">03</span>4자 검토 — 합의된 것과 갈린 것</h2>
+<p class="lede">서로 모르는 상태에서 병렬로 검토했다. 겹치는 결론이 신뢰도가 높다.</p>
+
+<h3>만장일치 (4/4)</h3>
+<div class="scroll"><table>
+<thead><tr><th style="width:36%">합의</th><th>근거</th></tr></thead>
+<tbody>
+<tr><td><b>sourcei 절대 정확도는 인용 금지</b></td>
+    <td>GT의 94%가 폴더/파일명 또는 캡션 정규식 파생. <code>sourcei_build.py</code> docstring 스스로 "recall 벤치마크 아님, FP 스트레스 테스트"라고 못박음. 정확히 쓰면 "Gemini 캡션 일치율 0.6942"</td></tr>
+<tr><td><b>프레임 단위 micro는 실질 표본을 과장한다</b></td>
+    <td>2fps 추출 → 한 이벤트의 프레임들은 근중복. 유의성 단위는 <code>src_video</code> 또는 <code>(src_video, event_index)</code>. t-검정 금지, 블록 부트스트랩/순열검정만</td></tr>
+<tr><td><b>사람 검수 GT 앵커가 최우선</b></td>
+    <td>뱅크·probe·파인튠 세 트랙의 유일한 공통 자산. 유일하게 복리로 쌓임</td></tr>
+<tr><td><b>승자문장 UMAP 칠하기는 재시도 금지</b></td>
+    <td>이미 실측 반증(영역분산 ↔ LOO 이득 무상관, 영토 ≈ 카메라 86.8%)</td></tr>
+</tbody></table></div>
+
+<h3>갈린 것 2건 — 중재</h3>
+
+<div class="card">
+<h3>⚔ sourcei에 <code>topk_vote</code> 점수를 백필할 것인가</h3>
+<p><span class="who">ai-data-engineer + Codex:</span> "최우선. 코드 델타 0, <code>stage_vote</code> 그대로 실행하면 수 분."<br>
+<span class="who">cto:</span> "Later → 사실상 Don't. 제품 규칙은 wave로 정정됐다. 없는 커버리지를 '공백'이라 부르는 관성."</p>
+<p><b>중재:</b> cto가 맞다 — §02에서 확인했듯 <code>topk_vote</code>는 제품 규칙이 아니다. 다만 <b>비용이 실제로 0에 가깝다</b>(기존 npz·임베딩 재사용).
+그러니 <b>우선순위는 낮추되 부산물로 같이 돌린다.</b> 목적은 "제품 규칙 재현"이 아니라
+<b>세 규칙이 갈리는 프레임 = 경계 사례 리뷰 큐</b>를 얻는 것. 그 용도로는 값이 있다.</p>
+</div>
+
+<div class="card">
+<h3>⚔ 사람 검수 표본을 몇 장, 어떤 단위로</h3>
+<p><span class="who">ai-modeler:</span> 200장 (랜덤 100 + 문장앵커 큐 100, lift 측정용) &nbsp;·&nbsp;
+<span class="who">ai-data-engineer:</span> 250~300 <b>이벤트</b> (셀별 속성표본) &nbsp;·&nbsp;
+<span class="who">cto:</span> 400장 클래스 균형</p>
+<p><b>중재:</b> 숫자가 아니라 <b>단위</b>가 쟁점이고, 거기선 이미 합의돼 있다 — <b>프레임이 아니라 이벤트</b>.
+전역 오류율을 5%p 정밀도로 재려면 design effect 9.22 보정 시 3,541장이 필요해 비현실적이다.
+따라서 <b>"전역 오류율 추정"을 포기하고 "셀별 스크리닝"으로 목적을 바꾼다</b>:
+셀당 20~60 이벤트로 "이 셀은 명백히 깨졌다(≥15%)"만 판정. 총 <b>250~300 이벤트</b>가 착지점이고,
+ai-modeler의 랜덤/큐 <b>대조 설계는 그대로 얹는다</b>(큐의 lift를 못 재면 큐를 만든 의미가 없다).</p>
+</div>
+
+<!-- ═══════════════════════════════════════ -->
+<h2><span class="n">04</span>다음 분석 — 우선순위</h2>
+<p class="lede">GT 의존성으로 갈랐다. GT 작업은 리드타임이 길어 먼저 착수하되, 나머지를 기다리게 하지 않는다.</p>
+
+<div class="scroll"><table>
+<thead><tr><th>#</th><th>분석</th><th>판정</th><th>GT 필요</th><th>비용</th><th>방어가능성</th></tr></thead>
+<tbody>
+<tr><td class="num">0</td><td><b>선행 확인 3건</b> — gidx 정합 / 이벤트당 프레임 수 / <code>v3_unknown</code> 정체</td><td><span class="tag t-do">즉시</span></td><td>—</td><td>30분</td><td>—</td></tr>
+<tr><td class="num">1</td><td><b>GT 신뢰도 감사</b> — 이벤트 250~300 사람 검수 + 문장앵커 큐 lift</td><td><span class="tag t-do">DO</span></td><td>만드는 것</td><td>L</td><td>보고가능</td></tr>
+<tr><td class="num">2</td><td><b>크로스도메인 전이</b> — source-h 문장 판정이 sourcei에서도 같은 부호인가</td><td><span class="tag t-do">DO</span></td><td>불필요*</td><td>M</td><td>보고가능</td></tr>
+<tr><td class="num">3</td><td><b>디바운스 재현</b> — 제품 규칙을 처음으로 끝까지 재현 (5중 3, 2fps)</td><td><span class="tag t-do">DO</span></td><td>불필요</td><td>M</td><td>조건부 보고가능</td></tr>
+<tr><td class="num">4</td><td><b>삭제 레버를 wave로 재현</b> — prune 결론이 제품 규칙에서 살아남는가</td><td><span class="tag t-do">DO</span></td><td>기존 source-h</td><td>M</td><td>보고가능</td></tr>
+<tr><td class="num">5</td><td><b>near_miss 감사</b> — falldown FP의 몇 %가 라벨 경계 비용인가</td><td><span class="tag t-do">DO</span></td><td>1과 결합</td><td>S</td><td>내부 보고가능</td></tr>
+<tr><td class="num">6</td><td><b>linear probe 스케일링 커브</b> — 400장이 뱅크를 이기는가</td><td><span class="tag t-do">DO</span></td><td>1의 산출물</td><td>M</td><td>보고가능</td></tr>
+<tr><td class="num">7</td><td>SAM3 교차 검증 — GT 독립 신호</td><td><span class="tag t-later">LATER</span></td><td>불필요</td><td>S</td><td>탐색적</td></tr>
+<tr><td class="num">8</td><td>전이성 사전 예측자 (채택 게이트 v2)</td><td><span class="tag t-later">LATER</span></td><td>2의 결과 후</td><td>M</td><td>탐색적</td></tr>
+<tr><td class="num">9</td><td>sourcei <code>topk_vote</code> 백필</td><td><span class="tag t-later">부산물</span></td><td>—</td><td>~0</td><td>큐 생성용</td></tr>
+</tbody></table></div>
+<p class="small">* 전이의 <b>양성</b> 결과는 GT 없이 방어된다(라벨 잡음은 상관을 0 쪽으로만 끌어내리므로 보수적). <b>음성</b> 결과만 GT 감사를 기다려야 한다.</p>
+
+<h3>실행 순서</h3>
+<pre><code>선행 0 (30분)
+   ├─→ 1. GT 감사 착수 ──────────────────────→ 6. probe 커브
+   └─→ 2. 전이  ∥  3. 디바운스  ∥  4. wave prune  ──→ 5. near_miss
+                    (셋 다 GT 없이 병렬)              └→ 8. 게이트 v2</code></pre>
+
+<!-- ═══════════════════════════════════════ -->
+<h2><span class="n">05</span>주요 분석 카드</h2>
+
+<div class="card">
+<h3>0 · 선행 확인 3건 <span class="tag t-do">30분 · 아래 전부의 전제</span></h3>
+<div class="scroll"><table>
+<thead><tr><th>확인</th><th>왜 필수</th></tr></thead>
+<tbody>
+<tr><td><code>sourcei-prompts.gidx</code> ↔ <code>source-h-prompts.gidx</code>가 <b>같은 npz를 가리키는가</b> — <code>text</code> 해시로 대조 후에만 gidx 사용</td>
+    <td>gidx는 뱅크 <b>내부 인덱스</b>이고 <code>stage_promptmap</code>이 버전마다 <code>0..M-1</code>을 재부여한다. 어긋난 채 나온 상관계수는 전부 쓰레기</td></tr>
+<tr><td><code>(src_video, event_index)</code>당 프레임 수, <code>t_sec</code> 간격 분포, 클래스별 <b>영상 수</b></td>
+    <td>모든 유의성의 실질 n. fire 229프레임이 영상 3편이면 fire 단독 결론은 전부 불가. 디바운스(3)의 성립 조건이기도 함</td></tr>
+<tr><td><code>v3_unknown</code> 1,806장(24%)의 정체</td>
+    <td>UUID 파일명이라 카메라 분해 불가 — <b>카메라가 아니라 미상 버킷</b>이다. 층화에 섞으면 최대층이 미상이 되어 카메라 게이트가 무의미해짐</td></tr>
+</tbody></table></div>
+</div>
+
+<div class="card">
+<h3>1 · GT 신뢰도 감사 <span class="tag t-do">DO — 최우선</span></h3>
+<p><b>질문:</b> <code>gt_source</code>별 GT 오류율은 얼마이며, 문장 앵커 큐가 랜덤 대비 몇 배 효율로 오류를 찾는가?</p>
+
+<p><b>먼저 0원 진단.</b> 사람을 쓰기 전에 기존 필드 교차만으로 상한/하한이 나온다:</p>
+<pre><code>ds.match(F("event_kind.label")=="near_miss").count_values("wave_pred_v1_0_8_0.label")
+ds.match(F("event_kind.label")=="near_miss").match(F("fallen_person_count")&gt;0).count()</code></pre>
+<p class="small">뱅크(PE-Core 홀리스틱)와 SAM3(오픈보캡 검출)는 <b>다른 모델 계열</b>이다. 둘 다 양성인 프레임이 "GT=normal이 틀렸을" 최우선 후보.
+두 값이 크게 다르면(예: SAM3 40% vs 뱅크 5%) 어느 신호를 믿을지부터 정해야 한다.</p>
+
+<p><b>표본 설계 — 이벤트 단위, 셀별 스크리닝:</b></p>
+<div class="scroll"><table>
+<thead><tr><th>우선</th><th>셀</th><th class="num">표본</th><th>근거</th></tr></thead>
+<tbody>
+<tr><td class="num">1</td><td>normal / caption / <b>near_miss</b></td><td class="num">60</td><td>1,503장(20%). Gemini가 "넘어질 뻔"으로 판정한 경계를 코드가 강제로 normal에 편입 — 설계상 최대 오염원. 위 0원 진단 상위 스코어 우선</td></tr>
+<tr><td class="num">2</td><td>normal / caption / <b>other</b></td><td class="num">40</td><td>2,459장(32.8%). "이벤트 아님" 판정 자체의 신뢰도</td></tr>
+<tr><td class="num">3</td><td>falldown·fire·smoke / <b>folder+filename</b></td><td class="num">30 <span class="small">(fire는 근센서스)</span></td><td>abnormal GT의 94% 원천. <b>세그먼트 경계 프레임</b> 우선 — <code>PAD_SEC=0.5</code>가 이벤트 앞뒤 정상 장면을 끌어들였는지</td></tr>
+<tr><td class="num">4</td><td>normal / <b>none</b></td><td class="num">20 <span class="small">(모집단 159)</span></td><td>캡션조차 없는 최약체</td></tr>
+<tr><td class="num">5</td><td><b>랜덤 대조군</b> (층별 비례)</td><td class="num">100</td><td>큐의 lift를 재려면 필수. 이게 없으면 "큐가 좋다"를 말할 수 없다</td></tr>
+</tbody></table></div>
+
+<div class="warn"><strong>검정력을 미리 써둘 것.</strong> 셀당 n=50이면 관측 0건 시 상한 7.1%, 5건 시 CI [4.3%, 21.4%].
+즉 <b>"10% 미만"과 "20% 초과"는 가르지만 그 사이는 못 가른다.</b> 이걸 사전에 명시하는 게 이 분석의 방어선이다.</div>
+
+<p><b>운영 주의 3가지:</b></p>
+<ul>
+<li><b>LS로 보내지 마라.</b> sourcei 프레임은 <code>ffmpeg -ss/-to</code> presigned-URL 추출 JPG라 <code>image_id</code>가 없다 →
+LS에서 검수해도 <code>image_label_annotations</code>에 투영될 자리가 없다. <code>frames_relabel.py</code> 패턴(FiftyOne in-place 패치)을 재사용하고,
+<code>gt_audit</code> 필드로 기록하라. 이건 GT 승격이 아니라 <b>weak GT의 계측</b>임을 라벨에 명시할 것.</li>
+<li><b>확증편향 차단</b> — 검수자에게 문장·예측을 숨기고 이미지 + 4지선다만. <code>near_miss</code>는 "판정 불가/경계" 선택지 별도.</li>
+<li><b>중복 방지</b> — <code>(src_video, event_index)</code>당 최대 1장. 안 그러면 근중복 10장을 10번 검수하고 n=10을 n=100으로 착각한다.</li>
+</ul>
+<p><b>기각 조건:</b> 큐의 lift ≤ 1.5 (랜덤과 다를 바 없음 → 조인의 이 용도는 폐기).</p>
+<div class="note"><strong>전례 경고:</strong> 이 코드베이스는 이미 한 번 "저마진이 라벨 의심을 예측한다"를 <b>직접 반증</b>했다
+(AUC GT=normal 0.886 vs GT=fire 0.009, 재라벨 뒤집힘 lift 0.92배). 문장앵커 큐를 프로덕션 배정에 쓰기 전에 이 랜덤 대조로 검증하지 않으면 같은 실수를 반복한다.</div>
+</div>
+
+<div class="card">
+<h3>2 · 크로스도메인 전이 <span class="tag t-do">DO — 사업 모델을 바꾸는 질문</span></h3>
+<p><b>질문:</b> source-h에서 유익/유해로 판정된 문장이 sourcei에서도 같은 부호를 갖는가?</p>
+<p><b>왜 지금:</b> 조인 전엔 문장 통계가 프레임 필드에 녹아 있어 문장 단위 대응비교가 불가능했다. 이제 양쪽 다 문장=표본 + <b>동일 뱅크</b> → 12,480쌍 완전 대응.</p>
+<p><b>결정 변화:</b> 전이되면 뱅크 큐레이션은 <b>전역 1회</b>로 끝나고 신규 현장은 무비용 온보딩.
+전이 안 되면 원가가 <b>O(현장 수)</b> — 사업 모델 자체가 달라진다.</p>
+<p><b>설계:</b> 주 지표는 <code>wave_gain</code>의 <b>클래스 내</b> Spearman ρ. 클래스 간 통합 금지(문장 수가 normal 10,703 vs falldown 160이라 ΔIoU 스케일이 달라 Simpson 역설).</p>
+<div class="warn"><strong>이 분석의 핵심 방어 — 감쇠 보정.</strong> 각 도메인 내부에서 영상 반분해 <code>wave_gain</code>을 두 번 계산 → 도메인 내 재현성 <i>r<sub>A</sub></i>, <i>r<sub>B</sub></i>.
+판정은 raw ρ가 아니라 <b>ρ / √(r<sub>A</sub>·r<sub>B</sub>)</b>. 이걸 안 하면 <b>"전이 안 됨"과 "지표가 원래 노이즈"를 구분할 수 없다.</b> 비용은 wave 4회.</div>
+<p><b>사전 임계:</b> 보정 ρ ≥ 0.5 → 전역 큐레이션 / 0.2–0.5 → 코어+현장 보정 하이브리드 / &lt; 0.2 → 현장별.<br>
+<b>기각 조건:</b> 비캡션 층(<code>folder</code>+<code>filename</code> 2,983장)에서 부호 뒤집힘, 또는 재현성 <i>r</i> 자체가 0.3 미만(→ 지표를 먼저 고쳐야 함).</p>
+</div>
+
+<div class="card">
+<h3>3 · 디바운스 재현 <span class="tag t-do">DO — 제품 규칙 최초 완전 재현</span></h3>
+<p><b>질문:</b> 디바운스(최근 5 중 3)를 넣으면 wave 성능이 어떻게 변하고, 어떤 문장이 "고립 발화 생성기"인가?</p>
+<p><b>왜 지금:</b> source-h은 키프레임 집합이라 시간 이웃이 없어 코드가 디바운스를 명시적으로 포기했다.
+sourcei는 <code>src_video + event_index + frame_in_event + t_sec</code>이 있고 <b>추출 fps가 제품 추론 fps와 동일한 2</b>다.
+조인의 기여는 <b>죽은 발화의 승자 문장 집계</b> — 문장 큐레이션에 "지속성" 축이 추가된다.</p>
+<p><b>결정 변화:</b> 지금까지의 모든 수치는 "디바운스 이전"이라 제품 실측이 아니었다.
+이게 되면 처음으로 제품 성능을 인용할 수 있고, 큐레이션 기준이 정확도 → <b>정확도 + 지속성 2축</b>이 된다.</p>
+<p><b>설계:</b> 디바운스 전/후 per-class P/R/F1, <code>src_video</code> 블록 부트스트랩. <b>이벤트 단위 지표</b>(이벤트당 1회 이상 발화)를 프레임 단위와 <b>나란히</b> 보고 — 제품 알림은 이벤트 단위다. 3/5, 2/5, 3/7 민감도 스윕.</p>
+<p><b>교란:</b> 프레임이 이벤트 구간에서만 추출됐다면 normal 시퀀스가 짧아 FP 쪽 디바운스 이득이 과대평가된다 →
+<code>event_kind=other/near_miss</code> 구간 프레임 수를 먼저 확인(선행 0), 부족하면 결론을 <b>재현율 영향에만</b> 한정.<br>
+<b>기각 조건:</b> 이벤트당 프레임 중앙값 &lt; 5.</p>
+</div>
+
+<div class="card">
+<h3>4 · 삭제 레버를 wave로 재현 <span class="tag t-do">DO — kill-or-confirm</span></h3>
+<p><b>질문:</b> top-k 기준 "삭제 레버"(v080 문장 1.6% 제거 → 92.4% &gt; 전면교체 91.1%)가 제품 규칙에서도 유효한가?</p>
+<p><b>왜 중요:</b> 버전 비교에서 이미 전례가 있다 — 같은 개선이 <b>top-k에서 macroF1 +19pp였는데 wave에서는 +2.9pp</b>로 6.5배 증발했다.
+삭제 레버도 증발하면 <b>지난 큐레이션 분석 전체가 제품 무관 결론</b>이 된다. 신규 데이터 0으로 프로그램 전체를 검증하는 실험.</p>
+<p><b>구조적 근거(왜 다를 수 있나):</b> top-k에서 "한 번도 안 이긴 문장 삭제"는 거의 no-op이지만,
+wave는 <b>클래스별 코사인 히스토그램 전체</b>를 쓰므로 모든 문장이 판정에 기여한다 —
+특히 normal 문장 10,703개가 기준 분포를 만든다(top-k에서는 거의 역할이 없던 것들). 삭제의 의미가 구조적으로 다르다.</p>
+<p><b>설계:</b> 채택 문장 내 <code>wins</code> 순위 ↔ <code>wave_gain</code> 순위 클래스 내 Spearman.
+<code>wave_vs_topk</code>가 세팅된 프레임의 승자 문장이 <code>wave_role</code> 하위 10%에 몰리는지 순열검정 10,000회.
+동일 프레임·동일 뱅크 대응비교라 <b>카메라 교란이 원리적으로 상쇄</b>된다.<br>
+<b>기각 조건:</b> 클래스 내 ρ &gt; 0.7이면 "정렬됨"으로 종료(좋은 결과지만 후속 없음).</p>
+</div>
+
+<div class="card">
+<h3>5 · near_miss 감사 <span class="tag t-do">DO — 처방 자체가 갈린다</span></h3>
+<p><b>질문:</b> 전체 falldown FP 중 <code>event_kind=near_miss</code>가 차지하는 <b>점유율</b>은?</p>
+<p><b>왜 지금:</b> 오탐 프레임의 승자를 자유텍스트로는 특정 못 했다. <code>winner_gidx</code> → 문장 →
+<code>peak_word</code> / <code>bg_phrase</code> / <code>ablate_role</code>로 <b>원인 조각까지</b> 내려가는 경로가 조인으로 처음 열렸다.</p>
+<p><b>결정 변화:</b> near_miss가 FP의 과반이면 처방은 임계 조정도 문장 절제도 아니라 <b>GT를 3-state(alert / near / normal)로 재정의하는 것</b>이다.</p>
+<p><b>설계:</b> 대조군 <code>event_kind ∈ {other, drop}</code>(2,635장). 1차 결정값은 비율이 아니라 <b>점유율</b>.
+<code>src_video</code> 블록 부트스트랩. 두 규칙 병기.<br>
+<b>주의:</b> near_miss 판정 자체가 캡션 정규식("뻔") 파생이라 대부분 <code>gt_source=caption</code>에 몰려 있다.
+여기서 나오는 FP는 성능 지표가 아니라 <b>라벨 경계 비용</b>으로 프레이밍하고, "near_miss 정의의 정확도"는 분석 1 표본에서 별도 측정.</p>
+</div>
+
+<div class="card">
+<h3>6 · linear probe 스케일링 커브 <span class="tag t-do">DO — 프로그램 존속 질문</span></h3>
+<p><b>질문:</b> 같은 400장으로 linear probe를 학습하면(4/16/64/400-shot) 뱅크를 이기는가?</p>
+<p><b>왜:</b> 무학습 프롬프트-온리 전략의 천장은 <b>클래스당 라벨 4장 수준</b>이라는 게 CLIP 원논문의 결과이고,
+우리 실측 +7pp가 정확히 그 대역에 있다. 400장 probe가 뱅크를 이기면 <b>뱅크 큐레이션을 계속할지 말지</b>가 바뀐다.
+GT 감사의 부산물로 거의 공짜로 나온다 — <b>같은 400장을 두 번 쓰는 설계</b>다.</p>
+</div>
+
+<!-- ═══════════════════════════════════════ -->
+<h2><span class="n">06</span>조용히 틀릴 수 있는 지점</h2>
+<p class="lede">Codex 코드 실사에서 나온 것 중 실제로 결론을 오염시킬 수 있는 것만 추렸다. 전부 <code>파일:라인</code> 근거 있음.</p>
+
+<div class="scroll"><table>
+<thead><tr><th style="width:30%">지점</th><th>무엇이 틀리나</th><th>대응</th></tr></thead>
+<tbody>
+<tr><td><b>화면이 wave를 잘못 그린다</b><br><span class="small">user-prompt-compare:222,257</span></td>
+    <td><code>adopted</code>는 <b>K=1 승수</b>에서 만들어지는데 패널이 <code>dist_iou</code>에서도 이 마스크로 12,166개를 회색 "미채택"으로 칠한다. wave에선 모든 문장이 분포에 참여하므로 <b>시각적으로 조용히 틀림</b></td>
+    <td>규칙이 <code>dist_iou</code>일 때 <code>wave_role</code> 기반으로 색을 바꾸기. <b>지금 화면을 보고 있는 사람이 이미 오해 중</b></td></tr>
+<tr><td><b>필드명에 파라미터가 없다</b><br><span class="small">prompt_geometry.py:1423,1477,2376</span></td>
+    <td><code>vote_*</code>에 K가 없고 <code>wave_*</code>에 bins/thr가 없다 → K나 임계를 바꿔 재실행하면 <b>같은 필드가 다른 의미로 덮인다</b></td>
+    <td>run manifest에 K/bins/thr 기록. 최소한 재실행 전 무슨 파라미터였는지 확인</td></tr>
+<tr><td><b>stale 라벨이 남는다</b><br><span class="small">prompt_geometry.py:2384</span></td>
+    <td><code>wave_vs_topk_*</code>는 <b>불일치 프레임에만</b> set_values 하고 먼저 clear하지 않는다 → 임계 변경 후 옛 mismatch가 그대로 잔류</td>
+    <td>재실행 전 clear-then-set</td></tr>
+<tr><td><b>캐시가 길이만 본다</b><br><span class="small">prompt_geometry.py:459, 2370</span></td>
+    <td><code>stage_bank</code>는 기존 NPZ의 <b>문장 수만 같으면</b> 텍스트·클래스·임베딩 모델이 바뀌어도 skip. wave 캐시도 짧은 버전 태그만 보고 읽음</td>
+    <td>bank fingerprint / frame key hash 검증 추가. 의심되면 캐시 삭제 후 재실행</td></tr>
+<tr><td><b>축약 태그 충돌</b><br><span class="small">prompt_geometry.py:127</span></td>
+    <td><code>vtag()</code>가 마지막 세 조각만 이어붙여 <code>v1.0.8.0</code>과 <code>v2.0.8.0</code>이 <b>둘 다 <code>v080</code></b>. 게다가 플러그인이 이를 독립 재구현</td>
+    <td>도메인 번호가 다른 뱅크를 붙이기 전에 반드시 확인</td></tr>
+<tr><td><b>gidx 단독 identity</b><br><span class="small">prompt_geometry.py:2461 / plugin:236,611</span></td>
+    <td>버전마다 <code>gidx=0..M-1</code> 재부여인데 플러그인은 gidx 하나로만 상태 저장, 클릭 시 <b>첫 번째 일치 행</b>의 버전을 택함. selftest도 "gidx 전역 유일"만 강제 → 두 버전 넣으면 <b>구조적 실패</b></td>
+    <td><code>prompt_uid = "&lt;bank_version&gt;:&lt;gidx&gt;"</code>로 전환. <b>다중 버전 백필 전 필수</b></td></tr>
+<tr><td><b>vote confidence 문서 불일치</b><br><span class="small">prompt_geometry.py:1368,1480</span></td>
+    <td>docstring은 "득표율"인데 실제 값은 <code>(1위표−2위표)/K</code> vote margin</td>
+    <td>해석 시 주의. 문서 수정</td></tr>
+<tr><td><b>probe 다중 후보 부정확</b><br><span class="small">user-prompt-probe:136,200,217</span></td>
+    <td>UI는 여러 줄을 "묶음 평가"한다고 하지만 첫 후보 후 top-K 경계선을 갱신하지 않고 다음 후보를 계산 → 재채점과 달라질 수 있음</td>
+    <td>당분간 <b>한 번에 한 문장만</b> probe</td></tr>
+<tr><td><b>튜닝셋 = 평가셋</b><br><span class="small">user-prompt-probe:175,193</span></td>
+    <td>probe가 선택한 <b>바로 그 뷰</b>의 GT로 즉시 정확도·순이득을 낸다 → 그 숫자는 in-sample</td>
+    <td>채택 결정에 쓸 땐 반드시 미사용 카메라/영상 홀드아웃 별도 확인</td></tr>
+</tbody></table></div>
+
+<!-- ═══════════════════════════════════════ -->
+<h2><span class="n">07</span>하지 말 것</h2>
+
+<div class="scroll"><table>
+<thead><tr><th style="width:34%">하지 말 것</th><th>근거</th></tr></thead>
+<tbody>
+<tr><td><span class="tag t-dont">DON'T</span> <b>sourcei로 뱅크 A/B 비교 · 절대 정확도 공표</b></td>
+    <td><code>sourcei-prompts</code>는 v1.0.8.0 <b>한 벌뿐</b> — 대응비교의 대조군이 물리적으로 없다. 게다가 GT가 파생이고 near_miss 1,503이 normal로 뭉쳐 falldown FP가 구조적으로 부풀려진다</td></tr>
+<tr><td><span class="tag t-dont">DON'T</span> <b>승자문장 UMAP 칠하기 / 문장·이미지 혼합 UMAP</b></td>
+    <td>이미 실측 반증(영역분산↔LOO 무상관, 영토≈카메라 86.8%). 혼합 UMAP은 text↔image cos 0.147 vs image↔image 0.756이라 최근접 질의가 <b>엔티티 타입 분류기</b>가 된다 — 코드 docstring이 이미 기각한 길</td></tr>
+<tr><td><span class="tag t-dont">DON'T</span> <b><code>nearest_key</code> / <code>match</code>로 문장 품질 판정</b></td>
+    <td><code>nearest</code>는 argmax 프레임 <b>1장</b>(극단치)이고 12,480 중 12,166이 미채택이라 대부분 "우연히 가장 가까운" 프레임. 클래스별 문장 수 불균형으로 hit의 base rate가 달라 비교 자체가 무의미. <b>썸네일 정성 탐색용</b>이지 통계량 아님</td></tr>
+<tr><td><span class="tag t-dont">DON'T</span> <b>LLM으로 뱅크 문장 자동 증강 후 재평가</b></td>
+    <td>레버는 <b>삭제</b>인데 정반대 방향. 게다가 또 모델 파생 → 자기학습 경계 재침범</td></tr>
+<tr><td><span class="tag t-dont">DON'T</span> <b>Gemini 캡션에서 normal 문장을 뽑아 새 프롬프트로</b></td>
+    <td>sourcei normal GT의 96%가 Gemini 캡션 파싱 결과다. 캡션에서 뽑은 문장으로 그 GT를 맞히면 <b>진짜 순환</b>(train-on-test)이 된다. 제안이 나오면 즉시 기각</td></tr>
+<tr><td><span class="tag t-dont">DON'T</span> <b>FiftyOne 패널 UX 추가 개선 / 새 워크스페이스</b></td>
+    <td>양방향 조인으로 목적 달성. 이후는 유지비만 늘고 컨테이너 recreate마다 증발한다(이미 원복되는 런타임 패치 2개 존재)</td></tr>
+<tr><td><span class="tag t-dont">DON'T NOW</span> <b><code>018~020</code> migration을 main 머지</b></td>
+    <td>migration 주석이 스스로 "두 번째 프로그램 소비자 없음 = 가장 약한 지점"이라 자인. <code>src/</code> 변경 = 이미지 재빌드 = 라벨링 중단</td></tr>
+</tbody></table></div>
+
+<p class="small">상시 금지(재확인): 영상 단위 폴드 없는 탐욕제거 수치 인용 · 예산 목적 뱅크 삭감(비승자 = 예비군, <code>reach&gt;0</code>) · 순진한 뱅크 병합(84.7% &lt; 91.0%) · 클래스 내 백분위 지표에 전역 절대컷 재도입.</p>
+
+<!-- ═══════════════════════════════════════ -->
+<h2><span class="n">08</span>오늘 할 것</h2>
+<p class="lede">분석보다 급한 게 하나 있다.</p>
+
+<div class="warn">
+<strong>먼저: 미push 코드를 push하라. 비용 <code>git push</code> 한 번, blast radius 0.</strong>
+<ul style="margin-bottom:0">
+<li><code>feature/apo-topk-probe</code> — origin 대비 <b>3커밋 앞</b>이고 <b>메인 워크트리에 체크아웃돼 있다</b>.
+누가 <code>main</code>에 push하면 <code>deploy-stack.sh</code>가 이 repo에서 <code>git reset --hard &lt;main SHA&gt;</code>를 돌린다 →
+<b>3커밋 + 미커밋 tracked 수정 6개가 소실</b>. 2026-07-29에 커밋 9개 + 미커밋 4개가 실제로 파괴된 전례가 있다.</li>
+<li><code>feature/viz-curation-sdd</code> — 25커밋, <b>어떤 remote에도 없는 유일본</b>. 워크트리라 reset엔 안 날아가지만 디스크 정리 한 번이면 끝.</li>
+</ul>
+</div>
+
+<pre><code># 1. tracked 수정 커밋 후 push (배포 트리거 없음 — feature 브랜치)
+git push origin feature/apo-topk-probe
+git push origin feature/viz-curation-sdd
+
+# 2. 선행 확인 0 — gidx 정합 / 이벤트 구조 / v3_unknown
+#    (§05 카드 0)
+
+# 3. GT 없이 돌아가는 것들 — 코드 델타 0
+BANK_ATTACH=v1.0.8.4 python docker/analysis/prompt_geometry.py attach --profile sourceh
+BANK_A=v1.0.8.0 BANK_B=v1.0.8.0 VOTE_K=10 VOTE_KS=1,10 \
+  python docker/analysis/prompt_geometry.py vote --profile sourcei</code></pre>
+
+<p><b>하지 말 것:</b> 지금 <code>main</code>으로 머지. <code>docker/analysis/</code>는 CI 재빌드 트리거에도 rsync 대상에도 <b>없다</b> →
+머지해도 <b>반영 0인데 dagster 3종은 무조건 재기동돼 라벨링만 끊긴다</b>. 반영은 <code>docker cp</code>. <b>push ≠ merge.</b></p>
+
+<!-- ═══════════════════════════════════════ -->
+<h2><span class="n">09</span>연결 경로 — 이 분석이 제품에 닿는가</h2>
+<p class="lede">솔직하게: 대부분 끊겨 있다. 이 사실이 산출물의 형태를 결정한다.</p>
+
+<div class="scroll"><table>
+<thead><tr><th>구간</th><th>상태</th><th>근거</th></tr></thead>
+<tbody>
+<tr><td>FiftyOne 분석 → 삭제/추가 문장 결정</td><td><b style="color:var(--ok)">있음</b></td><td>선택도 지표 + 조인 완성</td></tr>
+<tr><td>결정 → 뱅크 파일 갱신</td><td><b style="color:var(--bad)">끊김</b></td><td>뱅크 SoT는 NAS userwatch 버전 파일(52버전). 우리가 authored한 문장은 5행뿐이고 그마저 미머지 migration 안</td></tr>
+<tr><td>뱅크 → 제품 배포</td><td><b style="color:var(--muted)">우리 소관 아님</b></td><td>userwatch 릴리스. 우리 CI/compose 어디에도 뱅크 서빙 경로 없음</td></tr>
+<tr><td>분석 코드 → prod 컨테이너</td><td><b style="color:var(--bad)">끊김(구조적)</b></td><td><code>deploy-stack.sh</code> rsync 대상, 재빌드 글롭 <b>양쪽 다 <code>docker/analysis/</code> 없음</b>. 반영은 <code>docker exec</code> 수동 복사뿐이라 git과 상시 drift</td></tr>
+<tr><td>분석 → 학습 루프</td><td><b style="color:var(--warn)">GT 한 점에서만</b></td><td>뱅크는 무학습 트랙이라 <code>model_registry</code>/PE-Core 파인튠과 접점 없음. 두 트랙의 유일한 공통 자산이 <b>사람 검수 GT</b></td></tr>
+</tbody></table></div>
+
+<div class="note"><strong>따라서 최종 산출물의 형태는 코드도 대시보드도 아니라 "문장 diff + 재현 스크립트 + 근거" 문서다.</strong>
+그 사실이 §07의 "패널 UX 추가 개선 = DON'T"를 만들고, 사람 검수 GT가 <b>분석 트랙과 학습 트랙을 잇는 유일한 다리</b>라는 점이 §01 판정의 두 번째 근거다.</div>
+
+<h3>3개월 뒤</h3>
+<div class="scroll"><table>
+<thead><tr><th style="width:50%">남는 것</th><th>사라지는 것</th></tr></thead>
+<tbody>
+<tr><td>사람 검수 GT 앵커 세트 — 유일하게 복리로 쌓이는 자산</td><td>FiftyOne 워크스페이스/패널 상태, brain_key 가정, 런타임 패치</td></tr>
+<tr><td>지표 정의(선택도 = would-win ÷ 오탈취)와 <b>규칙 병기 관례</b></td><td>UMAP 좌표(재계산마다 달라짐)</td></tr>
+<tr><td>제품 릴리스에 실제로 실린 문장 diff — 그것만</td><td>v080/v084 절대 점수, 파생 GT 기준 <code>0.6942</code></td></tr>
+<tr><td>뱅크 원장 + <code>ledger → eval → report</code> 재현 스크립트 <b>— push된 경우에만</b></td><td>push 안 된 브랜치</td></tr>
+</tbody></table></div>
+
+<!-- ═══════════════════════════════════════ -->
+<h2><span class="n">10</span>부록 — 실측 데이터 상태</h2>
+
+<div class="scroll"><table>
+<thead><tr><th>데이터셋</th><th class="num">규모</th><th>비고</th></tr></thead>
+<tbody>
+<tr><td><code>sourcei</code></td><td class="num">7,498 프레임</td><td>2fps 추출. GT 파생(FP 스트레스 테스트 용도, recall 벤치마크 아님)</td></tr>
+<tr><td><code>sourcei-prompts</code></td><td class="num">12,480 문장</td><td>v1.0.8.0 단일 버전 — <b>버전 비교 경로가 데이터상 안 탄다</b></td></tr>
+<tr><td><code>source-h</code></td><td class="num">13,144 프레임</td><td>사람 재라벨 GT. v084에 <code>winner_gidx_v084</code> 부재</td></tr>
+<tr><td><code>source-h-prompts</code></td><td class="num">12,480 문장</td><td>sourcei-prompts와 <b>동일 뱅크</b> → gidx가 크로스도메인 조인키</td></tr>
+<tr><td><code>frames_captions</code></td><td class="num">199,972</td><td>유일하게 진짜 GT(<code>review_status='finalized'</code>) 사용. 단 <code>bank_domain_map.yaml</code> <code>domains: {}</code> = 0단계</td></tr>
+</tbody></table></div>
+
+<h3>sourcei 판정 현황</h3>
+<div class="scroll"><table>
+<thead><tr><th>규칙</th><th class="num">micro</th><th class="num">normal</th><th class="num">falldown</th><th class="num">smoke</th><th class="num">fire</th></tr></thead>
+<tbody>
+<tr><td>GT</td><td class="num">—</td><td class="num">4,323</td><td class="num">1,404</td><td class="num">1,542</td><td class="num">229</td></tr>
+<tr><td><code>argmax_k1</code></td><td class="num">0.6942</td><td class="num">6,541</td><td class="num">492</td><td class="num">384</td><td class="num">81</td></tr>
+<tr><td><code>dist_iou</code> (제품)</td><td class="num">0.6599</td><td class="num">6,609</td><td class="num">687</td><td class="num">161</td><td class="num">41</td></tr>
+</tbody></table></div>
+<p class="small">두 규칙 모두 <b>normal로 심하게 쏠려 있다</b>(예측 6,541~6,609 vs GT 4,323). 이벤트 클래스 recall이 낮다는 뜻인데,
+GT가 파생이라 "모델이 못 잡는 것"인지 "GT가 이벤트를 과다 선언한 것"인지 <b>현재로선 구분 불가</b> — 이것이 분석 1이 최우선인 이유다.</p>
+
+<h3>3도메인 교차분석은 아직 불가</h3>
+<div class="scroll"><table>
+<thead><tr><th>축</th><th>현재 상태</th><th>필요 조치</th></tr></thead>
+<tbody>
+<tr><td>도메인 매핑</td><td><code>bank_domain_map.yaml</code>의 <code>domains: {}</code> — score/gap/gtsync 전부 hard-skip</td><td>노션 "프롬프트 버전/관리 체계 구축"에서 도메인 번호·버전쌍 확정 후 시드</td></tr>
+<tr><td>클래스 taxonomy</td><td><code>class_crosswalk</code>에 fire·smoke·normal만. <b><code>falldown</code> 매핑이 아예 없다</b></td><td><code>SELECT DISTINCT category FROM image_label_annotations</code>로 실제 LS 카테고리 확인 후 추가</td></tr>
+<tr><td>GT 정의</td><td>source-h/sourcei = weak proxy, frames_captions = 실 GT. <b>정의가 다른 셋을 한 표에 놓으면 안 됨</b></td><td>비교 시 GT 정의 각주 필수 + min-n tier 적용(&lt;30 건수만, &lt;100 탐색적, ≥100&amp;영상≥30 보고가능)</td></tr>
+<tr><td>카메라 단위</td><td>frames_captions는 ledger row에 <code>camera</code> 키가 없어 전부 <code>"unknown"</code></td><td>프록시 결정 필요. <b><code>source_unit_name</code> 재사용은 금지</b> — 다른 도메인에서 이미 증명된 함정</td></tr>
+</tbody></table></div>
+
+<footer>
+<p><b>검토 구성</b> — ai-modeler(실험·측정 설계) · ai-data-engineer(GT·큐레이션 루프) · cto(우선순위·ROI) 페르소나 병렬 + OpenAI Codex(코드 실사, <code>파일:라인</code> 근거) 종합.
+네 검토자는 서로의 결과를 모르는 상태에서 병렬 수행했다.</p>
+<p><b>사실 확인 방식</b> — 데이터 수치는 <code>docker-analysis-1</code> 라이브 FiftyOne 직접 쿼리(2026-08-10), 제품 규칙은 <code>pe_inference/</code> 코드 직접 확인, 코드 지적은 전부 파일:라인 근거 보유.
+표기되지 않은 추정은 "미확인"으로 명시했다.</p>
+<p><b>확실치 않은 것</b> — sourcei↔source-h의 <code>gidx</code> 정합은 <b>텍스트 해시 대조 전까지 가정</b>이다(선행 확인 0). 검증 전에 크로스도메인 상관계수를 인용하지 말 것.</p>
+</footer>
+
+</div>
+</body>
+</html>
