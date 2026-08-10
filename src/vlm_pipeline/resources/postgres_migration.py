@@ -111,6 +111,8 @@ class PostgresMigrationMixin:
         # 015: 활성 임베딩 model_name 포인터 (PE-Core 승격). image_embeddings 가 있는
         #      (pgvector) 환경에서만 의미 → 008/009 과 동일 전제조건. 비-pgvector prod 부팅 보호.
         "015_embedding_active_model.sql": "SELECT 1 FROM pg_available_extensions WHERE name = 'vector'",
+        # 021: 뱅크 문장 벡터(entity_type='prompt')용 partial HNSW. 008/009 과 동일 전제조건.
+        "021_prompt_embedding_index.sql": "SELECT 1 FROM pg_available_extensions WHERE name = 'vector'",
     }
 
     def ensure_runtime_schema(self) -> None:

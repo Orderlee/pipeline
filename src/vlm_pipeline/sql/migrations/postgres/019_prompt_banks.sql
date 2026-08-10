@@ -24,13 +24,23 @@
 --     labels/GT 보정 루프에 들어오지 않는다). 이 판단이 틀렸다면 강행 근거가 사라진다 —
 --     이 파일이 이번 설계의 가장 약한 지점이다(weakest_point 참고).
 --
+-- ── 2026-08-10 개정 (적용 전 수정 — 어느 환경에도 적용된 적 없음) ────────────────────
+--   * 보류 해제 조건("두 번째 소비자가 프로그램으로 조회")이 요구 R6(뱅크 문장 DB 관리) +
+--     Phase 2 창으로 충족됐다. 위 weakest_point 는 해소된 것으로 본다.
+--   * 전수 실측(`docker/analysis/prompt_bank_ledger.py inventory`)이 원안의 두 전제를 바꿨다:
+--     ① 52버전 중 텍스트 보유는 35개뿐(13개는 벡터만, 4개는 빈 폴더)이라 `db_backed` 승격
+--        대상은 35개다. 나머지는 `external_only` 로 남는다 — 옮길 텍스트가 존재하지 않는다.
+--     ② 문장 총량이 506,247행/10.5MB 로 작아 "대량 복제 회피" 근거가 성립하지 않는다.
+--        별도 membership 테이블 없이 bank_sentences 하나로 버전 diff 가 SQL 한 방이 된다.
+--   * bank_sentences 의 UNIQUE 키를 content_hash → gidx 로 교정 (아래 제약 주석 참고).
+--
 -- Forward-only, idempotent, DO 블록 미사용.
 --
 -- @ASSERT_AFTER: SELECT to_regclass('prompt_banks') IS NOT NULL
 -- @ASSERT_AFTER: SELECT to_regclass('bank_sentences') IS NOT NULL
 -- @ASSERT_AFTER: SELECT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'prompt_banks_version_source_unique' AND conrelid = 'prompt_banks'::regclass AND contype = 'u')
 -- @ASSERT_AFTER: SELECT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid = 'bank_sentences'::regclass AND confrelid = 'prompt_banks'::regclass AND contype = 'f')
--- @ASSERT_AFTER: SELECT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'bank_sentences_bank_hash_unique' AND conrelid = 'bank_sentences'::regclass AND contype = 'u')
+-- @ASSERT_AFTER: SELECT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'bank_sentences_bank_gidx_unique' AND conrelid = 'bank_sentences'::regclass AND contype = 'u')
 
 BEGIN;
 
@@ -72,6 +82,9 @@ CREATE TABLE IF NOT EXISTS bank_sentences (
     content_hash            TEXT NOT NULL,
     text                    TEXT NOT NULL,
     class_label             TEXT NOT NULL,
+    -- 뱅크 안에서의 순번. 프레임 쪽 `winner_gidx_*` 가 가리키는 값이 이것이고, CSV 행 순서라
+    -- 파생 불가 — 명시 저장이 유일한 방법이다. 사람이 author 한 문장은 뱅크 순번이 없어 NULL.
+    gidx                    INTEGER,
     origin                  TEXT NOT NULL DEFAULT 'human-pinpoint',  -- 'human-pinpoint' | 'userwatch' | 'pruned-candidate' | ...
     adopted                 BOOLEAN NOT NULL DEFAULT FALSE,
     probe_target            TEXT,
@@ -81,11 +94,18 @@ CREATE TABLE IF NOT EXISTS bank_sentences (
     probe_smoke_recall_delta DOUBLE PRECISION,
     probe_verified          BOOLEAN NOT NULL DEFAULT FALSE,
     created_at              TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    CONSTRAINT bank_sentences_bank_hash_unique UNIQUE (bank_id, content_hash),
+    -- ⚠️ 원안은 UNIQUE(bank_id, content_hash) 였으나 **전수 실측이 반증**했다: userwatch 35개
+    -- 뱅크에 같은 문장이 두 번 이상 들어간 경우가 152건 있다(뱅크는 문장의 집합이 아니라
+    -- 반복 가능한 순서열이다). 그 제약으로 적재하면 152행이 조용히 사라지고, 사라진 행의
+    -- gidx 가 winner_gidx 로 참조되면 프레임↔문장 조인이 깨진다. 실제 identity 는 gidx 다.
+    -- (우리가 쓰는 v1.0.8.0/v1.0.8.4 자체는 뱅크내 중복 0건이라 현행 조인에는 영향 없음.)
+    CONSTRAINT bank_sentences_bank_gidx_unique UNIQUE (bank_id, gidx),
     CONSTRAINT bank_sentences_text_check CHECK (btrim(text) <> '')
 );
 
 CREATE INDEX IF NOT EXISTS bank_sentences_class_label_idx ON bank_sentences (class_label);
 CREATE INDEX IF NOT EXISTS bank_sentences_bank_id_idx ON bank_sentences (bank_id);
+-- 버전 간 문장 diff("A 에는 있고 B 에는 없는 문장")의 조인 키. UNIQUE 는 아니다(위 참고).
+CREATE INDEX IF NOT EXISTS bank_sentences_content_hash_idx ON bank_sentences (content_hash);
 
 COMMIT;
