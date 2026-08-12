@@ -92,13 +92,27 @@ def assert_mem_budget(budget_gb: float) -> None:
         raise SystemExit(f"메모리 부족: available {avail_gb:.1f}G < 2×budget {budget_gb:.0f}G — 시작 거부")
 
 
-# 비교 대상 뱅크 버전 — env 로 파라미터화 (새 버전이 나오면 BANK_A/BANK_B 만 바꿔 재실행)
-VERSIONS = (os.environ.get("BANK_A", "v1.0.8.0"), os.environ.get("BANK_B", "v1.0.8.4"))
-V0, V4 = VERSIONS
+# 비교 대상 뱅크 버전 — env 로 파라미터화 (새 버전이 나오면 BANK_A/BANK_B 만 바꿔 재실행).
+# 다중 버전(2026-08-11, 사용자 요청 "userwatch 전 버전"): BANK_LIST="v1,v2,..." 가 있으면
+# 그 전체가 VERSIONS 가 된다 — wave/attach/promptmap 은 원래 BANKS 루프라 그대로 동작.
+# ⚠️ 순서가 gidx 오프셋(GIDX_OFFSET × 순번)을 정하므로 재실행 간에 순서를 바꾸면 안 된다.
+if os.environ.get("BANK_LIST"):
+    VERSIONS = tuple(v.strip() for v in os.environ["BANK_LIST"].split(",") if v.strip())
+else:
+    VERSIONS = (os.environ.get("BANK_A", "v1.0.8.0"), os.environ.get("BANK_B", "v1.0.8.4"))
+V0, V4 = VERSIONS[0], VERSIONS[-1]
 # 단일뱅크 모드 — `BANK_A == BANK_B` 로 돌리면(예: sourcei 는 v1.0.8.0 만) 뱅크를 훑는
 # 스테이지가 같은 일을 두 번 하고 promptmap 은 문장이 두 배로 들어간다. 여기서 한 번만 접는다.
 BANKS = tuple(dict.fromkeys(VERSIONS))
 CLASS_NAMES = {0: "normal", 1: "falldown", 2: "fire", 3: "smoke"}
+
+# 다중 뱅크를 한 `<dataset>-prompts` 에 실을 때의 gidx 전역 유일성 (2026-08-11):
+#   FiftyOne gidx = BANKS.index(version) * GIDX_OFFSET + 뱅크-로컬 인덱스.
+# user-prompt-compare 패널이 gidx 를 전역 유일 id 로 쓰고(클릭 ids·row_of 딕셔너리·selftest
+# 불변식) 프레임 필드 `winner_gidx_<tag>` 와 등식 조인하므로, promptmap 과 attach 가 같은
+# 오프셋을 써야 한다. 첫 버전(BANK_A)은 오프셋 0 — 기존 v080 산출물과 바이트 동일.
+# 뱅크-로컬 인덱스(prune CSV·geometry 내부)와의 환산은 gidx % GIDX_OFFSET.
+GIDX_OFFSET = 100_000
 
 # ── 판정규칙 ────────────────────────────────────────────────────────────────
 # 제품 APO 는 **전역 top-K 문장의 클래스 다수결**로 판정한다 (`bank_vote_stream` 참고).
@@ -125,13 +139,16 @@ def log(msg: str) -> None:
 
 
 def vtag(version: str) -> str:
-    """v1.0.8.4 → v084 — `margin_*`/`winner_*` 필드 접미사.
+    """v1.0.8.4 → v1084 — `margin_*`/`winner_*` 필드 접미사.
 
     기존 코드가 ("v080","v084") 를 하드코딩하고 있었다. BANK_A/BANK_B 를 바꿔 재실행하면
     새 버전 값이 옛 이름 필드에 덮여 조용히 거짓말을 한다 → 버전에서 파생한다.
-    """
-    parts = version.lstrip("v").split(".")
-    return "v" + "".join(parts[-3:] if len(parts) >= 3 else parts)
+
+    2026-08-11 전 파트 조인으로 변경: 마지막 3파트만 쓰면 v1.0.5.0/v2.0.5.0 이 같은
+    "v050", v5.0.15.0/v6.0.15.0/v8.0.15.0 이 같은 "v0150" 으로 붕괴한다 (userwatch 52버전
+    적재에서 실충돌). 전 파트 조인은 54버전 전수 유일 확인. 기존 v080/v084 필드는
+    v1080/v1084 로 재백필된다 (패널 version_to_winner_field 와 동기)."""
+    return "v" + "".join(version.lstrip("vV").split("."))
 
 
 def jsonl_load(path: str, key: str = "key") -> dict:
@@ -457,12 +474,25 @@ def stage_bank(csv_path: str, version: str) -> None:
     import requests
 
     rows = list(_csv.DictReader(open(csv_path, newline="", encoding="utf-8")))
+    # 자리표시자를 임베딩하면 그 문자열 자체가 자석이 된다 (§is_placeholder 주석)
+    n_ph = sum(1 for r in rows if is_placeholder(r.get("prompt")))
+    if n_ph:
+        raise SystemExit(f"bank {version}: CSV 에 문장 없는 행이 {n_ph}/{len(rows)}개 "
+                         f"({PLACEHOLDER_PREFIX}...) — 벡터전용 뱅크의 자리표시자다. "
+                         "텍스트 원본 CSV 를 쓰라")
     out = f"{PROMPT_DIR}/{version}.npz"
     if os.path.exists(out):
         z = np.load(out, allow_pickle=True)
-        if len(z["cls"]) == len(rows):
-            log(f"bank {version}: 이미 존재 (n={len(rows)}) → skip")
+        # ⚠️ 행수만 비교하면 안 된다 — `bankfrom` 큐레이션은 **같은 개수·다른 문장** 버전을
+        #    대량 생산하므로, 같은 버전명으로 재실행하면 새 문장을 임베딩하지 않고 옛 npz 를
+        #    조용히 재사용한다 (2026-08-11 감사 지적). 문장 내용으로 비교한다.
+        same = (list(z["prompt"]) == [r["prompt"] for r in rows]) if "prompt" in z \
+            else (len(z["cls"]) == len(rows))
+        if same:
+            log(f"bank {version}: 이미 존재 (n={len(rows)}, 문장 동일) → skip")
             return
+        log(f"bank {version}: 기존 npz 와 문장이 다르다 "
+            f"(기존 {len(z['cls'])} / 신규 {len(rows)}) → 재임베딩")
     sess = requests.Session()
     vecs = np.zeros((len(rows), 1024), dtype=np.float32)
     cls = np.zeros(len(rows), dtype=np.int64)
@@ -475,6 +505,210 @@ def stage_bank(csv_path: str, version: str) -> None:
     np.savez_compressed(out, vec=vecs, cls=cls,
                         prompt=np.array([r["prompt"] for r in rows], dtype=object))
     log(f"bank {version}: 저장 {out} (n={len(rows)})")
+
+
+# ────────────────────── bankfrom (큐레이션) ──────────────────────
+def _norm_text(s: str) -> str:
+    """원장(`prompt_bank_ledger.py:56`)과 **같은** 정규화 — 공백 접기 + 소문자."""
+    return " ".join((s or "").split()).lower()
+
+
+# 벡터전용 뱅크(텍스트 미보유)를 npz 로 흡수할 때 `prompt` 배열에 채워지는 자리표시자.
+# 2026-08-11 일괄 재빌드로 v1.0.8.0/v1.0.8.4 npz 의 `prompt` 가 이걸로 덮여 문장 데이터셋까지
+# 전파됐다 (벡터·cls 는 온전). 이걸 문장으로 착각하면 자리표시자 문자열을 임베딩한 **가짜 자석**이
+# 뱅크에 들어가고, 점수는 그럴싸하게 나온다 — 그래서 문장을 쓰는 모든 입구에서 막는다.
+PLACEHOLDER_PREFIX = "(텍스트 없음"
+
+
+def is_placeholder(s: str) -> bool:
+    return str(s or "").lstrip().startswith(PLACEHOLDER_PREFIX)
+
+
+def _bank_rows(texts: list, labels: list, cls_map: dict) -> tuple[list[tuple[int, str]], int]:
+    """(class int, prompt) 행 + 중복탈락수. **fail-closed** — 모르는 라벨/빈 문장은 예외.
+
+    조용한 기본값(`.get(label, 0)`)을 두지 않는 이유: normal(0) 로 흘러들어간 fire 문장은
+    뱅크를 조용히 망치고 점수에는 그럴싸하게 나타난다.
+    중복 판정은 (정규화 텍스트, class) — 텍스트만으로 접으면 같은 문장을 다른 클래스로
+    쓰는 정당한 경우까지 삼킨다 (원장 content_hash 의 알려진 결함과 같은 함정).
+    """
+    rev = {v: k for k, v in cls_map.items()}
+    rows, seen, dropped = [], set(), 0
+    n_ph = sum(1 for t in texts if is_placeholder(t))
+    if n_ph:
+        raise SystemExit(
+            f"bankfrom: 선택에 문장이 없는 표본이 {n_ph}/{len(texts)}개 있다 "
+            f"({PLACEHOLDER_PREFIX}...). 그 뱅크 버전은 벡터만 있고 텍스트가 없다 — "
+            "CSV 로 뽑으면 자리표시자를 임베딩한 가짜 자석이 만들어진다.\n"
+            "  · 사이드바 `bank_version` 으로 텍스트가 있는 버전만 남기고 다시 고르거나,\n"
+            "  · 원본 CSV 로 npz 를 복원한 뒤 `promptmap` 을 다시 돌려라 (예: "
+            f"bank --csv {PROMPT_DIR}/text_features_<버전>.csv --version <버전>)")
+    for t, lab in zip(texts, labels):
+        if not (t or "").strip():
+            raise SystemExit("bankfrom: 빈 text 표본이 선택에 포함됐다 — 태그를 확인하라")
+        if lab not in rev:
+            raise SystemExit(f"bankfrom: 모르는 클래스 라벨 {lab!r} — 허용: {sorted(rev)}")
+        k = (_norm_text(t), rev[lab])
+        if k in seen:
+            dropped += 1
+            continue
+        seen.add(k)
+        rows.append((rev[lab], t))
+    return rows, dropped
+
+
+def stage_bankfrom(tag: str, version: str, notes: str | None = None) -> None:
+    """App 에서 **태그한 문장** → 뱅크 CSV + provenance + 원장 1행 (큐레이션 버전 확정).
+
+    ## 왜 태그인가 (플러그인 operator 를 만들지 않은 이유)
+
+    네이티브 Embeddings 라쏘는 `ctx.selected` 에 **들어오지 않는다** — `ctx.extended_selection`
+    으로만 오고, 그걸 받아 뷰를 건드리면 선택이 스스로 사라진다 (prompt-compare 패널의
+    `on_change_extended_selection` 실측 주석). 반면 라쏘는 그리드를 이미 좁히므로
+    **그리드 전체선택 → 네이티브 tag 버튼**이면 선택 UI 코드가 0줄이고, 태그는 어느 선택
+    경로에서 왔든 살아남는다. 게다가 클래스 이름↔int 사상이 이 파일의 `CLASS_NAMES` 하나로
+    끝나 App 플러그인에 사상을 **두 번째로 하드코딩**하는 drift 위험이 없다.
+
+    ## 흐름
+
+        App: 사이드바 필터 or 라쏘 → 그리드 전체선택 → tag `bank:<version>`
+        python prompt_geometry.py bankfrom --tag bank:<version> --version <version>
+        python prompt_geometry.py bank --csv <위 CSV> --version <version>   # → npz
+
+    ## 산출물
+
+    · `PROMPT_DIR/authored_<version>.csv` — 정본 헤더 `ID,class,prompt` (`stage_bank` 입력).
+      ⚠️ 파일명이 `authored_` 인 것은 필수다. `text_features_*` 로 쓰면
+      `prompt_bank_ledger.py scan_roots()` 의 `VERSION_RE` 에 걸려 우리 뱅크가
+      **외부 공급 뱅크로 위장 등록**된다.
+    · `PROMPT_DIR/authored_<version>.json` — provenance. 부모 버전·태그·분모·미평가 표시.
+      이게 없으면 "v080 에서 205개 삭제"와 "전면 재작성"이 사후 구분되지 않는다 (실측상
+      이 둘은 가치 부호가 반대다).
+    · `prompt_banks`(source='internal') 1행 + `bank_sentences` N행 — DSN 도달 시. 실패해도
+      CSV/JSON 은 남긴다 (fail-soft: 작업을 잃지 않는다).
+
+    ## 읽는 사람에게
+
+    `eval` 은 항상 `null` 로 시작한다 — **이 버전은 아직 미평가다.** 선택에 쓰인 점수
+    (`wins`/`purity` = top-k 축, `wave_gain` = 분포 IoU 축)는 GT 파생이라 그대로는 train
+    점수다. 같은 뱅크 교체가 top-k 로는 +19pp, 제품 규칙으로는 +2.9pp 였다.
+    ⚠️ `wave_gain` **원값 정렬 금지** — normal 클래스는 부호가 반대다
+    (`stage_promptmap` 의 `signed = where(cls==0, -wgain, wgain)`). 정렬은 `wave_role` 로.
+    """
+    import csv as _csv
+    import datetime as _dt
+
+    import fiftyone as fo
+
+    name = f"{PROFILES[PROFILE]['dataset']}-prompts"
+    if name not in fo.list_datasets():
+        raise SystemExit(f"bankfrom: 데이터셋 {name} 없음 — `promptmap` 스테이지를 먼저 돌려라")
+    ds = fo.load_dataset(name)
+    view = ds.match_tags(tag)
+    if not view.count():
+        raise SystemExit(f"bankfrom: 태그 {tag!r} 인 문장이 0개 "
+                         f"(현재 태그: {ds.count_sample_tags()})")
+
+    rows, dropped = _bank_rows(view.values("text"), view.values("category.label"), CLASS_NAMES)
+    parents = collections.Counter(x for x in view.values("bank_version.label") if x)
+    counts = collections.Counter(CLASS_NAMES[c] for c, _ in rows)
+
+    out = f"{PROMPT_DIR}/authored_{version}.csv"
+    try:                                    # x = 배타 생성. 같은 버전명 재사용을 조용히 덮지 않는다
+        f = open(out, "x", newline="", encoding="utf-8")
+    except FileExistsError:
+        # 컨테이너가 root 로 쓰므로 호스트 일반 유저로는 지울 수 없다 — 실제 되는 명령을 준다.
+        raise SystemExit(
+            f"bankfrom: {out} 이 이미 있다 — 버전명을 바꾸거나 다음으로 치워라\n"
+            f"  docker exec docker-analysis-1 rm {out} {out[:-4]}.json") from None
+    with f:
+        w = _csv.writer(f)
+        w.writerow(["ID", "class", "prompt"])
+        for i, (c, t) in enumerate(rows):
+            w.writerow([i, c, t])           # ID 는 stage_bank 가 무시한다 (행 순번으로 보존)
+
+    prov = {
+        "version": version, "source": "internal", "origin": "curated",
+        "dataset": name, "tag": tag, "profile": PROFILE,
+        "n_selected": view.count(), "n_rows": len(rows), "n_dropped_dup": dropped,
+        "class_counts": dict(counts), "parents": dict(parents),
+        "model_name": "PE-Core-L14-336",
+        "created_at": _dt.datetime.now(_dt.timezone.utc).isoformat(),
+        "notes": notes,
+        # 미평가 표시 — 홀드아웃 재채점 전에는 어떤 점수도 이 버전에 붙지 않는다.
+        "eval": None,
+        "eval_protocol": "leave-one-camera-out, 제품 규칙(분포 IoU). 프레임 이항 CI 금지 "
+                         "(설계효과 9.22 → 소스영상 클러스터 부트스트랩). 음성대조군="
+                         "같은 클래스 구성 무작위 동수 선택.",
+    }
+    with open(f"{PROMPT_DIR}/authored_{version}.json", "w", encoding="utf-8") as jf:
+        json.dump(prov, jf, ensure_ascii=False, indent=2)
+
+    log(f"bankfrom {version}: 태그 {tag} → 문장 {len(rows):,} "
+        f"(선택 {view.count():,} / 중복탈락 {dropped}) → {out}")
+    log(f"bankfrom {version}: 클래스 {dict(counts)} · 부모 {dict(parents)}")
+    if len(parents) == 1:
+        (pv, pn), = parents.items()
+        total = ds.match({"bank_version.label": pv}).count()
+        log(f"bankfrom {version}: {pv} 기준 유지 {pn:,}/{total:,} "
+            f"(삭제 {total - pn:,}) — counterfactual 재현 가능")
+    _bankfrom_ledger(version, rows, prov)
+    log(f"bankfrom {version}: 다음 → python {os.path.basename(__file__)} bank "
+        f"--csv {out} --version {version}")
+    log(f"bankfrom {version}: ⚠️ 미평가 버전이다. 홀드아웃 재채점 전에는 점수를 인용하지 말 것")
+
+
+def _bankfrom_ledger(version: str, rows: list, prov: dict) -> None:
+    """019 원장에 `source='internal'` 뱅크 1행 + 문장 N행. **fail-soft** — 못 붙어도 CSV 는 산다.
+
+    · `bank_id` 는 uuid5 로 결정적 — 재실행이 행을 복제하지 않는다 (ON CONFLICT DO NOTHING).
+    · `parent_bank_id` 는 UUID 를 **계산하지 않고 조회**한다. 기존 외부공급 행의 UUID 생성
+      규칙을 우리가 재현한다고 가정하면 FK 가 조용히 깨진다.
+    · `gidx` = CSV 행 순번. `stage_bank` 가 만드는 npz 의 인덱스와 같은 정의여야
+      프레임 `winner_gidx_*` 조인이 성립한다.
+    """
+    import hashlib
+    import uuid as _uuid
+
+    dsn = os.environ.get("DATAOPS_POSTGRES_DSN") or os.environ.get("POSTGRES_DSN")
+    if not dsn:
+        log("bankfrom: DATAOPS_POSTGRES_DSN 없음 → 원장 생략 (CSV/JSON 만)")
+        return
+    try:
+        import psycopg2
+        from psycopg2.extras import execute_values
+
+        bank_id = str(_uuid.uuid5(_uuid.NAMESPACE_URL, f"internal:{version}"))
+        parent_tag = next(iter(prov["parents"])) if len(prov["parents"]) == 1 else None
+        with psycopg2.connect(dsn) as conn, conn.cursor() as cur:
+            parent_id = None
+            if parent_tag:
+                cur.execute("SELECT bank_id FROM prompt_banks WHERE version_tag = %s "
+                            "ORDER BY created_at LIMIT 1", (parent_tag,))
+                got = cur.fetchone()
+                parent_id = got[0] if got else None
+                if not got:
+                    log(f"bankfrom: 부모 {parent_tag} 원장 미등록 → parent_bank_id NULL")
+            cur.execute(
+                "INSERT INTO prompt_banks (bank_id, version_tag, source, sentence_storage, "
+                "  origin_uri, model_name, sentence_count, class_counts, parent_bank_id, "
+                "  ingested_by, notes) "
+                "VALUES (%s,%s,'internal','db_backed',%s,%s,%s,%s,%s,%s,%s) "
+                "ON CONFLICT DO NOTHING",
+                (bank_id, version, f"{PROMPT_DIR}/authored_{version}.csv",
+                 prov["model_name"], len(rows), json.dumps(prov["class_counts"]), parent_id,
+                 "prompt_geometry.bankfrom", json.dumps(prov, ensure_ascii=False)))
+            execute_values(
+                cur,
+                "INSERT INTO bank_sentences (sentence_id, bank_id, content_hash, text, "
+                "  class_label, gidx, origin, adopted) VALUES %s ON CONFLICT DO NOTHING",
+                [(str(_uuid.uuid5(_uuid.NAMESPACE_URL, f"{version}:{i}")), bank_id,
+                  hashlib.sha256(_norm_text(t).encode()).hexdigest()[:16], t,
+                  CLASS_NAMES[c], i, "curated", False)
+                 for i, (c, t) in enumerate(rows)])
+        log(f"bankfrom {version}: 원장 등록 bank_id={bank_id} (문장 {len(rows):,})")
+    except Exception as e:                  # noqa: BLE001 — 원장은 부가물, CSV 를 잃지 않는다
+        log(f"bankfrom: 원장 등록 실패 ({type(e).__name__}: {e}) — CSV/JSON 은 정상 저장됨")
 
 
 # ────────────────────── analyze ──────────────────────
@@ -1285,8 +1519,11 @@ def stage_attach() -> None:
     # (체크박스·카운트 없음 — camera 3종·ground_truth 4종도 동일, 실측 확인).
     # 서술문에서 "smoke" 하나로 여러 문장이 동시에 잡혀 문장 특정이 불가능하다.
     # IntField 는 min/max 정확값 필터라 충돌이 없고, 값이 prune CSV 의 `gidx` 와 같은 키다.
+    # gidx 전역 오프셋 (GIDX_OFFSET 주석): -prompts 데이터셋의 gidx 와 등식 조인이 되도록
+    # 버전 순번 오프셋을 더한다. BANK_A(=BANKS[0])는 0 이라 기존 v080 값과 동일.
+    goff = (BANKS.index(version) if version in BANKS else 0) * GIDX_OFFSET
     ds.set_values(f"winner_gidx_{tag}",
-                  {ids[i]: int(win_g[i]) for i in ok}, key_field="id")
+                  {ids[i]: int(win_g[i]) + goff for i in ok}, key_field="id")
     ds.set_values(f"pred_margin_{tag}",
                   {ids[i]: float(pred_margin[i]) for i in ok}, key_field="id")
 
@@ -1562,9 +1799,22 @@ def stage_probecache() -> None:
     import fiftyone as fo
 
     version = os.environ.get("BANK_ATTACH", VERSIONS[0])
-    tag = vtag(version)
     keys, X, gt, src, banks = load_all()
-    bank = banks[version]
+    if version.lower() in ("all", "__all__", "전체"):
+        # 「전체」 = 뱅크 **합집합** 위의 top-K. App 드롭다운에서 prompt-compare 의 '전체' 와
+        # 같은 모수를 프로브·문장생성에도 주기 위한 것이다 (뱅크가 2벌인데 프로브는 1벌만
+        # 보이던 문제, 2026-08-12 사용자 지적).
+        # ⚠️ 합집합은 **별개 뱅크**다. 순진 병합이 단일 뱅크보다 나빴던 실측이 있으므로
+        #    후보 문장을 넓은 모수에서 보려는 용도로만 쓰고, 제품 성능으로 인용하지 말 것.
+        tag = "all"
+        version = "+".join(BANKS)
+        bank = {"vec": np.concatenate([banks[v]["vec"] for v in BANKS], axis=0),
+                "cls": np.concatenate([banks[v]["cls"] for v in BANKS], axis=0),
+                "prompt": [p for v in BANKS for p in banks[v]["prompt"]]}
+        log(f"probecache: 합집합 뱅크 {version} → 문장 {len(bank['cls']):,}")
+    else:
+        tag = vtag(version)
+        bank = banks[version]
     vals, idxs = bank_topk_stream(X, bank)
     cs = sorted(vals)
     pred, votes, sel = vote_topk(vals, idxs)
@@ -2458,7 +2708,14 @@ def stage_promptmap() -> None:
     name = f"{PROFILES[PROFILE]['dataset']}-prompts"
     ds = fo.Dataset(name, overwrite=True, persistent=True)
 
-    for v in BANKS:
+    # UMAP 입력을 루프에서 numpy 로 직접 수집 — ds.values("embedding") 는 전 행을
+    # Python list-of-lists 로 올려서 54버전 ~78만 행이면 20GB+ (가용 8GB 호스트에서 OOM).
+    # 여기서 add_samples 와 같은 순서·같은 스킵으로 모으므로 대응이 어긋나지 않는다.
+    E_parts: list = []
+    inserted_ids: list = []   # ID-keyed points 용 — 순서 결합 제거 (codex 3A)
+
+    for vi, v in enumerate(BANKS):
+        goff = vi * GIDX_OFFSET          # gidx 전역 유일성 — GIDX_OFFSET 주석 참고
         bank = banks[v]
         P, cls = bank["vec"], bank["cls"]
         classes = sorted(set(cls.tolist()))
@@ -2492,12 +2749,13 @@ def stage_promptmap() -> None:
         ncos, nidx = nearest_frame_stream(X, P)
         log(f"promptmap {v}: 문장 {len(P):,} — 채택 {len(won):,} / 최근접 계산 완료")
 
-        batch, missing = [], 0
+        batch, missing, kept_g = [], 0, []
         for g in range(len(P)):
             fp = key2fp.get(keys[int(nidx[g])])
             if fp is None:                             # 소스 데이터셋에 없는 프레임
                 missing += 1
                 continue
+            kept_g.append(g)
             c = int(cls[g])
             fr = won.get(g, [])
             ngt = int(gt[int(nidx[g])])
@@ -2513,7 +2771,7 @@ def stage_promptmap() -> None:
                 s[f"nearest_{ax}"] = fo.Classification(label=str(lab))
             s["adopted"] = fo.Classification(label="채택" if fr else "미채택")
             s["wins"] = len(fr)
-            s["gidx"] = g
+            s["gidx"] = goff + g
             if fr:
                 p = float((gt[fr] == c).mean())
                 s["purity"] = round(p, 4)
@@ -2522,28 +2780,51 @@ def stage_promptmap() -> None:
             if wgain is not None:
                 s["wave_gain"] = float(wgain[g])
                 s["wave_role"] = fo.Classification(label=str(wrole[g]))
-            s["embedding"] = P[g].tolist()
+            # embedding(1024-d 리스트)은 몽고에 넣지 않는다 — 문서 부피의 94%였고,
+            # 29버전 60만 행에서 WiredTiger 캐시를 부풀려 mongod 딥스톨(ping 9분43초,
+            # _OperationCancelled 연쇄)을 일으켰다 (2026-08-11 실측 2회). 벡터 정본은
+            # PROMPT_DIR/<ver>.npz — gidx%GIDX_OFFSET 로 조회. UMAP 은 위 E_parts 경로.
             batch.append(s)
             if len(batch) >= 2000:                     # 2000 씩 흘려 피크 RAM 억제
-                ds.add_samples(batch)
+                inserted_ids.extend(map(str, ds.add_samples(batch)))
                 batch = []
         if batch:
-            ds.add_samples(batch)
+            inserted_ids.extend(map(str, ds.add_samples(batch)))
         if missing:
             log(f"promptmap {v}: 최근접 프레임이 소스에 없어 스킵 {missing}")
+        E_parts.append(P[np.asarray(kept_g, dtype=np.int64)].astype(np.float32))
 
-    # UMAP — ds 순서로 읽으므로 points ↔ sample 대응이 어긋날 수 없다
+    # UMAP — E_parts 는 add_samples 와 같은 순서/스킵으로 모였으므로 대응이 어긋나지 않는다
     for _v in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS",
                "NUMBA_NUM_THREADS"):
         os.environ.setdefault(_v, str(max(1, (os.cpu_count() or 4) // 4)))
     import fiftyone.brain as fob
     import umap
 
-    E = np.asarray(ds.values("embedding"), dtype=np.float32)
-    log(f"promptmap: UMAP fit {E.shape}")
+    E = np.concatenate(E_parts, axis=0)
+    del E_parts
+    assert len(E) == ds.count(), f"UMAP 입력 {len(E)} ≠ 데이터셋 {ds.count()} — 스킵 대응 붕괴"
+    umap_init = "spectral"
+    if len(E) > 100_000:
+        # 1024-d 코사인 UMAP 은 29버전 60만 행에서 메모리가 폭발한다 (RLIMIT 16GB 에서
+        # MemoryError 실측, 2026-08-12) — PCA 64-d 사전축소 (UMAP 문서 권장 관행).
+        # 주의: PCA 는 평균 중심화를 하므로 축소 공간의 cosine 은 원 벡터의 cosine 과
+        # 수학적으로 동일하지 않다 (codex 3B) — 시각화 배치 용도의 근사로 수용.
+        # init 도 random 으로 — spectral 은 큰 connected component(실측 23,929노드)에서
+        # dense n×n(4.3GB) 을 만들다 죽는다.
+        from sklearn.decomposition import PCA
+        E = PCA(n_components=64, svd_solver="randomized",
+                random_state=42).fit_transform(E).astype(np.float32)
+        umap_init = "random"
+        log(f"promptmap: PCA 사전축소 → {E.shape}")
+    log(f"promptmap: UMAP fit {E.shape} (init={umap_init})")
     pts = umap.UMAP(n_components=2, metric="cosine", low_memory=True,
-                    random_state=42).fit_transform(E)
-    fob.compute_visualization(ds, points=pts, brain_key="emb_viz")
+                    init=umap_init, random_state=42).fit_transform(E)
+    # ID-keyed dict (codex 3A): raw ndarray 는 compute_visualization 이 개수만 검증하고
+    # 순서는 ds.values("id") 와의 암묵 결합 — 중간에 재정렬이 끼면 조용히 뒤섞인다.
+    assert len(inserted_ids) == len(pts)
+    fob.compute_visualization(ds, points={i: p for i, p in zip(inserted_ids, pts)},
+                              brain_key="emb_viz")
 
     sch = ds.get_field_schema()
     for wsname, color in (("prompts", "category.label"),
@@ -3772,8 +4053,35 @@ def stage_report_frames() -> None:
     log(f"report → {out}")
 
 
+def _selftest_bankfrom() -> None:
+    """`bankfrom` 행 빌더 — 클래스 이름→int 역사상, 중복 접기, fail-closed 4종.
+
+    ⚠️ `stage_selftest` **맨 앞**에서 부른다. 뒤쪽 `vtag` assert 가 29버전 재빌드로 stale 해져
+    실패하는 상태라(그건 별 트랙), 뒤에 두면 이 검증에 영원히 도달하지 못한다.
+    """
+    cm = {0: "normal", 2: "fire"}
+    rows, dropped = _bank_rows(["A fire.", "A  fire. ", "Nothing."], ["fire", "fire", "normal"], cm)
+    assert rows == [(2, "A fire."), (0, "Nothing.")], rows      # 공백만 다른 중복은 접힌다
+    assert dropped == 1
+    # 같은 텍스트라도 클래스가 다르면 별 행 — 텍스트만으로 접으면 안 된다
+    assert len(_bank_rows(["x", "x"], ["fire", "normal"], cm)[0]) == 2
+    for bad in ((["x"], ["smoke"]), ([" "], ["fire"]),         # 모르는 라벨 / 빈 문장
+                (["(텍스트 없음 #3)"], ["fire"]),               # 벡터전용 뱅크 자리표시자
+                (["A fire.", "(텍스트 없음 #9)"], ["fire", "fire"])):   # 일부만 섞여도 거부
+        try:
+            _bank_rows(list(bad[0]), list(bad[1]), cm)
+            raise AssertionError(f"fail-closed 안 됨: {bad}")
+        except SystemExit:
+            pass
+    assert is_placeholder("(텍스트 없음 #0)") and is_placeholder("  (텍스트 없음 #12)")
+    assert not is_placeholder("A small fire blazes in the center in daylight.")
+    assert not is_placeholder("") and not is_placeholder(None)
+    log("selftest: bankfrom OK")
+
+
 def stage_selftest() -> None:
     """데이터 불필요 자가검증 — 스트리밍 리덕션 == 순진 행렬곱, crosswalk fail-closed, min-n."""
+    _selftest_bankfrom()
     rng = np.random.default_rng(0)
     X = rng.normal(size=(500, 64)).astype(np.float32)
     X /= np.linalg.norm(X, axis=1, keepdims=True)
@@ -3910,22 +4218,35 @@ def stage_selftest() -> None:
         "nearest idx 가 그 cos 를 가리키지 않음"
     assert purity_bin(0.0) == "0-25%" and purity_bin(0.5) == "50-75%" and purity_bin(1.0) == "90-100%"
     assert loo_bin(12) == "유해 +10↑" and loo_bin(0) == "중립 0" and loo_bin(-3).startswith("유익")
+
     log("selftest OK")
 
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("stage", choices=["bank", "analyze", "ablate", "attach", "gap", "prune", "atlas",
+    ap.add_argument("stage", choices=["bank", "bankfrom", "analyze", "ablate", "attach", "gap", "prune", "atlas",
                                       "wave", "promptmap", "attrs", "viz", "flips",
                                       "guide", "slim", "report", "gen", "screens", "vote", "probecache", "all", "selftest",
                                       "score", "gtsync"])
     ap.add_argument("--profile", choices=list(PROFILES),
                     default=os.environ.get("BANK_PROFILE", "sourceh"))
     ap.add_argument("--csv", help="bank 스테이지: 프롬프트 CSV 경로")
-    ap.add_argument("--version", help="bank 스테이지: 버전 이름 (npz 파일명)")
+    ap.add_argument("--version", help="bank/bankfrom 스테이지: 버전 이름 (npz·CSV 파일명)")
+    ap.add_argument("--tag", help="bankfrom 스테이지: App 에서 붙인 표본 태그")
+    ap.add_argument("--notes", help="bankfrom 스테이지: 이 버전을 왜 만들었는지 (provenance 에 저장)")
     ap.add_argument("--mem-budget-gb", type=float, default=4.0)
     args = ap.parse_args()
     set_profile(args.profile)
+
+    # 프로필 분기보다 앞 — bankfrom 은 프롬프트 데이터셋의 문자열 몇천 개만 읽으므로 세 프로필
+    # 모두에서 성립하고, **메모리 가드 대상이 아니다** (그 가드는 유사도 행렬 1.5GB 스테이지용).
+    # 아래 분기의 허용목록 3벌도 건드리지 않는다.
+    if args.stage == "bankfrom":
+        if not (args.tag and args.version):
+            raise SystemExit("bankfrom 스테이지는 --tag 와 --version 이 필요하다")
+        stage_bankfrom(args.tag, args.version, args.notes)
+        return
+
     assert_mem_budget(args.mem_budget_gb)
     os.makedirs(GEO, exist_ok=True)
 
