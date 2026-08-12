@@ -165,7 +165,11 @@ def selftest() -> int:
         if field not in ds.get_field_schema():
             pg.log(f"selftest {v}: {field} 없음 — 대조 생략 (prune 미실행)")
             continue
-        got = dict(zip(ds.values("id"), ds.values(field)))
+        # 다중뱅크 gidx 오프셋 보정 (pg.GIDX_OFFSET 주석) — 필드 값은 전역 gidx,
+        # cache/뱅크 인덱스는 뱅크-로컬이라 오프셋을 벗겨 비교한다.
+        goff = pg.BANKS.index(v) * getattr(pg, "GIDX_OFFSET", 0)
+        got = {k: (None if x is None else int(x) - goff)
+               for k, x in zip(ds.values("id"), ds.values(field))}
         pred, w = winners(cache, banks[v], v)
         cls = banks[v]["cls"]
         cmp_ = [(i, got[ids[i]]) for i in ok if got.get(ids[i]) is not None]

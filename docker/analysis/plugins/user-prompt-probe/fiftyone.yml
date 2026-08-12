@@ -1,7 +1,9 @@
 name: "@user/prompt-probe"
-description: 후보 프롬프트를 App 안에서 즉시 채점 — top-k 진입률·순이득·배경 코사인
-version: 1.0.0
+description: 프롬프트 후보 즉시 채점 + LLM 문장 생성(오탐/미검출 보완) + 선택 문장 → 뱅크 버전 CSV
+version: 1.1.0
 fiftyone:
   version: ">=1.4"
 operators:
   - probe_prompt
+  - export_bank_version
+  - generate_prompts

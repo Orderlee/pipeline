@@ -270,6 +270,139 @@ pairwise cos 0.951. **절대 cosine 수준이 아니라 격차를 봐야 한다.
 docker exec docker-analysis-1 nice -n 10 python /workspace/prompt_geometry.py probecache
 ```
 
+### 오퍼레이터 3개 — 어느 데이터셋에서 어떤 버튼이 뜨나
+
+같은 플러그인에 3개가 들어 있고 **뜨는 데이터셋이 다르다**(`resolve_placement` 가 스키마로 게이트).
+
+| 오퍼레이터 | 버튼 | 뜨는 곳 | 하는 일 |
+|---|---|---|---|
+| `probe_prompt` | 프롬프트 프로브 | 프레임 데이터셋 (`probe_*` 캐시 필요) | 손으로 쓴 문장 즉시 채점 |
+| `generate_prompts` | 문장 생성 | 〃 | 오탐/미검출 코호트 → LLM 후보 문장 → **같은 채점부로 즉시 채점** |
+| `export_bank_version` | 뱅크 버전 만들기 | 문장 데이터셋 (`<ds>-prompts`) | 선택/뷰/태그 → `authored_<ver>.csv` + provenance + 019 원장 |
+
+`generate_prompts` 는 **처방이 반대인 두 모드를 분리**한다. 섞으면 "오탐 고치려고 이벤트 문장을
+추가"하는 정반대 동작이 나오므로 선언 클래스를 모드가 고정한다.
+
+- **오탐 줄이기(FP)** — 대상 = `GT normal` 인데 이벤트로 오판된 프레임. 선언 클래스 `normal` 고정.
+- **미검출 줄이기(FN)** — 대상 = `GT 이벤트` 인데 normal 로 놓친 프레임. 선언 = 그 이벤트.
+
+결과 화면의 **① 삭제 후보를 먼저 보라.** 코호트를 이기고 있는 문장을 점유율 순으로 세어 주는데,
+한 문장이 수백 장을 독식하는 경우가 실측된 지배 패턴이고 그때 정답은 문장 추가가 아니라 그 문장
+삭제다(개선 실측의 98.5%가 "나쁜 자석 제거" 기여).
+
+> ⚠️ **채점 숫자는 top-k 규칙이다.** 제품 판정규칙(분포 IoU)과 상관이 **−0.07** 로 측정됐고,
+> 선례(사람이 오탐 프레임을 보고 쓴 5문장, `sourceh_v2/work/banks/v1.0.8.0+night5/`)는 top-k
+> **+3.53pp** 인데 제품 규칙에서는 **+0.046pp** 였다. 그래서 이 오퍼레이터는 **아무것도 저장하지
+> 않는다** — 채택은 문장을 뱅크 CSV 로 넣고 `wave` 로 재채점한 뒤에 판단한다.
+
+LLM 백엔드는 2종이다. 새 설정 파일·compose 변경 없음.
+
+| 백엔드 | 필요한 것 | 비고 |
+|---|---|---|
+| `vertex` (기본) | 없음 — `google-genai` 는 이미지에 baked, creds 는 `/app/credentials` ro 바인드, `GEMINI_PROJECT`/`GEMINI_LOCATION` env 상주 | 실측 이미지 6~8장 ≈ 3s (`thinking_budget=0` 강제) |
+| `openai_compat` | env `PROMPT_GEN_BASE_URL` (+선택 `PROMPT_GEN_API_KEY`) | 로컬 vLLM/Ollama·외부 OpenAI 호환 API 공통. ⚠️ 이 호스트 가용 RAM 이 낮아 로컬 모델 상주는 비권장 — 코드 경로만 열려 있다 |
+
+모델명은 오퍼레이터 드롭다운(`PROMPT_GEN_MODEL`, 기본 `gemini-2.5-flash`)에서 바꾼다.
+
+### ③ 뱅크 버전 만들기 — 대상 고르는 4가지 방법
+
+| 대상 | 쓰는 때 |
+|---|---|
+| **프로젝트 성능 상위 N개** (기본) | "이 현장에서 잘 잡히는 문장만 모아 뱅크를 만들고 싶다" — 아래 참고 |
+| 선택한 문장 | 그리드 체크박스·라쏘로 직접 고른 것 |
+| 현재 뷰 전체 | 사이드바 필터로 좁힌 것 전부 |
+| 이미 붙여둔 태그 | `bank:*` 태그를 미리 달아둔 경우 |
+
+**프로젝트 성능 상위 N개**는 프레임 데이터셋의 `winner_gidx_<tag>`(프레임마다 이긴 문장) + `ground_truth`
+를 **선택한 카메라로 자른 뒤에만** 집계해 순위를 만든다.
+
+| 입력 | 뜻 |
+|---|---|
+| 원본 뱅크 버전 | 어느 뱅크의 문장 풀에서 고를지 |
+| 프로젝트(카메라) | 이 프레임들에서만 성능을 집계. `전체` 가능 |
+| 문장 개수 / 클래스별로 N개 | 켜두면 **클래스마다** N개 (한 클래스 독식 방지) |
+| 최소 승수 | 이 프로젝트에서 최소 몇 장을 이겨야 후보로 볼지 |
+| 정렬 기준 | 정확도 / **순이득(맞춘−틀린, 기본)** / 승수 |
+| **미리보기만** (기본 ON) | 고른 문장 표만 보여주고 **아무것도 저장하지 않는다.** 확인 후 끄고 재실행 |
+
+#### 채택 근거 수치 — 어느 값을 보고 고르나
+
+결과 표에 이미지↔문장 수치가 함께 나온다. **프레임 필드만으로** 계산한다 (문장이 그 프레임을
+top-1 로 이겼다면 그 프레임의 `cos_best_<그 클래스>` 가 곧 그 문장의 코사인이므로 임베딩 재계산 불필요).
+
+| 컬럼 | 뜻 | 읽는 법 |
+|---|---|---|
+| `이긴 프레임` | 이 프로젝트에서 top-1 로 가져간 장수 | 분모다. 3장 미만은 통계가 아니다 |
+| `정답 비율` | 이긴 프레임 중 GT 가 그 클래스인 비율 | **1순위 필터.** 0.9 미만은 자석이 새는 것 |
+| `순이득` | 맞춘 − 틀린 (= 2×정답 − 승수) | 정확도와 분량을 한 축으로 본 값. 기본 정렬 |
+| `코사인` | 이긴 프레임들에서의 평균 코사인 | 절대값 자체는 의미 약함(0.25~0.32 대역). **높은데 정답 비율이 낮으면 배경 자석** |
+| `마진` | 같은 프레임에서 (자기 클래스 최고 − 2등 클래스 최고) | **가장 중요.** 판정을 뒤집은 여유폭. 실측 승리 마진 중앙값 ≈ **0.01** → 0.01 미만은 우연에 가깝고 뱅크가 조금 바뀌면 뒤집힌다 |
+| `제품규칙 IoU` | 그 프레임들의 분포-IoU 평균 (낮을수록 탐지) | 제품 임계 기본 0.15. ⚠️ **프레임의 성질**이라 문장 개별 인과가 아니다. `normal` 은 정의상 값이 없다(빈칸 정상) |
+
+**권장 채택 순서**: ① 정답 비율 ≥ 0.9 로 걸러라 → ② 그중 **마진 ≥ 0.02** 를 우선(0.01 근처는 보류)
+→ ③ 이긴 프레임 ≥ 3 인지 확인 → ④ 이벤트 클래스는 제품규칙 IoU 가 임계(0.15)보다 낮은 쪽을 선호
+→ ⑤ 코사인이 유독 높은데 정답 비율이 낮은 행은 **버려라**(배경 자석).
+
+> ⚠️ **클래스 커버리지를 반드시 보라.** 카메라를 좁히면 그 현장에 없는 이벤트의 문장은 승수 0 으로
+> 전부 걸러져 **fire/smoke 문장이 하나도 없는 뱅크**가 조용히 만들어진다 (실측: 상가 복도 카메라에서
+> normal 만 선정). 결과의 「클래스 커버리지 점검」이 빠진 클래스를 이름으로 알려준다 — 그때는
+> 프로젝트를 `전체` 로 하거나 최소 승수를 0 으로 낮춘다.
+> ⚠️ 이 순위는 **그 프로젝트의 GT** 로 만든 값이라 그 현장에 적합(overfit)된 선택이다. 선정 조건
+> (`rank: bank=… camera=… top_n=… sort_by=… missing_classes=…`)이 provenance 에 자동 기록된다.
+> ⚠️ `winner_gidx_*` 는 구 표기(`v084`)와 신 표기(`v1084`)가 섞여 있고 gidx 오프셋 세대도 다르다 —
+> 필드명은 둘 다 탐색하고, 조인은 `gidx % GIDX_OFFSET` 으로 맞춘다(등식 조인은 조용히 0건이 된다).
+
+### 큐레이션 한 바퀴 (App → CSV → 벡터)
+
+```bash
+# 0) 선행: 문장 데이터셋 + probe 캐시
+docker exec docker-analysis-1 nice -n 10 python /workspace/prompt_geometry.py promptmap
+docker exec docker-analysis-1 nice -n 10 python /workspace/prompt_geometry.py probecache
+
+# 1) App(:5153) 에서 `<ds>-prompts` 를 열고 라쏘/사이드바로 문장을 고른 뒤
+#    [뱅크 버전 만들기] → 버전명 입력.  선택분에 `bank:<버전>` 태그가 자동으로 붙어 provenance 가 된다.
+#    CSV 는 그 즉시 호스트에 나타난다: docker/data/fiftyone/sourceh/prompts/authored_<버전>.csv
+
+# 2) 벡터화 (문장 수 × 7.5ms — App 을 막지 않도록 분리)
+docker exec docker-analysis-1 python /workspace/prompt_geometry.py \
+  bank --csv /data/fiftyone/sourceh/prompts/authored_<버전>.csv --version <버전>
+
+# 3) 제품 규칙으로 재채점 (여기서 판단한다)
+BANK_LIST=v1.0.8.0,<버전> docker exec docker-analysis-1 \
+  python /workspace/prompt_geometry.py wave
+```
+
+터미널 없이 CLI 로만 1)을 하려면 App 에서 태그만 붙이고 아래를 쓴다.
+
+```bash
+docker exec docker-analysis-1 python /workspace/prompt_geometry.py \
+  bankfrom --tag bank:<버전> --version <버전> --notes "왜 만들었는지"
+```
+
+> ⚠️ 파일명은 반드시 `authored_*` 다. `text_features_*` 로 쓰면 `prompt_bank_ledger.py` 의
+> `VERSION_RE` 에 걸려 우리가 만든 뱅크가 **외부 공급 뱅크로 위장 등록**된다.
+> 산출물은 컨테이너 root 소유라 호스트에서 지울 때는 `docker exec … rm` 이 필요하다.
+
+#### 어느 데이터셋에서 지금 쓸 수 있나 (2026-08-12 실측)
+
+| 데이터셋 | 버튼 | 상태 |
+|---|---|---|
+| `sourcei` (7,498) | 프로브 · 문장 생성 | ✅ probe 캐시 `v080` + `top_prompt_v1_0_8_0` + GT 4클래스. FP 는 적고(fire 6/smoke 0/falldown 27) **FN 이 많다**(smoke 1,117 · falldown 897 · fire 131) → 「미검출 줄이기」로 쓰는 데이터셋 |
+| `sourcei-prompts` (28,605) | 뱅크 버전 만들기 | ✅ **자리표시자 0** — 실문장 보유(v080 12,480 + v084 16,125). 큐레이션 온전 |
+| `source-h` (13,144) | 프로브 · 문장 생성 | ✅ FP 가 많다(smoke 956) → 「오탐 줄이기」쪽 |
+| `source-h-prompts` | 뱅크 버전 만들기 | ⚠️ **현재 사용 불가** — npz 텍스트가 자리표시자로 덮여(2026-08-11 16:00) 94%가 문장 없음. 가드가 거부한다. 복구 = 원본 CSV 로 `bank` 재실행 후 `promptmap` |
+
+> ⚠️ **`resolve_placement` 는 절대 예외를 던지면 안 된다.** `ctx.dataset` 이 `None` 인 시점에도
+> 호출되는데, 예외가 나면 FiftyOne 이 `ExecutionResult(error=...)` 를 배치 배열에 실어 보내고
+> (`operators/executor.py:635` + `operators/server.py:85` 의 `is not None` 통과) 프론트가 그 배열을
+> 렌더하다 죽어 **툴바의 모든 플러그인 버튼이 함께 사라진다**. 2026-08-12 에 실제로 발생했다.
+> 배치 판정은 `_has_field()` / `_probe_tags_safe()` 로만 하고, self-check 가 이 회귀를 잡는다.
+> 서버 응답으로 직접 확인하려면:
+> ```bash
+> docker exec docker-analysis-1 sh -c 'curl -s -X POST http://localhost:5151/operators/resolve-placements \
+>   -H "Content-Type: application/json" -d "{\"dataset_name\":\"sourcei\"}"' | head -c 400
+> ```
+
 ## 스크립트 지도 — 어느 데이터셋이 어디서 나오는가
 
 README 본문은 여러 데이터셋을 전제로 설명하는데, 그것들을 **만드는** 스크립트가 정리돼 있지
