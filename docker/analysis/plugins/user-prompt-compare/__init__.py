@@ -21,10 +21,14 @@ PROMPTS_DATASET = "sourcei-prompts"
 BRAIN_KEY = "emb_viz"          # 하드코딩 — App이 다른 키에서 죽는 실측 함정
 
 FRAMES_DATASET = "sourcei"
-VTAG = "v080"
+VTAG = "v1080"   # 2026-08-11 전 파트 태그로 통일 (구 v080 — vtag 주석 참고)
 WINNER_FIELD = f"winner_gidx_{VTAG}"
 MAX_POINTS = 20_000
-CACHE_CAP_BYTES = 64 * 2**20
+#  ⚠️ 상한을 64MB → 192MB 로 올림 (2026-08-12). 64MB 는 28,605행 시절 예산이었고,
+#     29버전 리빌드로 603,318행이 되며 실측 ≈50.6MB 로 한계에 붙었다 — 필드가 몇 개만
+#     늘거나 버전이 추가되면 `AssertionError: 캐시 예산 64MB 초과` 로 패널이 죽는다.
+#     엔트리는 여전히 1개만 유지하므로(_CACHE.clear()) 상주 메모리는 이 상한이 곧 전부다.
+CACHE_CAP_BYTES = 192 * 2**20
 
 _CACHE = {}  # (dataset_name, brain_key, last_modified_at) -> bundle. 엔트리 1개 유지.
 
@@ -61,19 +65,50 @@ def load_prompt_bundle(dataset_name=PROMPTS_DATASET):
     xy = np.asarray(ds.load_brain_results(BRAIN_KEY).points, dtype="float32")
     b = {"xy": xy}
     schema = ds.get_field_schema()
+    # ⚠️ 필드별 `ds.values(f)` 를 돌면 컬렉션을 **필드 수만큼 전체 순회**한다. 28,605행 시절엔
+    #    무해했지만 29버전 리빌드로 603,318행이 되며 10회 순회 = **119.5초(실측)** 가 되어
+    #    오퍼레이터 600초 타임아웃(`on_rule_change`)까지 터졌다. `values([...])` 는 **한 번의
+    #    집계**로 전 필드를 가져온다 — 배열·후처리·길이가 모두 동일해 의미 변화가 없다.
+    #    ⚠️ 그리고 **Classification 필드는 `.label` 로 직접 읽는다**. `values("category")` 는
+    #    603,318개 Classification 객체를 만든 뒤 우리가 `.label` 을 꺼내는데, 실측
+    #    `category` 25s vs `category.label` 1.9s / `wave_role` 25.3s vs 2.7s — **9~13배**다.
+    #    META_FIELDS 의 embedded 4종(category·adopted·wave_role·bank_version)이 로드 시간의
+    #    거의 전부였다(105s 중 ~100s). 값은 아래 후처리가 뽑던 것과 **동일한 문자열**이다.
+    have, paths = [], []
+    for f in META_FIELDS:
+        if f not in schema:
+            continue
+        have.append(f)
+        paths.append(f + ".label"
+                     if type(schema[f]).__name__ == "EmbeddedDocumentField" else f)
+    cols = ds.values(paths) if paths else []
+    got = dict(zip(have, cols))
     for f in META_FIELDS:
         if f not in schema:
             b[f] = None
             continue
-        vals = ds.values(f)
-        # Classification 필드(category/adopted 등)는 .label로
-        if vals and hasattr(vals[0], "label"):
+        vals = got[f]
+        if not vals:
+            b[f] = None   # 0행 데이터셋 — IndexError 대신 필드 없음과 동일 취급 (opus F10)
+            continue
+        # dtype 판정은 **첫 non-None 값**으로 (opus F10): 0번 행이 None 인 컬럼(예: wave
+        # 캐시 없는 버전이 앞에 오는 wave_role)을 vals[0]으로 판정하면 Classification
+        # 객체 배열이 그대로 남아 그룹명이 "<Classification: ...>" 로 쪼개진다.
+        probe = next((v for v in vals if v is not None), None)
+        if hasattr(probe, "label"):
             vals = [v.label if v else None for v in vals]
-        b[f] = np.asarray(vals, dtype=object) if isinstance(vals[0], str) \
+            probe = next((v for v in vals if v is not None), None)
+        b[f] = np.asarray(vals, dtype=object) if isinstance(probe, str) \
             else np.asarray([0 if v is None else v for v in vals])
     if b.get("adopted") is not None and b["adopted"].dtype == object:
         b["adopted"] = np.asarray([v in (True, "채택", "true") for v in b["adopted"]])
-    assert _bundle_nbytes(b) <= CACHE_CAP_BYTES, "캐시 예산 64MB 초과 — 스펙 §5.5"
+    # ⚠️ 메시지에 상한을 하드코딩하지 않는다 — 64MB→192MB 로 올렸을 때 문구가 stale 해져
+    #    실제로 캡에 걸려도 잘못된 숫자가 찍혔다 (codex 지적, 2026-08-12).
+    # ⚠️ `_bundle_nbytes` 는 numpy `.nbytes` 만 더한다 — object dtype 배열이 참조하는
+    #    파이썬 문자열 실메모리는 세지 않으므로, 이 상한은 RSS 상한이 아니라 배열 바이트 근사다.
+    assert _bundle_nbytes(b) <= CACHE_CAP_BYTES, (
+        f"캐시 예산 초과: {_bundle_nbytes(b)/2**20:.1f}MB > {CACHE_CAP_BYTES/2**20:.0f}MB "
+        "(배열 바이트 기준 — 문자열 실메모리 미포함)")
     _CACHE.clear()          # 엔트리 1개만 유지
     _CACHE[key] = b
     return b
@@ -105,23 +140,23 @@ def gidxes_to_frame_ids(gs, dataset_name=FRAMES_DATASET, winner_field=WINNER_FIE
 # ── Task 12 — 뱅크 버전 → 조인 필드 매핑 + 프롬프트 데이터셋 자동 유도 ──
 
 def version_to_winner_field(version):
-    """버전 문자열의 숫자만 추출해 마지막 3자리로 winner_gidx_v<3자리> 필드명을 만든다.
+    """버전 문자열 → winner_gidx_v<태그> 필드명 — **prompt_geometry.vtag 와 문자 단위 동일**.
 
-    예: "v1.0.8.0" -> "1080" -> "080" -> "winner_gidx_v080"
-        "v1.0.8.4" -> "1084" -> "084" -> "winner_gidx_v084"
+    예: "v1.0.8.0" -> "winner_gidx_v1080",  "v1.0.13.2" -> "winner_gidx_v10132"
+    (2026-08-11: 마지막 3자리 방식은 v1.0.5.0/v2.0.5.0 이 같은 v050 으로 붕괴.)
+    ⚠️ digits-only(re.sub(r"\\D",...))로 만들면 안 된다 (opus F3, 2026-08-12): 큐레이션
+    버전명("v1.0.8.4-prune205")에서 프로듀서는 "v1084-prune205", digits 는 "v1084205" 로
+    갈라져 실재하는 필드를 "없음"으로 안내한다. 점 split 조인만이 프로듀서와 일치한다.
     """
-    digits = re.sub(r"\D", "", str(version))
-    tail = digits[-3:].zfill(3) if digits else "000"
-    return f"winner_gidx_v{tail}"
+    return "winner_gidx_v" + "".join(str(version).lstrip("vV").split("."))
 
 
 def _resolve_join_field(dataset, version):
     """버전 → 조인 필드, 단 세션 데이터셋 스키마에 실제로 없으면 None.
 
-    실측(Task 12, 2026-08-07): source-h 프레임 데이터셋은 winner_gidx_v080만 갖고
-    winner_gidx_v084는 없다(v084 관련 다른 필드 — rule_flip_v084/winner_loo_v084 등 —
-    는 있지만 winner_gidx_v084 자체가 부재). 호출부는 None을 "조인 필드 없음" 안내로
-    처리해야 하며 절대 KeyError/ValueError로 죽으면 안 된다.
+    호출부는 None을 "조인 필드 없음" 안내로 처리해야 하며 절대 KeyError/ValueError로
+    죽으면 안 된다. (2026-08-11 리빌드로 sourcei/source-h 둘 다 v080·v084 조인 필드를
+    갖게 됐지만, 새 버전 백필 전의 데이터셋에서는 여전히 None 경로가 정상 동작이다.)
     """
     if dataset is None or version is None:
         return None
@@ -148,7 +183,7 @@ def _current_winner_field(ctx):
     """프레임→문장 역방향 조인(그리드 체크박스/lasso)에 쓸 winner 필드.
 
     버전 필터가 특정 버전으로 잡혀 있으면 그 버전에서 유도, "전체"/미설정이면
-    레거시 기본값(WINNER_FIELD=winner_gidx_v080)으로 폴백 — 기존 sourcei 기본 동작과
+    레거시 기본값(WINNER_FIELD=winner_gidx_v1080)으로 폴백 — 기존 sourcei 기본 동작과
     바이트 단위로 동일하게 유지(회귀 방지).
     """
     filt = ctx.panel.state.bank_version_filter
@@ -167,16 +202,26 @@ def stratified_subsample(labels, max_points, seed=0):
     by_class = {}
     for i, lab in enumerate(labels):
         by_class.setdefault(lab, []).append(i)
+    # 클래스당 1점을 먼저 확보한 뒤 비례 배분 (opus F4): 구현이 out[:max_points] 로
+    # 정렬 전 절단하면 반올림 합이 예산을 넘는 순간 삽입 순서상 뒤쪽 클래스가 통째로
+    # 사라져 "클래스당 최소 1점 보장" docstring 계약이 깨진다.
     out = []
+    extra = []
     for lab, idxs in by_class.items():
         k = max(1, int(round(len(idxs) / len(labels) * max_points)))
-        out.extend(rng.choice(idxs, size=min(k, len(idxs)), replace=False).tolist())
-    return sorted(out[:max_points])
+        pick = rng.choice(idxs, size=min(k, len(idxs)), replace=False).tolist()
+        out.append(pick[0])
+        extra.extend(pick[1:])
+    rng.shuffle(extra)   # 절단이 특정 클래스에 몰리지 않게
+    return sorted(out + extra[: max(0, max_points - len(out))])
 
 
 # ── UI 계약 문자열 (스펙 §5.4 — 임의 수정 금지) ──
-BANNER_RULE = ("이 조인은 K=1 전역 argmax(argmax_k1) 승자 기준 — "
-               "제품 판정규칙(topk_vote K=10 다수결, dist_iou)과 다른 값")
+# 정정(2026-08-10): 구 문구 "제품 판정규칙(topk_vote K=10 다수결)"은 stale —
+# pe_inference/01_TuningFree_v2.py에 top-k/argmax 0 hits. 실제 제품 판정은
+# 분포 IoU(클래스별 cos 히스토그램 80bin vs normal, IoU<0.15) + 디바운스(5중 3) @2fps.
+BANNER_RULE = ("이 조인은 top-k(K=1 전역 argmax) 승자 기준 — 실제 제품 판정"
+               "(분포 IoU 80bin·thr 0.15 + 디바운스 5중3 @2fps)과 다른 값")
 BANNER_COORDS_A = "좌우 UMAP은 독립 fit — 좌표 공간 비교 금지, 연결은 선택 하이라이트로만"
 BANNER_WAVE_NOCLICK = "dist_iou에는 프레임 귀속이 없습니다 — 기여도는 전역 LOO(wave_gain)"
 RESERVE_TEXT = "가져간 프레임 0 — 예비군 (새 카메라 승자의 66%가 여기서 나온다)"
@@ -190,9 +235,19 @@ CLASS_COLORS = {  # Task 2와 동일 값 (배포 단위가 달라 복사 유지 
     "fire": "#D55E00", "smoke": "#56B4E9", "falldown": "#E69F00",
     "normal": "#0072B2", "smoking": "#CC79A7",
 }
-WAVE_ROLE_COLORS = {  # dist_iou 전용 — CLASS_COLORS와 무교집합인 wave_role 값 색칠 (리뷰 fix)
-    "유익 상위10%": "#009E73", "유해 하위10%": "#D55E00", "중간": "#0072B2",
+# dist_iou 전용 — wave_role 값 색칠. dict 순서 = 그리기 순서(z-order): 다수(중간 9,980)를
+# 아래에 깔고 유익/유해를 위에 얹는다. 중간=회색 복귀(2026-08-10 정정): dist_iou 화면에서
+# 미채택 회색 trace가 사라져(전 문장이 wave 분포 참여 — build_mode_a 참고) 회색 충돌이
+# 없어졌고, 다수 중간은 배경으로 가라앉아야 유익/유해가 산다.
+WAVE_ROLE_COLORS = {
+    "중간": "#999999", "유익 상위10%": "#009E73", "유해 하위10%": "#D55E00",
 }
+
+# 색칠 축 — **규칙과 독립** (2026-08-12 사용자 요청). 기본값은 규칙별 기존 동작 유지.
+COLOR_BY_CATEGORY = "category"
+COLOR_BY_WAVE_ROLE = "wave_role"
+COLOR_BY_LABELS = {COLOR_BY_CATEGORY: "클래스 (fire/smoke/…)",
+                   COLOR_BY_WAVE_ROLE: "wave 역할 (유익/유해/중간)"}
 
 
 def _hover(b, i):
@@ -201,7 +256,8 @@ def _hover(b, i):
             f"purity={b['purity'][i]} wave_gain={b['wave_gain'][i]}")
 
 
-def build_mode_a(bundle, rule, show_unadopted, selected_gidx, bank_version_filter=None):
+def build_mode_a(bundle, rule, show_unadopted, selected_gidx, bank_version_filter=None,
+                 color_by=None):
     """문장 산점도 (모드 A). trace: [0]미채택 [1..k]채택(그룹별 1개) [마지막]하이라이트.
 
     채택점은 그룹(argmax_k1=클래스, dist_iou=wave_role)별로 trace를 쪼갠다 — Plotly 범례는
@@ -221,9 +277,15 @@ def build_mode_a(bundle, rule, show_unadopted, selected_gidx, bank_version_filte
         idx_all = idx_all[keep]
     adopted = b["adopted"][idx_all].astype(bool)
     if len(idx_all) > MAX_POINTS:
-        cats = [b["category"][i] for i in idx_all]
-        sub_pos = np.asarray(stratified_subsample(cats, MAX_POINTS))
-        idx_all = idx_all[sub_pos]
+        # 채택 점(승자 문장 — 이 패널의 존재 이유)은 전수 보존하고 **미채택만** 층화한다.
+        # 29버전 60만 행에서 category 층화만 걸면 채택 ~5,600점이 ~185점으로 뭉개진다
+        # (2026-08-12). 채택 총수는 버전당 ~200이라 MAX_POINTS 예산 안에 항상 들어간다.
+        keep_idx = idx_all[adopted][:MAX_POINTS]   # 채택 폭증 시에도 하드캡 유지 (codex A)
+        rest = idx_all[~adopted]
+        budget = max(0, MAX_POINTS - len(keep_idx))
+        cats = [b["category"][i] for i in rest]
+        sub_pos = np.asarray(stratified_subsample(cats, budget), dtype=np.int64)
+        idx_all = np.sort(np.concatenate([keep_idx, rest[sub_pos]]))
         adopted = b["adopted"][idx_all].astype(bool)
 
     def trace(mask, color, size, name, opacity):
@@ -242,49 +304,68 @@ def build_mode_a(bundle, rule, show_unadopted, selected_gidx, bank_version_filte
     # `in` 검사로 selftest가 고정하므로 접미사 추가는 기존 assert를 깨지 않는다).
     vtxt = bank_version_filter or ALL_VERSIONS_LABEL
     sub = f"{BANNER_COORDS_A} · 버전: {vtxt}"
-    if not show_unadopted:
+    if rule == "argmax_k1" and not show_unadopted:
         # 토글 피드백(사용자 피드백): 미채택 숨김 상태를 배너에도 굵게 명시 —
-        # 버튼 라벨(render)과 이중으로 상태가 보이게 한다.
+        # 버튼 라벨(render)과 이중으로 상태가 보이게 한다. (argmax 전용 — dist_iou에는
+        # 미채택 개념이 없다, 아래 정정 참고.)
         sub += " · <b>표시: 채택만</b>"
     # 마커 시인성(사용자 피드백): App 테마 배경(mediaSpace, 다크)이 기본이라 작은/반투명
     # 점이 묻힌다 — 채택점은 크게 + 흰 테두리, 미채택은 한 단계 밝게. 팔레트 자체는 유지.
     if rule == "argmax_k1":
         banner = f"{BANNER_RULE}<br><sup>{sub}</sup>"
+        member = adopted            # 그룹 trace 대상 = 채택 (미채택은 회색 예비군 trace)
+    else:  # dist_iou — 클릭 무효
+        banner = f"{BANNER_WAVE_NOCLICK}<br><sup>{sub}</sup>"
+        # 정정(2026-08-10): wave(dist_iou)는 **모든 문장이 분포에 참여**한다 — wave_role/
+        # wave_gain이 전 12,480행에 존재(실측: 유익 1,250·유해 1,250·중간 9,980, 미채택
+        # 12,166행 전부 wave_gain≠0). K=1 승수 기준인 adopted 마스크로 12,166개를 회색
+        # "미채택 예비군"으로 칠하던 것은 틀린 표현(유익 1,237·유해 1,247을 뭉갬).
+        member = np.ones(len(idx_all), dtype=bool)
+
+    # ── 색칠 축은 **규칙과 독립** (2026-08-12 사용자 요청: wave 화면에서도 카테고리 범례).
+    #    기본값은 규칙별 기존 동작 그대로 유지 — topk=클래스, dist_iou=wave_role (회귀 방지).
+    #    배너·클릭 귀속·member 마스크는 규칙의 성질이라 위에 남겨 두고 여기서 색만 고른다.
+    cb = color_by or ("category" if rule == "argmax_k1" else "wave_role")
+    if cb == COLOR_BY_CATEGORY and b.get("category") is not None:
         groups_arr = np.asarray([str(b["category"][i]) for i in idx_all], dtype=object)
         palette = CLASS_COLORS
-        def size_of(i):
-            return 6 + min(10, int(b["wins"][i]) // 50)
-    else:  # dist_iou — 색=wave_role, 크기 균일, 클릭 무효
-        banner = f"{BANNER_WAVE_NOCLICK}<br><sup>{sub}</sup>"
-        has_role = b.get("wave_role") is not None
-        groups_arr = np.asarray([str(b["wave_role"][i]) if has_role else "채택"
-                                 for i in idx_all], dtype=object)
-        palette = WAVE_ROLE_COLORS if has_role else {}
-        def size_of(i):
-            return 7
+    elif cb == COLOR_BY_WAVE_ROLE and b.get("wave_role") is not None:
+        groups_arr = np.asarray([str(b["wave_role"][i]) for i in idx_all], dtype=object)
+        palette = WAVE_ROLE_COLORS
+    else:                            # 필드 부재 — 단색 1개 trace (크래시 대신 축약)
+        groups_arr = np.asarray(["전체"] * len(idx_all), dtype=object)
+        palette = {}
 
     data = []
-    if show_unadopted:
-        # size 6 = 네이티브 Embeddings(emb_viz) 패널의 점 크기와 동일 (라이브 실측 — 사용자
-        # 요청: 두 화면의 점 크기 체감이 같아야 비교가 편하다). 미채택 구분은 회색+반투명으로.
-        data.append(trace(~adopted, GREY, 6, f"미채택 {int((~adopted).sum())} (예비군)", 0.45))
-    else:
-        # 빈 trace(x=[]) 대신 visible=False: 배열 길이를 유지한 채 플래그만 뒤집는다.
-        # (빈 배열 방식은 클라이언트 patch 딥머지에서 옛 점을 못 지우는 문제가 있었다 —
-        # _refresh의 set_data 금지 주석. visible=False trace는 범례에서도 빠진다 — 실측.)
-        t_hidden = trace(~adopted, GREY, 6, f"미채택 {int((~adopted).sum())} (숨김)", 0.45)
-        t_hidden["visible"] = False
-        data.append(t_hidden)
-    # 채택: 그룹별 trace 1개 (docstring 참고 — 범례에 그룹별 색+개수가 나오고, 범례 클릭으로
+    if rule == "argmax_k1":
+        if show_unadopted:
+            # size 6 = 네이티브 Embeddings(emb_viz) 패널의 점 크기와 동일 (라이브 실측 — 사용자
+            # 요청: 두 화면의 점 크기 체감이 같아야 비교가 편하다). 미채택 구분은 회색+반투명으로.
+            data.append(trace(~adopted, GREY, 6, f"미채택 {int((~adopted).sum())} (예비군)", 0.45))
+        else:
+            # 빈 trace(x=[]) 대신 visible=False: 배열 길이를 유지한 채 플래그만 뒤집는다.
+            # (빈 배열 방식은 클라이언트 patch 딥머지에서 옛 점을 못 지우는 문제가 있었다 —
+            # _refresh의 set_data 금지 주석. visible=False trace는 범례에서도 빠진다 — 실측.)
+            t_hidden = trace(~adopted, GREY, 6, f"미채택 {int((~adopted).sum())} (숨김)", 0.45)
+            t_hidden["visible"] = False
+            data.append(t_hidden)
+    # 그룹별 trace 1개 (docstring 참고 — 범례에 그룹별 색+개수가 나오고, 범례 클릭으로
     # 그룹 토글도 된다). 팔레트 순서 → 팔레트 밖 그룹(사전순) 순으로 안정 정렬, 빈 그룹은 생략.
-    order = [grp for grp in palette if (adopted & (groups_arr == grp)).any()]
-    order += sorted(set(groups_arr[adopted]) - set(palette))
+    order = [grp for grp in palette if (member & (groups_arr == grp)).any()]
+    order += sorted(set(groups_arr[member]) - set(palette))
     for grp in order:
-        m = adopted & (groups_arr == grp)
+        m = member & (groups_arr == grp)
         t = trace(m, palette.get(grp, "#999999"), 5, f"{grp} {int(m.sum())}", 0.95)
-        t["marker"] = {"color": palette.get(grp, "#999999"),
-                       "size": [size_of(i) for i in idx_all[m]], "opacity": 0.95,
-                       "line": {"width": 0.8, "color": "#FFFFFF"}}
+        if rule == "argmax_k1":
+            t["marker"] = {"color": palette.get(grp, "#999999"),
+                           "size": [6 + min(10, int(b["wins"][i]) // 50) for i in idx_all[m]],
+                           "opacity": 0.95, "line": {"width": 0.8, "color": "#FFFFFF"}}
+        elif grp == "중간":
+            # 다수(≈80%)인 중간은 배경으로 — 작고 연하게, 테두리 없음
+            t["marker"] = {"color": "#999999", "size": 5, "opacity": 0.35}
+        else:
+            t["marker"] = {"color": palette.get(grp, "#999999"), "size": 7,
+                           "opacity": 0.95, "line": {"width": 0.8, "color": "#FFFFFF"}}
         data.append(t)
 
     sel = [i for i in range(len(idx_all))
@@ -368,6 +449,29 @@ def build_mode_b(ds_name, group_field, groups, brain_key=BRAIN_KEY):
                        "xaxis": {"visible": False}, "yaxis": {"visible": False}}}
 
 
+# App 내장 ShowSamples 오퍼레이터가 자기 Select stage 에 박는 고정 uuid.
+# (번들 실측: const SHOW_SAMPLES_STAGE_ID="show_samples_stage_id"; execute 는
+#  view.filter(s => s._uuid !== SHOW_SAMPLES_STAGE_ID) 로 직전 것을 지운 뒤 새로 붙인다)
+SHOW_SAMPLES_STAGE_ID = "show_samples_stage_id"
+
+
+def _client_view_stages(ctx):
+    """App 이 EXEC 페이로드에 실어 보낸 **뷰 바 원본 스테이지 dict 목록**.
+
+    ⚠️ `ctx.view`(DatasetView)와 다르다 — ctx.view 는 request_params 의 filters/extended
+    (사이드바 필터·확장 선택)까지 스테이지로 구워 넣으므로, 그걸 되돌려 set_view 하면
+    사이드바 필터가 뷰 바 칩으로 승격돼 버린다. 여기 원본 dict 에는 App 이 붙인 `_uuid` 가
+    살아 있어 우리 스테이지만 정확히 골라낼 수 있다 (ExecutionContext.view 소스 실측).
+    """
+    rp = getattr(ctx, "request_params", None) or {}
+    return [s for s in (rp.get("view") or []) if isinstance(s, dict)]
+
+
+def _has_our_stage(ctx):
+    """뷰 바에 우리가 건 Select 스테이지가 남아 있는가 (패널 상태와 무관)."""
+    return any(s.get("_uuid") == SHOW_SAMPLES_STAGE_ID for s in _client_view_stages(ctx))
+
+
 def _dedup_guard(ctx, state_key, ids):
     """재발화 가드 (공용 헬퍼). 반환: 처리해야 하면 False, 중복(스킵)이면 True.
 
@@ -420,6 +524,7 @@ class PromptComparePanel(foo.Panel):
 
     def on_load(self, ctx):
         ctx.panel.state.rule = "argmax_k1"
+        ctx.panel.state.color_by = COLOR_BY_CATEGORY
         ctx.panel.state.show_unadopted = True
         ctx.panel.state.selected_gidx = []
         ctx.panel.state.sel_total = 0
@@ -445,6 +550,9 @@ class PromptComparePanel(foo.Panel):
         ctx.panel.state.set("controls", {
             "mode": ctx.panel.state.mode or "A",
             "rule": ctx.panel.state.rule or "argmax_k1",
+            "color_by": ctx.panel.state.color_by or (
+                COLOR_BY_CATEGORY if (ctx.panel.state.rule or "argmax_k1") == "argmax_k1"
+                else COLOR_BY_WAVE_ROLE),
             "show_mode": SHOW_ALL_LABEL if ctx.panel.state.show_unadopted else SHOW_ADOPTED_LABEL,
             "bank_version_filter": ctx.panel.state.bank_version_filter or ALL_VERSIONS_LABEL,
             "group_field": ctx.panel.state.group_field or "project",
@@ -512,9 +620,14 @@ class PromptComparePanel(foo.Panel):
         version_filter = ctx.panel.state.bank_version_filter or ALL_VERSIONS_LABEL
         sel = set(ctx.panel.state.selected_gidx or [])
         if update_plot:
-            fig = build_mode_a(b, rule=ctx.panel.state.rule,
+            # ⚠️ `or "argmax_k1"` 는 493행 컨트롤 미러와 **같은 기본값**이어야 한다.
+            #    미러에만 폴백이 있어서, state.rule 이 None 인 경로(패널 상태 초기화 등)에서
+            #    드롭다운은 "topk" 로 보이는데 플롯은 else 분기(dist_iou)로 가 범례가
+            #    wave_role(유익/유해/중간)로 나왔다 — 2026-08-12 사용자 리포트의 원인.
+            fig = build_mode_a(b, rule=ctx.panel.state.rule or "argmax_k1",
                                show_unadopted=ctx.panel.state.show_unadopted,
-                               selected_gidx=sel, bank_version_filter=version_filter)
+                               selected_gidx=sel, bank_version_filter=version_filter,
+                               color_by=ctx.panel.state.color_by)
         # ⚠️ set_data 사용 금지 (사용자 피드백 라운드 실측, 2026-08-07): set_data →
         # patch_panel_data 는 클라이언트 패널 데이터 저장소에 **딥머지(patch)** 된다 —
         # 배열이 줄어드는 갱신(미채택 숨김: 12,166→0, 버전 필터: 전체→부분집합)에서 새
@@ -549,6 +662,8 @@ class PromptComparePanel(foo.Panel):
     #    시그니처와 같으면 무시해야 다른 훅(on_plot_click 등)이 막 세팅한 상태를 덮어쓰지 않는다.
     #    가드 상태는 `_dedup_guard`로 위임 (밑줄 없는 상태 키 필수 — 헬퍼 docstring 참고).
     def on_change_selected(self, ctx):
+        if ctx.panel.state.rule != "argmax_k1":
+            return   # dist_iou: 프레임 귀속 없음 — 배너가 없다고 선언한 조인을 그리지 않는다 (opus F7)
         ids = ctx.selected or []
         if _dedup_guard(ctx, "sel_seen", ids):
             return
@@ -565,16 +680,12 @@ class PromptComparePanel(foo.Panel):
     #    lasso에 반응하지 않는다, 0 ids 유지. lasso는 이 훅으로만 온다.
     #    payload = {"selection": [sample_id, ...], "scope": "global"|None, ...}) ──
     def on_change_extended_selection(self, ctx):
+        if ctx.panel.state.rule != "argmax_k1":
+            return   # dist_iou: 프레임 귀속 없음 (opus F7 — on_change_selected 와 동일 게이트)
         ext = ctx.extended_selection or {}
         ids = ext.get("selection") or []
         if not ids:
-            # 빈 전이 무시 (2026-08-10 리로드 버그 최종 진단): 이 패널에 on_change 훅이
-            # 등록돼 있으면 **훅 EXEC 왕복 자체가** (바디가 no-op이어도) 네이티브 emb_viz의
-            # extendedSelection을 수 초 내 소거한다 — 훅 등록을 지운 프로브만 생존, App
-            # 버그라 Python에서 못 막는다. 그래서 ① 아래에서 받은 ids를 즉시 뷰(Select
-            # stage)로 승격해 소거와 무관한 진실을 만들고 ② 소거가 만드는 빈 에코는 여기서
-            # 삼킨다. 진짜 해제는 플롯 더블클릭·그리드 체크 해제 경로가 담당.
-            return
+            return   # 빈 에코 무시 — 해제는 '선택 해제' 버튼/그리드 해제 경로가 담당
         if _dedup_guard(ctx, "ext_sel_seen", ids):
             return
         ctx.panel.state.join_field_missing = None
@@ -582,11 +693,14 @@ class PromptComparePanel(foo.Panel):
         winner_field = _current_winner_field(ctx)
         ctx.panel.state.selected_gidx = \
             frame_ids_to_gidx(ids, dataset_name=frames_name, winner_field=winner_field)
-        # 뷰 승격: extendedSelection은 이 훅의 EXEC 응답이 돌아올 즈음 App이 소거한다(위
-        # 주석) — 같은 프레임 집합을 Select 뷰로 다시 걸면 그리드 필터·emb_viz 반영이
-        # 안정적으로 유지된다 (역방향과 동일 종착 상태, 해제=더블클릭).
-        self._select_frames_view(ctx, sorted(ids))
-        self._refresh(ctx, update_plot=False)   # 성능: 표·컨트롤만 갱신 (뷰 변경이 재렌더 유발)
+        # ⚠️ 이 방향은 **읽기 전용** — 뷰를 절대 건드리지 않는다 (2026-08-11 사용자 리포트:
+        # "embeddings 에서 선택하면 add stage 에 뭔가 추가된다"의 직접 원인이 여기 있던
+        # 뷰 승격이었다). 네이티브 lasso 자체는 뷰 바에 아무것도 만들지 않는다 — Embeddings
+        # 청크는 setView 를 import 하지 않고, 그리드 좁히기는 뷰 바에 렌더되지 않는
+        # extendedSelectionOverrideStage 로 건다. 게다가 그 청크의 플롯/override 이펙트
+        # deps 에 view 가 들어 있어, 우리가 뷰를 바꾸면 override 가 재계산되며 사용자의
+        # 선택이 스스로 사라진다 — 즉 옛 "방어책"이 막으려던 증상의 원인 일부였다.
+        self._refresh(ctx, update_plot=False)   # 표·컨트롤만 갱신 (12k점 재렌더 회피)
 
     # ── 문장 → 프레임 ──
     def on_plot_click(self, ctx):
@@ -614,6 +728,11 @@ class PromptComparePanel(foo.Panel):
         version_str = str(b["bank_version"][int(idxs[0])]) if b.get("bank_version") is not None else None
         join_field = _resolve_join_field(ctx.dataset, version_str)
         ctx.panel.state.selected_gidx = [g]
+        # 빈 그리드-에코 선점: show_samples 뷰 변경이 ctx.selected 를 비우고 on_change_selected
+        # 를 재발화시키면 방금 만든 문장 선택이 지워진다 (opus F5, 2026-08-12) — 빈 시그니처를
+        # 미리 심어 dedup 가드가 그 에코를 삼키게 한다.
+        ctx.panel.state.set("sel_seen", [])
+        ids = []
         if join_field is None:
             ctx.panel.state.join_field_missing = \
                 version_to_winner_field(version_str) if version_str else "?"
@@ -621,8 +740,12 @@ class PromptComparePanel(foo.Panel):
             ctx.panel.state.join_field_missing = None
             frames_name = ctx.dataset.name if ctx.dataset is not None else FRAMES_DATASET
             ids = gidx_to_frame_ids(g, dataset_name=frames_name, winner_field=join_field)
-            if ids:
-                self._select_frames_view(ctx, ids)   # 뷰 기반 반영 — 헬퍼 docstring 참고
+        if ids:
+            self._select_frames_view(ctx, ids)   # 뷰 기반 반영 — 헬퍼 docstring 참고
+        else:
+            # 조인 실패/승자 프레임 0 — 이전 문장의 Select 칩을 걷어낸다. 안 걷으면
+            # 그리드의 옛 프레임들이 새 문장의 결과처럼 읽힌다 (opus F1).
+            self._clear_frames_view(ctx)
         # 전체 갱신(하이라이트 포함) — 이 방향은 뷰 기반이라 재렌더가 파괴할 extended
         # selection이 없다 (사용자 피드백: 선택했으면 시각적으로 표시돼야 한다).
         # emb_viz 선택을 소비하는 on_change_* 훅과 달리 update_plot=False가 불필요.
@@ -650,6 +773,8 @@ class PromptComparePanel(foo.Panel):
         # 대상이 아니고, 가드를 걸면 클릭으로 상태가 바뀐 뒤 같은 영역 재-lasso가 삼켜진다.
         ctx.panel.state.selected_gidx = ids
         ctx.panel.state.join_field_missing = None
+        ctx.panel.state.set("sel_seen", [])   # 빈 그리드-에코 선점 (opus F5 — on_plot_click 참고)
+        frame_ids = []
         prompts_name = _prompts_dataset_name(ctx)
         if ids and fo.dataset_exists(prompts_name):
             import numpy as np
@@ -674,15 +799,16 @@ class PromptComparePanel(foo.Panel):
                     continue
                 by_field.setdefault(jf, []).append(g)
             frames_name = ctx.dataset.name if ctx.dataset is not None else FRAMES_DATASET
-            frame_ids = []
             for jf, gs in by_field.items():
                 frame_ids += gidxes_to_frame_ids(gs, dataset_name=frames_name, winner_field=jf)
             # 중복 제거(codex 리뷰): 같은 프레임이 버전별 winner 필드 양쪽의 승자면 버킷 두 개에서
             # 두 번 들어온다 — 중복이 남으면 클라이언트가 dedup해 돌려줄 때 에코 선점 비교
             # (sorted 리스트 동등)가 어긋나 진짜 처리로 오인된다.
             frame_ids = sorted(set(frame_ids))
-            if frame_ids:
-                self._select_frames_view(ctx, frame_ids)
+        if frame_ids:
+            self._select_frames_view(ctx, frame_ids)
+        else:
+            self._clear_frames_view(ctx)   # 승자 0 — 이전 문장 칩 잔존 방지 (opus F1)
         # 전체 갱신(하이라이트 포함) — 뷰 기반이라 재렌더가 파괴할 extended selection이
         # 없다 (사용자 피드백: box select 후 선택 표시가 보여야 한다). update_plot=False는
         # emb_viz의 extended selection을 소비하는 on_change_* 훅에만 필요 (_refresh docstring).
@@ -696,23 +822,75 @@ class PromptComparePanel(foo.Panel):
         두 scope 모두 그리드 필터→복귀→선택 소멸; emb_viz 패널을 닫으면 안 지워짐 =
         그 패널이 소거 주체. App 번들이라 Python에서 수정 불가). 뷰 경로는 자가 소거
         기계가 없고, 그리드·Embeddings 패널 모두 선택 프레임만 보여주는 형태로 반영된다
-        (사용자 요청: 관련 이미지가 samples/embeddings에 표시). 해제 = 플롯 더블클릭."""
-        frames_name = ctx.dataset.name if ctx.dataset is not None else FRAMES_DATASET
-        base = ctx.view if getattr(ctx, "view", None) is not None else fo.load_dataset(frames_name)
-        ctx.ops.set_view(view=base.select(frame_ids))
+        (사용자 요청: 관련 이미지가 samples/embeddings에 표시). 해제 = 플롯 더블클릭.
+
+        ⚠️ 반드시 내장 `show_samples` 를 쓴다 — `set_view(ctx.view.select(...))` 로 직접
+        만들면 **선택할 때마다 Select stage 가 뷰 바에 하나씩 쌓인다**(2026-08-11 사용자
+        리포트: "embedding 을 선택하면 add stage 에 뭔가가 추가된다"). base 가 이미 우리
+        스테이지를 포함한 ctx.view 라 append 되고, 교집합으로만 좁아져 다른 영역을 lasso
+        하면 결과가 비기도 한다. 내장 오퍼레이터는 고정 `_uuid`("show_samples_stage_id")로
+        **직전 스테이지를 제거한 뒤 새로 붙이므로** 항상 1개만 유지되고 사용자가 뷰 바에
+        직접 건 필터는 보존된다 (App 번들 ShowSamples.execute 실측:
+        `view.filter(s => s._uuid !== SHOW_SAMPLES_STAGE_ID)` 후 append).
+        """
+        ctx.ops.show_samples(list(frame_ids))
+
+    def _clear_frames_view(self, ctx):
+        """우리 Select 스테이지만 제거 — 사용자가 뷰 바에 직접 건 스테이지는 보존.
+
+        ⚠️ `show_samples(None)` 금지: ShowSamples 는 로컬 레지스트리 오퍼레이터라 실행 전
+        validateOperatorInputs 를 거치는데 `samples` 가 **required List** 로 선언돼 있어
+        (번들 실측: `mt.list("samples", new OperatorString, {required:!0})`) null 이
+        "Required property" 로 걸려 execute 에 도달조차 못 한다. `[]` 도 불가 — JS 에서
+        빈 배열은 truthy 라 `Select(sample_ids=[])` 가 붙어 0장 그리드가 된다.
+        `clear_view()` 는 동작하지만 사용자 스테이지까지 통째로 날린다. 그래서 원본 스테이지
+        리스트에서 우리 것만 빼고 set_view 를 직접 트리거한다.
+        """
+        # ponytail: request_params["view"] 는 EXEC 요청 시점 스냅샷 — trigger 는 enqueue 후
+        # 즉시 리턴하므로(executor.py 실측, codex) 직전 트리거가 아직 클라에 반영 전이면
+        # 밀리초급 TOCTOU 창이 있다. 사람 손 속도에서는 실발생이 없어 수용; 재발 시
+        # 클라이언트측 idempotent clear 오퍼레이터로 승격.
+        stages = _client_view_stages(ctx)
+        kept = [s for s in stages if s.get("_uuid") != SHOW_SAMPLES_STAGE_ID]
+        if len(kept) == len(stages):
+            return False                      # 우리 칩 없음 — 사용자 뷰를 건드리지 않는다
+        # ctx.ops.set_view(view=...) 는 DatasetView 전용(_serialize_view 호출)이라 raw stage
+        # 리스트는 trigger 로 직접 넘긴다.
+        ctx.trigger("set_view", params={"view": kept})
+        return True
+
+    def _clear_selection(self, ctx):
+        """선택 해제 — 문장 선택·프레임 뷰·하이라이트를 한 번에 원복.
+
+        ext_sel_seen 에는 []가 아니라 **현재 살아 있는 extended selection 의 시그니처**를
+        심는다 (opus F6): 빈 에코는 훅 진입부에서 이미 early-return 이라 [] 선점은 무의미
+        하고, 오히려 아직 살아 있는 lasso 의 재발화 dedup 을 풀어 방금 한 해제가 selected_gidx
+        를 되살린다. 라이브 시그니처를 심으면 그 재발화는 삼켜지고, 새 lasso 는 시그니처가
+        달라 정상 통과한다."""
+        ctx.panel.state.selected_gidx = []
+        ctx.panel.state.sel_total = 0
+        ctx.panel.state.join_field_missing = None
+        live = (getattr(ctx, "extended_selection", None) or {}).get("selection") or []
+        ctx.panel.state.set("ext_sel_seen", sorted(str(i) for i in live))
+        ctx.panel.state.set("sel_seen",
+                            sorted(str(i) for i in (getattr(ctx, "selected", None) or [])))
+        self._clear_frames_view(ctx)
+        self._refresh(ctx)   # 전체 갱신 — 하이라이트 링 즉시 제거 (뷰 기반이라 재렌더 무해)
+
+    def on_clear_selection(self, ctx):
+        """컨트롤 행의 '선택 해제' 버튼 — 선택이 있을 때만 렌더된다(render 참고).
+
+        ⚠️ 더블클릭에 기대면 안 된다: plotly 는 이 플롯에서 더블클릭에 `plotly_doubleclick`
+        이 아니라 **`plotly_click` 을 두 번** 쏜다(2026-08-11 브라우저 실측) — PlotlyView 의
+        on_double_click 훅은 발화한 적이 없다. 그래서 명시적 버튼이 유일하게 동작하는
+        패널 내 해제 경로다 (뷰 바의 × 로도 스테이지는 지울 수 있지만 패널 상태는 남는다)."""
+        self._clear_selection(ctx)
 
     def on_plot_double_click(self, ctx):
-        """플롯 더블클릭 = 선택 해제 (plotly 표준 UX) — 빈 plotly_selected는 무시하므로
-        (on_plot_selected 주석) 명시적 해제 경로는 이 훅과 그리드 선택 해제 둘이다.
-        clear_view는 커스텀 뷰까지 전체 해제한다 — Select stage만 제거하는 정교함은
-        base view 직렬화 추적이 필요해 보류 (사용자 뷰는 view bar에서 복원 가능)."""
+        """더블클릭 훅 — 현재 plotly 가 안 쏘지만(on_clear_selection 주석) 계약상 유지."""
         if ctx.panel.state.mode != "A":
             return
-        ctx.panel.state.selected_gidx = []
-        ctx.panel.state.join_field_missing = None
-        ctx.panel.state.set("ext_sel_seen", [])   # 빈 에코 선점 (그리드 해제와 동일 규약)
-        ctx.ops.clear_view()
-        self._refresh(ctx)   # 전체 갱신 — 하이라이트 링 즉시 제거 (뷰 기반이라 재렌더 무해)
+        self._clear_selection(ctx)
 
     # ── 컨트롤 드롭다운 핸들러 (2026-08-10 피드백: 토글 버튼 → 드롭다운 통일).
     #    값은 ctx.params["value"] (아래 on_group_field_change 주석의 실측 계약과 동일).
@@ -726,6 +904,17 @@ class PromptComparePanel(foo.Panel):
         v = ctx.params.get("value")
         if v in ("argmax_k1", "dist_iou"):
             ctx.panel.state.rule = v
+            # 규칙을 바꾸면 색칠도 그 규칙의 기본값으로 되돌린다 — 그래야 "topk 인데 wave 범례"
+            # 같은 어긋남이 상태에 남지 않는다. 바꾸고 싶으면 색칠 드롭다운으로 다시 고르면 된다.
+            ctx.panel.state.color_by = (COLOR_BY_CATEGORY if v == "argmax_k1"
+                                        else COLOR_BY_WAVE_ROLE)
+            self._refresh(ctx)
+
+    def on_color_change(self, ctx):
+        # 화이트리스트 — 밖의 값이 조용히 폴백되면 범례가 규칙과 어긋난 채로 굳는다
+        v = (ctx.params or {}).get("value")
+        if v in COLOR_BY_LABELS:
+            ctx.panel.state.color_by = v
             self._refresh(ctx)
 
     def on_show_change(self, ctx):
@@ -761,7 +950,18 @@ class PromptComparePanel(foo.Panel):
         v = ctx.params.get("value")
         if v is not None:
             ctx.panel.state.bank_version_filter = v
-            ctx.panel.state.join_field_missing = None  # 버전 전환 시 이전 클릭 안내는 무효
+            ctx.panel.state.join_field_missing = None
+            # 버전 전환 시 stale 선택 정리 (opus F2): 이전 버전 필드 기준 selected_gidx 를
+            # 남기면 표·하이라이트가 화면과 다른 버전을 가리키고, dedup 시그니처 탓에 같은
+            # 프레임의 새 버전 재조인은 영구히 안 일어난다. 그리드 선택이 살아 있으면 새
+            # 버전 기준으로 **즉시 재조인**하고, 없으면 문장 선택을 비운다.
+            ids = ctx.selected or []
+            if ids and ctx.panel.state.rule == "argmax_k1":
+                frames_name = ctx.dataset.name if ctx.dataset is not None else FRAMES_DATASET
+                ctx.panel.state.selected_gidx = frame_ids_to_gidx(
+                    ids, dataset_name=frames_name, winner_field=_current_winner_field(ctx))
+            else:
+                ctx.panel.state.selected_gidx = []
         self._refresh(ctx)
 
     def render(self, ctx):
@@ -786,24 +986,42 @@ class PromptComparePanel(foo.Panel):
                     on_change=self.on_groups_change)
         elif ctx.panel.state.prompts_available:
             rule_choices = types.Choices()
-            rule_choices.add_choice("argmax_k1", label="argmax_k1 — 클릭·lasso 조인")
+            # 표기는 "topk" (사용자 요청 — 팀 용어), 내부 값·조인 필드는 argmax_k1 유지
+            # (winner_gidx_* 프로듀서/원장 식별자와의 일관성). 정확한 정의는 배너가 설명.
+            rule_choices.add_choice("argmax_k1", label="topk — 클릭·lasso 조인")
             rule_choices.add_choice("dist_iou", label="dist_iou — wave 기여도")
             row.enum("rule", rule_choices.values(), label="규칙", view=rule_choices,
                      on_change=self.on_rule_change)
-            show_choices = types.Choices()
-            show_choices.add_choice(SHOW_ALL_LABEL, label=SHOW_ALL_LABEL)
-            show_choices.add_choice(SHOW_ADOPTED_LABEL, label=SHOW_ADOPTED_LABEL)
-            row.enum("show_mode", show_choices.values(), label="표시", view=show_choices,
-                     on_change=self.on_show_change)
+            # 색칠 축 — 규칙과 독립. wave 화면에서도 클래스 범례를 볼 수 있다 (2026-08-12 요청).
+            color_choices = types.Choices()
+            for v, lab in COLOR_BY_LABELS.items():
+                color_choices.add_choice(v, label=lab)
+            row.enum("color_by", color_choices.values(), label="색칠", view=color_choices,
+                     on_change=self.on_color_change)
+            if ctx.panel.state.rule == "argmax_k1":
+                # 표시(전체/채택만)는 argmax 전용 — dist_iou는 전 문장이 wave 분포에
+                # 참여하므로 미채택 개념 자체가 없다 (build_mode_a의 2026-08-10 정정).
+                show_choices = types.Choices()
+                show_choices.add_choice(SHOW_ALL_LABEL, label=SHOW_ALL_LABEL)
+                show_choices.add_choice(SHOW_ADOPTED_LABEL, label=SHOW_ADOPTED_LABEL)
+                row.enum("show_mode", show_choices.values(), label="표시", view=show_choices,
+                         on_change=self.on_show_change)
             # 뱅크 버전 선택기: "전체" + 실제 프롬프트 데이터셋의 distinct bank_version.
-            # sourcei-prompts/source-h-prompts 둘 다 오늘(2026-08-07) 기준 단일 버전(v1.0.8.0)만
-            # 갖고 있지만, 코드는 값 개수에 의존하지 않고 일반적으로 동작한다.
+            # 2026-08-11 리빌드로 sourcei-prompts/source-h-prompts 둘 다 v1.0.8.0+v1.0.8.4 —
+            # 코드는 값 개수에 의존하지 않는다 (버전 추가 = promptmap 재빌드만).
             choices = types.Choices()
             choices.add_choice(ALL_VERSIONS_LABEL, label=ALL_VERSIONS_LABEL)
             for v in (ctx.panel.state.bank_versions or []):
                 choices.add_choice(v, label=v)
             row.enum("bank_version_filter", choices.values(), label="뱅크 버전",
                      view=choices, on_change=self.on_bank_version_change)
+            n_sel = len(ctx.panel.state.selected_gidx or [])
+            # 선택이 있거나, **패널 상태는 비었는데 우리 뷰 칩만 남은 경우**(F5·워크스페이스
+            # 전환 후)에도 노출한다 — 그때 버튼이 숨으면 사용자가 패널에서 뺄 방법이 없다.
+            if n_sel or _has_our_stage(ctx):
+                row.btn("clear_selection",
+                        label=("✕ 선택 해제" + (f" ({n_sel})" if n_sel else " (뷰만)")),
+                        on_click=self.on_clear_selection)
         else:
             row.md(NO_PROMPTS_PAIR_TEXT, name="no_prompts_notice")
         # data=... (Task 11 "클릭해야 나온다" 방어선 — 2차 안전망):
@@ -867,50 +1085,100 @@ def selftest():
     b = load_prompt_bundle()
     frames = fo.load_dataset(FRAMES_DATASET)
 
-    # 불변식 1: 완전분할 — 승수 총합 = 프레임 수
-    assert int(np.sum(b["wins"])) == frames.count(), \
-        (int(np.sum(b["wins"])), frames.count())
-    # 불변식 2: 프레임의 승자 gidx ⊆ 문장 gidx
-    winner = set(frames.values(WINNER_FIELD))
-    winner.discard(None)
-    assert winner <= set(int(g) for g in b["gidx"])
+    # 다중 뱅크 버전 (2026-08-11 리빌드): 버전별 문장 행 마스크 — 이하 불변식은 버전 단위다
+    bv_all = b.get("bank_version")
+    versions = sorted({str(v) for v in bv_all if v is not None}) if bv_all is not None else []
+    assert versions, "bank_version 없음 — 데이터 계층 회귀"
+    vmasks = {v: np.asarray([str(x) == v for x in bv_all]) for v in versions}
+
+    # 불변식 1: 완전분할 — **버전별로** 승수 총합 = 프레임 수 (각 버전이 전 프레임을 분할)
+    for v in versions:
+        assert int(np.sum(b["wins"][vmasks[v]])) == frames.count(), \
+            (v, int(np.sum(b["wins"][vmasks[v]])), frames.count())
+    # 불변식 2: 프레임의 승자 gidx ⊆ **그 버전** 문장 gidx (opus F8: 전역 합집합과 비교하면
+    # v084 컬럼에 v080 오프셋 값이 들어가도(재백필 누락·태그 충돌·배치 순서 변경) 초록이 된다)
+    gidx_all = set(int(g) for g in b["gidx"])
+    frames_schema = frames.get_field_schema()
+    for v in versions:
+        f = version_to_winner_field(v)
+        if f not in frames_schema:
+            continue
+        winner = set(frames.values(f))
+        winner.discard(None)
+        gidx_v = {int(g) for g in b["gidx"][vmasks[v]]}
+        assert winner <= gidx_v, \
+            f"{f} 승자 gidx가 {v} 문장 밖 — 오프셋/재백필 불일치 (밖: {sorted(winner - gidx_v)[:3]})"
     # 불변식 3: 채택 ⟺ wins>0
     assert all((w > 0) == bool(a) for w, a in zip(b["wins"], b["adopted"]))
     # 불변식 4 (codex 3차 리뷰): gidx 전역 유일 — row_of 딕셔너리/np.where 단일행 전제.
-    # 다중 bank_version 백필이 이걸 깨면 클릭·lasso 조인이 임의 행을 잡는다.
-    assert len(b["gidx"]) == len({int(g) for g in b["gidx"]}), "gidx 전역 유일성 붕괴"
+    # 다중 버전은 GIDX_OFFSET(prompt_geometry) 오프셋으로 유일성을 보장한다.
+    assert len(b["gidx"]) == len(gidx_all), "gidx 전역 유일성 붕괴"
 
-    # 조인 왕복: 임의 채택 문장 → 프레임들 → 도로 그 문장
-    g = int(b["gidx"][np.argmax(b["wins"])])
-    ids = gidx_to_frame_ids(g)
-    assert ids and set(frame_ids_to_gidx(ids)) == {g}
+    # 조인 왕복: 임의 채택 문장 → 프레임들 → 도로 그 문장. 다중 버전이라 왕복은
+    # **그 문장 버전의 winner 필드**로 해야 한다 (버전 혼합 시 gidx 오프셋이 다른 필드와
+    # 안 맞는 게 정상 — on_plot_click도 per-문장 버전으로 조인한다).
+    # g_ver 는 "MAX_POINTS 이하 크기 버전" 중에서 고른다 (opus F9): 정확 수량 계약들이
+    # "버전 필터를 걸면 서브샘플이 없다"를 전제하는데, 29버전 리빌드 후 일부 버전
+    # (v1.0.13.2=79,842행 등)은 단독으로도 MAX_POINTS 를 넘어 그 전제가 무너진다 —
+    # 큰 버전이 최대 wins 를 갖는 순간 selftest 가 중간에 죽어 뒤쪽 계약 전체가 미검증.
+    small_ver = {v for v in versions if int(vmasks[v].sum()) <= MAX_POINTS}
+    small_rows = np.flatnonzero(np.asarray([str(x) in small_ver for x in bv_all])) \
+        if bv_all is not None else np.arange(len(b["wins"]))
+    assert len(small_rows), "MAX_POINTS 이하 버전이 하나도 없음 — 합성 픽스처 필요"
+    gi0 = int(small_rows[np.argmax(b["wins"][small_rows])])
+    g = int(b["gidx"][gi0])
+    g_ver = str(bv_all[gi0]) if bv_all is not None else None
+    g_field = version_to_winner_field(g_ver) if g_ver else WINNER_FIELD
+    ids = gidx_to_frame_ids(g, winner_field=g_field)
+    assert ids and set(frame_ids_to_gidx(ids, winner_field=g_field)) == {g}
 
-    # 일괄 조인(lasso 다중선택 경로): 단건 조인의 합집합과 동일해야 한다
-    top2 = [int(b["gidx"][i]) for i in np.argsort(b["wins"])[-2:]]
-    assert set(gidxes_to_frame_ids(top2)) == \
-        set(gidx_to_frame_ids(top2[0])) | set(gidx_to_frame_ids(top2[1]))
+    # 일괄 조인(lasso 다중선택 경로): 단건 조인의 합집합과 동일해야 한다 — 같은 버전 내에서
+    vm0 = vmasks[g_ver] if g_ver else np.ones(len(b["wins"]), dtype=bool)
+    vrows = np.flatnonzero(vm0)
+    top2 = [int(b["gidx"][i]) for i in vrows[np.argsort(b["wins"][vrows])[-2:]]]
+    assert set(gidxes_to_frame_ids(top2, winner_field=g_field)) == \
+        set(gidx_to_frame_ids(top2[0], winner_field=g_field)) | \
+        set(gidx_to_frame_ids(top2[1], winner_field=g_field))
 
-    # 회색 계열 금지 (사용자 피드백 2026-08-10): 미채택(GREY)·중간·smoke가 전부 무채색이라
-    # 안 구분되던 회귀 방지 — 채택 팔레트(CLASS/WAVE_ROLE)는 유채색만, GREY 재사용 금지.
+    # 회색 충돌 금지 (사용자 피드백 2026-08-10): 같은 화면에 무채색 2종이 공존하면 안 된다.
+    # argmax 화면 = 미채택(GREY)과 공존하는 CLASS_COLORS는 전부 유채색.
+    # dist_iou 화면 = 미채택 trace가 없으므로(전 문장 wave 참여 정정) 중간=회색 허용,
+    # 유익/유해만 유채색이면 된다.
     def _greyish(c):
         r, gr, bl = (int(c[i:i + 2], 16) for i in (1, 3, 5))
         return max(r, gr, bl) - min(r, gr, bl) < 30
-    for c in list(CLASS_COLORS.values()) + list(WAVE_ROLE_COLORS.values()):
-        assert not _greyish(c), f"채택 팔레트에 회색 계열 색 {c}"
+    for c in CLASS_COLORS.values():
+        assert not _greyish(c), f"CLASS_COLORS에 회색 계열 색 {c} — 미채택 GREY와 충돌"
+    for role, c in WAVE_ROLE_COLORS.items():
+        if role != "중간":
+            assert not _greyish(c), f"wave 강조 팔레트에 회색 계열 색 {c}"
     assert GREY not in set(CLASS_COLORS.values()) | set(WAVE_ROLE_COLORS.values())
     assert len(set(CLASS_COLORS.values())) == len(CLASS_COLORS)          # 팔레트 내 중복 금지
     assert len(set(WAVE_ROLE_COLORS.values())) == len(WAVE_ROLE_COLORS)
+
+    # 배너 정정 고정 (2026-08-10): 제품 판정은 분포 IoU — stale "topk_vote" 문구 부활 금지
+    assert "분포 IoU" in BANNER_RULE and "topk_vote" not in BANNER_RULE
 
     # 층화 서브샘플: 상한 준수 + 전 클래스 보존
     labs = ["a"] * 100 + ["b"] * 10
     idx = stratified_subsample(labs, 20)
     assert len(idx) <= 20 and {labs[i] for i in idx} == {"a", "b"}
 
-    # 모드 A figure: 규칙별 계약 — trace 구조 [0]미채택 [1..k]채택(그룹별) [-1]선택
-    fig = build_mode_a(b, rule="argmax_k1", show_unadopted=True, selected_gidx={g})
+    # 모드 A figure: 규칙별 계약 — trace 구조 [0]미채택 [1..k]채택(그룹별) [-1]선택.
+    # 수량·이름의 정확 계약은 **서브샘플이 없는 조건**에서 검증한다: 2버전 28,605행 >
+    # MAX_POINTS 라 전체 뷰는 층화 서브샘플이 걸린다 — g와 같은 버전 필터(12,480행)로 고정.
+    fig = build_mode_a(b, rule="argmax_k1", show_unadopted=True, selected_gidx={g},
+                       bank_version_filter=g_ver)
     assert all(t["type"] == "scattergl" for t in fig["data"])           # scattergl 강제
     n_shown = sum(len(t["x"]) for t in fig["data"][:-1])
-    assert n_shown == len(b["gidx"])                                     # 12,480 전체 표시
+    assert n_shown == min(int(vmasks[g_ver].sum()), MAX_POINTS)          # 버전 내 전체 표시
+
+    # 서브샘플 채택 보존 계약 (2026-08-12): 전체 뷰(60만 행 > MAX_POINTS)에서도 채택 점은
+    # 전수 표시돼야 한다 — category 층화만 걸면 채택 ~5,600점이 3%로 뭉개지던 문제의 가드.
+    if len(b["gidx"]) > MAX_POINTS:
+        fig_sub = build_mode_a(b, rule="argmax_k1", show_unadopted=True, selected_gidx=set())
+        assert sum(len(t["x"]) for t in fig_sub["data"][1:-1]) == \
+            int(b["adopted"].astype(bool).sum()), "회귀: 서브샘플이 채택 점을 떨어뜨림"
     assert BANNER_RULE in fig["layout"]["title"]["text"]                 # 규칙 배너
     # 반응형 height 계약: layout에 height 고정 금지 — 실높이는 render()의 view height
     # (vh 기반 style)가 정한다. 고정값이 부활하면 큰 화면에서 아래 공간이 다시 논다.
@@ -924,31 +1192,49 @@ def selftest():
     assert adopted_traces, "채택 trace 0개"
     assert all(isinstance(t["marker"]["color"], str) for t in adopted_traces), \
         "회귀: 채택 trace가 per-point 색 배열 — 범례에 클래스 매핑이 안 나온다"
-    assert sum(len(t["x"]) for t in adopted_traces) == int(b["adopted"].astype(bool).sum())
-    cats_adopted = {str(c) for c, a in zip(b["category"], b["adopted"].astype(bool)) if a}
+    adopted_ver = b["adopted"].astype(bool) & vmasks[g_ver]
+    assert sum(len(t["x"]) for t in adopted_traces) == int(adopted_ver.sum())
+    cats_adopted = {str(c) for c, a in zip(b["category"], adopted_ver) if a}
     assert {t["name"].rsplit(" ", 1)[0] for t in adopted_traces} == cats_adopted, \
         "범례 이름(<클래스> <개수>)이 채택 클래스 집합과 불일치"
     assert all(t["marker"]["color"] == CLASS_COLORS.get(t["name"].rsplit(" ", 1)[0], "#999999")
                for t in adopted_traces)                                  # 범례 글리프 색 = 팔레트 색
+    # dist_iou (2026-08-10 정정): 전 문장이 wave 분포에 참여 — 미채택 회색 trace 금지,
+    # 전 12,480점이 wave_role 그룹 trace로 나뉜다 (adopted 마스크 사용 = 회귀).
     fig_w = build_mode_a(b, rule="dist_iou", show_unadopted=True, selected_gidx=set())
     assert BANNER_WAVE_NOCLICK in fig_w["layout"]["title"]["text"]       # 귀속 없음 안내
-    w_traces = fig_w["data"][1:-1]
+    w_traces = fig_w["data"][:-1]
+    n_w = sum(len(t["x"]) for t in w_traces)
+    if len(b["gidx"]) <= MAX_POINTS:
+        assert n_w == len(b["gidx"]), \
+            "회귀: dist_iou가 전 문장을 그리지 않음 — adopted 마스크가 부활했나"
+    else:
+        # 서브샘플: 채택 전수 보존 + 미채택 층화(반올림 미달 허용) ≈ MAX_POINTS
+        assert MAX_POINTS * 0.98 <= n_w <= MAX_POINTS, n_w
+    assert not any("미채택" in t["name"] for t in w_traces), \
+        "회귀: dist_iou에 미채택 trace — wave에는 미채택 개념이 없다"
     assert all(isinstance(t["marker"]["color"], str) for t in w_traces)
     assert any(t["marker"]["color"] != "#999999" for t in w_traces), \
-        "dist_iou 채택 trace 전체 회색 — wave_role 색 매핑 누락 의심"
-    fig_h = build_mode_a(b, rule="argmax_k1", show_unadopted=False, selected_gidx=set())
+        "dist_iou trace 전체 회색 — wave_role 색 매핑 누락 의심"
+    w_names = {t["name"].rsplit(" ", 1)[0] for t in w_traces}
+    assert {"유익 상위10%", "유해 하위10%", "중간"} <= w_names
+    fig_h = build_mode_a(b, rule="argmax_k1", show_unadopted=False, selected_gidx=set(),
+                         bank_version_filter=g_ver)   # 수량 정확 검증 — 서브샘플 회피
     # 숨김 = visible:False (빈 배열 아님 — 클라이언트 patch 딥머지가 옛 점을 못 지운다).
     # 배열 길이는 전체 유지, 플래그만 뒤집혀야 한다.
     assert fig_h["data"][0]["visible"] is False
-    assert len(fig_h["data"][0]["x"]) == int((~b["adopted"].astype(bool)).sum())
-    assert sum(len(t["x"]) for t in fig_h["data"][1:-1]) == int(b["adopted"].sum())
+    assert len(fig_h["data"][0]["x"]) == int((~b["adopted"].astype(bool) & vmasks[g_ver]).sum())
+    assert sum(len(t["x"]) for t in fig_h["data"][1:-1]) == int(adopted_ver.sum())
     assert "표시: 채택만" in fig_h["layout"]["title"]["text"]            # 숨김 상태 배너 명시
     assert "(숨김)" in fig_h["data"][0]["name"]                          # 범례에도 상태 표기
 
     # ── Task 12: 버전 → 조인 필드 매핑 함수 단위 검증 (지시된 예시 그대로) ──
-    assert version_to_winner_field("v1.0.8.0") == "winner_gidx_v080"
-    assert version_to_winner_field("v1.0.8.4") == "winner_gidx_v084"
-    assert version_to_winner_field("v1") == "winner_gidx_v001"   # 짧은 입력도 크래시 없이 zfill
+    assert version_to_winner_field("v1.0.8.0") == "winner_gidx_v1080"
+    assert version_to_winner_field("v1.0.8.4") == "winner_gidx_v1084"
+    assert version_to_winner_field("v1") == "winner_gidx_v1"     # 짧은 입력도 크래시 없음
+    assert version_to_winner_field("v1.0.13.2") == "winner_gidx_v10132"
+    # 충돌 회귀 가드: 마지막 3자리 방식이면 이 둘이 같은 필드로 붕괴한다
+    assert version_to_winner_field("v1.0.5.0") != version_to_winner_field("v2.0.5.0")
 
     class _FakeSchemaDS:
         def __init__(self, fields):
@@ -956,25 +1242,21 @@ def selftest():
         def get_field_schema(self):
             return {f: None for f in self._fields}
 
-    fake_ds = _FakeSchemaDS(["winner_gidx_v080"])
-    assert _resolve_join_field(fake_ds, "v1.0.8.0") == "winner_gidx_v080"
+    fake_ds = _FakeSchemaDS(["winner_gidx_v1080"])
+    assert _resolve_join_field(fake_ds, "v1.0.8.0") == "winner_gidx_v1080"
     assert _resolve_join_field(fake_ds, "v1.0.8.4") is None      # 필드 없음 → None(크래시 아님)
     assert _resolve_join_field(None, "v1.0.8.0") is None         # 데이터셋 없음 → None
 
-    # 실측 검증(2026-08-07): sourcei/source-h 프레임 데이터셋 실제 스키마와 대조.
-    # sourcei는 winner_gidx_v080만 갖는다(기존 VTAG 기본값과 일치).
+    # 실측 검증(2026-08-11 리빌드 후): sourcei/source-h 프레임에 v080·v084 조인 필드가 모두
+    # 백필됐다 (2026-08-07의 "v084 부재" 상태는 리빌드로 해소 — 커버리지 공백 ② 메움).
     assert _resolve_join_field(frames, "v1.0.8.0") == WINNER_FIELD
+    assert _resolve_join_field(frames, "v1.0.8.4") == "winner_gidx_v1084"
     if fo.dataset_exists("source-h"):
         sourceh_frames = fo.load_dataset("source-h")
         sourceh_schema = sourceh_frames.get_field_schema()
-        assert "winner_gidx_v080" in sourceh_schema
-        assert _resolve_join_field(sourceh_frames, "v1.0.8.0") == "winner_gidx_v080"
-        # ⚠️ 브리프 가정("source-h은 v080/v084 둘 다 있을 것")과 달리, 실측상 source-h 프레임
-        # 스키마엔 winner_gidx_v084 필드 자체가 없다(v084 관련 다른 파생 필드는 있음 —
-        # rule_flip_v084/winner_loo_v084/wave_iou_*_v084 등). 조인 가드가 크래시 대신
-        # None을 반환해야 하는 정확히 그 케이스 — 회귀 가드로 고정한다.
-        assert "winner_gidx_v084" not in sourceh_schema
-        assert _resolve_join_field(sourceh_frames, "v1.0.8.4") is None
+        assert "winner_gidx_v1080" in sourceh_schema
+        assert _resolve_join_field(sourceh_frames, "v1.0.8.0") == "winner_gidx_v1080"
+        assert _resolve_join_field(sourceh_frames, "v1.0.8.4") == "winner_gidx_v1084"
 
     # _prompts_dataset_name: ctx.dataset.name에서 유도, 없으면 레거시 PROMPTS_DATASET 폴백.
     class _FakeDataset:
@@ -999,7 +1281,7 @@ def selftest():
             self.panel = _FakePanel2(v)
     assert _current_winner_field(_FakeCtx2(ALL_VERSIONS_LABEL)) == WINNER_FIELD
     assert _current_winner_field(_FakeCtx2(None)) == WINNER_FIELD
-    assert _current_winner_field(_FakeCtx2("v1.0.8.4")) == "winner_gidx_v084"
+    assert _current_winner_field(_FakeCtx2("v1.0.8.4")) == "winner_gidx_v1084"
 
     # frame_ids_to_gidx/gidx_to_frame_ids: 존재하지 않는 조인 필드는 크래시 대신 빈 결과.
     assert gidx_to_frame_ids(g, dataset_name=FRAMES_DATASET, winner_field="winner_gidx_v999") == []
@@ -1010,6 +1292,8 @@ def selftest():
     bank_versions = sorted({str(v) for v in b["bank_version"] if v is not None}) \
         if b.get("bank_version") is not None else []
     assert bank_versions, "sourcei-prompts에 bank_version 값이 없음 — 데이터 계층 회귀 의심"
+    # 2026-08-11 리빌드 고정: 두 버전이 다 보여야 한다 (사용자 요청 "다 보이게")
+    assert {"v1.0.8.0", "v1.0.8.4"} <= set(bank_versions), bank_versions
     v0 = bank_versions[0]
     fig_all = build_mode_a(b, rule="argmax_k1", show_unadopted=True, selected_gidx=set(),
                             bank_version_filter=ALL_VERSIONS_LABEL)
@@ -1017,8 +1301,13 @@ def selftest():
                            bank_version_filter=v0)
     n_all = sum(len(t["x"]) for t in fig_all["data"][:-1])
     n_v0 = sum(len(t["x"]) for t in fig_v0["data"][:-1])
-    assert n_all == len(b["gidx"])            # "전체" = 기존 동작과 동일(회귀 없음)
+    if len(b["gidx"]) <= MAX_POINTS:
+        assert n_all == len(b["gidx"])                 # "전체" = 전수
+    else:
+        assert MAX_POINTS * 0.98 <= n_all <= MAX_POINTS   # 채택 전수 + 층화(미달 허용)
     assert n_v0 <= n_all                       # 특정 버전은 부분집합
+    # 버전 필터는 그 버전 문장만 남긴다 (2026-08-11 다중 버전 리빌드 후 실효 검증)
+    assert n_v0 == min(int(vmasks[v0].sum()), MAX_POINTS)
     assert f"버전: {v0}" in fig_v0["layout"]["title"]["text"]
     assert f"버전: {ALL_VERSIONS_LABEL}" in fig_all["layout"]["title"]["text"]
     # bank_version_filter 기본값(None)은 필터 없음과 동일해야 한다(하위호환 — 기존 호출부).
@@ -1049,7 +1338,7 @@ def selftest():
         assert all(t["type"] == "scattergl" for t in fig_sourceh_all["data"])
         n_sourceh_all = sum(len(t["x"]) for t in fig_sourceh_all["data"][:-1])
         n_sourceh_v0 = sum(len(t["x"]) for t in fig_sourceh_v0["data"][:-1])
-        assert n_sourceh_all == len(b_sourceh["gidx"])
+        assert n_sourceh_all == min(len(b_sourceh["gidx"]), MAX_POINTS)   # 2버전 > MAX_POINTS 서브샘플
         assert n_sourceh_v0 <= n_sourceh_all
     else:
         print("source-h-prompts not found — skip smoke")
@@ -1057,10 +1346,10 @@ def selftest():
     # _rows_to_markdown join_field_missing 안내 (표 내용은 그대로 유지).
     row12 = {"gidx": g, "text": "hello12", "wins": 1, "purity": 0.5,
              "n_cameras": 1, "wave_gain": 0.1}
-    md_missing = _rows_to_markdown([], "winner_gidx_v084")
-    assert "조인 필드 없음" in md_missing and "winner_gidx_v084" in md_missing
+    md_missing = _rows_to_markdown([], "winner_gidx_v1084")
+    assert "조인 필드 없음" in md_missing and "winner_gidx_v1084" in md_missing
     assert "선택된 프레임 없음" in md_missing
-    md_missing_rows = _rows_to_markdown([row12], "winner_gidx_v084")
+    md_missing_rows = _rows_to_markdown([row12], "winner_gidx_v1084")
     assert "조인 필드 없음" in md_missing_rows and "| gidx |" in md_missing_rows
 
     # 클릭 매핑 계약: PlotlyView의 onClick은 trace.ids[pointIndex]만 ctx.params["id"]로 전달한다
@@ -1136,6 +1425,9 @@ def selftest():
             # 실제 PanelState.set 은 pydash 중첩 경로 — 여기선 최상위 키만 흉내내면 충분
             # (_sync_controls 가 "controls" 단일 키에 dict 를 통째로 넣는다)
             setattr(self, key.split(".")[0], value)
+
+        def get(self, key, default=None):
+            return getattr(self, key.split(".")[0], default)
     class _FakePanelData:
         def __init__(self, calls):
             self._calls = calls
@@ -1159,7 +1451,8 @@ def selftest():
     scatter_view = schema.type.properties["scatter_v2"].view
     assert scatter_view.data, \
         "회귀: render() 스키마의 초기 data가 비어있음 — 최초 마운트 시 빈 산점도(Task 11) 재발"
-    assert sum(len(t["x"]) for t in scatter_view.data[:-1]) == len(b["gidx"]), \
+    n_schema = sum(len(t["x"]) for t in scatter_view.data[:-1])
+    assert min(len(b["gidx"]), MAX_POINTS) * 0.98 <= n_schema <= min(len(b["gidx"]), MAX_POINTS), \
         "회귀: 스키마에 구운 data 포인트 수가 전체 gidx 수와 불일치"
     assert scatter_view.layout, "회귀: render() 스키마의 초기 layout이 비어있음"
     # 컨트롤 드롭다운 4개 (2026-08-10 피드백): h_stack("controls") 한 줄 + _sync_controls 미러링
@@ -1226,14 +1519,80 @@ def selftest():
     class _FakeOps:
         def __init__(self):
             self.calls = []
+        def show_samples(self, samples, use_extended_selection=False):
+            self.calls.append(("show_samples", samples))
         def clear_view(self):
             self.calls.append("clear_view")
         def set_view(self, view=None, name=None):
             self.calls.append(("set_view", view))
+        def set_extended_selection(self, *a, **k):
+            self.calls.append("set_extended_selection")
+
+    OUR = {"_cls": "fiftyone.core.stages.Select", "kwargs": [],
+           "_uuid": SHOW_SAMPLES_STAGE_ID}
+    USER = {"_cls": "fiftyone.core.stages.Match", "kwargs": [], "_uuid": "u-1"}
+
+    def _mk_clear_ctx(stages):
+        c = _FakeCtxHandler()
+        panel_instance.on_load(c)
+        c.ops = _FakeOps()
+        c.request_params = {"view": list(stages)}
+        c.triggers = []
+        c.trigger = lambda name, params=None: c.triggers.append((name, params))
+        c.panel.state.selected_gidx = [g]
+        return c
+
+    # 해제 = 우리 _uuid 스테이지만 제거한 set_view 트리거 (2026-08-11).
+    # ⚠️ show_samples(None) 은 App 검증(samples required)에서 죽어 execute 에 도달조차
+    # 못 한다 — 이 계약이 회귀하면 해제가 조용히 안 먹는다(브라우저 실측으로 확인된 증상).
+    cctx = _mk_clear_ctx([USER, OUR])
+    panel_instance.on_clear_selection(cctx)
+    assert cctx.panel.state.selected_gidx == [] and cctx.panel.state.sel_total == 0
+    assert not any(c[0] == "show_samples" for c in cctx.ops.calls if isinstance(c, tuple)), \
+        "회귀: 해제에 show_samples 사용 — required 검증에서 죽어 실행되지 않는다"
+    assert cctx.triggers == [("set_view", {"view": [USER]})], cctx.triggers
+
+    # 우리 칩이 없으면 사용자 뷰를 절대 건드리지 않는다
+    cctx2 = _mk_clear_ctx([USER])
+    panel_instance.on_clear_selection(cctx2)
+    assert cctx2.triggers == [], cctx2.triggers
+
+    # 더블클릭 훅도 같은 해제 경로 (현재 plotly 가 안 쏘지만 계약 유지)
+    cctx3 = _mk_clear_ctx([OUR])
+    panel_instance.on_plot_double_click(cctx3)
+    assert cctx3.triggers == [("set_view", {"view": []})], cctx3.triggers
+
+    # '선택 해제' 버튼 노출 조건: 선택이 있거나, 패널 상태는 비었는데 뷰 칩만 남았을 때
+    def _ctrls(c):
+        return panel_instance.render(c).type.properties["controls"].type.properties
+    hctx.request_params = {"view": []}
+    hctx.panel.state.selected_gidx = [g]
+    assert "clear_selection" in _ctrls(hctx)
+    hctx.panel.state.selected_gidx = []
+    assert "clear_selection" not in _ctrls(hctx)
+    hctx.request_params = {"view": [OUR]}          # F5 후: 상태는 비었지만 칩은 남음
+    assert "clear_selection" in _ctrls(hctx), "회귀: 뷰 칩만 남으면 패널에서 해제 불가"
+    hctx.request_params = {"view": [USER]}
+    assert "clear_selection" not in _ctrls(hctx)   # 사용자 스테이지는 우리 소관 아님
+
+    # emb_viz 방향은 **읽기 전용** — 뷰를 건드리면 사용자가 본 "add stage 추가" 재발
+    ectx = _mk_clear_ctx([])
+    ectx.ops = _FakeOps()
+    ectx.triggers = []
+    ectx.extended_selection = {"selection": list(ids[:3])}
+    ectx.panel.state.set("ext_sel_seen", [])
+    panel_instance.on_change_extended_selection(ectx)
+    assert ectx.ops.calls == [] and ectx.triggers == [], \
+        "회귀: emb_viz lasso 가 뷰를 건드림 — 뷰 바에 스테이지가 생긴다"
+
+    # 스테이지 누적 방지 계약 (2026-08-11 사용자 리포트): 프레임 반영은 반드시 내장
+    # show_samples 여야 한다 — set_view(ctx.view.select(...))는 선택할 때마다 뷰 바에
+    # Select stage를 하나씩 쌓고 교집합으로만 좁아진다.
     hctx.ops = _FakeOps()
-    panel_instance.on_plot_double_click(hctx)
-    assert hctx.panel.state.selected_gidx == []
-    assert hctx.ops.calls == ["clear_view"]   # 해제 = 뷰 초기화 (extended selection 안 씀)
+    panel_instance._select_frames_view(hctx, ["fid1", "fid2"])
+    assert hctx.ops.calls == [("show_samples", ["fid1", "fid2"])], hctx.ops.calls
+    assert not any(c == "set_view" or (isinstance(c, tuple) and c[0] == "set_view")
+                   for c in hctx.ops.calls), "회귀: set_view 직접 호출 — 스테이지 누적 재발"
 
     # 빈 extendedSelection 에코 무시 (리로드 버그 방어 — on_change_extended_selection 주석):
     # 훅 EXEC가 유발한 App의 extendedSelection 소거 잔향이 표/선택을 지우면 안 된다.
@@ -1241,6 +1600,14 @@ def selftest():
     hctx.extended_selection = {"selection": []}
     panel_instance.on_change_extended_selection(hctx)
     assert hctx.panel.state.selected_gidx == [g], "회귀: 빈 extendedSelection 에코가 선택을 지움"
+
+    # 표시(전체/채택만) 드롭다운은 argmax 전용 — dist_iou에는 미채택 개념이 없다 (정정)
+    hctx.params = {"value": "dist_iou"}
+    panel_instance.on_rule_change(hctx)
+    dist_ctrls = panel_instance.render(hctx).type.properties["controls"].type.properties
+    assert "show_mode" not in dist_ctrls and "rule" in dist_ctrls
+    hctx.params = {"value": "argmax_k1"}
+    panel_instance.on_rule_change(hctx)
 
     # ── Task 12: 프롬프트 짝이 없는 데이터셋에서 모드 A가 크래시 대신 안내를 낸다 ──
     # frames_captions는 실측상 "frames_captions-prompts"가 없다(fo.list_datasets() 확인,
