@@ -7,7 +7,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CLI="$SCRIPT_DIR/genai-cli.sh"
-BASE="${GENAI_CLI_BASE:-http://10.0.0.10:8088}"
+BASE="${GENAI_CLI_BASE:-http://10.0.0.10:8089}"
 
 bold() { printf '\033[1m%s\033[0m\n' "$*"; }
 green() { printf '\033[32m%s\033[0m\n' "$*"; }

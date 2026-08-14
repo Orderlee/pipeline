@@ -48,8 +48,9 @@ def _load_dispatch_requested_folders(dispatch_pending_dir: Path) -> set[str]:
     return requested_folders
 
 
-def _has_allowed_direct_file(dir_path: Path, allowed_exts: set[str]) -> bool:
-    for entry in _iter_sorted_dir_entries(dir_path):
+def _has_allowed_direct_file(dir_path: Path, allowed_exts: set[str], entries: list[Path] | None = None) -> bool:
+    # entries 를 넘기면 재나열 없이 재사용 — CIFS 에서 tick 당 동일 디렉토리 이중 listing 방지
+    for entry in entries if entries is not None else _iter_sorted_dir_entries(dir_path):
         if entry.name.startswith("."):
             continue
         try:

@@ -188,23 +188,6 @@ class PostgresVideoMetadataMixin:
                 rows = cur.fetchall()
         return self._rows_to_dicts(rows, ["asset_id", "archive_path", "duration_sec"])
 
-    def count_deferred_env_videos(self) -> int:
-        """find_deferred_env_videos 와 동일 조건의 레코드 수 반환."""
-        with self.connect() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    SELECT COUNT(*)
-                    FROM video_metadata vm
-                    JOIN raw_files rf ON rf.asset_id = vm.asset_id
-                    WHERE vm.env_method = 'deferred'
-                      AND COALESCE(vm.frame_extract_count, 0) > 0
-                      AND rf.archive_path IS NOT NULL
-                    """
-                )
-                row = cur.fetchone()
-        return int(row[0]) if row else 0
-
     def update_video_env(
         self,
         asset_id: str,

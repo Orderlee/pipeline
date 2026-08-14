@@ -302,6 +302,22 @@ def fetch_kling_resource_packs(force: bool = False) -> list[dict]:
     return packs
 
 
+def order_packs_for_display(packs: list[dict]) -> list[dict]:
+    """Costs 탭 표시 순서 — online 우선, 그 다음 최근 결제(effective_time)순.
+
+    **필터하지 않는다.** 한때 online 만 남겼더니 요금제가 전량 만료된 순간(2026-08-14)
+    표가 통째로 사라져 "리소스팩 없음"(= 키 미설정과 동일 문구)만 남았고, 요금제 이름·
+    소진 시점 같은 진단 정보가 증발했다. non-online 행은 템플릿이 opacity:.5 로 흐린다.
+    effective_time 미보고 시 invalid_time(만료)로 fallback.
+    """
+    return sorted(
+        packs,
+        key=lambda p: (p.get("status") == "online",
+                       p.get("effective_time") or p.get("invalid_time") or 0),
+        reverse=True,
+    )
+
+
 def detect_concurrency_from_packs(packs: list[dict]) -> int | None:
     """활성(online) 요금제 이름의 `<N>Con` 에서 동시 작업 한도 추출. 여러 개면 최대.
 

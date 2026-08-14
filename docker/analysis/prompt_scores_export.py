@@ -13,8 +13,8 @@ importer·reader 와 함께 태어난다. 그때까지 이 JSONL 이 계약의 �
 
 R1a 의 핵심 문제 — 같은 개념이 세 가지 이름으로 산다:
     pred_v1_0_8_0 / pred_margin_v080 / wave_pred_v1_0_8_4 …
-버전 접미사가 필드마다 `v1_0_8_0` 스타일과 `v080` 스타일로 갈린다. 규칙을 발명하지 않고
-**두 후보를 실제 스키마에 조회해서** 있는 쪽을 쓴다 (없으면 에러로 세운다).
+버전 접미사가 필드마다 `v1_0_8_0`(vt) / `v1080`(vtag) / `v080`(구) 세 세대로 갈린다.
+규칙을 발명하지 않고 **세 후보를 실제 스키마에 조회해서** 있는 쪽을 쓴다 (`suffixes()` 참고).
 
 사용:
     # 컨테이너 안 (fiftyone 필요)
@@ -55,12 +55,25 @@ RULE_SENTENCE_FIELDS = {
 
 
 def suffixes(bank: str) -> list[str]:
-    """`v1.0.8.0` → 실제로 쓰이는 두 접미사 표기 후보. 어느 쪽인지는 스키마가 정한다."""
+    """`v1.0.8.0` → 실제로 쓰이는 접미사 표기 후보 (신 → 구 순). 어느 쪽인지는 스키마가 정한다.
+
+    세 세대가 공존한다:
+        v1_0_8_0  vt   — `pred_`/`vote_`/`wave_pred_` 계열
+        v1080     vtag — `winner_gidx_`/`margin_` 계열. `prompt_geometry.vtag()` 가 정본
+        v080      구   — 2026-08-11 이전 잔존. 폴백 전용
+
+    ⚠️ vtag 후보가 빠져 있어 `winner_gidx_{v}` 가 **전 버전에서 해석 실패**했다
+       (2026-08-14 발견: sourcei·source-h 양쪽 winner 해석 0건 → 정본 3층의 귀속 층
+       `prompt_frame_pred` 전량 누락. `resolve()` 가 None 이면 규칙을 건너뛰고 계속
+       진행하므로 exit 0 + validator 통과라 무증상이었다).
+       생산자가 2026-08-11 에 `vtag()` 를 전 파트 조인으로 바꿨는데 여기가 안 따라간 것.
+    ⚠️ 3파트 버전(`v1.0.8`)은 vtag 와 구 표기가 `v108` 로 같아지므로 중복을 접는다.
+    """
     parts = bank.lstrip("vV").split(".")
-    out = ["v" + "_".join(parts)]                    # v1_0_8_0 (pred_/vote_/wave_pred_)
+    out = ["v" + "_".join(parts), "v" + "".join(parts)]
     if len(parts) >= 3:
-        out.append("v" + "".join(parts[-3:]))        # v080 (margin_/winner_gidx_)
-    return out
+        out.append("v" + "".join(parts[-3:]))
+    return list(dict.fromkeys(out))
 
 
 def resolve(schema, template: str, bank: str) -> str | None:
@@ -294,13 +307,22 @@ def cmd_validate(args) -> int:
 
 # ────────────────────── selftest ──────────────────────
 def cmd_selftest(_args) -> int:
-    # 접미사 해석 — 두 표기 스타일이 다 후보로 나와야 한다 (R1a 의 실체)
-    assert suffixes("v1.0.8.0") == ["v1_0_8_0", "v080"], suffixes("v1.0.8.0")
-    assert suffixes("v1.0.8.4") == ["v1_0_8_4", "v084"]
+    # 접미사 해석 — 세 표기 세대가 다 후보로 나와야 한다 (R1a 의 실체)
+    assert suffixes("v1.0.8.0") == ["v1_0_8_0", "v1080", "v080"], suffixes("v1.0.8.0")
+    assert suffixes("v1.0.8.4") == ["v1_0_8_4", "v1084", "v084"]
+    # 3파트는 vtag 와 구 표기가 같다 → 중복이 접혀야 한다
+    assert suffixes("v1.0.8") == ["v1_0_8", "v108"], suffixes("v1.0.8")
+    # vtag 는 버전 전 파트를 조인한다 — 뒤 3파트만 쓰면 v1.0.5.0/v2.0.5.0 이 붕괴한다
+    assert suffixes("v1.0.5.0")[1] != suffixes("v2.0.5.0")[1]
     schema = {"pred_v1_0_8_0", "pred_margin_v080", "winner_gidx_v080"}
     assert resolve(schema, "pred_{v}", "v1.0.8.0") == "pred_v1_0_8_0"
     assert resolve(schema, "pred_margin_{v}", "v1.0.8.0") == "pred_margin_v080"
     assert resolve(schema, "vote_{v}", "v1.0.8.0") is None
+    # 회귀 방지 (2026-08-14): 현행 생산자는 winner_gidx_v1080 으로 쓴다. vtag 후보가 빠지면
+    # winner 가 전 버전에서 None 이 되고 귀속 층이 조용히 사라진다 — 그게 이 단언의 존재 이유.
+    assert resolve({"winner_gidx_v1080"}, "winner_gidx_{v}", "v1.0.8.0") == "winner_gidx_v1080"
+    # 구 슬러그만 있는 데이터셋도 계속 해석돼야 한다 (폴백 유지)
+    assert resolve({"winner_gidx_v080"}, "winner_gidx_{v}", "v1.0.8.0") == "winner_gidx_v080"
 
     scope = {"prompts_bank_version": "v1.0.8.0"}
     good_run = {"run_id": "r1", "rule": "argmax_k1", "code_version": "abc",
