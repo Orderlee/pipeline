@@ -13,6 +13,8 @@
 | `cleanup_minio_20260402.py` | scripts/ | 2026-04-02 MinIO 객체 정리 일회성 작업 (완료) |
 | `migrate_legacy/profile.py` | scripts/migrate_legacy/ | 제거된 schema 의 프로파일 마이그레이션 (완료) |
 | `migrate_legacy/build_pilot_manifest.py` | scripts/migrate_legacy/ | 초기 pilot manifest 생성 (완료) |
+| `backfill_vhc_sam3_bbox.py` | scripts/ | VHC 288건 SAM3 bbox 백필 — dispatch run 66a84f99 후속 (완료, 제거된 duckdb 모듈 import 라 미실행) |
+| `run_scanner.sh` | scripts/ | legacy 스캐너 shim — bootstrap_manifest.sh / auto_bootstrap 센서로 대체 |
 
 ## 정책
 

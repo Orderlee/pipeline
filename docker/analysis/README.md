@@ -97,7 +97,57 @@ docker exec docker-analysis-1 fiftyone plugins list   # 확인
 - 설치 위치 `/data/fiftyone/datasets/__plugins__/` 는 **bind mount 안이라 컨테이너
   재생성에도 유지**된다 (호스트 `docker/data/fiftyone/`). 다만 gitignore 대상이므로
   `docker/data/` 를 밀면 사라진다 → 위 명령으로 복구.
-- FiftyOne App 재시작 불필요. 플러그인 디렉토리를 요청마다 스캔한다.
+- **플러그인 캐시는 켜져 있어야 한다** (2026-08-14): 기본값(off)은 오퍼레이터 요청마다
+  플러그인 모듈을 재임포트해 user-prompt-compare 의 603k행 번들 캐시·dedup 가드가 매번
+  증발한다 (드롭다운 1회 = 왕복 20초+). `fiftyone_relaunch.py` 가
+  `FIFTYONE_PLUGINS_CACHE_ENABLED=true` 를 세팅하고, 컨테이너의
+  `/root/.fiftyone/config.json` 에도 `{"plugins_cache_enabled": true}` 를 써 뒀다
+  (**컨테이너 재생성 시 config.json 은 사라진다** — relaunch 경유 기동이면 env 로 커버).
+- 캐시가 켜져 있어도 플러그인 코드 반영에 App 재시작은 불필요 — 단 `docker cp` 후
+  **플러그인 디렉토리를 touch** 해야 무효화가 잡힌다 (dir_state 가 플러그인 *디렉토리*
+  mtime 기준: `docker exec docker-analysis-1 touch /data/fiftyone/datasets/__plugins__/user-prompt-compare`).
+  ⚠️ **패널 이름을 바꾸거나 새 패널을 추가할 땐 App 을 재기동**하고 저장 워크스페이스도
+  다시 저장할 것 — 서버 워커가 여러 개라 일부만 새 이름을 알면 그 워커가 응답할 때
+  `Panel "<이름>" no longer exists!` 가 뜬다 (2026-08-14 실측).
+
+### 분석 판독 규칙 (2026-08-14 감사 반영 — 어기면 화면이 조용히 거짓말한다)
+
+- **`sourcei.category` 는 사람 정답이 아니다.** v1.0.8.0 모델의 argmax 예측이다
+  (실측 3중: `argmax(cos_best_*)==category.label` 7,498/7,498 · `category.confidence` 전부
+  null · `pred_v1_0_8_0.label` 과도 7,498/7,498). 사람 정답은 `ground_truth`(영상 단위).
+  이 축으로 신버전을 채점하면 구버전 예측을 기준으로 삼는 **자기참조 평가**가 된다.
+- **표시/모집단을 항상 확인**할 것. `-prompts` 는 603,318 중 20,000(3.3%)만 그린다. 채택점은
+  전수 보존되고 미채택만 층화되므로 **화면의 채택 비율이 모집단보다 약 30배 부풀어 있다** —
+  두 패널의 배너·범례가 이 숫자를 직접 표기한다(`미채택 9,207/592,526` 형태).
+- 색칠 축을 바꾸면 배너가 **기준 축과 몇 장 상충하는지**, 그리고 값이 100% 동일한 축이
+  있으면 그 사실을 스스로 알린다. 상충(같은 값 집합 안에서 갈림)과 세분값(기준에 없는 값)은
+  다르게 표기된다 — `event_kind` 4,321장 차이는 상충 0장, 전부 세분값이다.
+
+### `-prompts` 데이터셋의 임베딩 패널 (`user-image-embeddings`, 2026-08-14)
+
+플러그인 하나가 패널 **2개**를 등록한다 — `image_embeddings`(프레임 좌표, 크로스 데이터셋
+조인) + `sentence_embeddings`(현재 데이터셋의 문장 좌표). `-prompts` compare 워크스페이스는
+좌하=문장, 우=이미지다. 좌하를 네이티브 Embeddings 로 두면 brain key 를 매번 손으로 골라야
+하거나(비워둘 때) 60만 점 렌더로 Chrome 이 죽는데(지정할 때), 자체 패널은 층화 서브샘플
+20,000 점을 **6.4초에 자동으로** 그린다. 화면 총 렌더 점: 610,816 → 27,497.
+
+
+`<X>-prompts` 의 `emb_viz` 는 **문장 좌표**다 (실측: gidx 603,318 개가 전부 고유, 같은
+이미지를 공유하는 22,578 샘플의 좌표 std 9.17 — 이미지 기준이면 0). 그 화면에서 이미지
+임베딩을 보려면 프레임 데이터셋(`<X>`) 좌표를 그려야 하는데 네이티브 Embeddings 패널은
+크로스 데이터셋을 못 읽고, brain key 를 데이터셋 간에 기억하는 함정까지 있다. 그래서
+자체 패널 `image_embeddings` 를 쓴다 — 프레임 좌표를 brain `sample_ids`→`id` 로 조인해
+**이미지 단위(7,498 점)** 로 그리고, 색칠 축(정답 클래스·실내외·주야·카메라 …)은 대상
+데이터셋 스키마에서 자동 발견한다. `-prompts` 워크스페이스의 좌하 네이티브 Embeddings 는
+`brainResult` 를 **비워** 둔다 (문장 60만 점 자동 렌더 = 110초 + Chrome 크래시).
+
+```bash
+docker cp docker/analysis/plugins/user-image-embeddings \
+  docker-analysis-1:/data/fiftyone/datasets/__plugins__/
+docker exec docker-analysis-1 sh -c \
+  'cd /data/fiftyone/datasets/__plugins__/user-image-embeddings && python __init__.py'  # selftest
+docker exec docker-analysis-1 python /workspace/fiftyone_app_setup.py workspace-compare
+```
 - 의존성(`umap-learn`, `scikit-learn`, `fiftyone-brain`)은 이미지에 이미 포함.
 
 ### 쓰는 법

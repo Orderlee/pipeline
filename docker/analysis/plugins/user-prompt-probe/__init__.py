@@ -240,13 +240,15 @@ def _cos_columns(frames_view, rows, won_idx, classes, version, offset):
               제품 규칙에서 어디 서 있나" 로만 읽어야 한다.
     """
     sch = frames_view.get_field_schema()
-    cb = {c: frames_view.values(f"cos_best_{c}") for c in classes
-          if f"cos_best_{c}" in sch}
-    iou = {}
-    for c in classes:
-        f = _pick_field(sch, "wave_iou_" + c + "_{tag}", version)
-        if f:
-            iou[c] = frames_view.values(f)
+    # 클래스당 values() 1회 → 필드 목록 1회씩 (위 배치 주석과 같은 이유)
+    cb_keys = [c for c in classes if f"cos_best_{c}" in sch]
+    cb = dict(zip(cb_keys, frames_view.values([f"cos_best_{c}" for c in cb_keys]))) \
+        if cb_keys else {}
+    iou_pairs = [(c, _pick_field(sch, "wave_iou_" + c + "_{tag}", version))
+                 for c in classes]
+    iou_keys = [c for c, f in iou_pairs if f]
+    iou = dict(zip(iou_keys, frames_view.values(
+        [f for _c, f in iou_pairs if f]))) if iou_keys else {}
     for r in rows:
         idxs = won_idx.get(int(r["gidx"]) % offset) or []
         c = r["cls"]
@@ -476,8 +478,7 @@ class ExportBankVersion(foo.Operator):
             raise ValueError(f"카메라 {cam} 프레임이 0장입니다")
 
         pview = ctx.dataset.match({"bank_version.label": rv})
-        gidx, texts, labels = (pview.values("gidx"), pview.values("text"),
-                               pview.values("category.label"))
+        gidx, texts, labels = pview.values(["gidx", "text", "category.label"])
         classes = sorted({x for x in labels if x})
         picked, won_idx = _rank_by_project(fview, fld, classes, gidx, texts, labels,
                                            top_n, per_class, min_wins, sort_by)
@@ -613,7 +614,11 @@ def _score_texts(view, tag, classes, cand_c, texts):
 
     need = ["embedding", f"probe_bar_{tag}", f"probe_votes_{tag}",
             f"probe_topc_{tag}", f"probe_out_{tag}", "ground_truth.label"]
-    emb, bar, votes, topc, out_c, gtl = (view.values(f) for f in need)
+    # ⚠️ 필드당 `values()` 를 따로 부르면 컬렉션을 필드 수만큼 **전체 순회**한다 —
+    #    `values([...])` 는 한 번의 집계로 끝난다 (배열·순서·길이 동일). 형제 플러그인
+    #    user-prompt-compare 가 603k 행에서 119.5s → 8.3s 로 줄인 것과 같은 처치
+    #    (2026-08-14 감사 실측: 이 파일에서도 4곳 확인, 4~5배).
+    emb, bar, votes, topc, out_c, gtl = view.values(need)
     E = np.asarray(emb, dtype="float32")
     E /= np.linalg.norm(E, axis=1, keepdims=True) + 1e-12
     bar = np.asarray(bar, dtype="float32")
@@ -996,9 +1001,10 @@ class GeneratePrompts(foo.Operator):
         view = ctx.view if ctx.view is not None else ctx.dataset.view()
         mode = ctx.params.get("mode") or "FP"
         target = ctx.params.get("target") or next(c for c in classes if c != "normal")
-        votes = np.asarray(view.values(f"probe_votes_{tag}"), dtype="int32")
-        topc = np.asarray(view.values(f"probe_topc_{tag}"), dtype="float32")
-        gtl = view.values("ground_truth.label")
+        _v, _t, gtl = view.values([f"probe_votes_{tag}", f"probe_topc_{tag}",
+                                   "ground_truth.label"])   # 배치 (위 주석)
+        votes = np.asarray(_v, dtype="int32")
+        topc = np.asarray(_t, dtype="float32")
         base = (votes + (topc + 2.0) / 10.0).argmax(axis=1)
         gt = np.array([classes.index(g) if g in classes else -1 for g in gtl])
         ni, ti = classes.index("normal"), classes.index(target)
@@ -1233,6 +1239,10 @@ def _self_check():
         def get_field_schema(self):
             return dict.fromkeys(self._c, 1)
         def values(self, f):
+            # 실제 FiftyOne 계약과 동일: 필드명 리스트를 주면 컬럼 리스트를 돌려준다
+            # (2026-08-14 배치화 후 목이 낡아 TypeError 를 냈다 — 목이 API 를 따라야 한다).
+            if isinstance(f, (list, tuple)):
+                return [self._c[x] for x in f]
             return self._c[f]
 
     #  프레임 3장: fire 코사인 [.30,.40,.20] / normal [.10,.35,.25] / smoke 없음
@@ -1260,6 +1270,9 @@ def _self_check():
             return self._n
 
         def values(self, f):
+            # 실제 계약과 동일하게 필드명 리스트도 받는다 (2026-08-14 배치화)
+            if isinstance(f, (list, tuple)):
+                return [self.values(x) for x in f]
             if f == "embedding":
                 return [[1.0] + [0.0] * 7 for _ in range(self._n)]
             if f.startswith("probe_bar"):
