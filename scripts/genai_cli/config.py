@@ -7,7 +7,7 @@ env vars (CI 우선):
 
 config file: ~/.config/genai-cli/config.toml (mode 0600)
   [default]
-  base = "http://10.0.0.10:8088"
+  base = "http://10.0.0.10:8089"
   user = "user"
   password = "..."
 """
@@ -27,7 +27,8 @@ except ImportError:  # pragma: no cover
     import tomli as tomllib   # py310 fallback
 
 
-DEFAULT_BASE = "http://10.0.0.10:8088"
+# 10.0.0.x 대역은 2026-05 네트워크 개편으로 전부 폐기 — 현행 호스트 IP + genai 호스트 포트(8089→컨테이너 8088)
+DEFAULT_BASE = "http://10.0.0.10:8089"
 CONFIG_PATH = Path.home() / ".config" / "genai-cli" / "config.toml"
 
 

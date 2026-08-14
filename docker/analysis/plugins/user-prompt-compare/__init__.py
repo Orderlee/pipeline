@@ -37,6 +37,11 @@ META_FIELDS = ["gidx", "text", "category", "adopted", "wins", "purity",
 
 # Task 12 — 뱅크 버전 선택기 + 프롬프트 데이터셋 자동 유도.
 ALL_VERSIONS_LABEL = "전체"
+# 컨트롤 그리드 열 수. App 번들 getGridSx 실측: orientation=horizontal 은 display:grid 인데
+# columns 가 없으면 gridAutoFlow="column" 이라 **줄바꿈이 없다** — 컨트롤이 5개를 넘으면
+# 뒤쪽(뱅크 버전·선택 해제)이 패널 폭 밖으로 밀려 조작 불가였다(2026-08-12 실측).
+# columns=N 이면 gridTemplateColumns=repeat(N,1fr) 로 행이 자동으로 접힌다.
+CONTROLS_COLUMNS = 3
 NO_PROMPTS_PAIR_TEXT = "이 데이터셋에는 프롬프트 짝이 없습니다"
 
 # 표시 드롭다운 값 (2026-08-10 피드백: 토글 버튼 전부 드롭다운으로 통일)
@@ -102,6 +107,16 @@ def load_prompt_bundle(dataset_name=PROMPTS_DATASET):
             else np.asarray([0 if v is None else v for v in vals])
     if b.get("adopted") is not None and b["adopted"].dtype == object:
         b["adopted"] = np.asarray([v in (True, "채택", "true") for v in b["adopted"]])
+    # 벡터화용 정수 코드 (2026-08-14): build_mode_a 의 버전 필터·층화 서브샘플이 603k행
+    # Python 루프(str 비교·dict 적재)로 요청당 수 초씩 태우던 것을 C 속도 마스크로 바꾼다.
+    # 로드 시 1회만 문자열화(캐시에 함께 저장) — int32 600k ≈ 2.4MB/필드라 캐시 예산 무해.
+    for f in ("category", "bank_version"):
+        if b.get(f) is not None:
+            uniq, codes = np.unique(
+                np.asarray(["" if v is None else str(v) for v in b[f]], dtype=object),
+                return_inverse=True)
+            b[f + "_uniq"] = uniq
+            b[f + "_codes"] = codes.astype(np.int32)
     # ⚠️ 메시지에 상한을 하드코딩하지 않는다 — 64MB→192MB 로 올렸을 때 문구가 stale 해져
     #    실제로 캡에 걸려도 잘못된 숫자가 찍혔다 (codex 지적, 2026-08-12).
     # ⚠️ `_bundle_nbytes` 는 numpy `.nbytes` 만 더한다 — object dtype 배열이 참조하는
@@ -195,20 +210,29 @@ def _current_winner_field(ctx):
 def stratified_subsample(labels, max_points, seed=0):
     """클래스 비례 서브샘플, 클래스당 최소 1점 보장. 인덱스 리스트 반환."""
     import numpy as np
-    labels = list(labels)
-    if len(labels) <= max_points:
-        return list(range(len(labels)))
+    arr = np.asarray(labels)
+    n = len(arr)
+    if n <= max_points:
+        return list(range(n))
     rng = np.random.default_rng(seed)
-    by_class = {}
-    for i, lab in enumerate(labels):
-        by_class.setdefault(lab, []).append(i)
+    if arr.dtype != object:
+        # 정수 코드/문자열 배열 경로 (2026-08-14): 603k행에서 Python dict 적재 루프가
+        # 초 단위였다 — np.unique + 마스크로 클래스별 인덱스를 C 속도로 뽑는다. 계약
+        # (클래스당 최소 1점·비례 배분·seed 결정론)은 동일, 클래스 순회 순서만
+        # 등장순→정렬순으로 바뀐다 (개수 불변, 뽑히는 개별 점만 달라질 수 있음).
+        groups = [np.nonzero(arr == u)[0] for u in np.unique(arr)]
+    else:  # None 섞인 object 리스트 — np.unique 가 정렬에서 죽으므로 기존 경로 유지
+        by_class = {}
+        for i, lab in enumerate(labels):
+            by_class.setdefault(lab, []).append(i)
+        groups = list(by_class.values())
     # 클래스당 1점을 먼저 확보한 뒤 비례 배분 (opus F4): 구현이 out[:max_points] 로
     # 정렬 전 절단하면 반올림 합이 예산을 넘는 순간 삽입 순서상 뒤쪽 클래스가 통째로
     # 사라져 "클래스당 최소 1점 보장" docstring 계약이 깨진다.
     out = []
     extra = []
-    for lab, idxs in by_class.items():
-        k = max(1, int(round(len(idxs) / len(labels) * max_points)))
+    for idxs in groups:
+        k = max(1, int(round(len(idxs) / n * max_points)))
         pick = rng.choice(idxs, size=min(k, len(idxs)), replace=False).tolist()
         out.append(pick[0])
         extra.extend(pick[1:])
@@ -246,8 +270,7 @@ WAVE_ROLE_COLORS = {
 # 색칠 축 — **규칙과 독립** (2026-08-12 사용자 요청). 기본값은 규칙별 기존 동작 유지.
 COLOR_BY_CATEGORY = "category"
 COLOR_BY_WAVE_ROLE = "wave_role"
-COLOR_BY_LABELS = {COLOR_BY_CATEGORY: "클래스 (fire/smoke/…)",
-                   COLOR_BY_WAVE_ROLE: "wave 역할 (유익/유해/중간)"}
+COLOR_BY_LABELS = {COLOR_BY_CATEGORY: "클래스", COLOR_BY_WAVE_ROLE: "wave 역할"}
 
 
 def _hover(b, i):
@@ -272,20 +295,48 @@ def build_mode_a(bundle, rule, show_unadopted, selected_gidx, bank_version_filte
     n = len(b["gidx"])
     idx_all = np.arange(n)
     bv = b.get("bank_version")
-    if bank_version_filter and bank_version_filter != ALL_VERSIONS_LABEL and bv is not None:
-        keep = np.asarray([str(bv[i]) == bank_version_filter for i in idx_all])
+    vfilt = bank_version_filter \
+        if bank_version_filter and bank_version_filter != ALL_VERSIONS_LABEL else None
+    if vfilt is not None and bv is not None:
+        codes, uniq = b.get("bank_version_codes"), b.get("bank_version_uniq")
+        if codes is not None:
+            # 벡터화 (2026-08-14): 구 [str(bv[i]) == filter ...] 는 603k행 Python 루프로
+            # 요청당 수 초 — 드롭다운 전환 왕복 ~20초(이중 발화 ×2 + 재발화 캐스케이드
+            # 동시 실행)의 주범 중 하나였다. 코드 배열은 load_prompt_bundle 이 1회 계산.
+            pos = np.nonzero(uniq == vfilt)[0]
+            keep = (codes == pos[0]) if len(pos) else np.zeros(n, dtype=bool)
+        else:  # 코드 배열 없는 합성 번들(selftest 픽스처) 하위호환
+            keep = np.asarray([str(bv[i]) == vfilt for i in idx_all])
         idx_all = idx_all[keep]
+    # ⚠️ **모집단**(버전 필터 적용 후, 서브샘플 전)을 여기서 붙잡는다 — 아래 서브샘플이
+    #    idx_all 을 20,000 으로 줄여버리면 "전체가 몇 개였는지" 를 영구히 잃는다.
+    #    기본 화면이 603,318 중 20,000(3.3%)만 그리면서 아무 표기도 없었고, 범례의
+    #    "미채택 9,208" 은 실제 592,526 의 1/64 였다 (2026-08-14 감사 실측). 분석자가
+    #    이걸 모르면 화면의 비율을 모집단 비율로 오독한다 — 채택점은 전수 보존되므로
+    #    화면상 채택 비율이 모집단의 **약 29배**로 부풀어 있다.
+    pop_idx = idx_all
+    pop_n = len(pop_idx)
     adopted = b["adopted"][idx_all].astype(bool)
     if len(idx_all) > MAX_POINTS:
         # 채택 점(승자 문장 — 이 패널의 존재 이유)은 전수 보존하고 **미채택만** 층화한다.
         # 29버전 60만 행에서 category 층화만 걸면 채택 ~5,600점이 ~185점으로 뭉개진다
         # (2026-08-12). 채택 총수는 버전당 ~200이라 MAX_POINTS 예산 안에 항상 들어간다.
-        keep_idx = idx_all[adopted][:MAX_POINTS]   # 채택 폭증 시에도 하드캡 유지 (codex A)
-        rest = idx_all[~adopted]
-        budget = max(0, MAX_POINTS - len(keep_idx))
-        cats = [b["category"][i] for i in rest]
-        sub_pos = np.asarray(stratified_subsample(cats, budget), dtype=np.int64)
-        idx_all = np.sort(np.concatenate([keep_idx, rest[sub_pos]]))
+        # 서브샘플은 (버전 필터, seed 고정)에만 의존 — 규칙/색칠/표시/선택과 무관하므로
+        # 번들 안에 캐시해 드롭다운 왕복을 상수 시간으로 만든다 (2026-08-14). 번들이
+        # _CACHE 1엔트리라 리빌드 시 캐시도 함께 증발 — 누수/불일치 없음.
+        sub_cache = b.setdefault("_subsample_cache", {})
+        cached = sub_cache.get(vfilt or ALL_VERSIONS_LABEL)
+        if cached is None:
+            keep_idx = idx_all[adopted][:MAX_POINTS]   # 채택 폭증 시에도 하드캡 유지 (codex A)
+            rest = idx_all[~adopted]
+            budget = max(0, MAX_POINTS - len(keep_idx))
+            ccodes = b.get("category_codes")
+            cats = ccodes[rest] if ccodes is not None \
+                else [b["category"][i] for i in rest]
+            sub_pos = np.asarray(stratified_subsample(cats, budget), dtype=np.int64)
+            cached = np.sort(np.concatenate([keep_idx, rest[sub_pos]]))
+            sub_cache[vfilt or ALL_VERSIONS_LABEL] = cached
+        idx_all = cached
         adopted = b["adopted"][idx_all].astype(bool)
 
     def trace(mask, color, size, name, opacity):
@@ -308,14 +359,14 @@ def build_mode_a(bundle, rule, show_unadopted, selected_gidx, bank_version_filte
         # 토글 피드백(사용자 피드백): 미채택 숨김 상태를 배너에도 굵게 명시 —
         # 버튼 라벨(render)과 이중으로 상태가 보이게 한다. (argmax 전용 — dist_iou에는
         # 미채택 개념이 없다, 아래 정정 참고.)
-        sub += " · <b>표시: 채택만</b>"
+        sub += " · **표시: 채택만**"
     # 마커 시인성(사용자 피드백): App 테마 배경(mediaSpace, 다크)이 기본이라 작은/반투명
     # 점이 묻힌다 — 채택점은 크게 + 흰 테두리, 미채택은 한 단계 밝게. 팔레트 자체는 유지.
     if rule == "argmax_k1":
-        banner = f"{BANNER_RULE}<br><sup>{sub}</sup>"
+        banner = f"{BANNER_RULE} · {sub}"
         member = adopted            # 그룹 trace 대상 = 채택 (미채택은 회색 예비군 trace)
     else:  # dist_iou — 클릭 무효
-        banner = f"{BANNER_WAVE_NOCLICK}<br><sup>{sub}</sup>"
+        banner = f"{BANNER_WAVE_NOCLICK} · {sub}"
         # 정정(2026-08-10): wave(dist_iou)는 **모든 문장이 분포에 참여**한다 — wave_role/
         # wave_gain이 전 12,480행에 존재(실측: 유익 1,250·유해 1,250·중간 9,980, 미채택
         # 12,166행 전부 wave_gain≠0). K=1 승수 기준인 adopted 마스크로 12,166개를 회색
@@ -326,27 +377,45 @@ def build_mode_a(bundle, rule, show_unadopted, selected_gidx, bank_version_filte
     #    기본값은 규칙별 기존 동작 그대로 유지 — topk=클래스, dist_iou=wave_role (회귀 방지).
     #    배너·클릭 귀속·member 마스크는 규칙의 성질이라 위에 남겨 두고 여기서 색만 고른다.
     cb = color_by or ("category" if rule == "argmax_k1" else "wave_role")
-    if cb == COLOR_BY_CATEGORY and b.get("category") is not None:
-        groups_arr = np.asarray([str(b["category"][i]) for i in idx_all], dtype=object)
-        palette = CLASS_COLORS
-    elif cb == COLOR_BY_WAVE_ROLE and b.get("wave_role") is not None:
-        groups_arr = np.asarray([str(b["wave_role"][i]) for i in idx_all], dtype=object)
-        palette = WAVE_ROLE_COLORS
-    else:                            # 필드 부재 — 단색 1개 trace (크래시 대신 축약)
-        groups_arr = np.asarray(["전체"] * len(idx_all), dtype=object)
-        palette = {}
+
+    def _groups(idx):
+        """idx 에 대한 (그룹 배열, 팔레트). 모집단·표시분 양쪽에 같은 규칙을 적용한다."""
+        if cb == COLOR_BY_CATEGORY and b.get("category") is not None:
+            return np.asarray([str(b["category"][i]) for i in idx], dtype=object), CLASS_COLORS
+        if cb == COLOR_BY_WAVE_ROLE and b.get("wave_role") is not None:
+            return np.asarray([str(b["wave_role"][i]) for i in idx], dtype=object), WAVE_ROLE_COLORS
+        return np.asarray(["전체"] * len(idx), dtype=object), {}   # 필드 부재 — 단색 1 trace
+
+    groups_arr, palette = _groups(idx_all)
+    # 모집단 그룹 카운트 — 범례에 "표시분/모집단" 을 같이 싣기 위해. 서브샘플이 없었으면
+    # (= 같은 배열) 재계산하지 않는다 (603k object 배열 순회는 비싸다).
+    if len(pop_idx) == len(idx_all):
+        pop_groups = groups_arr
+        pop_adopted = adopted
+    else:
+        pop_groups, _pal = _groups(pop_idx)
+        pop_adopted = b["adopted"][pop_idx].astype(bool)
+    pop_count = dict(zip(*np.unique(pop_groups, return_counts=True)))
+
+    def _legend(name, drawn, total):
+        """범례 라벨. 표시분과 모집단이 다르면 **둘 다** 보여준다 (위 pop_idx 주석)."""
+        return f"{name} {drawn:,}" if drawn == total else f"{name} {drawn:,}/{total:,}"
 
     data = []
     if rule == "argmax_k1":
         if show_unadopted:
             # size 6 = 네이티브 Embeddings(emb_viz) 패널의 점 크기와 동일 (라이브 실측 — 사용자
             # 요청: 두 화면의 점 크기 체감이 같아야 비교가 편하다). 미채택 구분은 회색+반투명으로.
-            data.append(trace(~adopted, GREY, 6, f"미채택 {int((~adopted).sum())} (예비군)", 0.45))
+            data.append(trace(~adopted, GREY, 6,
+                              _legend("미채택", int((~adopted).sum()),
+                                      int((~pop_adopted).sum())) + " (예비군)", 0.45))
         else:
             # 빈 trace(x=[]) 대신 visible=False: 배열 길이를 유지한 채 플래그만 뒤집는다.
             # (빈 배열 방식은 클라이언트 patch 딥머지에서 옛 점을 못 지우는 문제가 있었다 —
             # _refresh의 set_data 금지 주석. visible=False trace는 범례에서도 빠진다 — 실측.)
-            t_hidden = trace(~adopted, GREY, 6, f"미채택 {int((~adopted).sum())} (숨김)", 0.45)
+            t_hidden = trace(~adopted, GREY, 6,
+                             _legend("미채택", int((~adopted).sum()),
+                                     int((~pop_adopted).sum())) + " (숨김)", 0.45)
             t_hidden["visible"] = False
             data.append(t_hidden)
     # 그룹별 trace 1개 (docstring 참고 — 범례에 그룹별 색+개수가 나오고, 범례 클릭으로
@@ -355,7 +424,8 @@ def build_mode_a(bundle, rule, show_unadopted, selected_gidx, bank_version_filte
     order += sorted(set(groups_arr[member]) - set(palette))
     for grp in order:
         m = member & (groups_arr == grp)
-        t = trace(m, palette.get(grp, "#999999"), 5, f"{grp} {int(m.sum())}", 0.95)
+        t = trace(m, palette.get(grp, "#999999"), 5,
+                  _legend(grp, int(m.sum()), int(pop_count.get(grp, m.sum()))), 0.95)
         if rule == "argmax_k1":
             t["marker"] = {"color": palette.get(grp, "#999999"),
                            "size": [6 + min(10, int(b["wins"][i]) // 50) for i in idx_all[m]],
@@ -377,15 +447,33 @@ def build_mode_a(bundle, rule, show_unadopted, selected_gidx, bank_version_filte
                  # 다크 배경에서 #000000 링은 안 보인다 — Okabe-Ito 노랑(클래스 색과 무교집합)
                  "marker": {"color": "#F0E442", "size": 14, "symbol": "circle-open",
                             "line": {"width": 3}}})
+    # ⚠️ 표시/전체를 배너에 **반드시** 싣는다 (2026-08-14): 기본 화면이 603,318 중 20,000
+    #    (3.3%)만 그리는데 아무 표기가 없어, 분석자가 화면 비율을 모집단 비율로 오독했다.
+    #    채택점은 전수 보존되고 미채택만 층화되므로 화면의 채택 비율은 모집단보다 크게
+    #    부풀어 있다 — 그 왜곡 배수까지 숫자로 밝힌다. (형제 패널 image_embeddings 와 동일 계약.)
+    shown_n = sum(len(t["x"]) for t in data if t.get("visible") is not False)
+    if shown_n < pop_n:
+        pct = shown_n / pop_n * 100
+        pop_ad = int(pop_adopted.sum())
+        drawn_ad = int(adopted.sum())
+        bias = ((drawn_ad / max(shown_n, 1)) / (pop_ad / max(pop_n, 1))) if pop_ad else 0
+        banner += (f" · **표시 {shown_n:,}/{pop_n:,} ({pct:.1f}%)** — 층화 서브샘플"
+                   + (f", 채택 비율 {bias:.0f}배 과대" if bias >= 1.5 else ""))
+    else:
+        banner += f" · 표시 {shown_n:,}/{pop_n:,} (전량)"
+    # banner 는 layout.title 이 아니라 **별도 키**다 (2026-08-12): plotly title 은 modebar
+    # (우상단 아이콘 줄)와 같은 영역에 그려져 글자와 아이콘이 겹쳐 판독 불가였고, 자동 줄바꿈이
+    # 없어 패널 폭을 넘으면 문장 중간에서 잘렸다. 패널이 이걸 md 로 렌더한다(render 참고).
     return {"data": data,
-            "layout": {"title": {"text": banner, "font": {"size": 12}},
-                       "showlegend": True, "dragmode": "pan",
+            "banner": banner,
+            "layout": {"showlegend": True, "dragmode": "pan",
                        "xaxis": {"visible": False}, "yaxis": {"visible": False},
                        # height 고정 금지 — PlotlyView는 style.height(=view의 height kwarg,
                        # 기본 "100%")를 따르므로 render()의 vh 기반 height가 실높이를 정한다
                        # (App 번들 실측: bo=Yn?.height||"100%"). autosize가 그 style을 추적.
                        "autosize": True,
-                       "margin": {"l": 10, "r": 10, "t": 60, "b": 10}}}
+                       # t: 60 → 30 — 제목이 빠진 만큼 회수 (modebar 여유만 남긴다)
+                       "margin": {"l": 10, "r": 10, "t": 30, "b": 10}}}
 
 
 # ── 모드 B (스펙 §5.1b, R5-b) — 같은 데이터셋 슬라이스를 하나의 emb_viz 좌표에 overlay ──
@@ -410,10 +498,8 @@ def build_mode_b(ds_name, group_field, groups, brain_key=BRAIN_KEY):
     # 용이라 sourcei 등 다른 데이터셋엔 없다 — 무방비 ds.values()가 ValueError로 패널을
     # 죽였다. 조인 필드 부재와 같은 규약: 크래시 대신 안내 배너만 그린다.
     def _notice(text):
-        return {"data": [],
-                "layout": {"title": {"text": f"{text}<br><sup>{BANNER_COORDS_B}</sup>",
-                                     "font": {"size": 12}},
-                           "xaxis": {"visible": False}, "yaxis": {"visible": False}}}
+        return {"data": [], "banner": f"{text} · {BANNER_COORDS_B}",
+                "layout": {"xaxis": {"visible": False}, "yaxis": {"visible": False}}}
 
     try:
         field_missing = ds.get_field(group_field) is None
@@ -443,10 +529,10 @@ def build_mode_b(ds_name, group_field, groups, brain_key=BRAIN_KEY):
                        "line": {"width": 0.5, "color": "#FFFFFF"},
                        "color": OKABE_ITO_B[gi % len(OKABE_ITO_B)]},
         })
-    return {"data": data,
-            "layout": {"title": {"text": BANNER_COORDS_B, "font": {"size": 12}},
-                       "showlegend": True,
-                       "xaxis": {"visible": False}, "yaxis": {"visible": False}}}
+    return {"data": data, "banner": BANNER_COORDS_B,
+            "layout": {"showlegend": True,
+                       "xaxis": {"visible": False}, "yaxis": {"visible": False},
+                       "margin": {"l": 10, "r": 10, "t": 30, "b": 10}}}
 
 
 # App 내장 ShowSamples 오퍼레이터가 자기 Select stage 에 박는 고정 uuid.
@@ -488,6 +574,67 @@ def _dedup_guard(ctx, state_key, ids):
         return True
     ctx.panel.state.set(state_key, sig)
     return False
+
+
+_MISSING = object()
+_APPLIED = {}   # (panel_id, control) -> 마지막 반영 값. 프로세스 생존 동안만.
+
+# 산점도 trace 리스트의 서버측 보관소 (2026-08-14). ctx.panel.state 에 실으면 이후 **모든**
+# 훅 요청의 panel_state 와 spaces 트리(패널 상태 복제본)에 2MB×2 로 왕복하는데, 서버가
+# 요청 바디 1MB 당 ~2.5초를 태운다(4MB 요청 = 10초, curl 실측) — 드롭다운 한 번에 5~20초
+# 걸리던 최종 병목이 이것이었다. 여기 두면 요청/응답 state 는 KB 단위로 준다.
+# 키: 실 요청 = panel_id (여러 클라이언트가 같은 워크스페이스 패널을 열면 공유되지만,
+# OSS App 은 세션 자체가 전 클라이언트 공유라 패널 상태도 어차피 수렴한다). 오프라인
+# (selftest) = id(ctx.panel) 폴백 — fake ctx 별로 유일해 크로스토크가 없다.
+_FIGDATA = {}
+
+
+def _fig_key(ctx):
+    return (getattr(ctx, "params", None) or {}).get("panel_id") or id(ctx.panel)
+
+
+def _put_fig(ctx, data):
+    _FIGDATA[_fig_key(ctx)] = data
+    while len(_FIGDATA) > 8:   # 패널 인스턴스 몇 개 + 재시작 잔재면 충분
+        _FIGDATA.pop(next(iter(_FIGDATA)))
+
+
+def _get_fig(ctx):
+    return _FIGDATA.get(_fig_key(ctx))
+
+
+def _change_guard(ctx, control, value, carried_same):
+    """드롭다운 변경 dedup. 반환: 스킵(no-op)이면 True.
+
+    2026-08-14 실측(fetch 인터셉트 타임라인)으로 확정한 두 가지 클라이언트 동작 때문에
+    **서버가 마지막으로 반영한 값(_APPLIED)** 기준으로 판정해야 한다:
+    ① 드롭다운 한 번에 같은 on_*_change 가 135ms 간격 2발 — 둘 다 변경 전 panel_state
+       를 실어 오므로 요청 상태와의 값 비교로는 두 번째를 못 잡는다.
+    ② 요청에 실려 오는 panel_state 는 응답 1왕복만큼 낡는다 — 앞 변경이 처리되는 동안
+       사용자가 되돌리는 클릭(dist→topk)을 하면 carried state 기준으론 '값 그대로'로
+       보여 **진짜 변경이 삼켜진다** (드롭다운은 topk 인데 화면은 dist 로 굳는 버그).
+    _APPLIED 에 기록이 없으면(프로세스 재시작 직후 등) carried_same(요청 상태 기준
+    등가 여부)으로 폴백한다. panel_id 없는 호출(selftest·오프라인)은 항상 폴백 경로 —
+    실 클라이언트 요청만 panel_id 를 싣는다(요청 바디 실측).
+    ⚠️ 이 가드가 실효하려면 플러그인 모듈이 요청 간 생존해야 한다 —
+       FIFTYONE_PLUGINS_CACHE_ENABLED=true 필수 (기본 false 는 요청마다 재임포트라
+       모듈 전역이 증발하고, 603k 번들 _CACHE 도 매 요청 재로드돼 왕복이 20초를 넘긴다.
+       fiftyone_relaunch.py 가 세팅한다).
+    """
+    pid = (getattr(ctx, "params", None) or {}).get("panel_id")
+    if pid is None:
+        return carried_same
+    key = (pid, control)
+    prev = _APPLIED.get(key, _MISSING)
+    _APPLIED[key] = value
+    if prev is _MISSING:
+        # ⚠️ 첫 관측은 **무조건 처리** (2026-08-14 실측, image_embeddings 패널에서 재현):
+        #    클라이언트는 드롭다운 값을 낙관적으로 먼저 바꿔 그 값을 panel_state 에 담아
+        #    보내므로 carried_same 이 이미 True 다. 서버 기억이 빈 상태(프로세스 재기동 직후
+        #    첫 클릭)에서 이를 믿으면 **진짜 변경이 삼켜진다** — 드롭다운만 새 값이고 플롯·
+        #    배너는 옛 값으로 남는다. 같은 값 에코가 한 번 더 도는 비용은 결과가 같아 무해.
+        return False
+    return prev == value
 
 
 def _rows_to_markdown(rows, join_field_missing=None, total=None):
@@ -560,7 +707,7 @@ class PromptComparePanel(foo.Panel):
         })
 
     def _refresh(self, ctx, update_plot=True):
-        """update_plot=False = 성능 옵션: 플롯 상태(scatter_data/layout, 12k점)를 다시 쓰지
+        """update_plot=False = 성능 옵션: fig(_FIGDATA)·banner·layout 을 다시 쓰지
         않고 표(top_table)·컨트롤만 갱신한다. 선택 계열 훅은 뷰 변경이 어차피 재렌더를
         유발하므로 이중 재렌더를 피하려 False를 쓴다.
 
@@ -577,6 +724,9 @@ class PromptComparePanel(foo.Panel):
         # 스키마 data를 영원히 가린다(App 번들 `mt||view.data` 우선순위). set_data를 안 쓰는
         # 지금도 옛 세션의 잔재가 남아 있으므로 매 갱신마다 비워 스키마 경로만 살린다.
         ctx.panel.data.clear()
+        # 레거시 위생 (2026-08-14): 옛 배포가 state 에 실은 scatter_data(2MB)가 세션에
+        # 남아 있으면 모든 훅 왕복을 계속 부풀린다 — 항상 비운다 (_FIGDATA 주석 참고).
+        ctx.panel.state.scatter_data = None
         if ctx.panel.state.mode == "B":
             # 모드 B는 ctx.dataset(현재 세션 데이터셋)을 그린다 — sourcei(ground_truth 등)에서도
             # 열리지만 본용도는 frames_captions에서 project 간 비교.
@@ -586,13 +736,13 @@ class PromptComparePanel(foo.Panel):
                 fig = build_mode_b(ctx.dataset.name, group_field, groups)
             else:
                 fig = {"data": [],
-                       "layout": {"title": {"text": f"{BANNER_COORDS_B}<br><sup>"
-                                                     "그룹을 쉼표로 구분해 입력하세요</sup>",
-                                             "font": {"size": 12}},
-                                  "xaxis": {"visible": False}, "yaxis": {"visible": False}}}
+                       "banner": f"{BANNER_COORDS_B} · 그룹을 쉼표로 구분해 입력하세요 "
+                                 "(예: cohort-b,cohort-a)",
+                       "layout": {"xaxis": {"visible": False}, "yaxis": {"visible": False}}}
             # set_data 금지 — 아래 모드 A 쪽 주석 참고 (patch=딥머지라 줄어든 배열이 안 지워짐).
+            ctx.panel.state.banner = fig.get("banner", "")
             ctx.panel.state.layout = fig["layout"]
-            ctx.panel.state.scatter_data = fig["data"]
+            _put_fig(ctx, fig["data"])
             ctx.panel.state.top_table = []
             ctx.panel.state.sel_total = 0
             return
@@ -603,11 +753,11 @@ class PromptComparePanel(foo.Panel):
         if not fo.dataset_exists(prompts_name):
             ctx.panel.state.prompts_available = False
             ctx.panel.state.bank_versions = []
-            fig = {"data": [],
-                   "layout": {"title": {"text": NO_PROMPTS_PAIR_TEXT, "font": {"size": 12}},
-                              "xaxis": {"visible": False}, "yaxis": {"visible": False}}}
+            fig = {"data": [], "banner": NO_PROMPTS_PAIR_TEXT,
+                   "layout": {"xaxis": {"visible": False}, "yaxis": {"visible": False}}}
+            ctx.panel.state.banner = fig["banner"]
             ctx.panel.state.layout = fig["layout"]
-            ctx.panel.state.scatter_data = fig["data"]
+            _put_fig(ctx, fig["data"])
             ctx.panel.state.top_table = []
             ctx.panel.state.sel_total = 0
             return
@@ -632,13 +782,15 @@ class PromptComparePanel(foo.Panel):
         # patch_panel_data 는 클라이언트 패널 데이터 저장소에 **딥머지(patch)** 된다 —
         # 배열이 줄어드는 갱신(미채택 숨김: 12,166→0, 버전 필터: 전체→부분집합)에서 새
         # 짧은 배열이 옛 긴 배열의 꼬리를 못 지워 유령 점이 화면에 남는다(토글 후 trace0
-        # n=12,279 잔존 실측). 반면 render()가 스키마에 굽는 data(아래 scatter_data)는
+        # n=12,279 잔존 실측). 반면 render()가 스키마에 굽는 data(_FIGDATA 경유)는
         # show_panel_output 마다 통째로 교체되므로, 데이터 갱신은 이 경로 하나만 쓴다.
         # (한 번이라도 set_data 를 부르면 클라이언트가 patched data 를 스키마 data 보다
         # 우선하므로 — App 번들 `wo=mergeData(mt||Lt?.view?.data,…)` — 부분 도입도 불가.)
+        # trace 리스트 자체는 state 에 싣지 않는다 — _FIGDATA 주석(요청 2.5s/MB) 참고.
         if update_plot:
+            ctx.panel.state.banner = fig.get("banner", "")
             ctx.panel.state.layout = fig["layout"]
-            ctx.panel.state.scatter_data = fig["data"]
+            _put_fig(ctx, fig["data"])
         rows = []
         if sel:
             import numpy as np
@@ -662,6 +814,14 @@ class PromptComparePanel(foo.Panel):
     #    시그니처와 같으면 무시해야 다른 훅(on_plot_click 등)이 막 세팅한 상태를 덮어쓰지 않는다.
     #    가드 상태는 `_dedup_guard`로 위임 (밑줄 없는 상태 키 필수 — 헬퍼 docstring 참고).
     def on_change_selected(self, ctx):
+        if ctx.panel.state.mode is None:
+            # 자가 복구 (2026-08-14 실측): 서버 재시작 뒤 옛 탭이 재접속하면 빈 panel_state
+            # 에코가 공유 세션에 퍼져 컨트롤/배너가 통째로 사라진다. 초기화 안 된 상태
+            # (mode=None)로 도착한 에코는 on_load 로 되살린다 — 지울 사용자 선택이 없는
+            # 상태에서만 발동하므로 안전. 수동 에코 훅 2개에만 필요 (on_*_change 는
+            # _refresh 경유로 자연 복구).
+            self.on_load(ctx)
+            return
         if ctx.panel.state.rule != "argmax_k1":
             return   # dist_iou: 프레임 귀속 없음 — 배너가 없다고 선언한 조인을 그리지 않는다 (opus F7)
         ids = ctx.selected or []
@@ -680,6 +840,9 @@ class PromptComparePanel(foo.Panel):
     #    lasso에 반응하지 않는다, 0 ids 유지. lasso는 이 훅으로만 온다.
     #    payload = {"selection": [sample_id, ...], "scope": "global"|None, ...}) ──
     def on_change_extended_selection(self, ctx):
+        if ctx.panel.state.mode is None:
+            self.on_load(ctx)   # 빈 상태 에코 자가 복구 — on_change_selected 주석 참고
+            return
         if ctx.panel.state.rule != "argmax_k1":
             return   # dist_iou: 프레임 귀속 없음 (opus F7 — on_change_selected 와 동일 게이트)
         ext = ctx.extended_selection or {}
@@ -894,34 +1057,50 @@ class PromptComparePanel(foo.Panel):
 
     # ── 컨트롤 드롭다운 핸들러 (2026-08-10 피드백: 토글 버튼 → 드롭다운 통일).
     #    값은 ctx.params["value"] (아래 on_group_field_change 주석의 실측 계약과 동일).
+    # ⚠️ 모든 on_*_change 공통 (2026-08-14 실측 — fetch 인터셉트 타임라인으로 확정):
+    #   App 은 어떤 패널 오퍼레이터든 실행되면 등록된 on_change 훅을 재발화하고(Task 8),
+    #   서버가 밀어넣은 값 변경(예: on_rule_change 의 color_by 리셋)도 "변경"으로 보고
+    #   그 컨트롤의 on_change 를 쏜다 — 가드 없으면 변경 1회당 _refresh 가 3~4회 돌고,
+    #   왕복이 느릴 때 응답이 역순 도착하면 stale 렌더가 새 렌더를 덮는다(드롭다운은
+    #   topk 인데 화면은 dist_iou 로 굳는 실사용 버그의 직접 원인). 판정 기준은
+    #   _change_guard docstring 참고 — 요청이 실어 온 state 가 아니라 서버가 마지막으로
+    #   반영한 값 기준이어야 이중 발화와 '왕복 중 재클릭'을 모두 옳게 처리한다.
     def on_mode_change(self, ctx):
         v = ctx.params.get("value")
-        if v in ("A", "B"):
-            ctx.panel.state.mode = v
-            self._refresh(ctx)
+        if v not in ("A", "B") \
+                or _change_guard(ctx, "mode", v, v == ctx.panel.state.mode):
+            return
+        ctx.panel.state.mode = v
+        self._refresh(ctx)
 
     def on_rule_change(self, ctx):
         v = ctx.params.get("value")
-        if v in ("argmax_k1", "dist_iou"):
-            ctx.panel.state.rule = v
-            # 규칙을 바꾸면 색칠도 그 규칙의 기본값으로 되돌린다 — 그래야 "topk 인데 wave 범례"
-            # 같은 어긋남이 상태에 남지 않는다. 바꾸고 싶으면 색칠 드롭다운으로 다시 고르면 된다.
-            ctx.panel.state.color_by = (COLOR_BY_CATEGORY if v == "argmax_k1"
-                                        else COLOR_BY_WAVE_ROLE)
-            self._refresh(ctx)
+        if v not in ("argmax_k1", "dist_iou") \
+                or _change_guard(ctx, "rule", v, v == ctx.panel.state.rule):
+            return
+        ctx.panel.state.rule = v
+        # 규칙을 바꾸면 색칠도 그 규칙의 기본값으로 되돌린다 — 그래야 "topk 인데 wave 범례"
+        # 같은 어긋남이 상태에 남지 않는다. 바꾸고 싶으면 색칠 드롭다운으로 다시 고르면 된다.
+        ctx.panel.state.color_by = (COLOR_BY_CATEGORY if v == "argmax_k1"
+                                    else COLOR_BY_WAVE_ROLE)
+        self._refresh(ctx)
 
     def on_color_change(self, ctx):
         # 화이트리스트 — 밖의 값이 조용히 폴백되면 범례가 규칙과 어긋난 채로 굳는다
         v = (ctx.params or {}).get("value")
-        if v in COLOR_BY_LABELS:
-            ctx.panel.state.color_by = v
-            self._refresh(ctx)
+        if v not in COLOR_BY_LABELS \
+                or _change_guard(ctx, "color_by", v, v == ctx.panel.state.color_by):
+            return
+        ctx.panel.state.color_by = v
+        self._refresh(ctx)
 
     def on_show_change(self, ctx):
         # 화이트리스트 (codex 3차 리뷰): 두 라벨 밖의 값이 조용히 "채택만"으로 폴백되면 안 된다
         values = {SHOW_ALL_LABEL: True, SHOW_ADOPTED_LABEL: False}
         v = (ctx.params or {}).get("value")
-        if v not in values:
+        if v not in values \
+                or _change_guard(ctx, "show_mode", v,
+                                 values[v] == ctx.panel.state.show_unadopted):
             return
         ctx.panel.state.show_unadopted = values[v]
         self._refresh(ctx)
@@ -933,14 +1112,17 @@ class PromptComparePanel(foo.Panel):
     # 필드별로 전용 핸들러를 둔다.
     def on_group_field_change(self, ctx):
         v = ctx.params.get("value")
-        if v is not None:
-            ctx.panel.state.group_field = v
+        if v is None or _change_guard(ctx, "group_field", v,
+                                      v == ctx.panel.state.group_field):
+            return   # 같은 값 에코/이중 발화 — 위 공통 주석 참고
+        ctx.panel.state.group_field = v
         self._refresh(ctx)
 
     def on_groups_change(self, ctx):
         v = ctx.params.get("value")
-        if v is not None:
-            ctx.panel.state.groups = v
+        if v is None or _change_guard(ctx, "groups", v, v == ctx.panel.state.groups):
+            return
+        ctx.panel.state.groups = v
         self._refresh(ctx)
 
     # Task 12 — 뱅크 버전 드롭다운. Task 9 조사로 확정된 계약과 동일하게 값은
@@ -948,20 +1130,22 @@ class PromptComparePanel(foo.Panel):
     # 필드명 키 가정 아님).
     def on_bank_version_change(self, ctx):
         v = ctx.params.get("value")
-        if v is not None:
-            ctx.panel.state.bank_version_filter = v
-            ctx.panel.state.join_field_missing = None
-            # 버전 전환 시 stale 선택 정리 (opus F2): 이전 버전 필드 기준 selected_gidx 를
-            # 남기면 표·하이라이트가 화면과 다른 버전을 가리키고, dedup 시그니처 탓에 같은
-            # 프레임의 새 버전 재조인은 영구히 안 일어난다. 그리드 선택이 살아 있으면 새
-            # 버전 기준으로 **즉시 재조인**하고, 없으면 문장 선택을 비운다.
-            ids = ctx.selected or []
-            if ids and ctx.panel.state.rule == "argmax_k1":
-                frames_name = ctx.dataset.name if ctx.dataset is not None else FRAMES_DATASET
-                ctx.panel.state.selected_gidx = frame_ids_to_gidx(
-                    ids, dataset_name=frames_name, winner_field=_current_winner_field(ctx))
-            else:
-                ctx.panel.state.selected_gidx = []
+        if v is None or _change_guard(ctx, "bank_version_filter", v,
+                                      v == ctx.panel.state.bank_version_filter):
+            return   # 같은 값 에코/이중 발화 — on_mode_change 위 공통 주석 참고
+        ctx.panel.state.bank_version_filter = v
+        ctx.panel.state.join_field_missing = None
+        # 버전 전환 시 stale 선택 정리 (opus F2): 이전 버전 필드 기준 selected_gidx 를
+        # 남기면 표·하이라이트가 화면과 다른 버전을 가리키고, dedup 시그니처 탓에 같은
+        # 프레임의 새 버전 재조인은 영구히 안 일어난다. 그리드 선택이 살아 있으면 새
+        # 버전 기준으로 **즉시 재조인**하고, 없으면 문장 선택을 비운다.
+        ids = ctx.selected or []
+        if ids and ctx.panel.state.rule == "argmax_k1":
+            frames_name = ctx.dataset.name if ctx.dataset is not None else FRAMES_DATASET
+            ctx.panel.state.selected_gidx = frame_ids_to_gidx(
+                ids, dataset_name=frames_name, winner_field=_current_winner_field(ctx))
+        else:
+            ctx.panel.state.selected_gidx = []
         self._refresh(ctx)
 
     def render(self, ctx):
@@ -971,18 +1155,17 @@ class PromptComparePanel(foo.Panel):
         # 어색한 위치 → 라벨 있는 드롭다운으로 통일, ③ 폭은 글 크기에 맞게 — h_stack이 내용
         # 폭으로 잡아준다). flat + view.space 는 패널 렌더러가 무시(실측), h_stack 중첩의
         # state 바인딩 단절은 _sync_controls 의 중첩 경로 미러링으로 해결 — 그쪽 주석 참고.
-        row = panel.h_stack("controls", gap=2, align_y="center")
+        row = panel.h_stack("controls", gap=2, align_y="center",
+                            columns=CONTROLS_COLUMNS)
         mode_choices = types.Choices()
         mode_choices.add_choice("A", label="A — 문장↔프레임")
         mode_choices.add_choice("B", label="B — 그룹 overlay")
         row.enum("mode", mode_choices.values(), label="모드", view=mode_choices,
                  on_change=self.on_mode_change)
         if ctx.panel.state.mode == "B":
-            row.str("group_field", allow_empty=True,
-                    label="그룹 필드 (기본 project)",
+            row.str("group_field", allow_empty=True, label="그룹 필드",
                     on_change=self.on_group_field_change)
-            row.str("groups", allow_empty=True,
-                    label="그룹들 (쉼표구분, 예: cohort-b,cohort-a)",
+            row.str("groups", allow_empty=True, label="그룹들 (쉼표구분)",
                     on_change=self.on_groups_change)
         elif ctx.panel.state.prompts_available:
             rule_choices = types.Choices()
@@ -1022,8 +1205,8 @@ class PromptComparePanel(foo.Panel):
                 row.btn("clear_selection",
                         label=("✕ 선택 해제" + (f" ({n_sel})" if n_sel else " (뷰만)")),
                         on_click=self.on_clear_selection)
-        else:
-            row.md(NO_PROMPTS_PAIR_TEXT, name="no_prompts_notice")
+        # 프롬프트 짝이 없을 땐 모드 드롭다운만 남긴다 — 안내는 아래 배너가 싣는다
+        # (구: 컨트롤 행 안의 md. 그리드 셀 하나를 차지해 드롭다운과 높이가 어긋났다).
         # data=... (Task 11 "클릭해야 나온다" 방어선 — 2차 안전망):
         # 실사용 버그의 **1차·확정 원인은 이 파일이 아니라 fiftyone_app_setup.py 쪽**이었다 —
         # cmd_workspace_compare()가 만드는 Space에 active_child를 안 채워서, 워크스페이스
@@ -1053,9 +1236,33 @@ class PromptComparePanel(foo.Panel):
         # 클라이언트 즉시(서버 왕복 없음), 선택하면 on_selected로 문장→프레임 조인.
         # 높이 예산(사용자 피드백 2026-08-10): 구 360px 예산은 표를 뷰포트 밖으로 밀었다 —
         # 500px = 탭바+컨트롤 한 줄+하단 표(maxHeight 240px, 아래) 몫. 표가 항상 같이 보인다.
-        panel.plot("scatter_v2", data=ctx.panel.state.scatter_data or [],
+        # 배너: plotly title 에서 빼내 여기에 (build_mode_a 주석 참고). 마크다운이라
+        # 폭에 맞춰 접히고 modebar 와 겹치지 않는다. 빈 문자열이면 아예 만들지 않는다.
+        if ctx.panel.state.banner:
+            panel.md(ctx.panel.state.banner, name="banner_md")
+        fig_data = _get_fig(ctx)
+        if fig_data is None and ctx.panel.state.mode != "B" \
+                and ctx.panel.state.prompts_available is not False:
+            # 프로세스 재시작/캐시 축출로 서버측 fig 가 없는 경우 — 컨트롤 상태에서 결정론
+            # 재구성 (~0.1s, 번들 캐시 warm 기준). 모드 B 는 이 폴백 없이 다음 상호작용에
+            # 맡긴다 (그룹 재입력이 자연 경로). 실패하면 빈 산점도 — on_load 가 곧 채운다.
+            try:
+                b = load_prompt_bundle(_prompts_dataset_name(ctx))
+                fig = build_mode_a(
+                    b, rule=ctx.panel.state.rule or "argmax_k1",
+                    show_unadopted=ctx.panel.state.show_unadopted,
+                    selected_gidx=set(ctx.panel.state.selected_gidx or []),
+                    bank_version_filter=(ctx.panel.state.bank_version_filter
+                                         or ALL_VERSIONS_LABEL),
+                    color_by=ctx.panel.state.color_by)
+                fig_data = fig["data"]
+                _put_fig(ctx, fig_data)
+            except Exception:
+                fig_data = None
+        panel.plot("scatter_v2", data=fig_data or [],
                    layout=ctx.panel.state.layout or {},
-                   height="max(420px, calc(100vh - 500px))",
+                   # 500 → 560: 컨트롤이 2행(columns=3)까지 접히고 배너 줄이 추가된 몫.
+                   height="max(400px, calc(100vh - 560px))",
                    config={"responsive": True, "displayModeBar": True},
                    on_click=self.on_plot_click,
                    on_selected=self.on_plot_selected,
@@ -1072,8 +1279,40 @@ class PromptComparePanel(foo.Panel):
         return types.Property(panel, view=types.GridView())
 
 
+class PiaDefaultWorkspace(foo.Operator):
+    """데이터셋 열릴 때 'compare' 워크스페이스를 기본으로 로드 (2026-08-14 요청).
+
+    App 은 데이터셋 전환 시 spaces 를 항상 default_workspace_factory()(Samples 단독)로
+    리셋한다 (fiftyone/server/mutation.py set_dataset 실측) — 서버 코드 패치 대신
+    on_dataset_open 오퍼레이터로 뒤집는다. 워크스페이스 구성 자체는
+    fiftyone_app_setup.py workspace-compare 가 데이터셋별로 저장한다:
+    프롬프트 짝 있으면 반반 스택(Samples/Embeddings | Prompt Compare),
+    "-prompts"/짝 없음이면 Samples | Embeddings(emb_viz) — 그런 데이터셋에서
+    Prompt Compare 는 "짝 없음" 배너만 그리므로 임베딩 패널이 기본이어야 한다.
+    """
+
+    @property
+    def config(self):
+        return foo.OperatorConfig(
+            name="user_default_workspace",
+            label="Open 'compare' workspace on dataset open",
+            unlisted=True,
+            on_dataset_open=True,
+        )
+
+    def execute(self, ctx):
+        ds = getattr(ctx, "dataset", None)
+        try:
+            if ds is not None and "compare" in ds.list_workspaces():
+                ctx.ops.set_spaces(name="compare")
+        except Exception:
+            pass   # best-effort UX — 실패 시 App 기본 화면(Samples)이면 충분
+        return {}
+
+
 def register(p):
     p.register(PromptComparePanel)
+    p.register(PiaDefaultWorkspace)
 
 
 def selftest():
@@ -1179,7 +1418,7 @@ def selftest():
         fig_sub = build_mode_a(b, rule="argmax_k1", show_unadopted=True, selected_gidx=set())
         assert sum(len(t["x"]) for t in fig_sub["data"][1:-1]) == \
             int(b["adopted"].astype(bool).sum()), "회귀: 서브샘플이 채택 점을 떨어뜨림"
-    assert BANNER_RULE in fig["layout"]["title"]["text"]                 # 규칙 배너
+    assert BANNER_RULE in fig["banner"]                 # 규칙 배너
     # 반응형 height 계약: layout에 height 고정 금지 — 실높이는 render()의 view height
     # (vh 기반 style)가 정한다. 고정값이 부활하면 큰 화면에서 아래 공간이 다시 논다.
     assert "height" not in fig["layout"] and fig["layout"]["autosize"] is True
@@ -1202,7 +1441,7 @@ def selftest():
     # dist_iou (2026-08-10 정정): 전 문장이 wave 분포에 참여 — 미채택 회색 trace 금지,
     # 전 12,480점이 wave_role 그룹 trace로 나뉜다 (adopted 마스크 사용 = 회귀).
     fig_w = build_mode_a(b, rule="dist_iou", show_unadopted=True, selected_gidx=set())
-    assert BANNER_WAVE_NOCLICK in fig_w["layout"]["title"]["text"]       # 귀속 없음 안내
+    assert BANNER_WAVE_NOCLICK in fig_w["banner"]       # 귀속 없음 안내
     w_traces = fig_w["data"][:-1]
     n_w = sum(len(t["x"]) for t in w_traces)
     if len(b["gidx"]) <= MAX_POINTS:
@@ -1225,7 +1464,7 @@ def selftest():
     assert fig_h["data"][0]["visible"] is False
     assert len(fig_h["data"][0]["x"]) == int((~b["adopted"].astype(bool) & vmasks[g_ver]).sum())
     assert sum(len(t["x"]) for t in fig_h["data"][1:-1]) == int(adopted_ver.sum())
-    assert "표시: 채택만" in fig_h["layout"]["title"]["text"]            # 숨김 상태 배너 명시
+    assert "표시: 채택만" in fig_h["banner"]            # 숨김 상태 배너 명시
     assert "(숨김)" in fig_h["data"][0]["name"]                          # 범례에도 상태 표기
 
     # ── Task 12: 버전 → 조인 필드 매핑 함수 단위 검증 (지시된 예시 그대로) ──
@@ -1308,8 +1547,8 @@ def selftest():
     assert n_v0 <= n_all                       # 특정 버전은 부분집합
     # 버전 필터는 그 버전 문장만 남긴다 (2026-08-11 다중 버전 리빌드 후 실효 검증)
     assert n_v0 == min(int(vmasks[v0].sum()), MAX_POINTS)
-    assert f"버전: {v0}" in fig_v0["layout"]["title"]["text"]
-    assert f"버전: {ALL_VERSIONS_LABEL}" in fig_all["layout"]["title"]["text"]
+    assert f"버전: {v0}" in fig_v0["banner"]
+    assert f"버전: {ALL_VERSIONS_LABEL}" in fig_all["banner"]
     # bank_version_filter 기본값(None)은 필터 없음과 동일해야 한다(하위호환 — 기존 호출부).
     fig_default = build_mode_a(b, rule="argmax_k1", show_unadopted=True, selected_gidx=set())
     assert sum(len(t["x"]) for t in fig_default["data"][:-1]) == n_all
@@ -1400,13 +1639,13 @@ def selftest():
     # frames_captions(project 22개)이 본용도지만 selftest는 App 없이 도는 sourcei로 검증한다.
     figb = build_mode_b(FRAMES_DATASET, "ground_truth", ["normal", "falldown"], BRAIN_KEY)
     assert len(figb["data"]) == 2 and all(t["type"] == "scattergl" for t in figb["data"])
-    assert "같은 좌표계" in figb["layout"]["title"]["text"]
+    assert "같은 좌표계" in figb["banner"]
     # 크래시 가드 (2026-08-10 실사용 오류): 없는 그룹 필드는 ValueError 대신 안내 배너.
     # 기본값 "project"가 sourcei에 없어 on_groups_change가 패널을 죽였던 케이스 그대로.
     figb_nf = build_mode_b(FRAMES_DATASET, "project", ["cohort-b"], BRAIN_KEY)
-    assert figb_nf["data"] == [] and "그룹 필드 'project'가 없습니다" in figb_nf["layout"]["title"]["text"]
+    assert figb_nf["data"] == [] and "그룹 필드 'project'가 없습니다" in figb_nf["banner"]
     figb_nb = build_mode_b(FRAMES_DATASET, "ground_truth", ["normal"], "no_such_brain_key")
-    assert figb_nb["data"] == [] and "brain run" in figb_nb["layout"]["title"]["text"]
+    assert figb_nb["data"] == [] and "brain run" in figb_nb["banner"]
     n_normal = int(np.sum(np.asarray(frames.values("ground_truth.label"), dtype=object) == "normal"))
     assert figb["data"][0]["name"] == f"normal ({min(n_normal, MAX_POINTS // 2)})"
     # 데이터 계약(모드 A와 동일): 스키마 PlotlyView.data에는 trace 리스트만 굽는다 —
@@ -1497,11 +1736,11 @@ def selftest():
 
     # update_plot=False 계약 (성능): 플롯 상태를 다시 쓰지 않고 표만 갱신한다
     # (파괴 방지 수단 아님 — _refresh docstring의 최종 진단 참고).
-    prev_scatter = render_ctx.panel.state.scatter_data
+    prev_scatter = _get_fig(render_ctx)
     render_ctx.panel.state.selected_gidx = [g]
     panel_instance._refresh(render_ctx, update_plot=False)
-    assert render_ctx.panel.state.scatter_data is prev_scatter, \
-        "회귀: update_plot=False인데 scatter_data가 교체됨 — emb_viz 선택 파괴 재발"
+    assert _get_fig(render_ctx) is prev_scatter, \
+        "회귀: update_plot=False인데 fig 가 교체됨 — emb_viz 선택 파괴 재발"
     assert render_ctx.panel.state.top_table and render_ctx.panel.state.top_table[0]["gidx"] == g, \
         "update_plot=False에서도 승자 문장 표는 갱신돼야 한다"
     render_ctx.panel.state.selected_gidx = []
@@ -1527,6 +1766,8 @@ def selftest():
             self.calls.append(("set_view", view))
         def set_extended_selection(self, *a, **k):
             self.calls.append("set_extended_selection")
+        def set_spaces(self, spaces=None, name=None):
+            self.calls.append(("set_spaces", name))
 
     OUR = {"_cls": "fiftyone.core.stages.Select", "kwargs": [],
            "_uuid": SHOW_SAMPLES_STAGE_ID}
@@ -1629,15 +1870,97 @@ def selftest():
             "회귀: set_data 호출됨 — patch 딥머지가 줄어든 배열을 못 지우므로 스키마 경로만 써야 한다"
         assert "clear" in nopair_ctx.panel.data_calls, \
             "회귀: data.clear() 미호출 — 옛 세션의 patched data가 스키마 data를 가린다"
-        assert nopair_ctx.panel.state.scatter_data == [], \
+        assert _get_fig(nopair_ctx) == [], \
             "회귀: 프롬프트 짝 없음인데 산점도에 데이터가 실림"
-        assert NO_PROMPTS_PAIR_TEXT in nopair_ctx.panel.state.layout["title"]["text"]
+        assert nopair_ctx.panel.state.scatter_data is None, \
+            "회귀: scatter_data 가 state 에 실림 — 훅 왕복 페이로드 2.5s/MB 재발"
+        assert NO_PROMPTS_PAIR_TEXT in nopair_ctx.panel.state.banner
         nopair_schema = panel_instance.render(nopair_ctx)
         # 모드 A 전용 컨트롤(규칙/표시/버전)이 비활성 — 안내 텍스트만 렌더.
         nopair_ctrls = nopair_schema.type.properties["controls"].type.properties
-        assert "no_prompts_notice" in nopair_ctrls
+        # 안내는 컨트롤 셀이 아니라 배너로 나간다 (2026-08-12 UI 정리)
+        assert "no_prompts_notice" not in nopair_ctrls
+        assert "banner_md" in nopair_schema.type.properties
         assert "bank_version_filter" not in nopair_ctrls
         assert "rule" not in nopair_ctrls and "show_mode" not in nopair_ctrls
+
+    # ── 2026-08-14: 드롭다운 desync 버그 수정 검증 (재발화 에코·이중 발화·벡터화) ──
+    # ① 같은 값 에코는 _refresh 자체를 건너뛴다 — App 훅 재발화 캐스케이드 차단.
+    refresh_calls = []
+    orig_refresh = panel_instance._refresh
+    panel_instance._refresh = lambda c, update_plot=True: refresh_calls.append(1)
+    try:
+        hctx.params = {"value": hctx.panel.state.rule}
+        panel_instance.on_rule_change(hctx)
+        hctx.params = {"value": hctx.panel.state.color_by}
+        panel_instance.on_color_change(hctx)
+        hctx.params = {"value": SHOW_ALL_LABEL if hctx.panel.state.show_unadopted
+                       else SHOW_ADOPTED_LABEL}
+        panel_instance.on_show_change(hctx)
+        hctx.params = {"value": hctx.panel.state.bank_version_filter}
+        panel_instance.on_bank_version_change(hctx)
+        hctx.params = {"value": hctx.panel.state.mode}
+        panel_instance.on_mode_change(hctx)
+        hctx.params = {"value": hctx.panel.state.group_field}
+        panel_instance.on_group_field_change(hctx)
+    finally:
+        panel_instance._refresh = orig_refresh
+    assert refresh_calls == [], \
+        "회귀: 같은 값 재발화(App 훅 에코)가 _refresh 를 유발 — 렌더 폭풍/역순 덮어쓰기 재발"
+
+    # ② 변경 dedup 가드: 실 요청(panel_id 있음)은 서버 기억(_APPLIED) 기준.
+    class _PidCtx:
+        params = {"panel_id": "selftest-pid-1"}
+    # 최초 관측은 carried_same 이 True 여도 처리 (클라이언트 낙관적 업데이트 — 위 주석 참고)
+    assert _change_guard(_PidCtx(), "rule", "dist_iou", True) is False
+    assert _change_guard(_PidCtx(), "rule", "dist_iou", False) is True   # 이중 발화 → 흡수
+    # 왕복 지연 중 재클릭: 요청이 실어 온 낡은 state 기준으론 '같은 값'(carried_same=True)
+    # 이지만 서버가 마지막으로 반영한 값(dist_iou)과 다르므로 반드시 통과해야 한다 —
+    # carried state 로 판정하면 진짜 변경이 삼켜져 UI 가 stale 로 굳는다 (2026-08-14 실측).
+    assert _change_guard(_PidCtx(), "rule", "argmax_k1", True) is False
+    class _NoPidCtx:
+        params = {}
+    assert _change_guard(_NoPidCtx(), "rule", "x", False) is False
+    assert _change_guard(_NoPidCtx(), "rule", "x", True) is True, \
+        "panel_id 없는 경로는 carried_same 폴백이어야 한다 (selftest/오프라인 호환)"
+
+    # ③ 코드 배열 프리컴퓨트 정합: uniq[codes[k]] == str(원본[k]) (None → "").
+    if b.get("bank_version") is not None:
+        assert b.get("bank_version_codes") is not None
+        for k in (0, len(b["gidx"]) // 2, len(b["gidx"]) - 1):
+            want = "" if b["bank_version"][k] is None else str(b["bank_version"][k])
+            assert b["bank_version_uniq"][b["bank_version_codes"][k]] == want
+    # 서브샘플 캐시: MAX_POINTS 초과 번들이면 첫 build 가 캐시를 남기고 재호출과 동일 결과.
+    if len(b["gidx"]) > MAX_POINTS:
+        fig_c1 = build_mode_a(b, rule="argmax_k1", show_unadopted=True, selected_gidx=set())
+        assert ALL_VERSIONS_LABEL in b.get("_subsample_cache", {}), \
+            "회귀: 서브샘플 캐시 미적재 — 드롭다운 왕복마다 603k행 층화 재계산"
+        fig_c2 = build_mode_a(b, rule="argmax_k1", show_unadopted=True, selected_gidx=set())
+        assert [len(t["x"]) for t in fig_c1["data"]] == [len(t["x"]) for t in fig_c2["data"]]
+    # 정수 코드 경로의 층화 계약: 클래스당 최소 1점 + 예산 준수 + 중복 없음.
+    codes_fixture = np.asarray([0] * 100 + [1] * 10 + [2], dtype=np.int32)
+    picked = stratified_subsample(codes_fixture, 20)
+    assert len(picked) == len(set(picked)) == 20
+    assert {int(codes_fixture[i]) for i in picked} == {0, 1, 2}
+
+    # ④ on_dataset_open 기본 워크스페이스 오퍼레이터 (요청 2/4).
+    dws = PiaDefaultWorkspace()
+    assert dws.config.on_dataset_open is True and dws.config.unlisted is True
+    class _FakeDsW:
+        def __init__(self, ws):
+            self._ws = ws
+        def list_workspaces(self):
+            return self._ws
+    wctx = _FakeCtxHandler()
+    wctx.ops = _FakeOps()
+    wctx.dataset = _FakeDsW(["compare", "rules"])
+    dws.execute(wctx)
+    assert ("set_spaces", "compare") in wctx.ops.calls
+    wctx2 = _FakeCtxHandler()
+    wctx2.ops = _FakeOps()
+    wctx2.dataset = _FakeDsW([])
+    dws.execute(wctx2)
+    assert wctx2.ops.calls == [], "compare 없는 데이터셋은 spaces 를 건드리지 않는다"
 
     print("selftest OK")
 

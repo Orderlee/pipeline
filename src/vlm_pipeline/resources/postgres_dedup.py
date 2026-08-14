@@ -28,25 +28,6 @@ class PostgresDedupMixin(PostgresProcessMixin, PostgresBuildMixin):
     (기존 callers / conftest.py 가 PostgresDedupMixin 만 import 해도 동작하도록).
     """
 
-    def find_phash_null(self, limit: int = 100) -> list[dict]:
-        with self.connect() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    SELECT asset_id, raw_bucket, raw_key, archive_path, source_path
-                    FROM raw_files
-                    WHERE phash IS NULL
-                      AND media_type = 'image'
-                      AND ingest_status = 'completed'
-                    ORDER BY created_at
-                    LIMIT %s
-                    """,
-                    (limit,),
-                )
-                rows = cur.fetchall()
-            columns = ["asset_id", "raw_bucket", "raw_key", "archive_path", "source_path"]
-            return self._rows_to_dicts(rows, columns)
-
     def find_inline_dedup_targets(
         self,
         *,

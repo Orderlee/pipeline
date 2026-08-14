@@ -201,6 +201,10 @@ class PostgresIngestDispatchMixin:
                         status = 'failed',
                         error_message = EXCLUDED.error_message,
                         processed_at = EXCLUDED.processed_at
+                    -- duplicate-reject 가 라이브(running/archive_moved) run 행이나 터미널
+                    -- 이력을 'failed' 로 클로버하지 않게 가드 (감사 DISPATCH-5 Case A)
+                    WHERE dispatch_requests.status NOT IN
+                          ('completed', 'failed', 'canceled', 'running', 'archive_moved')
                     """,
                     (
                         record.get("request_id"),

@@ -6,6 +6,7 @@ Dagster/PipelineConfig 의존 없이 stale manifest 재수화만 담당한다.
 from __future__ import annotations
 
 import os
+import stat as stat_module
 from datetime import datetime
 from pathlib import Path
 
@@ -111,8 +112,15 @@ def reconcile_manifest_files_against_disk(
     for entry in original_entries:
         rel_path = _normalize_manifest_rel_path(entry, source_unit_path=source_unit_path)
         source_path = str(entry.get("path", "")).strip()
+        # CIFS 왕복 절감: is_file()+stat() 이중 stat 을 단일 stat 으로 (S_ISREG 로 파일 판정)
+        candidate_stat = None
         candidate_path = Path(source_path) if source_path else None
-        if candidate_path is None or not candidate_path.is_file():
+        if candidate_path is not None:
+            try:
+                candidate_stat = candidate_path.stat()
+            except OSError:
+                candidate_stat = None
+        if candidate_stat is None or not stat_module.S_ISREG(candidate_stat.st_mode):
             missing_rel_paths.append(rel_path or source_path or "<unknown>")
             continue
 
@@ -123,10 +131,7 @@ def reconcile_manifest_files_against_disk(
         updated_entry = dict(entry)
         updated_entry["path"] = str(candidate_path)
         updated_entry["rel_path"] = rel_path
-        try:
-            updated_entry["size"] = int(candidate_path.stat().st_size)
-        except OSError:
-            updated_entry["size"] = int(entry.get("size") or 0)
+        updated_entry["size"] = int(candidate_stat.st_size)
         surviving_entries.append(updated_entry)
 
     missing_count = len(missing_rel_paths)

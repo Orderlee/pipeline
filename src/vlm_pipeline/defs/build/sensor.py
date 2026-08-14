@@ -64,7 +64,6 @@ def _fetch_projects_ready_to_build(db_path: str | None = None) -> list[str]:  # 
       - classification-only 케이스(outputs 에 timestamp_video/bbox 없음)는
         본 sensor 처리 대상 아님 (build_classification 이 별도 처리하고 종료)
 
-    `PostgresResource.find_projects_ready_to_build()` 와 동일 SQL 이지만,
     sensor에서는 resource 주입 없이 read-only 연결을 직접 열어 수행.
     """
     with open_sensor_read_connection() as conn:

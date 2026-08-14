@@ -1,0 +1,7 @@
+name: "@user/bank-slots"
+description: 프레임 사이드바의 뱅크 A/B 슬롯을 App 안에서 교체 — 버전 드롭다운
+version: 1.0.0
+fiftyone:
+  version: ">=1.4"
+operators:
+  - set_bank_slots

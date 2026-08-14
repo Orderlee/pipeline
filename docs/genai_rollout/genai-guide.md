@@ -50,7 +50,7 @@
 ## 2. 빠른 시작
 
 ```
-URL : http://10.0.0.10:8088/   (staging)
+URL : http://10.0.0.10:8089/   (prod — 기본값이 프로덕션이므로 submit 은 실과금)
 인증: Basic Auth — GENAI_BASIC_AUTH_USER / GENAI_BASIC_AUTH_PASS
 ```
 
@@ -90,7 +90,7 @@ CLI 진입점은 `scripts/genai-cli.sh` (thin HTTP 클라이언트).
 
 ```bash
 # 자격증명: env 또는 config
-export GENAI_CLI_USER=user GENAI_CLI_PASS='...' GENAI_CLI_BASE=http://10.0.0.10:8088
+export GENAI_CLI_USER=user GENAI_CLI_PASS='...' GENAI_CLI_BASE=http://10.0.0.10:8089
 # 또는: ./scripts/genai-cli.sh config init
 
 ./scripts/genai-cli.sh engines                 # 활성 엔진 / health

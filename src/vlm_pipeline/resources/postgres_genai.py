@@ -1,7 +1,8 @@
 """PG GENAI 도메인 — genai_batches / genai_jobs CRUD + status rollup.
 
-GenAI Studio (FastAPI 컨테이너 + Dagster polling sensor) 가 호출.
-Phase 1 에서 schema/메서드 정의, Phase 3+ 에서 실제 호출자가 추가됨.
+읽기(pending/batch 조회)는 GenAI Studio 컨테이너가 자체 DB 계층(docker/genai/db/pg.py)
++ HTTP 폴링으로 대체해 이 mixin 에서 제거됨 — 남은 것은 인제스트 경로가 쓰는
+쓰기/코스트 메서드(update_genai_job_assets 등)뿐.
 
 DuckDB backend 에서는 이 mixin 의 메서드가 호출되지 않는다 (GenAI 데이터는
 PG 전용으로 저장). DuckDB 는 postgres_scanner 로 read-only 조회만 한다.
@@ -10,7 +11,6 @@ PG 전용으로 저장). DuckDB 는 postgres_scanner 로 read-only 조회만 한
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any
 
 
 _BATCH_INSERT_SQL = """
@@ -194,139 +194,3 @@ class PostgresGenAIMixin:
                     (new_status, int(n_done), int(n_failed), completed_at, batch_id),
                 )
                 return new_status
-
-    # ------------------------------------------------------------------
-    # Read — UI / sensor 가 호출
-    # ------------------------------------------------------------------
-    def get_genai_batch(self, batch_id: str) -> dict | None:
-        with self.connect() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    SELECT batch_id, engine, output_media, prompt, options_json,
-                           requested_by, status, n_total, n_succeeded, n_failed,
-                           submitted_at, completed_at
-                      FROM genai_batches
-                     WHERE batch_id = %s
-                    """,
-                    (batch_id,),
-                )
-                row = cur.fetchone()
-                if not row:
-                    return None
-                cols = [
-                    "batch_id",
-                    "engine",
-                    "output_media",
-                    "prompt",
-                    "options_json",
-                    "requested_by",
-                    "status",
-                    "n_total",
-                    "n_succeeded",
-                    "n_failed",
-                    "submitted_at",
-                    "completed_at",
-                ]
-                return self._row_to_dict(row, cols)
-
-    def list_genai_batches(
-        self,
-        status: str | None = None,
-        limit: int = 50,
-    ) -> list[dict]:
-        sql = """
-            SELECT batch_id, engine, output_media, status,
-                   n_total, n_succeeded, n_failed,
-                   submitted_at, completed_at
-              FROM genai_batches
-        """
-        params: list[Any] = []
-        if status:
-            sql += " WHERE status = %s"
-            params.append(status)
-        sql += " ORDER BY submitted_at DESC LIMIT %s"
-        params.append(int(limit))
-        with self.connect() as conn:
-            with conn.cursor() as cur:
-                cur.execute(sql, tuple(params))
-                rows = cur.fetchall()
-            cols = [
-                "batch_id",
-                "engine",
-                "output_media",
-                "status",
-                "n_total",
-                "n_succeeded",
-                "n_failed",
-                "submitted_at",
-                "completed_at",
-            ]
-            return self._rows_to_dicts(rows, cols)
-
-    def list_genai_jobs(self, batch_id: str) -> list[dict]:
-        with self.connect() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    SELECT job_id, batch_id, seq_in_batch,
-                           input_asset_id, output_asset_id, provider_job_id,
-                           status, error_message, cost_units,
-                           submitted_at, completed_at
-                      FROM genai_jobs
-                     WHERE batch_id = %s
-                     ORDER BY seq_in_batch
-                    """,
-                    (batch_id,),
-                )
-                rows = cur.fetchall()
-            cols = [
-                "job_id",
-                "batch_id",
-                "seq_in_batch",
-                "input_asset_id",
-                "output_asset_id",
-                "provider_job_id",
-                "status",
-                "error_message",
-                "cost_units",
-                "submitted_at",
-                "completed_at",
-            ]
-            return self._rows_to_dicts(rows, cols)
-
-    def find_pending_genai_jobs(
-        self,
-        engine: str | None = None,
-        limit: int = 100,
-    ) -> list[dict]:
-        # Dagster polling sensor 가 호출. status IN ('submitted','running') 의 비동기 job.
-        sql = """
-            SELECT j.job_id, j.batch_id, j.seq_in_batch,
-                   j.provider_job_id, j.status, j.submitted_at,
-                   b.engine, b.output_media
-              FROM genai_jobs j
-              JOIN genai_batches b ON b.batch_id = j.batch_id
-             WHERE j.status IN ('submitted','running')
-        """
-        params: list[Any] = []
-        if engine:
-            sql += " AND b.engine = %s"
-            params.append(engine)
-        sql += " ORDER BY j.submitted_at NULLS LAST LIMIT %s"
-        params.append(int(limit))
-        with self.connect() as conn:
-            with conn.cursor() as cur:
-                cur.execute(sql, tuple(params))
-                rows = cur.fetchall()
-            cols = [
-                "job_id",
-                "batch_id",
-                "seq_in_batch",
-                "provider_job_id",
-                "status",
-                "submitted_at",
-                "engine",
-                "output_media",
-            ]
-            return self._rows_to_dicts(rows, cols)

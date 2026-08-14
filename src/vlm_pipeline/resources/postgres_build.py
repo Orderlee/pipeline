@@ -267,44 +267,6 @@ class PostgresBuildMixin:
                 )
                 return [r[0] for r in cur.fetchall()]
 
-    def find_projects_ready_to_build(self) -> list[str]:
-        """LS 검수 finalized 라벨이 있고 아직 완료된 dataset이 없는 folder."""
-        with self.connect() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    SELECT DISTINCT r.source_unit_name AS folder
-                    FROM raw_files r
-                    WHERE r.source_unit_name IS NOT NULL
-                      AND r.source_unit_name <> ''
-                      AND (
-                        EXISTS (
-                            SELECT 1 FROM labels l
-                            WHERE l.asset_id = r.asset_id
-                              AND l.review_status = 'finalized'
-                        )
-                        OR EXISTS (
-                            SELECT 1 FROM image_labels il
-                            JOIN image_metadata im ON im.image_id = il.image_id
-                            WHERE im.source_asset_id = r.asset_id
-                              AND il.review_status = 'finalized'
-                        )
-                      )
-                      AND NOT EXISTS (
-                        SELECT 1 FROM datasets d
-                        WHERE d.name = r.source_unit_name
-                          AND d.build_status = 'completed'
-                      )
-                    ORDER BY folder
-                    """
-                )
-                rows = cur.fetchall()
-            return [row[0] for row in rows]
-
-    # ------------------------------------------------------------------
-    # Classification build 쿼리
-    # ------------------------------------------------------------------
-
     def find_projects_for_classification_build(self) -> list[dict]:
         """dispatch_requests.labeling_method 에 classification_* 가 포함된 프로젝트.
 
@@ -392,26 +354,6 @@ class PostgresBuildMixin:
                 "labels_key_list",
             ]
             return self._rows_to_dicts(rows, columns)
-
-    def find_latest_dispatch_for_folder(self, folder: str) -> dict | None:
-        """최신 dispatch_requests row (labeling_method, categories, classes)."""
-        with self.connect() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    SELECT labeling_method, categories, classes
-                    FROM dispatch_requests
-                    WHERE folder_name = %s
-                      AND (status IS NULL OR status NOT IN ('failed', 'canceled'))
-                    ORDER BY created_at DESC
-                    LIMIT 1
-                    """,
-                    (folder,),
-                )
-                row = cur.fetchone()
-            if not row:
-                return None
-            return {"labeling_method": row[0], "categories": row[1], "classes": row[2]}
 
     def find_project_video_candidates_missing_images(self, folder: str) -> list[dict]:
         """image_metadata row 가 전혀 없는 video (classification_image fallback 대상)."""

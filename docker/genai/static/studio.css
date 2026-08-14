@@ -551,7 +551,10 @@ body.gs-root { background: var(--gs-bg); color: var(--gs-text); overflow: hidden
 .gs-stat__sub { font-size: 12px; color: var(--gs-text-dim); margin-top: 3px; }
 
 .gs-page { padding: 24px 28px; overflow: auto; min-height: 0; }
-.gs-page--narrow { max-width: 980px; margin: 0 auto; padding: 24px 28px; }
+/* width:100% 필수 — .gs-app 이 grid 라 main 은 grid item 이고, 인라인축 `margin:auto` 가
+   justify-self:stretch 를 무력화한다 → width:auto 가 fit-content 로 풀려 max-width 가 영영
+   안 걸리고 페이지 폭이 "가장 넓은 자식" 에 끌려다녔다 (Kling 요금제 표가 사라지자 336px 로 붕괴). */
+.gs-page--narrow { width: 100%; box-sizing: border-box; max-width: 980px; margin: 0 auto; padding: 24px 28px; }
 
 /* Filter bar (batches list) */
 .gs-filterbar {

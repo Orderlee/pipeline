@@ -59,6 +59,7 @@ tests/unit/*
 # Phase E #14 STRUCT-BOOTSTRAP-POLICY — BootstrapPolicy / decide_unit_ready 순수 로직.
 # sensor_bootstrap_policy 만 import, dagster 의존 없음.
 !tests/unit/test_bootstrap_policy.py
+!tests/unit/test_dispatch_upsert_terminal_guard.py
 # image_label_annotations projection (DATA bbox 추적) — 순수 파서 + mock PG, dagster 의존 없음.
 !tests/unit/test_detection_coco_boxes.py
 !tests/unit/test_image_label_annotations_projection.py
@@ -230,6 +231,8 @@ scripts/recover_*_[0-9]*.py
 !tests/unit/test_key_builders.py
 # genai recompute_batch_status 파생 로직 (mock cursor, psycopg2 importorskip, dagster 의존 없음)
 !tests/unit/test_genai_pg_recompute.py
+# genai Kling 리소스팩 표시 순서 (순수 함수, sys.path 로 docker/genai 얹어 import, 외부 호출 없음)
+!tests/unit/test_genai_kling_packs.py
 # 카메라 씬 분류(camera-angle-grouping-2026-07-29 design) — Gemini 5축 lib 파싱은 ffmpeg/Vertex
 # mock, 헬퍼는 순수 함수(dagster 의존 없음), PG CRUD 는 db_resource fixture(DATAOPS_TEST_POSTGRES_DSN
 # 미설정 시 skip), 인라인 게이트(video_loader)는 ffprobe 만 mock.
@@ -260,3 +263,6 @@ scripts/recover_*_[0-9]*.py
 
 # MinIO vlm-raw/source-h 로컬 사본 (7.9GiB, git 추적 금지)
 /source-h/
+
+# macOS AppleDouble 리소스포크 (Finder/외부드라이브 경유로 생김, 바이너리 잔재)
+._*

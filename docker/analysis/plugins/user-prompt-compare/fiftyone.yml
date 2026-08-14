@@ -5,3 +5,4 @@ fiftyone:
   version: ">=1.19,<1.20"
 operators:
   - user_prompt_compare
+  - user_default_workspace

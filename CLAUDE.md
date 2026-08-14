@@ -348,6 +348,8 @@ git -C /home/user/work_p/Datapipeline-Data-data_pipeline_test status       # dev
 - `scripts/archive/fix_failed_status.py` — failed → completed 픽스 (완료)
 - `scripts/archive/fix_uploading_status.py` — uploading → completed 픽스 (완료)
 - `scripts/archive/recover_uploading.py` — uploading 복구 (완료)
+- `scripts/archive/backfill_vhc_sam3_bbox.py` — VHC 288건 SAM3 bbox 백필 (완료된 일회성, 제거된 duckdb 모듈 import 라 현행 미실행)
+- `scripts/archive/run_scanner.sh` — legacy 스캐너 shim (대체: auto_bootstrap 센서 / `scripts/bootstrap_manifest.sh`)
 
 ---
 

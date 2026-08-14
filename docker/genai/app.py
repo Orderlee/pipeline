@@ -762,14 +762,11 @@ def create_app() -> FastAPI:
         try:
             import time as _time
             from adapters.kling import (
-                fetch_kling_resource_packs, summarize_resource_packs, resource_pack_totals)
+                fetch_kling_resource_packs, order_packs_for_display,
+                summarize_resource_packs, resource_pack_totals)
             all_packs = fetch_kling_resource_packs()
-            # 표는 현재 활성(online) 팩만 노출. 누적 합계는 이전(runOut/expired)+현재 전체 합산.
-            online = [p for p in all_packs if p.get("status") == "online"]
-            # 최근 결제(구매) 순 — effective_time(개시 시각) 내림차순 → 방금 결제한 팩이 맨 위.
-            # effective_time 미보고 시 invalid_time(만료)로 fallback.
-            online.sort(key=lambda p: (p.get("effective_time") or p.get("invalid_time") or 0), reverse=True)
-            packs_panel = summarize_resource_packs(online, _time.time())
+            # ponytail: 팩 누적은 계정당 수십 개 수준이라 상한 없음. 수백 개가 되면 최근 N개로 자를 것.
+            packs_panel = summarize_resource_packs(order_packs_for_display(all_packs), _time.time())
             packs_panel["totals"] = resource_pack_totals(all_packs)
             packs_panel["error"] = None
         except Exception as exc:

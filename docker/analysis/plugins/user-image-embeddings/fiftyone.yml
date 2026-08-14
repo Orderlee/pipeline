@@ -1,0 +1,10 @@
+name: "@user/image-embeddings"
+description: "이미지 임베딩 산점도 패널 (프롬프트 데이터셋에서도 프레임 이미지 공간을 본다)"
+version: "0.1.0"
+fiftyone:
+  version: ">=1.19,<1.20"
+# 패널도 operators 로 등록한다 — user-prompt-compare 와 동일 (FiftyOne 은 Panel 을
+# Operator 의 하위 타입으로 취급하고, `panels:` 키는 이 배포에서 인식되지 않는다).
+operators:
+  - image_embeddings
+  - sentence_embeddings

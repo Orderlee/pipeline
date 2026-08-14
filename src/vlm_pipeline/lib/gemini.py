@@ -291,11 +291,6 @@ class GeminiAnalyzer:
         )
         return _extract_response_text(response)
 
-    def change_model(self, model_name: str) -> None:
-        _, generative_model_cls, _ = _load_vertex_ai()
-        self.model = generative_model_cls(model_name=model_name)
-        self.model_name = model_name
-
 
 from .gemini_script_utils import (  # noqa: F401, E402  # backward-compat re-exports
     DEFAULT_VIDEO_EXTENSIONS,

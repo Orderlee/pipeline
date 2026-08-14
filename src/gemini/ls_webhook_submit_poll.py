@@ -52,10 +52,11 @@ def poll_once(resolve_headers: Callable[[], dict]) -> dict:
     data = resp.json()
     projects = data.get("results", data) if isinstance(data, dict) else data
 
+    state = load_state()
     for project in projects:
         pid = int(project["id"])
         title = project.get("title", str(pid))
-        entry = load_state().get(str(pid), {})
+        entry = state.get(str(pid), {})
 
         # Slack 경로와 동일한 대상 조건: 파이프라인이 아는(state 존재) + 미확정 프로젝트만.
         if not entry or entry.get("status") == "finalized":

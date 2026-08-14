@@ -130,28 +130,6 @@ class PostgresIngestRawMixin(PostgresIngestAuditMixin):
                 row = cur.fetchone()
         return row is not None
 
-    def has_failed_duplicate_for_source(self, source_path: str, duplicate_asset_id: str) -> bool:
-        normalized_source = self._norm_str(source_path)
-        normalized_target = self._norm_str(duplicate_asset_id)
-        if not normalized_source or not normalized_target:
-            return False
-        duplicate_marker = f"duplicate_of:{normalized_target}"
-        with self.connect() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    SELECT 1
-                    FROM raw_files
-                    WHERE source_path = %s
-                      AND ingest_status = 'failed'
-                      AND error_message = %s
-                    LIMIT 1
-                    """,
-                    (normalized_source, duplicate_marker),
-                )
-                row = cur.fetchone()
-        return row is not None
-
     def update_raw_file_status(
         self,
         asset_id: str,
@@ -174,30 +152,6 @@ class PostgresIngestRawMixin(PostgresIngestAuditMixin):
                     """,
                     (status, error_message, archive_path, raw_bucket, datetime.now(), asset_id),
                 )
-
-    def batch_update_spec_and_status(self, updates: list[dict]) -> int:
-        """raw_files.ingest_status( 및 spec_id) 배치 업데이트."""
-        if not updates:
-            return 0
-        now = datetime.now()
-        with self.connect() as conn:
-            with conn.cursor() as cur:
-                for u in updates:
-                    aid = u.get("asset_id")
-                    if not aid:
-                        continue
-                    status = u.get("ingest_status", "pending")
-                    if "spec_id" in u:
-                        cur.execute(
-                            "UPDATE raw_files SET ingest_status = %s, spec_id = %s, updated_at = %s WHERE asset_id = %s",
-                            (status, u.get("spec_id"), now, aid),
-                        )
-                    else:
-                        cur.execute(
-                            "UPDATE raw_files SET ingest_status = %s, updated_at = %s WHERE asset_id = %s",
-                            (status, now, aid),
-                        )
-            return len([x for x in updates if x.get("asset_id")])
 
     def batch_update_status(self, updates: list[dict], *, skip_completed: bool = False) -> int:
         """배치 상태 업데이트.
@@ -444,25 +398,6 @@ class PostgresIngestRawMixin(PostgresIngestAuditMixin):
                 )
                 row = cur.fetchone()
         return row is not None
-
-    def list_completed_videos_for_spec_router(self, limit: int = 500) -> list[dict[str, Any]]:
-        """ingest_router용: ingest_status=completed, spec_id 미설정 비디오."""
-        with self.connect() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    SELECT asset_id, COALESCE(source_unit_name, '') AS source_unit_name, raw_key
-                    FROM raw_files
-                    WHERE media_type = 'video'
-                      AND ingest_status = 'completed'
-                      AND (spec_id IS NULL OR spec_id = '')
-                    ORDER BY created_at
-                    LIMIT %s
-                    """,
-                    (max(1, int(limit)),),
-                )
-                rows = cur.fetchall()
-            return [{"asset_id": r[0], "source_unit_name": r[1] or "", "raw_key": r[2]} for r in rows]
 
     def find_by_raw_key_stem(self, stem: str, source_unit_name: str | None = None) -> dict[str, Any] | None:
         with self.connect() as conn:
