@@ -381,6 +381,10 @@ def attach_labels(ds):
 
     This is intentionally fail-forward: DB/MinIO/JSON issues skip the affected lookup or sample so notebook work
     remains usable against partially populated staging/prod datasets.
+
+    ⚠️ **프레임 전용 쓰기다.** 정본 `frames` 데이터셋(구 frames_captions)은 프레임 187,994 +
+    캡션 11,978 의 **혼합 모달리티**라 여기서 모달리티를 가리지 않으면 캡션 문서까지 프레임
+    필드를 갖게 된다 — 아래 skip 가드 참조.
     """
     import fiftyone as fo
 
@@ -401,6 +405,20 @@ def attach_labels(ds):
     mc = _minio_client()
 
     for sample in samples:
+        # 캡션 모달리티는 image_id 가 없다 — 여기서 안 거르면 프레임 전용 필드가 캡션에
+        # 기록되어 DQ 자동 배제가 영구 파괴 (2026-08-19). DQ 로더들(_load_fo_metadata_for_dq,
+        # _fo_scores_for_ids)은 "캡션 문서엔 image_id 가 없다"는 성질 하나로 캡션을 걸러내는데,
+        # 아래 루프는 모달리티를 안 보고 caption/daynight/environment/project/detection_class/
+        # normalized_class 를 **전건**에 쓰고 save() 한다. 특히 normalize_class(None) 은
+        # None 이 아니라 문자열 "none" 을 돌려주므로(truthy 함정 — `str(label or "none")`)
+        # 캡션 11,978건이 normalized_class="none" 을 갖게 되고, 그 순간
+        #   ① 캡션이 프레임 전용 필드를 보유 → "필드 부재로 걸러진다"는 전제가 영구히 깨지고
+        #   ② 클래스 분포/분리도 집계(ds.values("normalized_class") 전량 스캔)에 "none" 이
+        #      11,978 부풀어 오른다.
+        # 되돌리려면 캡션 문서에서 필드를 지워야 하므로 **쓰기 전에** 막는 게 유일한 방어다.
+        # frames 프레임의 image_id 커버리지는 100%(실측)라 정상 샘플이 스킵될 위험은 없다.
+        if not _sample_value(sample, "image_id"):
+            continue
         try:
             image_id = str(_sample_value(sample, "image_id", ""))
             asset_id = _sample_value(sample, "asset_id")
@@ -645,11 +663,17 @@ def add_caption_clusters(ds, k: int = 12, model_name: str = DEFAULT_MODEL):
     """Cluster caption embeddings and project the asset-level cluster label onto frame samples.
 
     Frames whose source video has no caption embedding receive ``caption_cluster='none'``.
+
+    ⚠️ `attach_labels()` 와 같은 프레임 전용 쓰기다 — `caption_cluster` 는 "이 프레임의 출처
+    영상 캡션이 어느 군집인가"라서 캡션 문서 자신에게는 의미가 없다. 아래 두 쓰기 루프 모두
+    전건 write + save() 라 혼합 모달리티 데이터셋에서는 같은 누수가 난다 → 같은 skip 가드.
     """
     samples = list(ds)
     image_ids = [str(_sample_value(s, "image_id")) for s in samples if _sample_value(s, "image_id")]
     frame_asset_ids = _fetch_frame_asset_ids(image_ids)
     for sample in samples:
+        if not _sample_value(sample, "image_id"):
+            continue  # 캡션 모달리티 — 프레임 전용 필드를 쓰지 않는다 (docstring 참조)
         try:
             image_id = _sample_value(sample, "image_id")
             asset_id = _sample_value(sample, "asset_id") or frame_asset_ids.get(str(image_id))
@@ -687,6 +711,8 @@ def add_caption_clusters(ds, k: int = 12, model_name: str = DEFAULT_MODEL):
         if cluster_ids
     }
     for sample in samples:
+        if not _sample_value(sample, "image_id"):
+            continue  # 캡션 모달리티 — 프레임 전용 필드를 쓰지 않는다 (docstring 참조)
         try:
             asset_id = _sample_value(sample, "asset_id")
             sample["caption_cluster"] = asset_cluster.get(str(asset_id), "none") if asset_id else "none"
@@ -1500,7 +1526,15 @@ def _load_frames_for_dq(
 
 
 def _load_fo_metadata_for_dq(label_field: str = "normalized_class") -> dict[str, dict]:
-    """FiftyOne 'frames' 단일 스캔 → image_id: {label, caption}. 두 번 스캔하던 것을 통합."""
+    """FiftyOne `frames` 단일 스캔 → image_id: {label, caption}. 두 번 스캔하던 것을 통합.
+
+    2026-08-18: 구 'frames' 데이터셋은 실존하지 않아 이 로더가 **조용히 빈 dict** 를 돌려줬다
+    (DQ 가 "이상 없음"처럼 보이는 거짓) → 실존하던 frames_captions 로 교정. 2026-08-19 개명으로
+    그 데이터셋의 정본 이름이 `frames` 가 됐다 — 이름만 같을 뿐 옛 'frames' 와는 다른 것이다.
+    caption 모달리티 11,978건은 image_id 가 아예 없어 아래 `if not iid` 가드가 자동 배제한다
+    (실측 0건 보유). 이 배제가 성립하려면 캡션 문서에 image_id 가 계속 없어야 한다 —
+    `attach_labels()` 의 캡션 skip 가드가 그 전제를 지킨다.
+    """
     result: dict[str, dict] = {}
     try:
         import fiftyone as fo
@@ -2321,6 +2355,10 @@ def _fo_scores_for_ids(image_ids: list[str]) -> dict[str, dict]:
         import fiftyone as fo
         from fiftyone import ViewField as F
 
+        # 2026-08-18: 구 'frames' 는 실존하지 않아 조용히 빈 결과였다 → frames_captions 로
+        # 교정. 2026-08-19 개명으로 그 데이터셋의 정본 이름이 `frames` 가 됐다(옛 'frames' 와
+        # 무관). caption 문서는 아래 image_id match 가 배제하고, uniqueness/
+        # representativeness 부재 시 조기 반환.
         if not fo.dataset_exists("frames"):
             return out
         ds = fo.load_dataset("frames")

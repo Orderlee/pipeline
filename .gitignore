@@ -84,6 +84,23 @@ tests/unit/*
 !tests/unit/test_sourcea_site.py
 # SourceA 일일 수집 asset — preflight graceful skip + 자체 마감 (Task 2)
 !tests/unit/test_sourcea_download_asset.py
+# CI 미실행 커버리지 회수 (2026-08-18) — 로컬에서만 돌던 순수 유닛 138개를 CI 로 편입.
+# 12개는 lib/ (check_lib_layer_imports 로 dagster-free 보장), 2개는 defs(이미 CI 의존).
+# 네트워크·DB·GPU 의존 없음 — 로컬 실측 138 passed / 5 skipped / 2.23s.
+!tests/unit/test_lib_checksum.py
+!tests/unit/test_lib_sanitizer.py
+!tests/unit/test_lib_validator.py
+!tests/unit/test_clip_windows.py
+!tests/unit/test_compaction_cleanup.py
+!tests/unit/test_db_backend_parity.py
+!tests/unit/test_detection_common.py
+!tests/unit/test_sam3_coco_conversion.py
+!tests/unit/test_spec_config_tags.py
+!tests/unit/test_staging_routing_helpers.py
+!tests/unit/test_gcs_download_asset.py
+!tests/unit/test_video_frames.py
+!tests/unit/test_video_reencode.py
+!tests/unit/test_sensor_helpers_supersede.py
 # Phase 4-B integration tests (#12) — self-contained conftest, sidecar PG 의존
 # (DATAOPS_TEST_POSTGRES_DSN 미설정 시 자동 skip).
 !tests/integration/
@@ -260,6 +277,10 @@ scripts/recover_*_[0-9]*.py
 !tests/unit/test_ls_presign_renew_fixes.py
 # LS submit 폴러 테스트 — mock 기반(requests/state/finalize 패치), dagster import 없음.
 !tests/unit/test_ls_submit_poll.py
+# 프롬프트 뱅크 발행(버전/CSV) 테스트 — Notion 창1 선반영, 파일은 후속 커밋 예정.
+!tests/unit/test_prompt_bank_publish.py
+# LS tasks 키 파일 테스트 — Notion 창1 선반영, 파일은 후속 커밋 예정.
+!tests/unit/test_ls_tasks_keys_file.py
 
 # MinIO vlm-raw/source-h 로컬 사본 (7.9GiB, git 추적 금지)
 /source-h/

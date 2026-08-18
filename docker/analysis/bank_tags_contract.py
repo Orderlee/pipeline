@@ -54,6 +54,43 @@ PSE_TEMPLATES = ["pred_{v}", "pred_margin_{v}", "winner_gidx_{v}",
 PROBE_TEMPLATES = ["winner_gidx_{tag}", "wave_iou_falldown_{tag}",
                    "wave_iou_fire_{tag}", "wave_iou_smoke_{tag}"]
 
+# ── 생산자 전용 필드군 (2026-08-18, top-K 순위 사다리) ────────────────────────
+# `stage_attach` 가 top-K 판정의 2·3위 문장을 프레임에 내린다:
+#     winner_gidx_r{2,3}_<vtag>   (prompt_geometry.rank_gidx_field)
+#     top_prompt_r{2,3}_<vt>      (prompt_geometry.rank_prompt_field)
+#
+# **위 두 소비자 목록에는 넣지 않는다.** 그 목록의 뜻은 "소비자가 실제로 조회하는 템플릿"이고
+# (`pse.resolve` / `probe._pick_field` 호출부와 1:1), 이 필드를 읽는 소비자는 아직 없다.
+# 없는 소비 관계를 등록하면 C2/C4 가 검사하는 대상이 거짓이 된다.
+#
+# 그렇다고 계약 밖에 두면 진짜 위험이 안 잡힌다: **이름이 기존 계열로 접히는 것**이다.
+# C4 는 필드명을 `tag_re` 로 (계열, 태그) 분해해 계열 단위로 도달성을 판정하므로, 새 필드가
+# `winner_gidx` 계열로 파싱되면 C4 가 존재하지 않는 태그를 요구하며 빨개진다(오탐) 또는
+# 반대로 진짜 필드를 가린다. 그래서 **명명 규약만** C5 로 잠근다 — 순수 검사라 --pure-only
+# 에서도 돈다 (cron 의 저하 경로에서도 커버된다).
+PRODUCER_ONLY = [
+    # (템플릿, 접미사 세대, 기대 계열)
+    ("winner_gidx_r{r}_{sfx}", "vtag", "winner_gidx"),
+    ("top_prompt_r{r}_{sfx}", "vt", "top_prompt"),
+]
+RANK_EXTRA = (2, 3)
+
+# ── 버전 중립 필드 (2026-08-18, 화면4 사이트범위) ────────────────────────────
+# `stage_attach`/`stage_site` 는 버전을 **필드명에 안 박는** 계열도 쓴다. 근거는 스키마 누수다:
+# 48~52버전 환경에서 버전 태그를 박으면 필드 수가 뱅크 수만큼 는다(prompt_geometry:1795 주석,
+# codex 지적). 대신 어느 뱅크 산출인지는 `attached_bank` 한 필드가 들고 있다.
+#
+# 여기서 잠그는 위험은 하나다: **이 이름들이 태그 계열로 파싱되면 안 된다.** D7 리졸버는
+# `<계열>_<태그>` 로 필드를 쪼개는데, 버전 중립 필드가 그 모양으로 걸리면 C4 가 존재하지 않는
+# 태그를 요구하거나(오탐) 기존 계열을 가린다. C5 와 같은 방침 — 소비자가 없으므로
+# PSE_TEMPLATES/PROBE_TEMPLATES 에는 **넣지 않는다** (없는 소비 관계를 등록하면 C2/C4 가 거짓이 된다).
+VERSION_NEUTRAL = [
+    "runner_up", "close_call", "attached_bank",
+    "cos_best_normal", "cos_best_falldown", "cos_best_fire", "cos_best_smoke",
+    "cos_best_smoking",
+    "winner_site_scope", "winner_n_sites",       # stage_site (화면4)
+]
+
 FAILURES: list[str] = []
 CHECKS = 0
 
@@ -97,22 +134,33 @@ def load_pse():
     return pse
 
 
-def load_vtag():
-    """생산자 정본. numpy 등 무거운 import 가 딸려오므로 실패해도 계속 진행한다."""
+def load_producer():
+    """생산자 모듈(prompt_geometry) 자체. numpy 등 무거운 import 가 딸려오므로 fail-soft."""
     if WORKSPACE not in sys.path:
         sys.path.insert(0, WORKSPACE)
     try:
         import prompt_geometry as pg
-        return pg.vtag
+        return pg
     except Exception as exc:  # noqa: BLE001
-        print(f"  ⚠️  prompt_geometry.vtag 로드 실패 ({type(exc).__name__}) — "
+        print(f"  ⚠️  prompt_geometry 로드 실패 ({type(exc).__name__}) — "
               f"내장 정의로 대체한다. 생산자 정본과의 일치는 이번 실행에서 검사되지 않는다.")
         return None
+
+
+def load_vtag():
+    """생산자 정본 `vtag`. 모듈을 못 읽으면 None (호출부가 건너뛴다)."""
+    pg = load_producer()
+    return getattr(pg, "vtag", None) if pg else None
 
 
 def vtag_reference(version: str) -> str:
     """prompt_geometry.vtag 와 문자 단위로 같아야 하는 참조 구현 (C0 이 이를 고정한다)."""
     return "v" + "".join(version.lstrip("vV").split("."))
+
+
+def vt_reference(version: str) -> str:
+    """`pred_`/`top_prompt_` 계열의 접미사 (`version.replace('.', '_')`). C5 참조 구현."""
+    return "v" + "_".join(version.lstrip("vV").split("."))
 
 
 # ────────────────────── 계약 ──────────────────────
@@ -187,6 +235,90 @@ def c3_fallback(pse, probe) -> None:
                 fail(f"probe._pick_field [{label}]: {got!r} != {want!r}")
             else:
                 ok(f"probe._pick_field [{label}] → {got}")
+
+
+def c5_producer_only(pse, probe, pg, versions) -> None:
+    """C5: 생산자 전용 순위 필드(`*_r2_`/`*_r3_`)가 **기존 계열을 오염시키지 않는가.**
+
+    세 가지를 고정한다:
+      (a) D7 계열 파싱에서 `winner_gidx_r2` 처럼 **별 계열**로 떨어진다
+      (b) 기존 계열 템플릿(`winner_gidx_{v}` 등)이 이 필드를 집어가지 않는다
+      (c) 이름 생성이 생산자 정본(`rank_gidx_field`/`rank_prompt_field`)과 문자 단위로 같다
+
+    ⚠️ 소비자 도달성(C2/C4)은 **일부러 검사하지 않는다** — 이 필드를 읽는 소비자가 아직 없다.
+       읽는 쪽이 생기면 그때 PSE_TEMPLATES/PROBE_TEMPLATES 로 승격하는 게 맞다.
+    """
+    print("\n[C5] 생산자 전용 순위 필드 계열 분리")
+    tag_re = re.compile(r"^(?P<fam>.+?)_(?P<tag>v[\d_]+(?:-[\w]+)?)$")
+    builders = {"vtag": getattr(pg, "rank_gidx_field", None),
+                "vt": getattr(pg, "rank_prompt_field", None)} if pg else {}
+    bad = 0
+    for v in versions:
+        for tmpl, gen, base_fam in PRODUCER_ONLY:
+            sfx = vtag_reference(v) if gen == "vtag" else vt_reference(v)
+            for r in RANK_EXTRA:
+                f = tmpl.format(r=r, sfx=sfx)
+                m = tag_re.match(f)
+                want_fam = f"{base_fam}_r{r}"
+                if not m or m.group("fam") != want_fam:
+                    bad += 1
+                    fail(f"{f} → 계열 {m and m.group('fam')!r} (기대 {want_fam!r}) "
+                         "— 접미사 뒤가 아니라 **앞**에 순위를 붙여야 계열이 갈린다")
+                    continue
+                if pse.resolve({f}, base_fam + "_{v}", v) is not None:
+                    bad += 1
+                    fail(f"{f} 가 기존 템플릿 {base_fam}_{{v}} 에 잡힌다 — 1위 필드와 충돌")
+                if probe and probe._pick_field({f}, base_fam + "_{tag}", v) is not None:
+                    bad += 1
+                    fail(f"{f} 가 probe 의 {base_fam}_{{tag}} 에 잡힌다 — 1위 필드와 충돌")
+                b = builders.get(gen)
+                if b and b(sfx, r) != f:
+                    bad += 1
+                    fail(f"생산자 빌더 불일치: {b.__name__}({sfx!r},{r}) = {b(sfx, r)!r} != {f!r}")
+    if not bad:
+        n = len(versions) * len(PRODUCER_ONLY) * len(RANK_EXTRA)
+        ok(f"순위 필드 {n}개(버전 {len(versions)}) 전부 별 계열 + 기존 템플릿 미포획"
+           + ("" if builders.get("vtag") else " (생산자 빌더 대조는 생략 — 모듈 미로드)"))
+
+
+def c6_version_neutral(pse, probe, pg, versions) -> None:
+    """C6: 버전 중립 필드가 **태그 계열로 오파싱되지 않는가.**
+
+    두 가지를 고정한다:
+      (a) D7 계열 정규식에 안 걸린다 (= 버전 태그가 없다). 걸리면 C4 가 이 필드를 "어떤 버전의
+          필드"로 오인해 그 계열의 도달성 판정을 오염시킨다
+      (b) 어떤 소비자 템플릿에도 안 잡힌다 — 버전 필드 자리에 끼어들면 1위 필드와 충돌한다
+
+    ⚠️ 생산자 정본과의 대조는 `winner_site_scope`/`winner_n_sites` 만 한다 (`stage_site` 가
+       리터럴로 쓰는 이름). 나머지는 이 파일이 목록의 유일한 소유자다.
+    """
+    print("\n[C6] 버전 중립 필드 — 태그 계열 미오염")
+    tag_re = re.compile(r"^(?P<fam>.+?)_(?P<tag>v[\d_]+(?:-[\w]+)?)$")
+    bad = 0
+    for f in VERSION_NEUTRAL:
+        if tag_re.match(f):
+            bad += 1
+            fail(f"{f} 가 태그 계열로 파싱된다 — 버전 중립 필드는 `_v<숫자>` 로 끝나면 안 된다")
+        for tmpl in PSE_TEMPLATES:
+            for v in versions:
+                if pse.resolve({f}, tmpl, v) is not None:
+                    bad += 1
+                    fail(f"{f} 가 소비자 템플릿 {tmpl!r} 에 잡힌다 (버전 {v})")
+        if probe:
+            for tmpl in PROBE_TEMPLATES:
+                for v in versions:
+                    if probe._pick_field({f}, tmpl, v) is not None:
+                        bad += 1
+                        fail(f"{f} 가 probe 템플릿 {tmpl!r} 에 잡힌다 (버전 {v})")
+    if pg is not None:
+        for name in ("winner_site_scope", "winner_n_sites"):
+            if name not in VERSION_NEUTRAL:
+                bad += 1
+                fail(f"{name} 이 VERSION_NEUTRAL 목록에서 빠졌다")
+        if getattr(pg, "stage_site", None) is None:
+            print("  ⚠️  prompt_geometry.stage_site 부재 — 생산자 대조 생략")
+    if not bad:
+        ok(f"버전 중립 필드 {len(VERSION_NEUTRAL)}개: 태그 미파싱 + 소비자 템플릿 미포획")
 
 
 def c4_live_resolution(pse, probe, dataset_names) -> None:
@@ -279,7 +411,8 @@ def main() -> int:
     probe, probe_path = load_probe()
     print(f"소비자: prompt_scores_export ✓ / user-prompt-probe "
           f"{'✓ ' + probe_path if probe else '✗ ' + str(probe_path) + ' — 해당 검사 생략'}")
-    vtag = load_vtag()
+    pg = load_producer()
+    vtag = getattr(pg, "vtag", None) if pg else None
 
     versions = EDGE_VERSIONS[:]
     if not args.pure_only:
@@ -295,6 +428,8 @@ def main() -> int:
     c1_no_collision(versions)
     c2_producer_reachable(pse, probe, versions)
     c3_fallback(pse, probe)
+    c5_producer_only(pse, probe, pg, versions)
+    c6_version_neutral(pse, probe, pg, versions)
     if not args.pure_only:
         c4_live_resolution(pse, probe, args.datasets)
 

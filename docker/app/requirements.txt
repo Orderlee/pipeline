@@ -16,6 +16,8 @@ grpcio==1.76.0
 grpcio-health-checking==1.76.0
 grpcio-status==1.76.0
 imagehash>=4.3.1
+# lib/ 가 직접 import (video_env, recall_at_k, box_map) — imagehash 전이 의존이지만 명시
+numpy
 Pillow>=10.4.0
 pillow-heif>=0.18.0
 korean-romanizer>=0.27.0

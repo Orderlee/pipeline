@@ -83,6 +83,13 @@ FOLDER_TO_CLASS = {"normal": 0, "falldown": 1, "fire": 2, "smoke": 3, "helmet": 
 EVENT_TOKENS = {"쓰러짐": "falldown", "화재": "fire", "연기": "smoke", "헬멧": "helmet"}
 TOPK = 10
 TOP_SHOW = 10
+GT_SOURCE = "nas_folder"          # 이 원장의 GT 출처 표식 — LS finalized(ls_finalized)와 혼용 금지
+# scan 이 매 스캔마다 재계산해 쓰는 "표준" 필드. 이 집합 밖의 키(gt_moved_from/gt_move_reason 같은
+# 사람이 사후에 붙인 provenance)는 재스캔 시 잃으면 안 되므로 stage_scan 이 prev 에서 이어받는다.
+_STD_SCAN_FIELDS = {
+    "key", "folder", "name", "size", "mtime", "src_video", "frame_index",
+    "gt_class", "original_event", "camera", "gt_source",
+}
 
 
 def log(msg: str) -> None:
@@ -171,14 +178,23 @@ def stage_scan() -> None:
                     continue  # 이미 알고 있고 크기도 동일 → 변화 없음
                 stem = os.path.splitext(e.name)[0]
                 src, fr = src_of(stem)
-                fresh.append({
+                row = {
                     "key": key, "folder": folder, "name": e.name,
                     "size": st.st_size, "mtime": round(st.st_mtime, 3),
                     "src_video": nfc(src), "frame_index": fr,
                     "gt_class": FOLDER_TO_CLASS[folder],
                     "original_event": original_event(src),
                     "camera": camera_of(src),
-                })
+                    "gt_source": GT_SOURCE,
+                }
+                if prev:
+                    # size 가 바뀌어 새 행을 append 하는 경우(재복사 등) — jsonl_load 는
+                    # "마지막 쓰기 승" 이라, 표준 필드 밖의 사람이 붙인 provenance
+                    # (gt_moved_from/gt_move_reason 등)를 이어받지 않으면 조용히 사라진다.
+                    for k, v in prev.items():
+                        if k not in _STD_SCAN_FIELDS and k not in row:
+                            row[k] = v
+                fresh.append(row)
     if fresh:
         jsonl_append(path, fresh)
     total = len(jsonl_load(path))
@@ -351,11 +367,35 @@ def stage_angle(limit: int | None, workers: int = 6, per_frame: bool = False) ->
     log(f"angle 완료: ok={ok} err={err}")
 
 
+# ────────────────────────── 혼용 방어 ──────────────────────────
+_ALLOWED_GT_SOURCES = {GT_SOURCE, None}
+
+
+def assert_gt_source_pure(rows, context: str) -> None:
+    """GT 를 조립해 쓰는 지점(현재 stage_score)에서 이 원장의 gt_source 순도를 재확인한다.
+
+    이 원장은 NAS 폴더파생 GT(gt_source='nas_folder') 전용이다. LS finalized GT
+    (gt_source='ls_finalized', frames_bank_ledger.py 가 만드는 **별도 원장**)와 한
+    데이터셋에 섞이면 recall 비교가 무의미해진다 — CI pytest 게이트가 없는 analysis 코드라
+    실행 시점 self-check 가 유일한 방어선이다. `None` 은 이 필드가 아직 없던 구 원장 행
+    (하위호환) 이라 허용한다.
+    """
+    bad = collections.Counter(
+        r.get("gt_source") for r in rows if r.get("gt_source") not in _ALLOWED_GT_SOURCES
+    )
+    if bad:
+        raise RuntimeError(
+            f"{context}: gt_source 혼재 감지 — source-h 원장에 '{GT_SOURCE}'/None 이 아닌 값이 "
+            f"섞였다: {dict(bad)}. LS finalized 계열 원장과 혼용 금지."
+        )
+
+
 # ────────────────────────── 4. score ──────────────────────────
 def stage_score() -> None:
     import numpy as np
 
     led = jsonl_load(f"{WORK_DIR}/ledger.jsonl")
+    assert_gt_source_pure(led.values(), context="stage_score")
     d = np.load(f"{WORK_DIR}/embed.npz", allow_pickle=True)
     vec_of = {str(k): v for k, v in zip(d["key"], d["vec"])}
     banks = {}
@@ -363,9 +403,9 @@ def stage_score() -> None:
         p = f"{PROMPT_DIR}/{ver}.npz"
         if not os.path.exists(p):
             raise SystemExit(f"프롬프트 npz 없음: {p} — prompt_eval.py prompts 를 먼저 실행")
-        z = np.load(p, allow_pickle=True)
-        banks[ver] = {"vec": z["vec"].astype(np.float32), "cls": z["cls"].astype(int),
-                      "prompt": [str(x) for x in z["prompt"]]}
+        # 문장은 DB 정본 (`repair_bank_prompts.load_bank` 주석 참고) — npz 는 벡터만 담당
+        import repair_bank_prompts as _bank
+        banks[ver] = _bank.load_bank(ver, PROMPT_DIR)
     keys = [k for k in led if k in vec_of]
     if not keys:
         raise SystemExit("점수 낼 임베딩이 없다 — embed 스테이지를 먼저 실행")
@@ -493,8 +533,12 @@ def stage_build(dataset_name: str = "source-h-frames") -> None:
         s["frame_index"] = r["frame_index"]
         s["camera"] = r["camera"]
         s["original_event"] = r["original_event"]
-        # 재라벨 여부 — 이 데이터셋의 존재 이유
-        s["relabeled"] = r["original_event"] not in ("unknown", CLASS_NAMES[r["gt_class"]])
+        # 재라벨 여부 — 이 데이터셋의 존재 이유.
+        # raw 토큰 비교 금지: helmet 은 FOLDER_TO_CLASS 가 normal(0)로 **매핑**하는 택소노미
+        # 결정이라 "helmet" != "normal" 로 재면 helmet 프레임 전부가 사람 재라벨로 잡힌다.
+        # 원 폴더가 사상하는 클래스와 현재 gt_class 가 다를 때만 재라벨이다.
+        s["relabeled"] = (r["original_event"] != "unknown"
+                          and FOLDER_TO_CLASS.get(r["original_event"]) != r["gt_class"])
         s["relabel_transition"] = fo.Classification(
             label=f"{r['original_event']}→{CLASS_NAMES[r['gt_class']]}"
         )

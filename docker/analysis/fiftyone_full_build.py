@@ -82,6 +82,17 @@ def log(msg):
 _lim = os.getenv("FFB_LIMIT", "all").strip().lower()
 LIMIT = None if _lim in ("0", "all", "none", "") else int(_lim)
 DATASET = os.getenv("FFB_DATASET", "frames")
+# 정본 충돌 가드 (2026-08-19 개명): 'frames' 는 이제 **정본 데이터셋 이름**이다
+# (구 frames_captions = 프레임 187,994 + 캡션 11,978). 이 빌더의 실제 산출물은
+# `frames_full` 이고(merge_frames_captions.py 의 MFC_FRAMES 기본값 / fiftyone_umap_only.py
+# 의 FFB_DATASET 기본값이 그 이름이다), 위 기본값 'frames' 만 개명 전 이름으로 남아 있었다.
+# 그대로 두면 RESUME=1 은 정본에 프레임을 덧쓰고 RESUME=0 은 정본을 **삭제**한다.
+if DATASET == "frames":
+    raise SystemExit(
+        "superseded default: FFB_DATASET 기본값 'frames' 는 이제 정본 데이터셋 이름이다"
+        " (구 frames_captions). 이 빌더의 산출물은 frames_full 이므로"
+        " `FFB_DATASET=frames_full` 처럼 대상을 명시해서 실행하라."
+    )
 CHUNK = int(os.getenv("FFB_CHUNK", "2000"))
 WORKERS = int(os.getenv("FFB_WORKERS", "6"))
 FIT = int(os.getenv("FFB_FIT", "30000"))
