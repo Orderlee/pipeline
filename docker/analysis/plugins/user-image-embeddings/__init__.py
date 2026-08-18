@@ -634,7 +634,7 @@ def selftest():
     assert frames_dataset_name("sourcei-prompts") == "sourcei"
     assert frames_dataset_name("source-h-prompts") == "source-h"
     assert frames_dataset_name("sourcei") == "sourcei"
-    assert frames_dataset_name("frames_captions") == "frames_captions"
+    assert frames_dataset_name("frames") == "frames"
 
     # 층화 서브샘플 계약: 클래스당 최소 1점 + 예산 준수 + 중복 없음
     fixture = np.asarray(["a"] * 100 + ["b"] * 10 + ["c"])

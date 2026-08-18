@@ -123,6 +123,62 @@ x-runtime-dagster-common: &runtime-dagster-common
   gpus: all
   restart: unless-stopped
 
+# ── analysis 스택 (JupyterLab / FiftyOne / Streamlit) 공통 ────────────────────
+# 세 프로세스는 같은 이미지·볼륨·env 를 쓰고 포트와 command 만 다르다. 한 컨테이너에
+# 셋을 넣고 docker exec 로 손기동하던 것을 서비스 3개로 분리한다 — restart 정책이
+# 프로세스 단위로 걸려 "죽으면 신고 때까지 방치"가 구조적으로 사라진다(supervisord 불필요).
+x-analysis-env: &analysis-env
+  DATAOPS_POSTGRES_DSN: ${DATAOPS_POSTGRES_DSN:-}
+  EMBEDDING_API_URL: ${EMBEDDING_API_URL:-http://embedding-service:8003}
+  MINIO_ENDPOINT: ${ANALYSIS_MINIO_ENDPOINT:-http://minio:9000}
+  MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-minioadmin}
+  MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-minioadmin}
+  # FiftyOne 메타데이터 store = mongo 사이드카 (번들 mongod 미사용).
+  FIFTYONE_DATABASE_URI: ${FIFTYONE_DATABASE_URI:-mongodb://fiftyone-mongo:27017}
+  FIFTYONE_DEFAULT_APP_ADDRESS: 0.0.0.0
+  # 캐시 off(기본값)는 오퍼레이터 요청마다 플러그인 모듈을 재임포트 → 드롭다운 1회 왕복
+  # 20초+ (2026-08-14 실측). config.json 은 recreate 마다 사라지므로 env 로 고정한다.
+  FIFTYONE_PLUGINS_CACHE_ENABLED: "true"
+  # /workspace 가 호스트 repo bind mount 라, 안 막으면 __pycache__ 가 root 소유로
+  # 작업 트리에 쌓여 이후 git/rsync 작업이 권한으로 막힌다.
+  PYTHONDONTWRITEBYTECODE: "1"
+  # Vertex Gemini 쿼리 번역(KO→EN cross-lingual) 영구화 — genai/dagster 와 동일 creds 패턴.
+  # .env 의 GEMINI_GOOGLE_APPLICATION_CREDENTIALS 미설정 시 빈 값 → 코드가 사전(dict) fallback (무해).
+  GEMINI_GOOGLE_APPLICATION_CREDENTIALS: ${GEMINI_GOOGLE_APPLICATION_CREDENTIALS:-}
+  GOOGLE_APPLICATION_CREDENTIALS: ${GEMINI_GOOGLE_APPLICATION_CREDENTIALS:-}
+  GEMINI_PROJECT: ${GEMINI_PROJECT:-your-gcp-project}
+  GEMINI_LOCATION: ${GEMINI_LOCATION:-us-central1}
+  ENABLE_VERTEX_QUERY_TRANSLATION: ${ENABLE_VERTEX_QUERY_TRANSLATION:-1}
+  # FiftyOne App 이 처음 띄울 데이터셋. App 안에서 언제든 전환 가능하다.
+  FO_DATASET: ${FO_DATASET:-sourcei}
+
+x-analysis-base: &analysis-base
+  profiles: ["analysis"]
+  image: datapipeline-analysis:latest
+  environment: *analysis-env
+  volumes:
+    # P0-1: 코드 bind mount — "git commit = 실행 코드". 배포의 git reset --hard 가
+    # DEPLOY_REPO_ROOT(= repo 루트) 의 tracked 파일을 갱신하므로 이 디렉토리가 곧
+    # 배포본이고, .py 변경은 이미지 재빌드 없이 반영된다.
+    # 주의: 이 마운트는 이미지 레이어의 /workspace 를 통째로 가린다 — 컨테이너 안에서만
+    #      만든 파일은 repo 에 커밋돼 있지 않으면 보이지 않게 된다.
+    - ./analysis:/workspace
+    - ./data/fiftyone:/data/fiftyone
+    # 플러그인도 repo 가 정본 — recreate 후 docker cp 재적용 런북이 사라진다.
+    # 하위 경로만 덮으므로 같은 디렉토리의 @voxel51/brain(다운로드본)은 그대로 남는다.
+    - ./analysis/plugins/user-bank-slots:/data/fiftyone/datasets/__plugins__/user-bank-slots
+    - ./analysis/plugins/user-embeddings:/data/fiftyone/datasets/__plugins__/user-embeddings
+    - ./analysis/plugins/user-image-embeddings:/data/fiftyone/datasets/__plugins__/user-image-embeddings
+    - ./analysis/plugins/user-prompt-compare:/data/fiftyone/datasets/__plugins__/user-prompt-compare
+    - ./analysis/plugins/user-prompt-probe:/data/fiftyone/datasets/__plugins__/user-prompt-probe
+    - ./app/credentials:/app/credentials:ro
+  networks:
+    - default
+    - pipeline-network
+  depends_on:
+    - fiftyone-mongo
+  restart: unless-stopped
+
 services:
   app:
     build:
@@ -610,51 +666,57 @@ services:
     restart: unless-stopped
 
   analysis:
-    # JupyterLab + FiftyOne — 임베딩 시각화/유사검색 surface. profile 로 환경별 생성(COMPOSE_PROFILES=analysis).
-    # GPU 불필요(임베딩은 이미 pgvector 적재). FiftyOne 메타데이터 store = mongo 사이드카(fiftyone-mongo).
-    # (번들 mongod 는 slim 베이스에서 미동작 → 사이드카로 전환. 2026-06-15 staging 검증.)
+    # JupyterLab — 노트북 surface 이자 `docker exec` 로 분석 스크립트를 돌리는 곳.
+    # analysis-* 3서비스가 공유하는 이미지의 빌드 주체이기도 하다.
+    # GPU 불필요(임베딩은 이미 pgvector 적재). profile 로 환경별 생성(COMPOSE_PROFILES=analysis).
     # ⚠️ MINIO_ENDPOINT 는 presigned URL 이 사용자 브라우저에서 열려야 하므로 host-reachable 주소로
-    #    설정 (예: http://10.0.0.10:9000). 내부 docker 명(minio:9000)은 브라우저에서 미도달.
-    profiles: ["analysis"]
+    #    설정 (예: http://10.0.0.51:9000). 내부 docker 명(minio:9000)은 브라우저에서 미도달.
+    <<: *analysis-base
     build:
       context: ./analysis
-    image: datapipeline-analysis:latest
     command: ["sh", "-c", "exec jupyter lab --ip=0.0.0.0 --port=8888 --no-browser --allow-root --ServerApp.token=${JUPYTER_TOKEN:-}"]
     ports:
       - "${JUPYTER_PORT:-8888}:8888"
+
+  analysis-fiftyone:
+    # FiftyOne App (:5151). 예전엔 recreate 때마다 docker exec 로 손기동해야 했다.
+    # ponytail: 프로세스 종료는 restart 정책이 잡지만, launch_app 이 띄우는 App
+    #   자식이 죽고 부모 python 이 sleep 로 남으면 컨테이너는 살아 있어 healthcheck 만
+    #   unhealthy 로 뜬다(compose 는 unhealthy 로 재시작하지 않는다). 그 상태가 실제로
+    #   관측되면 autoheal 사이드카를 붙이거나 relaunch 를 자식 감시로 바꿀 것.
+    <<: *analysis-base
+    command: ["sh", "-c", "exec python /workspace/fiftyone_relaunch.py"]
+    ports:
       - "${FIFTYONE_PORT:-5151}:5151"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:5151/ >/dev/null || exit 1"]
+      interval: 60s
+      timeout: 10s
+      # 데이터셋 로드가 60만행 규모라 첫 응답까지 시간이 걸린다.
+      start_period: 300s
+      retries: 3
+
+  analysis-streamlit:
+    # 임베딩 대시보드 (:8501). 텍스트검색은 HNSW ~50ms, 랜딩 KMeans 는 캐시 미스 시 수백초.
+    <<: *analysis-base
+    command: ["sh", "-c", "exec streamlit run /workspace/embedding_dashboard.py --server.port 8501 --server.address 0.0.0.0"]
+    ports:
       - "${STREAMLIT_PORT:-8501}:8501"
-    environment:
-      DATAOPS_POSTGRES_DSN: ${DATAOPS_POSTGRES_DSN:-}
-      EMBEDDING_API_URL: ${EMBEDDING_API_URL:-http://embedding-service:8003}
-      MINIO_ENDPOINT: ${ANALYSIS_MINIO_ENDPOINT:-http://minio:9000}
-      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-minioadmin}
-      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-minioadmin}
-      # FiftyOne 메타데이터 store = mongo 사이드카 (번들 mongod 미사용).
-      FIFTYONE_DATABASE_URI: ${FIFTYONE_DATABASE_URI:-mongodb://fiftyone-mongo:27017}
-      FIFTYONE_DEFAULT_APP_ADDRESS: 0.0.0.0
-      # Vertex Gemini 쿼리 번역(KO→EN cross-lingual) 영구화 — genai/dagster 와 동일 creds 패턴.
-      # .env 의 GEMINI_GOOGLE_APPLICATION_CREDENTIALS 미설정 시 빈 값 → 코드가 사전(dict) fallback (무해).
-      GEMINI_GOOGLE_APPLICATION_CREDENTIALS: ${GEMINI_GOOGLE_APPLICATION_CREDENTIALS:-}
-      GOOGLE_APPLICATION_CREDENTIALS: ${GEMINI_GOOGLE_APPLICATION_CREDENTIALS:-}
-      GEMINI_PROJECT: ${GEMINI_PROJECT:-your-gcp-project}
-      GEMINI_LOCATION: ${GEMINI_LOCATION:-us-central1}
-      ENABLE_VERTEX_QUERY_TRANSLATION: ${ENABLE_VERTEX_QUERY_TRANSLATION:-1}
-    volumes:
-      - ./data/fiftyone:/data/fiftyone
-      - ./analysis/notebooks:/workspace/notebooks
-      - ./app/credentials:/app/credentials:ro
-    networks:
-      - default
-      - pipeline-network
-    depends_on:
-      - fiftyone-mongo
-    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8501/_stcore/health >/dev/null || exit 1"]
+      interval: 60s
+      timeout: 10s
+      start_period: 60s
+      retries: 3
 
   fiftyone-mongo:
     # FiftyOne 메타데이터 전용 MongoDB 사이드카 (analysis 와 함께 생성). 데이터는 볼륨 영속.
     profiles: ["analysis"]
     image: mongo:7
+    # 4GB: 실측 RSS 5.5GiB(8GB 상한 시절) + 62.5G 2인 공유 호스트 회수 지시(2026-08-18).
+    # -prompts 60만행 추가 후에도 쿼리 지연이 체감되면 6~8 로 되돌리는 게 낫다 — 상한이
+    # 너무 낮으면 mongod 가 디스크로 spill 하며 App 이 느려진다.
+    command: ["mongod", "--wiredTigerCacheSizeGB", "4"]
     volumes:
       - ./data/fiftyone/mongo:/data/db
     networks:

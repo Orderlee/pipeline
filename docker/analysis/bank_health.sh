@@ -29,7 +29,11 @@
 set -uo pipefail
 
 CONTAINER="${BANK_HEALTH_CONTAINER:-docker-analysis-1}"
-DATASETS="${BANK_HEALTH_DATASETS:-sourcei,source-h}"
+# source-h 은 2026-08-18 사용자 요청으로 데이터셋 삭제됨 (GT 정본은 sourceh_v2/work/ledger.jsonl 에 잔존).
+# 검사기는 없는 데이터셋을 FAIL 로 치므로(저하 실행 방지) 목록에서도 함께 내렸다.
+# `frames` 는 2026-08-18 -prompts 동반 데이터셋 개통(prompt DB 연결)과 함께 편입.
+# (2026-08-19 개명: frames_captions → frames, frames_captions-prompts → frames-prompts)
+DATASETS="${BANK_HEALTH_DATASETS:-sourcei,frames}"
 LOG="${BANK_HEALTH_LOG:-/home/user/logs/bank_health.log}"
 LOCK="${BANK_HEALTH_LOCK:-/tmp/bank_health.lock}"
 TIMEOUT="${BANK_HEALTH_TIMEOUT:-600}"

@@ -226,6 +226,12 @@ def stage_prompts(limit: int | None = None) -> None:
             rows = list(csv.DictReader(f))
         if limit:
             rows = rows[:limit]
+            # ⚠️ 공유 정본 보호: 이 npz 는 세 프로필(prompt_geometry)·frames_eval·
+            #    repair_bank_prompts 가 공유하는 버전 전역 자원이고, --limit 로 잘린 행수는
+            #    아래 "행수 불일치 → 재생성" 분기를 타서 12,480행 정본을 N행으로 덮어쓴다
+            #    (vec 은 어디에도 백업이 없다). 스모크 산출물은 별도 경로로 격리한다.
+            npz_path = f"{PROMPT_DIR}/{ver}.limit{limit}.npz"
+            log(f"{ver}: --limit {limit} → 정본 보호, 산출물 격리 {npz_path}")
         if os.path.exists(npz_path):
             d = np.load(npz_path, allow_pickle=True)
             if len(d["cls"]) == len(rows):
@@ -471,12 +477,9 @@ def stage_score() -> None:
 
     banks = {}
     for ver in VERSIONS:
-        z = np.load(f"{PROMPT_DIR}/{ver}.npz", allow_pickle=True)
-        banks[ver] = {
-            "vec": z["vec"].astype(np.float32),
-            "cls": z["cls"].astype(int),
-            "prompt": [str(p) for p in z["prompt"]],
-        }
+        # 문장은 DB 정본 (`repair_bank_prompts.load_bank` 주석 참고) — npz 는 벡터만 담당
+        import repair_bank_prompts as _bank
+        banks[ver] = _bank.load_bank(ver, PROMPT_DIR)
         log(f"{ver}: 프롬프트 {len(banks[ver]['cls'])} 클래스분포="
             f"{ {int(c): int((banks[ver]['cls'] == c).sum()) for c in sorted(set(banks[ver]['cls']))} }")
 

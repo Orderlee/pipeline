@@ -45,6 +45,10 @@ PROFILES = {
 BANK_NPZ = "/data/fiftyone/sourceh/prompts/{v}.npz"
 URL = os.environ.get("EMBEDDING_API_URL", "http://embedding-service:8003")
 EPS = 1e-5                    # 이보다 작은 하락은 "무효과" — 부호 없는 argmax 금지(codex §5)
+# `prompt_geometry.GIDX_OFFSET` 와 **같은 값**. -prompts 의 `gidx` 는 2026-08-11 다중뱅크
+# 리빌드부터 `뱅크순번 × GIDX_OFFSET + 뱅크-로컬` 인 전역 id 다 — npz 행 인덱스로 쓰려면
+# `% GIDX_OFFSET` 이 필요하다 (안 하면 뱅크순번 0 이외 전 버전에서 IndexError).
+GIDX_OFFSET = 100_000
 STOP = {"a", "an", "the", "is", "are", "was", "were", "in", "on", "at", "of", "to",
         "and", "or", "it", "its", "with", "by", "for", "there", "has", "have", "be"}
 # 구 경계 — 전치사/접속 앞에서 자른다. 쉼표도 경계다.
@@ -134,8 +138,9 @@ def main() -> None:
     pds = fo.load_dataset(f"{dsname}-prompts")
     sid, gidx, texts, wins, bver = (pds.values(f) for f in
                                     ("id", "gidx", "text", "wins", "bank_version.label"))
-    # ⚠️ gidx 는 **뱅크 버전 로컬** 인덱스다. 버전을 안 걸면 다른 버전 문장의 벡터를
-    #    base 로 집어와 전 수치가 조용히 오염된다 (codex §2).
+    # ⚠️ gidx 는 **전역** id 다 (뱅크순번 × GIDX_OFFSET + 로컬). npz 행 인덱스로 쓸 때만
+    #    `% GIDX_OFFSET` 로 로컬 환산하고, 프레임 `winner_gidx_*` 조인은 전역 그대로 쓴다.
+    #    버전을 안 걸면 다른 버전 문장의 벡터를 base 로 집어와 전 수치가 조용히 오염된다 (codex §2).
     cand = [i for i in range(len(sid)) if bver[i] == a.bank]
     if len(cand) < len(sid):
         log(f"주의: bank_version != {a.bank} 인 문장 {len(sid) - len(cand)}개 제외")
@@ -177,7 +182,7 @@ def main() -> None:
     E = embed_many(jobs, a.retry) if jobs else np.zeros((0, 1024), dtype=np.float32)
     log(f"임베딩 완료 {time.time() - t0:.0f}s")
 
-    base = V[[int(gidx[i]) for i in order]]
+    base = V[[int(gidx[i]) % GIDX_OFFSET for i in order]]      # 전역 gidx → npz 행
     bmax = (X @ base.T).max(axis=0)
     bbg = (X[bg] @ base.T).mean(axis=0)
     pos = {i: p for p, i in enumerate(order)}
@@ -277,6 +282,7 @@ def main() -> None:
     fds = fo.load_dataset(dsname)
     wg = f"winner_gidx_{vtag(a.bank)}"
     if wg in fds.get_field_schema():
+        # 여기는 **전역 gidx 그대로** — `winner_gidx_<tag>` 도 오프셋 포함 값이라 양쪽이 맞는다
         g2 = {int(gidx[i]): upd[sid[i]] for i in order}
         pc, rl = {}, {}
         for fid, g in zip(fds.values("id"), fds.values(wg)):

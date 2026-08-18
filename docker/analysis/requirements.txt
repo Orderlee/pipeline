@@ -10,3 +10,11 @@ streamlit
 streamlit-autorefresh
 # Vertex Gemini 쿼리 번역(KO→EN cross-lingual) — analysis 에서 genai.Client(vertexai=True). 미설치/미인증 시 코드가 사전 fallback.
 google-genai
+# 직접 import 하는 패키지는 명시 선언 (현재는 fiftyone 의 전이 의존성으로 설치되지만,
+# fiftyone 이 의존성을 바꾸면 조용히 깨진다 — report_charts/promptviz 가 직접 쓴다)
+numpy
+matplotlib
+scipy
+scikit-learn
+pyyaml
+threadpoolctl

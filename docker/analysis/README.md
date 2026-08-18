@@ -12,32 +12,51 @@ Dockerfile 상단 주석과 `ENV FIFTYONE_DATABASE_DIR` 는 그 시절 잔재이
 
 ```bash
 # 환경별 profile 활성 + 기동 (prod 예시; staging 은 compose-staging wrapper)
-COMPOSE_PROFILES=analysis ./scripts/compose-prod.sh up -d analysis
+COMPOSE_PROFILES=analysis ./scripts/compose-prod.sh up -d analysis analysis-fiftyone analysis-streamlit
 ```
 
-| surface | 컨테이너 포트 | prod 호스트 포트 | 자동 기동 |
-|---|---|---|---|
-| JupyterLab | 8888 | `8888` | ✅ (compose `command:`) |
-| FiftyOne App | 5151 | `5153` (`FIFTYONE_PORT`) | ❌ 수동 |
-| Streamlit 대시보드 | 8501 | `8503` (`STREAMLIT_PORT`) | ❌ 수동 |
+| surface | 서비스 / 컨테이너 | 컨테이너 포트 | prod 호스트 포트 | 자동 기동 |
+|---|---|---|---|---|
+| JupyterLab | `analysis` / `docker-analysis-1` | 8888 | `8888` | ✅ |
+| FiftyOne App | `analysis-fiftyone` / `docker-analysis-fiftyone-1` | 5151 | `5153` (`FIFTYONE_PORT`) | ✅ |
+| Streamlit 대시보드 | `analysis-streamlit` / `docker-analysis-streamlit-1` | 8501 | `8503` (`STREAMLIT_PORT`) | ✅ |
 
 JupyterLab token = `JUPYTER_TOKEN`, 미설정 시 토큰 없음 — 내부망 전용.
+FiftyOne 이 처음 띄우는 데이터셋은 `FO_DATASET`(기본 `sourcei`) — App 안에서 언제든 전환 가능.
 
-> ⚠️ **JupyterLab 만 자동 기동**한다. FiftyOne 과 Streamlit 은 포트만 열려 있고 프로세스는 안 뜬다.
-> **컨테이너 재시작·recreate·호스트 재부팅 때마다 다시 띄워야 한다.**
+> ✅ **2026-08-18 P0 편입 완료.** 세 프로세스가 각각 독립 서비스이고 `restart: unless-stopped`
+> 라 죽으면 자동으로 다시 뜬다. **`docker exec -d` 로 손기동하던 절차는 폐기됐다.**
+> `deploy-stack.sh` 도 `analysis_active()` 분기로 세 서비스를 `up -d` 해 둔다.
 >
-> ⚠️ **배포는 이 컨테이너를 건드리지 않는다.** `deploy-stack.sh` 에 `analysis` 분기가 없고
-> 재빌드 트리거 경로에도 `docker/analysis/` 가 없다 (2026-08-10 실측: analysis 컨테이너가
-> dagster recreate 를 생존). 그래서 역방향 함정이 있다 — `docker/analysis/**` 는
-> `paths-ignore` **밖**이라 이 디렉토리만 고쳐 main 에 push 하면 **dagster 3종만
-> stop/rm/recreate 돼 라벨링이 끊기고 analysis 에는 아무 효과가 없다.**
-> 분석 변경은 `dev` 로 보내거나 다른 배포와 묶고, 반영은 `docker cp` 로 한다.
+> ⚠️ 남은 천장: `fiftyone_relaunch.py` 는 App 을 자식 프로세스로 띄우고 자신은 sleep 한다.
+> **자식만 죽으면 컨테이너는 살아 있어** healthcheck 만 `unhealthy` 로 바뀌고 compose 는
+> 재시작하지 않는다(`docker ps` 로 보인다). 실제로 관측되면 autoheal 사이드카를 붙일 것.
 
-```bash
-docker exec -d docker-analysis-1 \
-  streamlit run /workspace/embedding_dashboard.py --server.port 8501 --server.address 0.0.0.0
-docker exec -d docker-analysis-1 python /workspace/fiftyone_prod_launch.py
-```
+### 코드 반영 — `docker cp` 는 더 이상 쓰지 않는다
+
+`docker/analysis/` 전체가 `/workspace` 로 **bind mount** 돼 있고, 플러그인 5종도
+`__plugins__/` 아래로 각각 마운트돼 있다. 이 repo 가 곧 배포 repo(`DEPLOY_REPO_ROOT`)이므로
+**여기서 파일을 고치는 순간 컨테이너 안 코드가 바뀐다.**
+
+| 바꾼 것 | 반영 방법 |
+|---|---|
+| `*.py` (스크립트) | 없음 — 다음 `docker exec ... python` 실행이 새 코드를 읽는다 |
+| 플러그인 `__init__.py` | 없음 — `FIFTYONE_PLUGINS_CACHE_ENABLED=true` 라도 `dir_state` 로 자동 무효화 |
+| `embedding_dashboard.py` | 없음 — Streamlit 자동 리로드 |
+| FiftyOne App 이 import 하는 모듈 | `docker restart docker-analysis-fiftyone-1` |
+| `requirements.txt` / `Dockerfile` | `COMPOSE_PROFILES=analysis ./scripts/compose-prod.sh build analysis` 후 세 서비스 recreate |
+
+> ⚠️ **컨테이너 안에서만 파일을 만들지 말 것.** bind mount 가 이미지 레이어의 `/workspace` 를
+> 통째로 가리므로, repo 에 없는 파일은 **컨테이너에서 보이지도 않는다**. (2026-08-18 편입 시
+> 컨테이너 전용으로 남아 있던 6파일 720줄을 repo 로 회수했다.)
+>
+> ⚠️ `docker/analysis/**` 는 배포 워크플로의 `paths-ignore` 대상이라 **분석 코드만 push 해도
+> 배포가 돌지 않는다** — 라벨링이 끊기지 않는다는 뜻이고, 동시에 CI 가 코드를 날라주지도
+> 않는다는 뜻이다. 이 repo 에서 직접 커밋하는 한 반영은 이미 끝나 있다.
+>
+> ⚠️ 배포는 `DEPLOY_REPO_ROOT` 를 `git reset --hard` 한다 — **이 repo 에 체크아웃된 브랜치가
+> 무엇이든 그 브랜치가 리셋된다.** 미push 커밋이 있는 상태에서 다른 사람이 `main` 에 push 하면
+> 소실된다. 작업 브랜치는 push 해 둘 것.
 
 ## 사용 (노트북)
 
@@ -53,10 +72,9 @@ fp.search_by_image(rows[0]["image_id"], k=20)          # 이미지 유사 검색
 
 ## ⚠️ 운영 주의
 
-- **`/workspace` 코드는 git 과 drift 한다.** 이미지에 COPY 되는 건 `fiftyone_pgvector.py` 와
-  `embedding_dashboard.py` 둘뿐이고 (`Dockerfile:16-17`), 나머지 스크립트
-  (`fiftyone_prod_launch.py`, `refresh_frames_labels.py`, `unify_coco_categories.py` 등)는
-  실행 중인 컨테이너에 수동 복사된 것이다. 수정 사항은 반드시 repo 에도 반영할 것.
+- **`/workspace` = 이 repo 의 `docker/analysis/`** (bind mount, 2026-08-18~). 이미지의
+  `COPY` 2줄은 마운트에 가려 무의미해졌고 drift 도 사라졌다. 예전에 `docker cp` 로만 존재하던
+  스크립트는 전부 repo 로 회수됨. **컨테이너 안에서 새 파일을 만들지 말 것** (repo 에 없으면 안 보인다).
 - **MINIO_ENDPOINT**: presigned URL 이 **사용자 브라우저**에서 열려야 하므로
   `ANALYSIS_MINIO_ENDPOINT` 를 host-reachable 주소로 설정.
   현재 prod 값은 `http://10.0.0.51:9000`. 내부 docker 명(`minio:9000`)은 브라우저에서 미도달
@@ -80,30 +98,31 @@ minifier 가 실제 호출 분기를 지워버린 것이라, env·설정으로�
 하지만 그 버튼이 원래 부르는 건 앱 코드가 아니라 **오퍼레이터**이고, 동일 기능의
 OSS 구현이 `@voxel51/brain` 플러그인에 있다. 번들 패치·포크 없이 플러그인 설치만으로 해결된다.
 
-### 설치 (컨테이너 재생성 후 소실 시 재실행)
+### 설치
+
+**자체 플러그인 5종(`user-*`)은 설치 절차가 없다** — compose 가 `docker/analysis/plugins/<name>` 을
+`__plugins__/<name>` 으로 각각 bind mount 한다(2026-08-18~). repo 가 정본이고, recreate 후
+`docker cp` 재적용도 필요 없다.
+
+공식 brain 플러그인만 1회 다운로드가 필요하다:
 
 ```bash
-# 1) 공식 brain 플러그인 (compute_visualization 등 16개 오퍼레이터)
+# 공식 brain 플러그인 (compute_visualization 등 16개 오퍼레이터)
 docker exec docker-analysis-1 fiftyone plugins download \
   https://github.com/voxel51/fiftyone-plugins --plugin-names @voxel51/brain
-
-# 2) 자체 플러그인 (패널 버튼 2종) — repo 소스를 복사
-docker cp docker/analysis/plugins/user-embeddings \
-  docker-analysis-1:/data/fiftyone/datasets/__plugins__/
 
 docker exec docker-analysis-1 fiftyone plugins list   # 확인
 ```
 
-- 설치 위치 `/data/fiftyone/datasets/__plugins__/` 는 **bind mount 안이라 컨테이너
-  재생성에도 유지**된다 (호스트 `docker/data/fiftyone/`). 다만 gitignore 대상이므로
-  `docker/data/` 를 밀면 사라진다 → 위 명령으로 복구.
+- `/data/fiftyone/datasets/__plugins__/` 는 **bind mount 안이라 컨테이너 재생성에도 유지**된다
+  (호스트 `docker/data/fiftyone/`). 다만 gitignore 대상이라 `docker/data/` 를 밀면
+  `@voxel51/brain` 은 사라진다 → 위 명령으로 복구. `user-*` 는 repo 마운트라 영향 없음.
 - **플러그인 캐시는 켜져 있어야 한다** (2026-08-14): 기본값(off)은 오퍼레이터 요청마다
   플러그인 모듈을 재임포트해 user-prompt-compare 의 603k행 번들 캐시·dedup 가드가 매번
   증발한다 (드롭다운 1회 = 왕복 20초+). `fiftyone_relaunch.py` 가
-  `FIFTYONE_PLUGINS_CACHE_ENABLED=true` 를 세팅하고, 컨테이너의
-  `/root/.fiftyone/config.json` 에도 `{"plugins_cache_enabled": true}` 를 써 뒀다
-  (**컨테이너 재생성 시 config.json 은 사라진다** — relaunch 경유 기동이면 env 로 커버).
-- 캐시가 켜져 있어도 플러그인 코드 반영에 App 재시작은 불필요 — 단 `docker cp` 후
+  `FIFTYONE_PLUGINS_CACHE_ENABLED=true` 를 세팅하고, **compose 의 `x-analysis-env` 에도
+  같은 값이 박혀 있다** — `config.json` 이 recreate 로 사라져도 env 가 덮는다.
+- 캐시가 켜져 있어도 플러그인 코드 반영에 App 재시작은 불필요 — 단 파일을 고친 뒤
   **플러그인 디렉토리를 touch** 해야 무효화가 잡힌다 (dir_state 가 플러그인 *디렉토리*
   mtime 기준: `docker exec docker-analysis-1 touch /data/fiftyone/datasets/__plugins__/user-prompt-compare`).
   ⚠️ **패널 이름을 바꾸거나 새 패널을 추가할 땐 App 을 재기동**하고 저장 워크스페이스도
@@ -142,8 +161,7 @@ docker exec docker-analysis-1 fiftyone plugins list   # 확인
 `brainResult` 를 **비워** 둔다 (문장 60만 점 자동 렌더 = 110초 + Chrome 크래시).
 
 ```bash
-docker cp docker/analysis/plugins/user-image-embeddings \
-  docker-analysis-1:/data/fiftyone/datasets/__plugins__/
+# 플러그인 파일 복사는 불필요(bind mount). selftest 만 돌린다.
 docker exec docker-analysis-1 sh -c \
   'cd /data/fiftyone/datasets/__plugins__/user-image-embeddings && python __init__.py'  # selftest
 docker exec docker-analysis-1 python /workspace/fiftyone_app_setup.py workspace-compare
@@ -312,7 +330,7 @@ pairwise cos 0.951. **절대 cosine 수준이 아니라 격차를 봐야 한다.
 즉석에서 보는 도구. 배경 코사인(`bg_cos`)이 함께 나오는데, 이게 높으면 그 문장이 클래스가
 아니라 **배경을 읽고 있다는 신호**("배경 자석")다.
 
-- 설치는 `user-embeddings` 와 동일한 `docker cp` 패턴 (위 설치 절 참조).
+- 설치 절차 없음 — compose bind mount (위 설치 절 참조).
 - ⚠️ **선행 조건**: `probecache` 스테이지가 만든 `probe_bank_*`/`probe_bar_*` dataset.info·필드가
   없으면 "probe 캐시가 없습니다" 로 거부한다. 먼저 아래를 돌릴 것.
 
@@ -439,8 +457,7 @@ docker exec docker-analysis-1 python /workspace/prompt_geometry.py \
 |---|---|---|
 | `sourcei` (7,498) | 프로브 · 문장 생성 | ✅ probe 캐시 `v080` + `top_prompt_v1_0_8_0` + GT 4클래스. FP 는 적고(fire 6/smoke 0/falldown 27) **FN 이 많다**(smoke 1,117 · falldown 897 · fire 131) → 「미검출 줄이기」로 쓰는 데이터셋 |
 | `sourcei-prompts` (28,605) | 뱅크 버전 만들기 | ✅ **자리표시자 0** — 실문장 보유(v080 12,480 + v084 16,125). 큐레이션 온전 |
-| `source-h` (13,144) | 프로브 · 문장 생성 | ✅ FP 가 많다(smoke 956) → 「오탐 줄이기」쪽 |
-| `source-h-prompts` | 뱅크 버전 만들기 | ⚠️ **현재 사용 불가** — npz 텍스트가 자리표시자로 덮여(2026-08-11 16:00) 94%가 문장 없음. 가드가 거부한다. 복구 = 원본 CSV 로 `bank` 재실행 후 `promptmap` |
+| ~~`source-h`~~ / ~~`source-h-prompts`~~ | – | ⚠️ **2026-08-18 사용자 요청으로 데이터셋 자체가 삭제됨** (`bank_health.sh` 커밋 참조). GT 원장은 `sourceh_v2/work/ledger.jsonl` 에 잔존 — **재생성 금지.** 현재 유효 목록은 `bank_health.sh` 의 `DATASETS` 가 정본 |
 
 > ⚠️ **`resolve_placement` 는 절대 예외를 던지면 안 된다.** `ctx.dataset` 이 `None` 인 시점에도
 > 호출되는데, 예외가 나면 FiftyOne 이 `ExecutionResult(error=...)` 를 배치 배열에 실어 보내고
@@ -472,7 +489,9 @@ README 본문은 여러 데이터셋을 전제로 설명하는데, 그것들을 
 ## frames_captions 프롬프트 뱅크 평가 (frames_bank_eval.sh)
 
 - 전체 사이클: `./docker/analysis/frames_bank_eval.sh` — 매핑이 비어 있으면 0단계(스탬프만)로
-  정직하게 끝난다. 도메인을 열려면 `bank_domain_map.yaml` 의 `domains:` 를 노션
+  정직하게 끝난다. **2026-08-18 기준 `fire_smoke` 도메인(bank_a=v1.0.8.0, bank_b=v1.0.8.4)은
+  이미 시드되어 0단계를 넘어 동작한다** — 아래 시드 절차는 추가 도메인을 열 때만 필요하다.
+  도메인을 열려면 `bank_domain_map.yaml` 의 `domains:` 를 노션
   "프롬프트 버전/관리 체계 구축" 페이지 기준으로 시드하고 뱅크 CSV 를 `--bank` 로 등록.
 - GT(LS finalized)가 늘었을 때: 재채점 불필요 —
   `frames_bank_ledger.py` → `gtsync` → `report` 만 재실행 (래퍼 주석 참조).
@@ -506,11 +525,14 @@ README 본문은 여러 데이터셋을 전제로 설명하는데, 그것들을 
 
 ## 프롬프트 관점 데이터셋 — `source-h-prompts` (promptmap)
 
+> ⚠️ **이 데이터셋은 2026-08-18 삭제되어 아래 명령/URL 은 더 이상 유효하지 않다 — 이력 참고용.**
+> 같은 구조가 `sourcei-prompts` 로 살아 있으니 실습은 그쪽에서.
+
 프레임 관점(`top_prompt_*`, `winner_*`)의 뒤집힌 짝. **점 하나 = 문장 하나**라서 프롬프트를
 카테고리별로 보고, 그 문장이 실제로 어떤 이미지에 붙는지 확인하는 용도.
 
 ```bash
-docker cp docker/analysis/prompt_geometry.py docker-analysis-1:/workspace/prompt_geometry.py
+# (bind mount 라 복사 불필요 — repo 파일이 곧 /workspace/prompt_geometry.py)
 docker exec docker-analysis-1 nice -n 10 python /workspace/prompt_geometry.py promptmap
 # → http://10.0.0.10:5153/datasets/source-h-prompts  (워크스페이스 `prompts` 선택)
 ```
@@ -627,7 +649,7 @@ BANK_PROFILE=frames docker exec ... python /workspace/prompt_geometry.py attrs  
 노션 「데이터 임베딩 회의 내용 정리」 §1(실내 데이터로 이동) 적용. 이벤트 구간만 프레임화.
 
 ```bash
-docker cp docker/analysis/sourcei_build.py docker-analysis-1:/workspace/
+# (bind mount 라 복사 불필요)
 docker exec docker-analysis-1 python /workspace/sourcei_build.py all   # segments→frames→sam3→embed→build
 # 뱅크 분석은 prompt_geometry 재사용 (v1.0.8.0 단일 뱅크)
 BANK_A=v1.0.8.0 BANK_B=v1.0.8.0 ... prompt_geometry.py attach --profile sourcei
@@ -684,7 +706,7 @@ BANK_A=v1.0.8.0 BANK_B=v1.0.8.0 ... prompt_geometry.py attach --profile sourcei
 정본 `docker/analysis/fiftyone_app_setup.py` (git). 배포·실행:
 
 ```bash
-docker cp docker/analysis/fiftyone_app_setup.py docker-analysis-1:/workspace/
+# (bind mount 라 복사 불필요)
 docker exec docker-analysis-1 python /workspace/fiftyone_app_setup.py selftest              # 팔레트 위생 검사
 docker exec docker-analysis-1 python /workspace/fiftyone_app_setup.py colors [ds1,ds2,...]   # 기본: sourcei,sourcei-prompts,source-h,source-h-prompts
 docker exec docker-analysis-1 python /workspace/fiftyone_app_setup.py workspace              # sourcei: rules (Samples | Embeddings, rule_cross 불일치)
@@ -708,7 +730,7 @@ docker exec docker-analysis-1 python /workspace/fiftyone_app_setup.py workspace-
 ### user-prompt-compare — 교차 데이터셋 비교 패널 (2026-08)
 
 - 정본 `docker/analysis/plugins/user-prompt-compare/` → 배포:
-  `docker cp docker/analysis/plugins/user-prompt-compare/. docker-analysis-1:/data/fiftyone/datasets/__plugins__/user-prompt-compare/`
+  (bind mount 라 복사 불필요 — 디렉토리 touch 만으로 캐시가 무효화된다)
 - 워크스페이스 `compare`(sourcei): Samples | Embeddings | Prompt Compare 3-패널(H1 확정안).
   모드 A=프레임↔문장(argmax_k1 조인, dist_iou 모드는 클릭 무효), 모드 B=같은
   데이터셋 그룹 overlay(frames_captions에서 project 비교).

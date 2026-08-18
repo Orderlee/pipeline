@@ -26,6 +26,8 @@ CCTV/보안 영상을 수집 → 중복제거 → Gemini 라벨링 → SAM3 bbox
 
 ```bash
 # 의존성 설치 (editable)
+# ⚠️ pyproject.toml 은 git 미추적(.gitignore) — fresh clone 에는 없다. 호스트 잔존 파일로만
+#    동작하며 CI 는 이 경로를 타지 않는다(self-hosted 러너 고정 venv).
 pip install -e ".[dev]"
 
 # 로컬 테스트
@@ -105,13 +107,16 @@ docker exec docker-postgres-1 psql -U airflow -d vlm_pipeline -c "SELECT COUNT(*
    `docker/Dockerfile`, `docker/app/`, `configs/`, `scripts/`, `gcp/`, `split_dataset/`,
    `src/python/`, **`src/vlm_pipeline/`**, `src/gemini/`,
    `docker/{sam3,pg-backup,genai,embedding,trainer,mlflow,curation}/`,
+   `docker/analysis/Dockerfile`·`docker/analysis/requirements.txt`(analysis 는 이 두 파일만 —
+   `.py`·플러그인은 bind mount 라 재빌드 불요, `docker/analysis/**` 자체는 `paths-ignore`),
    `docker/docker-compose.yaml`, 그리고 배포 workflow 파일 자체
 3. **deploy 잡** — 호스트 코드를 deployed SHA로 정렬:
    - **(a) rsync** `-a --delete` 워크스페이스 → DEPLOY_ROOT 동기화 (`src/`, `configs/`, `gcp/`, `scripts/`, `split_dataset/` + `docker/app/` 일부 + compose/Dockerfile). `docker/app/` rsync 는 `dagster_home/`, `dagster_home_staging/`, `credentials/` 를 `--exclude`. `docker/data/` 는 애초에 rsync 소스가 아니고 gitignore 대상이라 양쪽 모두 안 건드림
    - **(b) git hard-reset** `git -C ${DEPLOY_REPO_ROOT} fetch origin && reset --hard ${GITHUB_SHA}` — 호스트 git tree(`.git/HEAD`, `git log`, `git status`)를 deployed commit과 정확히 일치시킴. **rsync로 src 파일은 갱신되지만 `.git`은 안 건드리므로** 이 step이 없으면 호스트의 `git log`가 영원히 stale로 보임. tracked 파일만 reset되고 `dagster_home/` 등 untracked는 유지됨.
 4. env 파일 복원 + `REQUIRED_ENV_KEYS` 검증 (누락 시 hard fail), MinIO 키 자동 파생
 5. `postgres` healthy 대기 → dagster 3종 stop/rm → code-server → daemon → dagster 순차 기동 →
-   profile 별 조건부 build/recreate(`sam3`/`pg-backup`/`genai`/`embedding-service`/`trainer`) →
+   profile 별 조건부 build/recreate(`sam3`/`pg-backup`/`genai`/`embedding-service`/`trainer`/`analysis`) →
+   analysis 3서비스는 `up -d` 로만 보증(force-recreate 아님 — FiftyOne 세션 보호) →
    HEALTHCHECK_URL 응답 검증 (prod `:3030/server_info`, staging `:3031/server_info`)
 6. AI deploy 분석 (Claude CLI, best-effort, 실패해도 배포는 성공)
 
@@ -121,8 +126,8 @@ docker exec docker-postgres-1 psql -U airflow -d vlm_pipeline -c "SELECT COUNT(*
 > 단, **CI 경로로 들어온 `src/vlm_pipeline/` 변경은 재빌드 트리거에 포함**되므로 자동 반영된다.
 
 > ⚠️ **배포 = 라벨링 중단**: `docs/**`, `*.md`, `tests/**`, `.cursor/**`, `.agent/**`,
-> `.github/copilot-instructions.md`, `.github/workflows/claude*.yml` 는 `paths-ignore` 로 배포를
-> 아예 트리거하지 않는다. 그 밖의 `main` push 는 **이미지 재빌드 여부와 무관하게** dagster 3종을
+> `.github/copilot-instructions.md`, `.github/workflows/claude*.yml`, **`docker/analysis/**`**(2026-08-18
+> 추가) 는 `paths-ignore` 로 배포를 아예 트리거하지 않는다. 그 밖의 `main` push 는 **이미지 재빌드 여부와 무관하게** dagster 3종을
 > 항상 stop→rm→recreate 하므로 진행 중 run 이 끊긴다 (deploy-stack.sh 의 이 구간은 `BUILD_REQUIRED`
 > 가드 밖에 있음).
 
@@ -197,6 +202,10 @@ git -C /home/user/work_p/Datapipeline-Data-data_pipeline_test status       # dev
   - "어떻게 수정했다"보다 **"무엇과 왜 수정했는지"** (`.gitmessage.txt` 참고)
 - **에러 처리**: per-file fail-forward — 한 파일 실패해도 나머지 계속 처리
 - **테스트**: pytest, Postgres fixture, mocked MinIO (`unittest.mock`), `tests/conftest.py` 공통 fixture
+  - ⚠️ **새 테스트 파일의 기본값은 "CI 미실행"이다.** `.gitignore` 가 `tests/unit/*` 등을 blanket
+    무시하고 `!tests/unit/<파일>` allowlist 로만 편입한다. allowlist 에 안 넣으면 untracked 라
+    CI 가 절대 돌리지 않는다 — 로컬 pytest 초록/빨강은 CI 신호가 아니다. 편입 여부는
+    `git ls-files tests/` 로만 확인 (2026-08-18 에 14파일을 이 경로로 편입, CI 732 passed).
 
 ---
 
@@ -279,6 +288,10 @@ git -C /home/user/work_p/Datapipeline-Data-data_pipeline_test status       # dev
   | `${DAGSTER_HOME_HOST_PATH}` = `./app/dagster_home` | `/app/dagster_home` | 런타임 상태 |
   | `${DOCKER_DATA_HOST_PATH}` = `./data` | `/data` | 모델 캐시·fiftyone |
 
+  - `fiftyone-mongo` 는 `--wiredTigerCacheSizeGB 4` 로 캐시 상한이 걸려 있다
+    (2026-08-18 에 8→4GB 로 축소 — 호스트 RAM 62.5GB 공유 환경에서 회수 목적).
+    FiftyOne 이 느려졌다고 이 값을 올리기 전에 호스트 RAM 여유부터 확인할 것.
+
   - incoming/archive/manifest 는 **별도 바인드가 아니라** 그 단일 바인드 안의 env 서브경로다:
     `INCOMING_DIR=/nas/data/incoming`, `ARCHIVE_DIR=/nas/data/archive`,
     `MANIFEST_DIR=/nas/data/incoming/.manifests`.
@@ -306,17 +319,20 @@ git -C /home/user/work_p/Datapipeline-Data-data_pipeline_test status       # dev
 - `PYTHONPATH` (컨테이너): `/:/src/python:/src/vlm`
 - **호스트 포트 ≠ 컨테이너 포트인 서비스** (`.env` 로 매핑되므로 착각하기 쉬움):
   `embedding-service` 8003→**8004**, `genai` 8088→**8089**, `mlflow` 5000→**5500**,
-  `analysis` FiftyOne 5151→**5153** / Streamlit 8501→**8503**, `postgres` 5432→**15433**
-- **`docker-analysis-1` 은 JupyterLab 만 자동 기동**한다. FiftyOne(:5153)·Streamlit(:8503) 은
-  포트만 열려 있고 프로세스는 안 뜨므로 **컨테이너 재시작·recreate·호스트 재부팅 때마다
-  `docker exec` 로 다시 띄워야 한다** (절차는 `docker/analysis/README.md`).
-  컨테이너 `/workspace` 코드는 이미지에 2개 파일만 COPY 되고 나머지는 수동 복사본이라
-  git 과 drift 한다 — 위 "단일 진리 원칙"은 `src/` 에만 적용되고 **이 컨테이너엔 적용되지 않는다**.
-- ⚠️ **배포는 analysis 컨테이너를 건드리지 않는다** (2026-08-10 실측: `deploy-stack.sh` 에
-  `analysis` 분기 0회, 재빌드 트리거에 `docker/analysis/` 0회, analysis 컨테이너가 dagster
-  recreate 를 생존). 그래서 역방향 함정이 있다 — `docker/analysis/**` 는 `paths-ignore` **밖**이라
-  main push 가 **dagster 3종만 recreate 시켜 라벨링을 끊고** analysis 에는 아무 효과가 없다.
-  **분석 코드만 담은 main push 금지** — `dev` 로 보내거나 다른 배포와 묶고, 반영은 `docker cp`.
+  `analysis-fiftyone` 5151→**5153** / `analysis-streamlit` 8501→**8503**, `postgres` 5432→**15433**
+- **analysis 스택 = 서비스 3개** (2026-08-18 P0 편입): `analysis`(JupyterLab, `docker-analysis-1`) /
+  `analysis-fiftyone`(:5153) / `analysis-streamlit`(:8503). 셋 다 `restart: unless-stopped` 라
+  **죽으면 자동 재기동**된다 — `docker exec -d` 손기동 절차는 폐기됐다.
+  `deploy-stack.sh` 의 `analysis_active()` 분기가 배포 때 세 서비스를 `up -d` 한다
+  (force-recreate 아님 — 무관한 변경으로 FiftyOne 세션을 끊지 않기 위해).
+- **`/workspace` 는 `docker/analysis/` 의 bind mount** 이므로 "단일 진리 원칙"이 이 컨테이너에도
+  적용된다. 이 repo 가 곧 `DEPLOY_REPO_ROOT` 라 **여기서 커밋하면 그대로 실행 코드**이고,
+  `docker cp` 는 필요 없다. 플러그인 5종(`user-*`)도 `__plugins__/` 로 각각 마운트된다.
+  ⚠️ 마운트가 이미지 레이어를 가리므로 **컨테이너 안에서만 만든 파일은 보이지 않는다.**
+  재빌드가 필요한 것은 `docker/analysis/{Dockerfile,requirements.txt}` 뿐.
+- `docker/analysis/**` 는 배포 워크플로의 **`paths-ignore` 안**에 있다(커밋 ab89fe2) —
+  분석 코드만 push 하면 배포가 아예 안 돌아 **라벨링이 끊기지 않는다**. 동시에 CI 가 코드를
+  날라주지도 않지만, bind mount 라 이 repo 의 커밋이 이미 반영이다.
 - prod MinIO 는 compose 의 `minio` 서비스가 아니라 **NAS 박스의 MinIO**(`10.0.0.51:9000`)다.
   로컬 `minio` 컨테이너는 prod 에서 기동하지 않는다.
 
@@ -337,7 +353,7 @@ git -C /home/user/work_p/Datapipeline-Data-data_pipeline_test status       # dev
 | `scripts/promote_pe_core.py` | PE-Core 포인터 전환 + partial-HNSW + 서빙 교체 (승격/롤백) | MLOps (만들되 기본 미실행; `--dry-run`) |
 | `scripts/dataset_pull.py` | dataset_catalog pin 해석 → `dvc get` (DVC 버전 데이터셋 pull) | MLOps (기본 dry-run) |
 | `scripts/clear_maintenance.sh` | GPU 정비락 수동 강제 해제 + `/maintenance/exit` + `/warmup` | MLOps 복구 (`.agent/skill/mlops-finetune/SKILL.md` §9) |
-| `scripts/repair_unsanitized_raw_keys.py` | 비정규 MinIO 키(`source-h/<한글>`) → 정본 `raw_key`(`source-h/<sanitize>`) 서버사이드 복사 | 복구 (기본 dry-run, `--apply`). source-h 804건 대기 중 |
+| `scripts/repair_unsanitized_raw_keys.py` | 비정규 MinIO 키(원본 표기 그대로 올라간 객체) → 정본 `raw_key`(sanitize 로마자) 서버사이드 복사 | 복구 (기본 dry-run, `--apply`). 잔여 건수는 문서에 박지 말고 **실행 직전 DB 로 확인** — 대상 코호트 `raw_files` 는 여전히 전량 `ingest_status='uploading'`(실측 871행) |
 
 ### Deprecated (scripts/archive/ 로 이동됨)
 
@@ -380,7 +396,10 @@ git -C /home/user/work_p/Datapipeline-Data-data_pipeline_test status       # dev
 
 ## GCS 외부 수집
 
-- 버킷: `source-a-rtsp-bucket` (주), `source-b-event-bucket`, `source-c-event-bucket`
+- 버킷 목록의 정본은 코드 상수 — `src/vlm_pipeline/defs/gcp/assets.py` 의 `DEFAULT_GCP_BUCKETS`(현재 2개).
+  `definitions_production.py` 가 이 상수를 `gcs_download_schedule` run_config 로 주입한다.
+  레거시 셸 스크립트(`gcp/download_from_gcs.sh`)의 기본 버킷은 이 상수와 **다르므로**
+  스케줄이 실제로 무엇을 받는지는 반드시 상수 쪽을 볼 것.
 - 스크립트: `gcp/download_from_gcs_rclone.py`
 - Dagster schedule: `gcs_download_schedule` (매일 04:00 KST)
 - 0바이트 파일 복구: `GCS_ZERO_BYTE_RETRIES` (기본 2)
@@ -540,11 +559,19 @@ git -C /home/user/work_p/Datapipeline-Data-data_pipeline_test status       # dev
 
 - `embedding-service` 컨테이너, 호스트 포트 **`8004`** → 컨테이너 8003, 호스트 GPU 0
 - 모델 PE-Core-L14-336 (`open_clip`, `hf-hub:timm/PE-Core-L-14-336`), 1024-d
-- 벡터 → `image_embeddings` (pgvector). `entity_type` = `frame`/`caption`/`video`/`detection`,
+- 벡터 → `image_embeddings` (pgvector). `entity_type` = `frame`/`caption`/`video`/`detection`/**`prompt`**
+  (뱅크 문장 텍스트 벡터, `entity_id` = 문장 `content_hash` — migration 021. 벡터는 텍스트만의
+  함수라 뱅크 간 공유 문장은 벡터 1개면 충분하고, 클래스 멤버십은 `bank_sentences` 쪽 속성),
   `UNIQUE(entity_type, entity_id, model_name)`
 - 인덱스는 **entity_type 별 partial HNSW** (통합 인덱스는 제거됨)
 - 서빙 모델 포인터 = `embedding_active_model` 테이블 단일 행. 파인튠 승격은 재임베딩 후
   이 포인터를 원자 전환하는 방식 (`scripts/promote_pe_core.py`)
+- **프롬프트 DB (migrations 018~021) 적용 상태 주의**: `prompt_banks`/`bank_sentences`(019)와
+  prompt partial HNSW(021)는 prod 에 **러너 밖에서 수동 선적용**됐다(`_pg_migrations` 에 기록).
+  `generation_prompts`+`v_prompt_*` 뷰(018/020)는 **파일만 main 에 있고 prod DB 미적용** —
+  018 은 `video_metadata` 를 ALTER 하므로 라벨링 중 psql 수동 적용 금지. 러너에 지연 게이트가
+  없어서 **다음 이미지 재빌드 배포의 부팅 시 자동 적용된다.** `generation_prompts` write 경로는
+  아직 미배선(테이블 정의만 존재).
 
 ---
 

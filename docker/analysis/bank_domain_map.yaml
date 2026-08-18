@@ -1,16 +1,16 @@
-# frames_captions 프롬프트 뱅크 평가 — 도메인 매핑 (fail-closed)
+# `frames` 프롬프트 뱅크 평가 — 도메인 매핑 (fail-closed)
+# (2026-08-19 개명: 데이터셋 frames_captions → frames. 아래 스펙 문서명은 파일명이라 그대로)
 # 스펙: docs/superpowers/specs/2026-07-31-frames-captions-bank-eval-design.md §5-4
 #
 # 시드 정본: 노션 "프롬프트 버전/관리 체계 구축" (도메인 번호·버전쌍 확정 후 기입).
 # domains 가 비어 있으면 score 스테이지는 hard-skip 한다 (0단계: 스탬프만 — 정상 동작).
 crosswalk_version: 1
-domains: {}
-# 시드 예시 (노션 대조 후 주석 해제):
-# domains:
-#   fire_smoke:
-#     projects: [fire_smoke]     # frames_captions 의 project 필드 값들
-#     bank_a: v1.0.5.7           # A 슬롯 = 기준(구) 버전 — /data/fiftyone/sourceh/prompts/<ver>.npz
-#     bank_b: v2.0.5.3           # B 슬롯 = 신버전
+# 시드 확정 2026-08-18 (미결 #1 해소 — 사용자 결정): npz·실측·attach 실행까지 갖춰진 유일한 쌍.
+domains:
+  fire_smoke:
+    projects: [fire_smoke]       # `frames` 데이터셋의 project 필드 값들
+    bank_a: v1.0.8.0             # A 슬롯 = 기준 — /data/fiftyone/sourceh/prompts/<ver>.npz
+    bank_b: v1.0.8.4             # B 슬롯 = 신버전
 class_crosswalk:
   # box category(image_label_annotations.category) → frame class. 미등재 = 그 이미지 GT 제외.
   fire: fire

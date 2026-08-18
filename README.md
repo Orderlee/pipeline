@@ -282,7 +282,7 @@ FiftyOne Embeddings 패널의 OSS 제한(대용량 시각화·색상 조합·좌
 
 ## Database Schema
 
-주요 테이블/뷰는 `src/vlm_pipeline/sql/schema_postgres.sql`에 정의되고, 증분 변경은 `src/vlm_pipeline/sql/migrations/postgres/`(`001`~`017`)로 관리됩니다.
+주요 테이블/뷰는 `src/vlm_pipeline/sql/schema_postgres.sql`에 정의되고, 증분 변경은 `src/vlm_pipeline/sql/migrations/postgres/`(`001`~`021`)로 관리됩니다.
 
 ### 운영 핵심 테이블/뷰
 
@@ -298,7 +298,7 @@ FiftyOne Embeddings 패널의 OSS 제한(대용량 시각화·색상 조합·좌
 | `v_finalized_labels` (VIEW) | finalized caption / timestamp / bbox 라벨 통합 조회 (`label_type` union; grain이 달라 테이블 대신 VIEW) |
 | `datasets` / `dataset_clips` | 데이터셋 정의 및 dataset ↔ clip 연결 |
 | `classification_datasets` | classification 빌드 산출물 추적 |
-| `image_embeddings` | PE-Core 프레임/캡션 임베딩 (pgvector, `ENABLE_EMBEDDING`일 때) |
+| `image_embeddings` | PE-Core 임베딩 (pgvector) — `entity_type` = frame/caption/video/detection/**prompt**(021 신설, 뱅크 문장 벡터), entity_type 별 partial HNSW |
 | `train_dataset_versions` | 동결 학습셋 버전 메타 및 lineage (`task`, `manifest_key`, `content_checksum`, count/split 통계) |
 | `model_registry` | 모델 버전 레지스트리 및 promote 상태 (`model`, `version`, `train_dataset_version_id`, metrics/checkpoint/env lock) |
 | `gpu_maintenance_lock` | GPU 서빙 정비락 상태 (`target`, `active`, `owner_run_id`, `heartbeat_at`, `ttl_seconds`) |
@@ -318,6 +318,147 @@ FiftyOne Embeddings 패널의 OSS 제한(대용량 시각화·색상 조합·좌
 | `labeling_configs` | config/parameters JSON 동기화 (버전 관리) |
 | `requester_config_map` | requester/team → config 매핑 (personal → team → fallback 우선순위) |
 | `genai_batches` / `genai_jobs` | GenAI Studio 비디오 생성 batch/job lifecycle |
+
+### 프롬프트 DB (migrations 018~021, 2026-08 신설)
+
+라벨링 프롬프트와 제로샷 분류용 프롬프트 뱅크를 DB 로 정본화한 계층입니다.
+
+| 테이블/뷰 | 설명 |
+|--------|------|
+| `generation_prompts` | 생성 모델에 실제로 보낸 프롬프트 원문의 정본(스키마). `UNIQUE(prompt_type, model_name, content_hash)` 로 dedup. `video_metadata.timestamp_generation_prompt_id` 가 참조 → 어떤 프롬프트로 라벨링됐는지 역추적. ⚠️ 현재는 테이블 정의만 신설 — write 경로는 아직 미배선 |
+| `prompt_banks` | 제로샷 분류용 프롬프트 뱅크 버전 원장. `UNIQUE(source, version_tag)`. `parent_bank_id` self-FK 로 델타 뱅크 lineage 추적 |
+| `bank_sentences` | 뱅크 소속 문장 (bank_id CASCADE). `UNIQUE(bank_id, gidx)` — 같은 뱅크 안에 동일 문장이 반복 등장할 수 있어(뱅크는 집합이 아니라 순서열) content_hash 유니크가 아니다. 행 identity 는 gidx |
+| `v_prompt_catalog` / `v_prompt_lineage` | 카탈로그 뷰 = `generation_prompts` ∪ `prompt_banks` UNION ALL 인벤토리. 계보 뷰 = `generation_prompts` ⋈ `video_metadata` ⋈ `labels` 로 human_edited 추적. 두 뷰 모두 문장·임베딩 테이블은 조인하지 않는다 (migration 020) |
+| (인덱스) `image_embeddings_hnsw_prompt` | 뱅크 문장 벡터용 partial HNSW — 문장 임베딩은 별도 테이블이 아니라 `image_embeddings(entity_type='prompt', entity_id=content_hash)` 에 흡수 (021, `CONCURRENTLY` 빌드) |
+
+### 테이블 관계도 (ERD)
+
+핵심 테이블만 표시합니다. 실선 = 명시 FK, 점선 = 코드 관례로만 조인되는 암묵 관계
+(`image_embeddings` 는 polymorphic 이라 `entity_type`+`entity_id` 로 소프트 조인).
+
+```mermaid
+erDiagram
+    raw_files ||--o| video_metadata : "asset_id (1:0..1)"
+    raw_files ||--o{ labels : "asset_id"
+    raw_files ||--o{ processed_clips : "source_asset_id"
+    raw_files ||--o{ image_metadata : "source_asset_id"
+    labels ||--o{ processed_clips : "source_label_id"
+    processed_clips ||--o{ image_metadata : "source_clip_id"
+    processed_clips ||--o{ image_labels : "source_clip_id"
+    image_metadata ||--o{ image_labels : "image_id"
+    image_labels ||--o{ image_label_annotations : "image_label_id (CASCADE)"
+    image_metadata ||--o{ image_label_annotations : "image_id"
+    datasets ||--o{ dataset_clips : "dataset_id"
+    processed_clips ||--o{ dataset_clips : "clip_id"
+    labeling_specs |o..o{ raw_files : "spec_id (암묵)"
+
+    datasets ||--o{ train_dataset_versions : "upstream_dataset_id"
+    train_dataset_versions ||--o{ model_registry : "train_dataset_version_id"
+    dataset_catalog ||--o{ train_dataset_versions : "dataset_catalog_id"
+    dataset_catalog ||--o{ dataset_catalog_aliases : "dataset_catalog_id"
+
+    labeling_specs ||--o{ generation_prompts : "spec_id (예약, 현재 NULL)"
+    generation_prompts ||--o{ video_metadata : "timestamp_generation_prompt_id"
+    prompt_banks ||--o{ bank_sentences : "bank_id (CASCADE)"
+    prompt_banks ||--o{ prompt_banks : "parent_bank_id (델타 lineage)"
+
+    image_metadata |o..o{ image_embeddings : "entity_type=frame (암묵)"
+    labels |o..o{ image_embeddings : "entity_type=caption (암묵)"
+    raw_files |o..o{ image_embeddings : "entity_type=video (암묵)"
+    bank_sentences }o..o| image_embeddings : "entity_type=prompt, entity_id=content_hash (암묵)"
+    embedding_active_model |o..o{ image_embeddings : "model_name 포인터 (암묵)"
+
+    raw_files {
+        TEXT asset_id PK
+        TEXT checksum UK
+        TEXT media_type "video|image"
+        TEXT ingest_status
+    }
+    video_metadata {
+        TEXT asset_id "PK, FK"
+        TEXT timestamp_status
+        TEXT camera_angle "017 씬축"
+        UUID timestamp_generation_prompt_id FK "018"
+    }
+    labels {
+        TEXT label_id PK
+        TEXT asset_id FK
+        INT event_index "UNIQUE(labels_key, event_index)"
+        TEXT review_status
+    }
+    processed_clips {
+        TEXT clip_id PK
+        TEXT source_asset_id FK
+        TEXT source_label_id FK
+    }
+    image_metadata {
+        TEXT image_id PK
+        TEXT source_asset_id FK
+        TEXT source_clip_id FK
+    }
+    image_labels {
+        TEXT image_label_id PK
+        TEXT image_id FK
+        TEXT label_tool
+        TEXT review_status
+    }
+    image_label_annotations {
+        TEXT annotation_id PK
+        TEXT image_label_id FK "CASCADE, UNIQUE(image_label_id, box_index)"
+        INT box_index
+        TEXT category
+    }
+    image_embeddings {
+        TEXT entity_type "frame|caption|video|detection|prompt"
+        TEXT entity_id "UNIQUE(entity_type, entity_id, model_name)"
+        TEXT model_name
+        VECTOR embedding "1024-d, entity_type 별 partial HNSW"
+    }
+    embedding_active_model {
+        TEXT scope PK
+        TEXT model_name "활성 포인터"
+    }
+    generation_prompts {
+        UUID prompt_id PK
+        TEXT prompt_type "CHECK 6종"
+        TEXT model_name
+        TEXT content_hash "UNIQUE(prompt_type, model_name, content_hash)"
+        TEXT spec_id FK "예약, 현재 NULL"
+    }
+    prompt_banks {
+        UUID bank_id PK
+        TEXT source "UNIQUE(source, version_tag)"
+        TEXT version_tag
+        UUID parent_bank_id FK "self"
+    }
+    bank_sentences {
+        UUID sentence_id PK
+        UUID bank_id FK "CASCADE"
+        INT gidx "UNIQUE(bank_id, gidx)"
+        TEXT content_hash "암묵→embeddings(prompt)"
+        TEXT class_label
+    }
+    model_registry {
+        TEXT model_version_id PK
+        TEXT status "candidate|promotable|promoted|archived|rolled_back"
+        TEXT train_dataset_version_id FK
+    }
+    train_dataset_versions {
+        TEXT train_dataset_version_id PK
+        TEXT upstream_dataset_id FK
+        UUID dataset_catalog_id FK "016"
+    }
+    dataset_catalog {
+        UUID dataset_catalog_id PK
+        TEXT task
+        TEXT git_rev
+    }
+    dataset_catalog_aliases {
+        TEXT task "PK 복합(task, alias)"
+        TEXT alias
+        UUID dataset_catalog_id FK
+    }
+```
 
 현재 스키마에서 중요한 점:
 

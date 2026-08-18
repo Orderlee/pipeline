@@ -208,7 +208,7 @@ def _compare_space(fo, ds):
       H1 확정안 v2 — 좌우 반반, 좌=Samples/Embeddings 세로 스택, 우=Prompt Compare.
       ``sizes=[0.5, 0.5]``는 두 최상위 children 사이의 폭 배분 — 좌 스택 내부 리프가
       2개라도 바깥 분할은 outer children 수(2) 기준이라 3-way 로 새지 않는다.
-    - "-prompts" 데이터셋·짝 없는 데이터셋(frames_captions 등): **같은 3분할**에서
+    - "-prompts" 데이터셋(`frames-prompts` 등)·짝 없는 데이터셋: **같은 3분할**에서
       우측 Prompt Compare 자리만 **`user_image_embeddings` 패널**로 교체
       (2026-08-14 사용자 요청 4 + "3분할이 아닌데?" + "prompt compare 처럼 플러그인
       하면 되잖아" 피드백). 네이티브 Embeddings 패널을 그 자리에 넣지 않는 이유는
