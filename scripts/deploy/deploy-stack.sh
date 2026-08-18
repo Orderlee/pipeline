@@ -152,6 +152,15 @@ trainer_active() {
     compose config --services 2>/dev/null | grep -qx trainer
 }
 
+# analysis 3서비스(analysis / analysis-fiftyone / analysis-streamlit)도 profile gating
+# (profiles:["analysis"]). 2026-08-18: 배포 lifecycle 에 편입 — 이전엔 deploy 가
+# analysis 를 전혀 몰라서 컨테이너 재생성 후 FiftyOne·Streamlit 이 죽은 채 방치됐다.
+# ⚠️ `.py` 는 bind mount(./analysis:/workspace)라 위쪽 git reset --hard 만으로 이미
+#    반영된다 — 재빌드가 필요한 건 Dockerfile / requirements.txt 가 바뀐 경우뿐.
+analysis_active() {
+    compose config --services 2>/dev/null | grep -qx analysis
+}
+
 if [[ "${BUILD_REQUIRED}" == "true" ]]; then
     # 2026-05-21: sam3 도 build target 에 포함 — docker/sam3/ 변경 시 자동 rebuild.
     # 이전에는 app 만 빌드해서 docker/sam3/app.py 변경이 컨테이너에 반영 안 됐음.
@@ -171,6 +180,9 @@ if [[ "${BUILD_REQUIRED}" == "true" ]]; then
     fi
     if trainer_active; then
         build_targets+=(trainer)
+    fi
+    if analysis_active; then
+        build_targets+=(analysis)
     fi
     compose build --progress plain "${build_targets[@]}"
 else
@@ -248,6 +260,16 @@ if embedding_active; then
         compose up -d --no-deps embedding-service
         echo "embedding-service ensured running"
     fi
+fi
+
+# 2026-08-18: analysis 스택 (profiles:["analysis"]) — JupyterLab / FiftyOne / Streamlit.
+# dagster 와 무관하고, 코드는 bind mount 라 배포가 코드를 나르지 않는다(git reset 이 나른다).
+# 그래서 **force-recreate 를 쓰지 않는다** — 무관한 변경으로 BUILD_REQUIRED 가 서도
+# 분석 중인 FiftyOne 세션을 끊지 않기 위해서다. compose 는 서비스 정의나 이미지가
+# 실제로 바뀐 경우에만 알아서 recreate 하므로, 이 호출은 "죽어 있으면 살린다"에 가깝다.
+if analysis_active; then
+    compose up -d --no-deps analysis analysis-fiftyone analysis-streamlit
+    echo "analysis stack ensured running"
 fi
 
 for i in $(seq 1 30); do

@@ -26,11 +26,22 @@ import argparse
 import collections
 import json
 import os
+import re
 import sys
 import time
 
 import numpy as np
 
+# ── 프로필 공용 축 3종 (2026-08-18, Phase 1) ────────────────────────────────
+# 사이트 층화(화면4·LOPO)를 두 데이터셋에서 같은 코드로 돌리기 위한 프로필 파라미터.
+#   group_field   원장 행에서 그룹 축을 읽을 키 (sourceh=카메라 / frames=project)
+#   group_plural  CSV 컬럼 접두 — sourceh 은 기존 prune CSV 의 `n_cams_*` 와 **문자 동일**해야
+#                 하고, frames 는 계획서(§3)의 `n_projects_win` 과 문자 동일해야 한다
+#   group_unit    라벨의 단위 세는 말 ("3대" vs "3곳") — SCOPE 라벨에 박힌다
+#   key_join      원장 `key` → FiftyOne 문서 조인 방식.
+#                 filepath_tail = `<부모폴더>/<파일명>` (frames_eval·sourcei_build 원장)
+#                 sample_id     = key 자체가 FiftyOne sample id (frames_bank_ledger 원장)
+#   embed_field   sample_id 프로필에서 임베딩을 스트리밍할 필드 (embed.npz 부재 시 폴백)
 PROFILES = {
     "sourceh": {
         "root": "/data/fiftyone/sourceh_v2",
@@ -38,13 +49,28 @@ PROFILES = {
         "prompt_dir": "/data/fiftyone/sourceh/prompts",
         "class_names": {0: "normal", 1: "falldown", 2: "fire", 3: "smoke"},
         "map_yaml": None,
+        # 원장 = frames_eval.py (NAS 폴더명 파생 = 사람 재라벨). 그 파일의 GT_SOURCE 와 동일 문자열.
+        "expected_gt_source": frozenset({"nas_folder"}),
+        "group_field": "camera", "group_plural": "cams", "group_unit": "대",
+        "key_join": "filepath_tail", "embed_field": None,
     },
     "frames": {
         "root": "/data/fiftyone/frames_bank",
-        "dataset": "frames_captions",
+        # 2026-08-19 개명: FiftyOne 데이터셋 `frames_captions` → `frames` (짝 데이터셋도
+        # `frames_captions-prompts` → `frames-prompts`). 프로필 키와 우연히 같아진 것이지
+        # 자동 파생이 아니다 — `root`(뱅크 산출물 경로 `frames_bank`)는 개명 대상이 아니다.
+        "dataset": "frames",
         "prompt_dir": "/data/fiftyone/sourceh/prompts",   # 뱅크 npz 는 버전 전역 자원 — 공유
         "class_names": {0: "normal", 1: "falldown", 2: "fire", 3: "smoke", 4: "smoking"},
         "map_yaml": os.environ.get("BANK_DOMAIN_MAP", "/workspace/bank_domain_map.yaml"),
+        # 원장 = frames_bank_ledger.py (Label Studio finalized = 사람 검수).
+        "expected_gt_source": frozenset({"ls_finalized"}),
+        # 원장 키 = FiftyOne **샘플 id**(24-hex, 실물 대조 2026-08-18 — image_id(UUID)가
+        # 아니다). 미디어가 평면(media/<uuid>.jpg)이라 basename 조인도 불가 — promptmap 등
+        # 프레임 조인은 샘플 id 로 한다 (sourceh/sourcei 는 경로 파생 키라 불필요).
+        "frame_key_field": "id",
+        "group_field": "project", "group_plural": "projects", "group_unit": "곳",
+        "key_join": "sample_id", "embed_field": "image_embedding",
     },
     # source-i — `sourcei_build.py` 가 만든 실내 이벤트구간 프레임.
     # ⚠️ recall 벤치마크 아님. 4클래스 GT 가 falldown 57 / fire 5 / smoke 6 구간뿐이고
@@ -55,6 +81,17 @@ PROFILES = {
         "prompt_dir": "/data/fiftyone/sourceh/prompts",   # 뱅크 npz 공유
         "class_names": {0: "normal", 1: "falldown", 2: "fire", 3: "smoke"},
         "map_yaml": None,
+        # 원장 = sourcei_build.py `kind_of()` 가 내는 4값. 위 프로필과 달리 **단일값이 아니다**
+        # — 근거 강도 순서(folder > filename > caption)를 값으로 남기는 설계라 한 원장 안에
+        # 정상적으로 섞여 있다. 'none' 은 문자열이지 None 이 아니다(캡션 없음 = 근거 없음).
+        # ⚠️ 'caption' 은 Gemini 파생 = **모델 라벨**이다. 여기서 통과시키는 건 그게 이 원장의
+        #    설계값이라서일 뿐, 학습/eval GT 로 승격해도 된다는 뜻이 아니다 (위 FP 스트레스
+        #    테스트 주석 + CLAUDE.md "자기학습 금지" 참조).
+        # ⚠️ 비대칭 주의: sourcei_build.py 는 (frames_eval.py / frames_bank_ledger.py 와 달리)
+        #    쓰기 쪽 assert_gt_source_pure 가드가 **없다** — 이 읽기 쪽 체크가 유일한 방어선이다.
+        "expected_gt_source": frozenset({"folder", "filename", "caption", "none"}),
+        "group_field": "camera", "group_plural": "cams", "group_unit": "대",
+        "key_join": "filepath_tail", "embed_field": None,
     },
 }
 PROFILE = "sourceh"
@@ -151,6 +188,31 @@ def vtag(version: str) -> str:
     return "v" + "".join(version.lstrip("vV").split("."))
 
 
+# ── top-K 순위 사다리 필드 (2026-08-18) ─────────────────────────────────────
+# 1위는 기존 `winner_gidx_<vtag>` / `top_prompt_<vt>` 가 그대로 담당한다(계약 불변).
+# 여기서 추가하는 건 **2·3위뿐**이다 — 프레임당 K=10 ListField 전개는 기각됐다
+# (스펙 §1-2: flat 스키마가 곧 App 필터. 프레임당 10칸이면 필터가 뱅크 수 ×10 으로 는다).
+#
+# 명명은 형제 필드의 접미사 세대를 **그대로 승계**한다 (스펙 §1-4 명명 부채를 늘리지 않는다):
+#   gidx 계열 → vtag   `winner_gidx_r2_v1084`
+#   문장 계열 → vt     `top_prompt_r2_v1_0_8_4`
+# D7 리졸버 정규식 `^(?P<fam>.+?)_(?P<tag>v[\d_]+...)$` 로 파싱하면 fam 이
+# `winner_gidx_r2` / `top_prompt_r2` 라는 **별 계열**로 떨어져 기존 계열과 안 섞인다
+# (`winner_gidx_v1084_r2` 처럼 태그 뒤에 붙이면 fam 파싱이 깨진다 — 그래서 앞에 붙인다).
+RANK_EXTRA = (2, 3)                       # 노출할 하위 순위. 1위는 기존 필드 담당
+RANK_FIELD_RE = re.compile(r"^(?:winner_gidx|top_prompt)_r\d+_v[\d_]+(?:-[\w]+)?$")
+
+
+def rank_gidx_field(tag: str, rank: int) -> str:
+    """r위 문장의 gidx 필드명 (tag = `vtag(version)`). rank 는 1-기반."""
+    return f"winner_gidx_r{rank}_{tag}"
+
+
+def rank_prompt_field(vt: str, rank: int) -> str:
+    """r위 문장의 원문 필드명 (vt = `version.replace('.', '_')`). rank 는 1-기반."""
+    return f"top_prompt_r{rank}_{vt}"
+
+
 def jsonl_load(path: str, key: str = "key") -> dict:
     out = {}
     with open(path, encoding="utf-8") as f:
@@ -166,8 +228,39 @@ def jsonl_load(path: str, key: str = "key") -> dict:
     return out
 
 
+def assert_gt_source_pure(rows, context: str) -> None:
+    """이 프로필 원장의 `gt_source` 순도 — 다른 계열 원장이 섞이면 fail-closed.
+
+    원장 3벌은 GT 출처가 서로 다르고, 각 프로필은 자기 것 하나만 읽어야 한다:
+        sourceh    ← frames_eval.py         `nas_folder`   (NAS 폴더명 = 사람 재라벨)
+        frames  ← frames_bank_ledger.py  `ls_finalized` (Label Studio 사람 검수)
+        sourcei ← sourcei_build.py       `folder|filename|caption|none` (근거 강도 순)
+    계열이 섞이면 뱅크 버전 비교·recall 이 통째로 무의미해지는데 **숫자는 멀쩡히 나온다** —
+    조용한 오염이라 산출물만 봐서는 못 잡는다. analysis 는 CI pytest 밖이라 실행 시점
+    self-check 가 유일한 방어선이다 (`frames_eval.py` / `frames_bank_ledger.py` 의 동명
+    함수와 같은 계약 — 세 파일이 같은 모양으로 읽히게 맞춰 뒀다).
+
+    `None` 은 이 필드가 생기기 전 구 원장 행이라 **항상** 허용한다(하위호환). 반면 sourcei 의
+    `'none'` 은 문자열 값이고 그 원장의 정상 값이다 — 둘을 헷갈리지 말 것.
+    """
+    allowed = PROFILES[PROFILE]["expected_gt_source"]
+    bad = collections.Counter(
+        r.get("gt_source") for r in rows
+        if r.get("gt_source") is not None and r.get("gt_source") not in allowed
+    )
+    if bad:
+        raise RuntimeError(
+            f"{context}: gt_source 혼재 감지 — 프로필 '{PROFILE}' 원장({WORK}/ledger.jsonl)에 "
+            f"{sorted(allowed)} / None 이외의 값이 섞였다: {dict(bad)}. "
+            "원장 계열 혼용 금지 — frames_eval.py=nas_folder / "
+            "frames_bank_ledger.py=ls_finalized / sourcei_build.py=folder·filename·caption·none."
+        )
+
+
 def load_all():
     led = jsonl_load(f"{WORK}/ledger.jsonl")
+    # GT 깔때기 — 이 파일의 모든 스테이지가 여기서 gt 를 받는다. 조립 **전에** 순도를 막는다.
+    assert_gt_source_pure(led.values(), context=f"load_all[{PROFILE}]")
     d = np.load(f"{WORK}/embed.npz", allow_pickle=True)
     keys = [str(k) for k in d["key"]]
     mask = [k in led for k in keys]
@@ -176,23 +269,251 @@ def load_all():
     X /= np.linalg.norm(X, axis=1, keepdims=True)
     gt = np.array([led[k]["gt_class"] for k in keys], dtype=np.int64)
     src = np.array([led[k]["src_video"] for k in keys])
-    banks = {}
-    for v in VERSIONS:
-        z = np.load(f"{PROMPT_DIR}/{v}.npz", allow_pickle=True)
-        banks[v] = {
-            "vec": z["vec"].astype(np.float32),
-            "cls": z["cls"].astype(np.int64),
-            "prompt": [str(p) for p in z["prompt"]],
-        }
+    banks = {v: load_bank(v) for v in VERSIONS}
     return keys, X, gt, src, banks
 
 
-def load_cameras(keys: list[str]) -> np.ndarray:
-    """프레임별 카메라. 뱅크 지표를 **사이트 층화**로 재려면 필수다 — pooled 값은 프레임이
-    가장 많은 카메라가 지배한다(실측: area-a 7,979 vs ODC 1,144, pooled 게이트를
-    통과한 후보의 held 카메라 FN 구조율이 6케이스 전부 0.0%)."""
+def load_bank(version: str) -> dict:
+    """뱅크 1개 → `{vec, cls, prompt}`. **벡터·클래스는 npz, 문장은 DB 정본.**
+
+    npz 는 벡터의 정본이지 문장의 정본이 아니다 — 2026-08-11 재빌드가 27버전의 문장을
+    자리표시자로 덮은 사고가 그 구분이 없어서 났다. 판정 규칙과 폴백은 형제 모듈
+    `repair_bank_prompts.load_bank` 한 곳에만 있다 (소비자 셋이 같은 규칙을 쓰도록).
+    """
+    import repair_bank_prompts as _bank          # 같은 디렉토리 형제 모듈
+    return _bank.load_bank(version, PROMPT_DIR)
+
+
+def load_groups(keys: list[str]) -> np.ndarray:
+    """프레임별 **사이트 그룹** (sourceh=camera / frames=project). 뱅크 지표를 사이트 층화로
+    재려면 필수다 — pooled 값은 프레임이 가장 많은 그룹이 지배한다(실측: area-a 7,979
+    vs ODC 1,144, pooled 게이트를 통과한 후보의 held 카메라 FN 구조율이 6케이스 전부 0.0%.
+    frames 는 편중이 더 크다: cohort-b 73,390 vs violence 144).
+
+    축 이름을 프로필이 정하므로 source-h 의 카메라 코드와 frames 의 project 코드가 **한 벌**이다.
+    """
+    fld = PROFILES[PROFILE]["group_field"]
     led = jsonl_load(f"{WORK}/ledger.jsonl")
-    return np.array([led[k].get("camera") or "unknown" for k in keys])
+    return np.array([led[k].get(fld) or "unknown" for k in keys])
+
+
+def load_cameras(keys: list[str]) -> np.ndarray:
+    """`load_groups` 의 구 이름 — sourceh/sourcei 스테이지가 부른다 (그 프로필의 축이 camera)."""
+    return load_groups(keys)
+
+
+FRAMES_EMBED_CHUNK = int(os.environ.get("FRAMES_EMBED_CHUNK", "2000"))
+
+
+def _stream_frames_embeddings(keys: list[str]) -> tuple[list[str], np.ndarray]:
+    """FiftyOne `image_embedding` 을 청크로 읽어 [N, d] fp32 로 채운다.
+
+    ⚠️ `view.values("image_embedding")` 을 20만 건에 한 번에 걸면 안 된다 — ListField 라
+       원소마다 파이썬 float 객체가 나서 청크 없이는 수 GB 가 순간에 뜬다(호스트 가용 11Gi
+       공유, OOM 이력). 청크 2,000 이면 파이썬 측 상주가 ~65MB 로 눌린다.
+    반환 배열은 **정규화 전**이다 (호출부가 `load_all()` 과 같은 자리에서 정규화한다).
+    """
+    import fiftyone as fo
+
+    fld = PROFILES[PROFILE]["embed_field"]
+    ds = fo.load_dataset(PROFILES[PROFILE]["dataset"])
+    live = set(ds.values("id"))
+    n_req = len(keys)
+    keys = [k for k in keys if k in live]         # 원장에만 있고 데이터셋에서 지워진 행 방어
+    if n_req and not keys:
+        # 요청 키가 전부 데이터셋에 없다 = 원장이 앞서 있는 상태. 캐시 병합 경로에서 정상 가능하므로
+        # 여기서 죽이지 않고 빈 결과를 돌려준다 (호출부가 개수로 판단한다).
+        log(f"embed 스트리밍: 요청 {n_req:,}건이 데이터셋에 없다 → 0건 반환 (원장 재생성 필요?)")
+        return [], np.zeros((0, 0), dtype=np.float32)
+    X = None
+    kept: list[str] = []
+    n = 0
+    t0 = time.time()
+    for s in range(0, len(keys), FRAMES_EMBED_CHUNK):
+        chunk = keys[s:s + FRAMES_EMBED_CHUNK]
+        vecs = ds.select(chunk, ordered=True).values(fld)
+        for k, v in zip(chunk, vecs):
+            if v is None or len(v) == 0:
+                continue                          # 임베딩 결손 — 조용히 0벡터로 채우면 안 된다
+            if X is None:
+                X = np.empty((len(keys), len(v)), dtype=np.float32)
+            X[n] = v
+            kept.append(k)
+            n += 1
+        if (s // FRAMES_EMBED_CHUNK) % 20 == 0:
+            log(f"embed 스트리밍 {min(s + FRAMES_EMBED_CHUNK, len(keys)):,}/{len(keys):,} "
+                f"({time.time() - t0:.0f}s)")
+    if X is None:
+        raise SystemExit(f"{PROFILES[PROFILE]['dataset']}: {fld} 가 전부 비었다 — "
+                         "임베딩 파이프라인 먼저 확인")
+    if n < len(keys):
+        log(f"embed 스트리밍: {fld} 결손 {len(keys) - n:,}건 제외")
+        X = np.ascontiguousarray(X[:n])
+    log(f"embed 스트리밍 완료: {X.shape} ({time.time() - t0:.0f}s)")
+    return kept, X
+
+
+def _load_frames_matrix() -> tuple[list[str], np.ndarray, np.ndarray, np.ndarray]:
+    """frames 프로필의 (keys, X, gt, src) — `load_all()` 의 frames 판.
+
+    ⚠️ **`load_all()` 을 그대로 쓸 수 없는 이유**: frames 의 `work/embed.npz` 는
+       `frames_bank_ledger.py` 가 **도메인 매핑된 프레임만** 담는 산출물이고
+       (`scored = [r for r in rows if r["domain"]]`), `bank_domain_map.yaml` 의 domains 가
+       비어 있는 0단계에서는 **파일 자체가 없다** (2026-08-18 실측: work/ 에 ledger.jsonl 과
+       gt_snapshot.json 만 존재). attach/site 는 도메인 매핑과 무관하게 전 프레임에 걸려야
+       하므로, npz 가 있으면 쓰고 없으면 데이터셋에서 스트리밍한다.
+       또 `load_all()` 은 VERSIONS 의 뱅크를 **전부** 올리는데(BANK_LIST 면 52벌),
+       attach/site 는 뱅크 1벌만 쓴다 — 여기서는 뱅크를 아예 안 읽는다.
+
+    `FRAMES_EMBED_CACHE=<path>` 를 주면 그 경로를 캐시로 쓴다(있으면 읽고, 없으면 스트리밍 후
+    기록). 기본값은 캐시 없음 — 원장이 소유한 `work/embed.npz` 는 **절대 덮어쓰지 않는다.**
+
+    ⚠️ **캐시는 원장의 부분집합일 수 있다 — 그 차이를 조용히 삼키면 안 된다.**
+       (a) `work/embed.npz` 는 애초에 도메인 매핑분만 담는 설계이고,
+       (b) 캐시를 만든 뒤 프레임이 새로 들어오면(원장 20만 / 캐시 18만) 교집합만 취하는 구현은
+           **2만 장을 검색조차 안 하고 누락**시킨다. 로그도 "교집합 18만/18만" 이라 정상처럼 보인다.
+       그래서 로드 직후 원장과 대조해 **미캐시 키만 추가 스트리밍**해 병합하고, 캐시 경로가
+       주어졌으면 전량으로 재작성한다. 캐시 npz 에 `n_ledger`/`created_at` 메타를 같이 실어
+       stale 여부를 파일만 보고도 알 수 있게 한다.
+    """
+    rows = _load_frames_ledger()                  # gt_source 순도 게이트 (load_all 과 동일 계약)
+    led = {r["key"]: r for r in rows}
+    order = [r["key"] for r in rows]              # 원장 순서 = 정본 커버리지 목록
+    cache = os.environ.get("FRAMES_EMBED_CACHE")
+    src_path = cache if (cache and os.path.exists(cache)) else f"{WORK}/embed.npz"
+    if os.path.exists(src_path):
+        d = np.load(src_path, allow_pickle=True)
+        ks = [str(k) for k in d["key"]]
+        m = np.array([k in led for k in ks], dtype=bool)
+        keys = [k for k, x in zip(ks, m) if x]
+        X = d["vec"][m].astype(np.float32)
+        meta = (f" [캐시메타 n_ledger={int(d['n_ledger'])} @{str(d['created_at'])}]"
+                if "n_ledger" in d.files else " [캐시메타 없음 — 구 캐시]")
+        stale_drop = len(ks) - len(keys)
+        log(f"frames: 임베딩 {src_path} → {X.shape} "
+            f"(원장 교집합 {len(keys):,}/{len(ks):,}, 원장 {len(order):,}){meta}")
+        if stale_drop:
+            log(f"frames: 캐시에만 있고 원장에 없는 키 {stale_drop:,}건 제외 (원장이 축소됐다)")
+        have = set(keys)
+        missing = [k for k in order if k not in have]
+        if missing:
+            # 조용히 진행 금지 — 누락분을 실제로 채운다. 못 채우면 그것도 로그로 드러난다.
+            log(f"frames: ⚠️ 캐시 미포함 {len(missing):,}건 발견 ({len(missing) / len(order):.1%}) "
+                "— 그만큼만 추가 스트리밍해 병합한다 (교집합만 쓰면 무음 누락이 된다)")
+            add_keys, add_X = _stream_frames_embeddings(missing)
+            if add_X.shape[0]:
+                if add_X.shape[1] != X.shape[1]:
+                    raise SystemExit(f"frames: 캐시 차원 {X.shape[1]} != 데이터셋 차원 "
+                                     f"{add_X.shape[1]} — 인코더가 바뀌었다. 캐시를 지우고 재실행")
+                keys = keys + add_keys
+                X = np.concatenate([X, add_X], axis=0)
+                if cache:
+                    np.savez(cache, key=np.array(keys), vec=X, n_ledger=len(order),
+                             created_at=time.strftime("%Y-%m-%dT%H:%M:%S"))
+                    log(f"frames: 캐시 재작성 → {cache} ({len(keys):,}장)")
+            gap = len(order) - len(keys)
+            log(f"frames: 병합 후 {len(keys):,}장 / 원장 {len(order):,} "
+                f"({len(keys) / len(order):.1%})"
+                + (f" — 여전히 {gap:,}건 미확보(데이터셋 부재 또는 임베딩 결손)" if gap else " — 전량 확보"))
+    else:
+        keys, X = _stream_frames_embeddings(order)
+        if cache:
+            np.savez(cache, key=np.array(keys), vec=X,
+                     n_ledger=len(order), created_at=time.strftime("%Y-%m-%dT%H:%M:%S"))
+            log(f"frames: 임베딩 캐시 기록 → {cache}")
+    nrm = np.linalg.norm(X, axis=1, keepdims=True)
+    bad = (nrm[:, 0] <= 0)
+    if bad.any():                                 # 0벡터를 나누면 NaN 이 조용히 전 지표에 번진다
+        log(f"frames: ⚠️ 0-노름 임베딩 {int(bad.sum()):,}건 제외")
+        keep = ~bad
+        X, nrm = X[keep], nrm[keep]
+        keys = [k for k, x in zip(keys, keep) if x]
+    X = X / nrm
+    gt = np.array([led[k].get("gt_class", -1) for k in keys], dtype=np.int64)
+    src = np.array([led[k].get("src_video") or "unknown" for k in keys])
+    return keys, X, gt, src
+
+
+def load_matched() -> tuple[list[str], np.ndarray, np.ndarray, np.ndarray]:
+    """프로필 무관 (keys, X, gt, src) 입구 — 뱅크 1벌만 쓰는 스테이지(attach/site)용.
+
+    sourceh/sourcei 는 `load_all()` 그대로(뱅크 로드 포함, 기존 동작 보존), frames 만 위 전용
+    로더를 탄다. 두 경로 모두 원장 순도 게이트를 지난다.
+    """
+    if PROFILE == "frames":
+        return _load_frames_matrix()
+    keys, X, gt, src, _ = load_all()
+    return keys, X, gt, src
+
+
+SET_VALUES_BATCH = int(os.environ.get("SET_VALUES_BATCH", "20000"))
+# `active_fields` 는 **데이터셋 전역 App 설정**이라 다른 사람 화면까지 바꾼다. `frames`
+# (구 frames_captions) 는 2026-08-18 실측에서 `active_fields=None`(제한 없음) 이었다.
+KEEP_ACTIVE_FIELDS = os.environ.get("KEEP_ACTIVE_FIELDS", "").lower() in ("1", "true", "yes")
+SET_ACTIVE_FIELDS = os.environ.get("SET_ACTIVE_FIELDS", "").lower() in ("1", "true", "yes")
+
+
+def set_active_fields(ds, active_fields_cls, want: list) -> list:
+    """`app_config.active_fields` 갱신 — **넓히기만 하고, 없던 제한을 새로 만들지 않는다.**
+
+    세 갈래다:
+      · 기존이 리스트(제한 있음)  → `want` 를 얹은 **합집합**. 남이 보던 필드가 안 사라진다.
+      · 기존이 None(제한 없음)    → **그대로 둔다** (기본). `SET_ACTIVE_FIELDS=1` 일 때만 신설.
+      · `KEEP_ACTIVE_FIELDS=1`    → 어느 쪽이든 손대지 않는다.
+
+    ⚠️ **왜 None 을 기본으로 보존하나** — "allowlist 밖 필드로 Color by 하면 App 이 TypeError 로
+       죽는다"는 실측(계획서 §2)은 **allowlist 가 존재할 때만** 성립하는 문제다. `active_fields`
+       가 None 이면 allowlist 라는 개념 자체가 없어 어떤 필드로 칠해도 크래시 위험이 없다.
+       반대로 None 인 데이터셋에 allowlist 를 처음 세우면 그 순간 **그동안 보이던 모든 필드가
+       그리드에서 사라지고**(`frames` 는 공유 데이터셋이다) 목록 밖 필드는 Color by 가
+       크래시하게 된다 — 즉 기본 동작이 위험을 *만들어내는* 쪽이 된다. 위험한 쪽을 기본값으로
+       두지 않는다.
+    """
+    cur_paths = getattr(ds.app_config.active_fields, "paths", None)
+    cur = list(cur_paths or [])
+    merged = [f for f in dict.fromkeys(cur + want) if f in ds.get_field_schema()]
+    if KEEP_ACTIVE_FIELDS:
+        log(f"active_fields: KEEP_ACTIVE_FIELDS=1 — 갱신 생략 "
+            f"(현재 {cur_paths if cur_paths else 'None(제한 없음)'} / 제안 {merged})")
+        return cur
+    if not cur_paths:                            # 제한 없음(None/빈 목록) = 신설 여부는 opt-in
+        if not SET_ACTIVE_FIELDS:
+            log("active_fields: 현재 제한 없음(None) — **그대로 둔다**. 무제한이면 Color by "
+                f"크래시 위험도 없다. allowlist 를 세우려면 SET_ACTIVE_FIELDS=1 (제안 {merged})")
+            return cur
+        log(f"active_fields: SET_ACTIVE_FIELDS=1 — 무제한 → allowlist 신설 {merged} "
+            "(목록 밖 필드는 그리드에서 사라지고 Color by 대상에서 제외된다)")
+    ds.app_config.active_fields = active_fields_cls(paths=merged, exclude=False)
+    return merged
+
+
+def set_values_batched(ds, field: str, pairs: list, make, batch: int | None = None) -> None:
+    """`{sample_id: 값}` 을 통째로 만들지 않고 배치로 나눠 쓴다.
+
+    `pairs` = [(sample_id, 프레임인덱스), ...], `make(프레임인덱스)` = 그 자리의 값.
+    source-h 13k 에서는 한 번에 만들어도 됐지만 frames 199,972 × `fo.Classification` 은 dict
+    하나가 수백 MB 로 뜬다 (호스트 가용 11Gi 공유 + OOM 이력 — 계획서 §4 운영 제약).
+    값이 dict 안에서 **동시에 살아 있는 수**를 배치 크기로 묶는 게 요점이다.
+    """
+    b = batch or SET_VALUES_BATCH
+    for s in range(0, len(pairs), b):
+        ds.set_values(field, {sid: make(i) for sid, i in pairs[s:s + b]}, key_field="id")
+
+
+def key_to_ids(ds, keys: list[str]) -> list:
+    """원장 key → FiftyOne sample id. 조인 방식은 프로필이 정한다 (`key_join`).
+
+    ⚠️ frames 원장의 key 는 **이미 sample id** 다 (frames_bank_ledger.py 가 `"key": sid`).
+       파일명 조인을 그대로 쓰면 전건 미매칭(필드 0개 기록)인데 로그만 보면 정상처럼 보인다.
+    """
+    if PROFILES[PROFILE]["key_join"] == "sample_id":
+        live = set(ds.values("id"))
+        return [k if k in live else None for k in keys]
+    k2i = {}
+    for s in ds.select_fields(["id", "filepath"]):
+        k2i[f"{os.path.basename(os.path.dirname(s.filepath))}/"
+            f"{os.path.basename(s.filepath)}"] = s.id
+    return [k2i.get(k) for k in keys]
 
 
 def class_sims(X: np.ndarray, bank: dict) -> dict[int, np.ndarray]:
@@ -316,7 +637,19 @@ def bank_topk_stream(X: np.ndarray, bank: dict, k: int = None, drop: np.ndarray 
                     part = np.argpartition(-cand_v, w - 1, axis=1)[:, :w]
                     cand_v = np.take_along_axis(cand_v, part, 1)
                     cand_i = np.take_along_axis(cand_i, part, 1)
-                o = np.argsort(-cand_v, axis=1)
+                # kind="stable" — float32 코사인 동점에서 문장 정체성이 실행마다 흔들리면
+                # 순위 사다리(winner_gidx_r2/r3)가 재현되지 않는다. 같은 파일 stage_attach 가
+                # "argsort 는 unstable quicksort 라 동점에서 [:,1] 이 승자와 같아질 수 있다"고
+                # 적어둔 것과 같은 함정이다.
+                # **pred 는 안 바뀐다**: 여기 argsort 는 집합이 아니라 순서만 정한다(집합은 위
+                # argpartition, 혹은 폭이 w 이하면 전량 유지). 남는 `vals[c]` 값의 다중집합이
+                # 같으므로 vote_topk 의 `allv`·클래스 라벨이 동일하고, votes(합)·topc(최댓값)도
+                # 동일하다. 동점에서 `idxs[c]` 의 정체성만 결정적으로 고정된다.
+                # ⚠️ 남는 비결정성 1건: 위 `argpartition` 은 w 경계 동점 중 **누구를 남길지**를
+                #    보장하지 않는다(값은 같고 정체성만 흔들린다). 전면 안정화는 타일마다 full
+                #    sort 라 200K 프레임에서 감당이 안 돼 받아들인다 — 그 경계는 클래스 안
+                #    w번째(기본 11위)라 노출 대상인 1~3위에 닿지 않는다.
+                o = np.argsort(-cand_v, axis=1, kind="stable")
                 vals[c][s:s + batch] = np.take_along_axis(cand_v, o, 1)[:, :w]
                 idxs[c][s:s + batch] = np.take_along_axis(cand_i, o, 1)[:, :w]
     return vals, idxs
@@ -329,10 +662,20 @@ def vote_topk(vals: dict, idxs: dict, k: int = None,
     `exclude` 에 (class, local_idx) 를 넣으면 그 문장이 없는 것처럼 계산한다 — LOO 용.
     반환 (pred, votes[N,C], sel_idx[N,k]) — sel_idx 는 표를 만든 문장의 클래스-로컬 번호
     (-1 은 빈자리). 이게 argmax 시절의 `arg`(승자 1개)를 대체한다.
+
+    ── 동점 처리 2단 (2026-08-18) ─────────────────────────────────────────
+    ① **선택 집합**을 정하는 `o` 는 기본 kind 그대로 둔다. `kind="stable"` 로 바꾸면 동점이
+       top-k 경계에 걸린 프레임에서 **집합이 달라져 pred 가 바뀐다** (실측: 동점 주입
+       200프레임 중 28프레임에서 pred·votes 불일치). 판정 재현은 이 개작의 범위 밖이므로
+       기존 동작을 유지한다.
+    ② **사다리 순서**만 `lexsort` 로 다시 세운다 — 1차 −코사인, 2차 원래 열번호
+       (= 클래스 오름차순 → 그 클래스 안 상위 슬롯). 집합이 그대로이고 `votes`(합)·
+       `topc`(최댓값)는 열 순서에 불변이므로 **pred 는 바이트 단위로 안 바뀐다.**
+       얻는 것: 동점에서 `winner_gidx_r2/r3_*` 가 quicksort 의 임의 순서에 안 흔들린다.
+       동점 규칙 방향은 아래 `argmax` 타이브레이크(낮은 클래스 id 우선)와 같다.
     """
     k = RULE_K if k is None else k
     cs = sorted(vals)
-    n = vals[cs[0]].shape[0]
     keep_v, keep_i, keep_c = [], [], []
     for c in cs:
         v, i = vals[c].copy(), idxs[c]
@@ -346,7 +689,9 @@ def vote_topk(vals: dict, idxs: dict, k: int = None,
     alli = np.concatenate(keep_i, 1)
     lab = np.concatenate(keep_c)
     kg = min(k, allv.shape[1])
-    o = np.argsort(-allv, axis=1)[:, :kg]
+    o = np.argsort(-allv, axis=1)[:, :kg]                  # ① 집합 — 기존 동작 유지
+    ro = np.lexsort((o, -np.take_along_axis(allv, o, 1)), axis=1)   # ② 사다리 순서만 결정적으로
+    o = np.take_along_axis(o, ro, 1)
     sel_c = lab[o]
     sel_v = np.take_along_axis(allv, o, 1)
     sel_i = np.take_along_axis(alli, o, 1)
@@ -421,6 +766,34 @@ def minn_tier(n: int) -> str:
     if n < 100:
         return "exploratory"
     return "reportable"
+
+
+def event_tier(n: int) -> str:
+    """이벤트 표본 수 → 주장 가능 tier. 경계는 `minn_tier` 와 같지만 분모가 **GT 가 아니라
+    규칙 예측**이라 0 칸 이름만 바꾼다 — `no_gt` 라고 부르면 GT 얘기로 읽힌다.
+
+    LOPO(사이트 전이)에서 "이벤트가 거의 없는 project 는 제외하거나 별도 tier"(계획서 §4)를
+    **하드코딩 목록 없이** 처리하는 자리다. loc-c 계열이 그 후보로 지목돼 있지만 이름을
+    박지 않는다 — 뱅크·규칙이 바뀌면 어느 project 가 비는지도 바뀐다.
+    """
+    return "no_event" if n == 0 else minn_tier(n)
+
+
+def gt_tier(gt: np.ndarray | None) -> str:
+    """`load_all()` 의 gt 배열 → min-n tier. GT 미조인/전무면 `"no_gt"`.
+
+    ⚠️ **배열이 있다 ≠ GT 가 있다.** `load_all()` 은 원장 `gt_class` 를 필터 없이 싣는데
+    (미검수 프레임은 −1), 나머지 코드는 `gt_class >= 0` 만 GT 로 친다(`stage_gtsync` 참조).
+    전부 −1 이면 `pred == gt` 가 항상 거짓이라 정답수·순도·LOO 이득이 **전부 0 으로 조용히
+    수렴**하는데, reach 랭킹(선택 산출물)은 GT 없이도 그럴듯하게 나온다. 그 조합이
+    "선택 결과"를 "품질 판정"으로 오독하게 만드는 지점이라 tier 를 산출물 최상단에 박는다.
+    """
+    if gt is None:
+        return "no_gt"
+    arr = np.asarray(gt)
+    if arr.size == 0:
+        return "no_gt"
+    return minn_tier(int((arr >= 0).sum()))
 
 
 NAME_TO_ID = {"normal": 0, "falldown": 1, "fire": 2, "smoke": 3, "smoking": 4}
@@ -514,9 +887,16 @@ def _norm_text(s: str) -> str:
 
 
 # 벡터전용 뱅크(텍스트 미보유)를 npz 로 흡수할 때 `prompt` 배열에 채워지는 자리표시자.
-# 2026-08-11 일괄 재빌드로 v1.0.8.0/v1.0.8.4 npz 의 `prompt` 가 이걸로 덮여 문장 데이터셋까지
-# 전파됐다 (벡터·cls 는 온전). 이걸 문장으로 착각하면 자리표시자 문자열을 임베딩한 **가짜 자석**이
-# 뱅크에 들어가고, 점수는 그럴싸하게 나온다 — 그래서 문장을 쓰는 모든 입구에서 막는다.
+# 이걸 문장으로 착각하면 자리표시자 문자열을 임베딩한 **가짜 자석**이 뱅크에 들어가고, 점수는
+# 그럴싸하게 나온다 — 그래서 문장을 쓰는 모든 입구에서 막는다.
+#
+# 2026-08-11 일괄 재빌드가 userwatch **JSON**(`"prompt": null` — 전 버전)만 읽고 옆의 CSV 를
+# 보지 않아 npz 29버전 중 27개의 `prompt` 가 이걸로 덮였고 문장 데이터셋까지 전파됐다
+# (벡터·cls 는 온전). 2026-08-18 `repair_bank_prompts.py --apply --sync` 로 **CSV 가 있는
+# 19버전을 복구**했다. 남은 8버전(v1.0.2.0·v1.0.5.4~5.7·v1.0.13.x)은 원본에 문장이 없거나
+# CSV 행수가 npz 와 달라 자리표시자가 **사실**이다.
+# ⚠️ `#N` 의 N 은 공급자 `ID` 컬럼이지 행 번호가 아니다 (v1.0.8.0 은 12,480행에 ID 2,405종,
+#    v1.0.6.2 는 16,125행 전부 ID=0 → 전부 `#0`). 자리표시자로 행을 역추적할 수 없다.
 PLACEHOLDER_PREFIX = "(텍스트 없음"
 
 
@@ -931,6 +1311,69 @@ PROBE_CANDIDATES = {
 }
 
 
+def load_probe_candidates() -> dict[str, list[str]]:
+    """프로브 후보 문장. `PROBE_CANDIDATES_CSV` 가 있으면 CSV 가 위 dict 를 **통째로 대체**한다.
+
+    위 하드코딩은 source-h(산업 현장) 문장 고정이라 다른 현장·도메인의 후보를 프로브할 방법이
+    없었다. 미지정이면 옛 dict 그대로 — 기존 실행은 바이트 단위로 동일하다.
+
+    CSV: 헤더 `class,prompt` 2컬럼. class 는 **이름**(`CLASS_NAMES` 의 값)이지 int 가 아니다.
+    인코딩은 utf-8-sig — 엑셀이 저장한 BOM 이 첫 헤더명을 `﻿class` 로 만들어 조용히
+    KeyError 를 내는 걸 막는다.
+
+    ⚠️ **이벤트 클래스만 유효하다** (`EVENT_CLASSES`). 유일한 소비자인 `stage_gap()` 이
+    `for c in EVENT_CLASSES` 로만 순회하므로, `normal` 처럼 그 밖의 클래스만 담긴 CSV 는
+    검증을 통과해도 프로브가 **조용히 0건**이 된다. 그래서 어휘를 이벤트 클래스로 좁혀
+    "통과했는데 아무 일도 안 일어남"을 막는다.
+
+    ⚠️ 적용 범위: `stage_gap()` 은 `main()` 라우팅상 **sourceh 프로필에서만** 돈다
+    (frames 는 `gap`→`stage_gap_frames` 로 가고 그쪽은 이 후보를 쓰지 않으며, sourcei 는
+    `gap` 자체가 거부된다). 즉 이 로더는 현재 sourceh 경로 전용이다.
+
+    지연 로드인 이유(모듈 상수 아님): `CLASS_NAMES` 는 `set_profile()` 이 런타임에 갈아끼우는
+    전역이라 import 시점에 읽으면 sourceh 사전에 영구 고정된다. 지금은 세 프로필 모두 1~3 이
+    falldown/fire/smoke 로 같아 결과가 우연히 일치하지만, 그 우연에 기대지 않는다.
+    """
+    path = os.environ.get("PROBE_CANDIDATES_CSV", "").strip()
+    if not path:
+        return PROBE_CANDIDATES
+
+    import csv as _csv
+
+    vocab = {CLASS_NAMES[c] for c in EVENT_CLASSES}
+    out: dict[str, list[str]] = {}
+    with open(path, newline="", encoding="utf-8-sig") as f:
+        rd = _csv.DictReader(f)
+        cols = {(c or "").strip() for c in (rd.fieldnames or [])}
+        missing = {"class", "prompt"} - cols
+        if missing:
+            raise SystemExit(f"PROBE_CANDIDATES_CSV={path}: 컬럼 누락 {sorted(missing)} "
+                             f"(헤더 필요: class,prompt / 실제: {rd.fieldnames})")
+        for ln, row in enumerate(rd, start=2):
+            cname = (row.get("class") or "").strip()
+            text = (row.get("prompt") or "").strip()
+            if not cname and not text:
+                continue                                   # 빈 줄은 흘린다
+            if not text:
+                raise SystemExit(f"PROBE_CANDIDATES_CSV={path}:{ln}: prompt 가 비어 있다 "
+                                 f"(class={cname!r})")
+            # fail-fast: 어휘 밖 class 를 흘려보내면 그 행은 아무 스테이지도 소비하지 않아
+            # "프로브가 조용히 0건"이 된다. 오타 하나가 침묵으로 끝나는 걸 막는다.
+            if cname not in vocab:
+                raise SystemExit(
+                    f"PROBE_CANDIDATES_CSV={path}:{ln}: 사용할 수 없는 class {cname!r} — "
+                    f"stage_gap 은 이벤트 클래스만 프로브한다 (프로필 {PROFILE} 기준 "
+                    f"허용: {sorted(vocab)}). 'normal' 등 비이벤트 클래스는 순회 대상이 "
+                    "아니라 통과시켜도 프로브 0건으로 조용히 끝난다.")
+            out.setdefault(cname, []).append(text)
+    if not out:
+        raise SystemExit(f"PROBE_CANDIDATES_CSV={path}: 유효한 행이 0개 — "
+                         "프로브 없이 도는 걸 막으려고 여기서 멈춘다")
+    log(f"gap: 프로브 후보를 CSV 로 대체 → {path} "
+        f"({ {k: len(v) for k, v in sorted(out.items())} })")
+    return out
+
+
 def stage_gap() -> None:
     import requests
     from sklearn.cluster import KMeans
@@ -942,6 +1385,7 @@ def stage_gap() -> None:
     arg4 = {c: cache[f"arg_{tag4}_{c}"] for c in CLASS_NAMES}
     pred4 = predict(best4)
     sess = requests.Session()
+    probe_cands = load_probe_candidates()   # 한 번만 — 군집 루프 안에서 CSV 재읽기 금지
 
     gap_out = {}
     fo_fields: dict[str, dict] = {"cluster": {}, "deficit": {}}
@@ -966,7 +1410,7 @@ def stage_gap() -> None:
             deficit = float((others[members] - best4[c][members]).mean())
             # 프로브: 후보 문장을 라이브 임베딩해 이 군집에서 would-win 측정
             probes = []
-            for cand in PROBE_CANDIDATES.get(cname, []):
+            for cand in probe_cands.get(cname, []):
                 e = _embed_text(sess, cand)
                 cos = X[members] @ e
                 probes.append({"text": cand,
@@ -1088,6 +1532,16 @@ class _Pruner:
             return {c: state[2][:, i] for i, c in enumerate(self.classes)}
         return {c: state["vals"][c][:, 0] for c in self.classes}
 
+    def class_best_local(self, state):
+        """클래스별 per-frame 최고 코사인 문장의 **클래스-로컬** 인덱스 (cache.npz `arg_*` 와 동일 키).
+
+        `best_of` 의 쌍이다 — 값이 아니라 그 값을 낸 문장을 가리킨다. 두 규칙 모두에서
+        정의된다(top-K 는 클래스별 상위 사다리의 0번 칸이 곧 그 클래스의 1위).
+        """
+        if isinstance(state, tuple):
+            return dict(state[1])
+        return {c: state["idxs"][c][:, 0] for c in self.classes}
+
     def top1_gidx(self, state):
         """프레임별 **최고 코사인 기여 문장**의 뱅크 전역 인덱스. K=1 이면 argmax 승자와 같다.
         top-K 에서 프레임당 기여 문장이 여럿이라도, 사이트범위 같은 단일값 필드는 대표 1개가 필요하다."""
@@ -1097,6 +1551,65 @@ class _Pruner:
         sel = state["sel"]                       # 이미 코사인 내림차순
         c0, i0 = sel[:, 0, 0], sel[:, 0, 1]
         return np.array([self.gidx[int(c)][int(i)] if i >= 0 else 0 for c, i in zip(c0, i0)])
+
+    def rank_gidx(self, state, r: int):
+        """프레임별 **r위 기여 문장**의 뱅크 전역 인덱스 (r=0 이 1위). 없으면 원소 −1.
+
+        ── "순위"의 정의 (사용자 Q1 확정 스키마의 근거) ─────────────────────────────
+        top-K 다수결에서 **득표순은 문장 단위로 정의되지 않는다**. `vote_topk` 을 보면
+        선택된 K 문장은 각각 정확히 1표씩 넣으므로(`votes = (sel_c == c).sum(1)`) 문장
+        사이에 표 차이가 없다 — 득표는 *클래스*의 속성이지 문장의 속성이 아니다.
+        state 안에서 문장 사이에 실재하는 유일한 서열은 **코사인 내림차순**이고,
+        `vote_topk` 이 이미 그 순서로 `sel` 을 돌려준다 (`o = np.argsort(-allv, 1)[:, :k]`
+        → `sel_i = take_along_axis(alli, o, 1)`). 따라서:
+
+            rank r = 그 프레임의 **전역 top-K 풀 안에서 코사인 r번째** 문장
+                     (클래스 무관 — 2위가 1위와 다른 클래스일 수 있다)
+
+        r=0 은 `top1_gidx()` 와 같은 문장이고, 그건 곧 argmax 규칙의 승자와도 같다
+        (max_c max_p cos = max_p cos — `_selftest_topk_ranks` 가 이 등식을 고정한다).
+        그래서 `winner_gidx_<tag>` 를 top1 대표로 유지해도 규칙 전환으로 값이 안 바뀐다.
+
+        ⚠️ RULE=argmax(K=1) state 에는 **2위 문장의 인덱스가 없다** — `bank_top2_stream`
+           은 2위의 *값*(b2)만 접어 보관하고 인덱스는 1위(a1)만 준다. 클래스 사다리
+           (2위 클래스의 1위 문장)로 대신 채우면 이름은 같은데 뜻이 다른 값이 되므로
+           **채우지 않고 None 을 돌려준다** (조용한 거짓말 금지). 호출부는 필드를 아예
+           안 쓴다.
+        """
+        if isinstance(state, tuple):
+            return self.top1_gidx(state) if r == 0 else None
+        sel = state["sel"]
+        if r >= sel.shape[1]:
+            return None
+        c, i = sel[:, r, 0], sel[:, r, 1]
+        return np.array([self.gidx[int(cc)][int(ii)] if ii >= 0 else -1
+                         for cc, ii in zip(c, i)], dtype=np.int64)
+
+    def rank_cos(self, state, r: int):
+        """`rank_gidx` 와 **같은 문장**의 코사인. 열 자체가 없으면 None, 빈 슬롯은 NaN.
+
+        ⚠️ 정렬을 다시 하지 않는다. `sel` 이 이미 지목한 (클래스, 클래스-로컬 인덱스)로
+           `vals` 를 되짚는다 — 그래야 `rank_gidx` 와 **구조적으로** 어긋날 수 없다.
+           예전 구현은 `allv` 를 독립적으로 재정렬했는데, 그러면 동점에서 정렬 kind 가
+           조금만 달라져도 값과 문장이 다른 자리를 가리킨다 (두 곳의 kind 를 영원히
+           맞춰야 하는 숨은 결합).
+        ⚠️ 빈 슬롯은 **NaN**. `bank_topk_stream` 은 못 채운 자리에 센티널 −2.0 을 남기는데
+           그대로 흘리면 "코사인 −2.0" 이라는 실재하지 않는 값이 새어나가 (rank_gidx 는
+           같은 자리에 −1 을 내는데) 중앙값·정렬이 조용히 오염된다.
+        """
+        if isinstance(state, tuple) or r >= state["sel"].shape[1]:
+            return None
+        sc, si = state["sel"][:, r, 0], state["sel"][:, r, 1]
+        out = np.full(len(si), np.nan, dtype=np.float32)
+        for cl in self.classes:
+            m = (sc == cl) & (si >= 0)
+            if not m.any():
+                continue
+            # idxs[cl] 의 한 행 안에서 같은 문장은 한 번만 나온다 (타일마다 문장이 유일) →
+            # argmax 로 찾은 첫 일치가 유일 일치다
+            col = (state["idxs"][cl][m] == si[m][:, None]).argmax(1)
+            out[m] = np.take_along_axis(state["vals"][cl][m], col[:, None], 1)[:, 0]
+        return out
 
     def touched_by(self, state, drop):
         """그 프레임의 판정에 기여한 문장 중 하나라도 삭제됐나 = 판정이 바뀔 수 있는 프레임."""
@@ -1222,8 +1735,90 @@ class _Pruner:
         return drop, curve, base, hits, converged
 
 
+def contrib_pairs(pr: _Pruner, state) -> tuple[np.ndarray, np.ndarray]:
+    """`_Pruner.contrib_frames` 의 **벡터화 쌍둥이** — (문장 gidx, 프레임 idx) 평행 배열.
+
+    집합은 같다(`_selftest_site_scope` 가 두 경로의 동치를 고정한다). 따로 두는 이유는 규모다:
+    contrib_frames 는 프레임당 K개(199,972×10 = 200만)를 파이썬 루프 + dict/list 로 쌓아
+    frames 프로필에서 수백 MB·수십 초를 쓴다. 사이트 집계에 필요한 건 "문장×그룹 유일쌍"
+    뿐이라 정수 배열 두 개로 끝난다 (200만 × 8B × 2 = 32MB).
+
+    argmax 규칙: 그 문장이 자기 클래스 1위였고 그 클래스로 예측된 프레임 (= 옛 '승자')
+    top-K 규칙: 그 문장이 전역 top-K 에 표를 넣은 프레임
+    """
+    if isinstance(state, tuple):
+        _, a1, _, pred = state
+        gs, fs = [], []
+        for c in pr.classes:
+            m = (a1[c] >= 0) & (pred == c)
+            if not m.any():
+                continue
+            fr = np.flatnonzero(m)
+            gs.append(pr.gidx[c][a1[c][fr]])
+            fs.append(fr)
+        if not gs:
+            return np.zeros(0, dtype=np.int64), np.zeros(0, dtype=np.int64)
+        return np.concatenate(gs), np.concatenate(fs)
+    sel = state["sel"]
+    n, w = sel.shape[0], sel.shape[1]
+    sc = sel[:, :, 0].ravel()
+    si = sel[:, :, 1].ravel()
+    rows = np.repeat(np.arange(n, dtype=np.int64), w)
+    live = si >= 0
+    sc, si, rows = sc[live], si[live], rows[live]
+    g = np.zeros(len(si), dtype=np.int64)
+    for c in pr.classes:
+        m = sc == c
+        if m.any():
+            g[m] = pr.gidx[c][si[m]]
+    return g, rows
+
+
+def group_win_matrix(sent_idx: np.ndarray, frame_idx: np.ndarray, gcode: np.ndarray,
+                     n_bank: int, n_groups: int) -> np.ndarray:
+    """[문장, 그룹] 승수 행렬. `n_groups_win = (W > 0).sum(1)`.
+
+    dense 로 두는 게 맞다 — 12,480문장 × 21 project = 262K 칸(2MB). 널모델이 이 계산을
+    수십 번 반복하므로 bincount 한 방으로 끝나는 형태가 필요하다.
+    """
+    flat = sent_idx * n_groups + gcode[frame_idx]
+    return np.bincount(flat, minlength=n_bank * n_groups).reshape(n_bank, n_groups)
+
+
+def _cramers_v(a: np.ndarray, b: np.ndarray, na: int, nb: int) -> float:
+    """두 범주 축의 연관 강도 (0=무관, 1=완전 재인코딩). 널모델 게이트 ②의 수치."""
+    if na < 2 or nb < 2 or len(a) == 0:
+        return 0.0
+    T = np.bincount(a * nb + b, minlength=na * nb).reshape(na, nb).astype(np.float64)
+    n = T.sum()
+    E = T.sum(1, keepdims=True) @ T.sum(0, keepdims=True) / n
+    chi2 = float((((T - E) ** 2) / np.where(E > 0, E, 1.0)).sum())
+    return float(np.sqrt(chi2 / (n * (min(na, nb) - 1))))
+
+
+def _predict_acc(a: np.ndarray, b: np.ndarray, na: int, nb: int) -> tuple[float, float]:
+    """a(예: site_scope) 로 b(예: project) 를 맞히는 다수결 정확도 + 최빈 b 기저율.
+
+    Cramér's V 는 크기가 커도 해석이 어렵다. "이 축을 알면 project 를 얼마나 맞히나"는
+    기저율과 나란히 놓으면 재인코딩 여부를 눈으로 판정할 수 있다.
+    """
+    if len(a) == 0:
+        return 0.0, 0.0
+    T = np.bincount(a * nb + b, minlength=na * nb).reshape(na, nb)
+    return float(T.max(1).sum() / T.sum()), float(T.sum(0).max() / T.sum())
+
+
 def _prune_bank(X: np.ndarray, gt: np.ndarray, src: np.ndarray, cam: np.ndarray,
                 bank: dict, version: str) -> dict:
+    # tier 를 **가장 먼저** 찍는다. 이 스테이지의 산출물(reach 랭킹·삭제셋)은 GT 가 없어도
+    # 끝까지 계산되므로, 로그 첫 줄에 no_gt 가 없으면 아래 정답/순도 숫자를 그대로 믿게 된다.
+    tier = gt_tier(gt)
+    if tier == "no_gt":
+        log(f"prune {version}: tier=no_gt — GT 0건. 아래 정답·순도·LOO 이득은 전부 무의미하고 "
+            "reach/wins 랭킹만 **선택(selection) 신호**로 읽어라 (품질 판정 아님)")
+    else:
+        log(f"prune {version}: tier={tier} (GT {int((np.asarray(gt) >= 0).sum()):,}건)")
+
     pr = _Pruner(X, gt, bank)
     state = pr.score(None)
     pred = pr._pred_of(state)
@@ -1251,6 +1846,9 @@ def _prune_bank(X: np.ndarray, gt: np.ndarray, src: np.ndarray, cam: np.ndarray,
         c = int(bank["cls"][g])
         fr = win_frames.get(g)
         row = {
+            # 행마다 같은 값이지만 CSV 첫 칸에 있어야 한다 — 이 파일만 떼어 열었을 때
+            # (엑셀/DictReader) tier 를 못 보면 선택 랭킹을 성적표로 읽게 된다.
+            "tier": tier,
             "gidx": g, "cls": c, "cls_name": CLASS_NAMES[c],
             "wins": int(len(fr)) if fr is not None else 0,
             # 선언클래스 순도 — 다수결 순도가 아니다. 전부 normal 프레임을 가져간 smoke
@@ -1258,7 +1856,11 @@ def _prune_bank(X: np.ndarray, gt: np.ndarray, src: np.ndarray, cam: np.ndarray,
             "purity": float((gt[fr] == c).mean()) if fr is not None else None,
             # cross-class 분해: 훔친 프레임의 실제 GT 분포. normal 오탈취(임계치 문제)와
             # fire↔smoke 오탈취(개념 경계 붕괴)는 처방이 다른데 순도 한 숫자는 둘 다 뭉갠다.
-            "stolen": ("|".join(f"{CLASS_NAMES[int(k)]}:{v}" for k, v in
+            # `.get(...,"no_gt")` 필수 — 원장의 미검수 프레임은 gt_class=−1 인데 CLASS_NAMES
+            # 에 −1 이 없어 `KeyError: -1` 로 죽었다. 그러면 GT 없는 뱅크는 리포트 자체가
+            # 안 나와 tier=no_gt 표기가 **도달 불가**가 된다 (이 스테이지는 GT 없이도
+            # reach 랭킹을 내는 게 목적이다). −1 은 오탈취가 아니라 '모름'이라 별도 이름을 준다.
+            "stolen": ("|".join(f"{CLASS_NAMES.get(int(k), 'no_gt')}:{v}" for k, v in
                                 sorted(collections.Counter(gt[fr][gt[fr] != c].tolist()).items()))
                        if fr is not None else ""),
             "loo_gain": 0,                       # 아래에서 gains0 로 덮어쓴다
@@ -1325,13 +1927,22 @@ def _prune_bank(X: np.ndarray, gt: np.ndarray, src: np.ndarray, cam: np.ndarray,
         hold["note"] = "영상이 1개뿐 — 홀드아웃 불가"
         log(f"prune {version}: ⚠️ 홀드아웃 불가 (영상 {len(vids)}개) — 인샘플 이득은 과적합 상한이다")
 
-    winner_g = np.array([pr.gidx[int(c)][a1[int(c)][i]] for i, c in enumerate(pred)])
+    # 같은 뿌리의 두 번째 사고: 여기도 argmax 시절 state 내부값(`a1`)을 호출자 스코프에서
+    # 그대로 쓰고 있었다. `a1` 은 `_Pruner.score()` 의 argmax 분기 지역변수라 이 스코프에
+    # 존재한 적이 없다 → RULE 과 무관하게 NameError. 규칙 무관 대표 문장은 top1_gidx 가 낸다.
+    winner_g = pr.top1_gidx(state)
     by_g = {r["gidx"]: r for r in sents}
     ranked = sorted(sents, key=lambda r: (-r["loo_gain"], r["purity"] if r["purity"] is not None else 9))
     # JSON 에는 **결정 대상**(이겼거나 삭제됐거나)만 넣는다 — 전 뱅크 16k행을 넣으면
     # prune.json 이 6MB 가 되어 사람이 못 읽는다. 전량은 CSV 가 받는다.
     decision = [r for r in ranked if r["wins"] > 0 or r["dropped"]]
-    return {"version": version, "n_frames": int(len(gt)), "base_hits": base_hits,
+    # ⚠️ `tier` 는 **버전 객체의 첫 키**다 (prune.json 의 진짜 최상단이 아니라).
+    #    prune.json 의 최상단 키 공간은 버전 이름 전용이고, report_charts.py 의
+    #    `versions = [...] or list(pr)` 폴백이 그걸 그대로 버전 목록으로 쓴다 —
+    #    거기에 "tier" 를 끼우면 `prune_tier.csv` 를 열려다 죽는다. 하나 위로 올리지 말 것.
+    return {"tier": tier,
+            "n_gt": int((np.asarray(gt) >= 0).sum()),
+            "version": version, "n_frames": int(len(gt)), "base_hits": base_hits,
             "final_hits": final_hits, "n_dropped": int(drop.sum()),
             "n_dropped_nonwinner": n_drop_nonwinner,
             "total_gain": final_hits - base_hits, "converged": converged,
@@ -1412,7 +2023,8 @@ def stage_prune() -> None:
         p = f"{REPORT_DIR}/prune_{v}.csv"
         # ⚠️ **전 뱅크**를 쓴다. 예전엔 라운드0 승자만 써서 삭제 랭킹이 실제 삭제셋의 절반도
         #    못 담았다 (v080: 삭제 201 중 92행만). 라운드2+ 에서 승격→삭제된 문장이 빠졌었다.
-        cols = ["gidx", "cls", "cls_name", "wins", "purity", "stolen", "loo_gain", "reach",
+        cols = ["tier",
+                "gidx", "cls", "cls_name", "wins", "purity", "stolen", "loo_gain", "reach",
                 *[f"reach_{k}" for k in res[v]["cameras"]],
                 "n_cams_win", "n_cams_reach", "dropped", "text"]
         with open(p, "w", newline="", encoding="utf-8") as f:
@@ -1420,8 +2032,10 @@ def stage_prune() -> None:
             w.writeheader()
             w.writerows(rows)
         nd = sum(1 for r in rows if r["dropped"])
-        log(f"prune: 랭킹 CSV → {p} (전 뱅크 {len(rows):,}행 / 삭제 {nd} 전수 포함)")
-    log(f"prune 완료 → {GEO}/prune.json")
+        log(f"prune: 랭킹 CSV → {p} [tier={res[v]['tier']}] "
+            f"(전 뱅크 {len(rows):,}행 / 삭제 {nd} 전수 포함)")
+    tiers = ", ".join(f"{v}={res[v]['tier']}" for v in VERSIONS)
+    log(f"prune 완료 → {GEO}/prune.json (tier: {tiers})")
 
 
 # ────────────────────── attach ──────────────────────
@@ -1437,9 +2051,40 @@ def stage_attach() -> None:
       · `top_prompt_<v_underscored>`  실제로 이긴 문장 원문 (StringField)
       · `pred_margin_<vtag>`          top1 − top2 클래스 점수차. 확신도 정렬용
         (⚠️ 연속 float 은 App 에서 색이 안 나온다 — 색칠하려면 구간화 필드가 따로 필요)
+      · `winner_gidx_r{2,3}_<vtag>`   2·3위 문장의 gidx (IntField, top-K 규칙에서만)
+      · `top_prompt_r{2,3}_<v_underscored>` 그 문장 원문 (StringField)
+
+    ── 규칙 개작 (2026-08-18) ──────────────────────────────────────────────
+    계산 자체는 **top-K state 위에서** 한다 (`_Pruner.score`). 예전엔 `bank_top2_stream`
+    으로 클래스별 1·2위만 접어서 순위 사다리를 만들 수 없었다.
+
+    ⚠️ 그렇다고 `pred_<vt>` 를 다수결로 바꾸지는 **않는다.** 이 필드군은 정본 3층
+       익스포트의 `argmax_k1` 슬롯이고(`prompt_scores_export.RULE_FIELDS`), 다수결 슬롯은
+       이미 `vote_<vt>` / `vote_margin_<vtag>`(stage_vote) 가 따로 갖고 있다. 여기를
+       다수결로 덮으면 두 규칙이 같은 숫자가 되어 스펙 §M9 의 "규칙별 예측 슬롯" 비교가
+       통째로 무의미해지고, P3(같은 개념 두 이름 금지)도 깨진다.
+       → `pred_/pred_margin_/runner_up/close_call/cos_best_*` = argmax_k1 슬롯 유지.
+         단 값은 같은 state 의 열0(클래스별 최고 코사인)에서 뽑으므로 옛 경로와 동일하다.
+    ⚠️ `winner_gidx_<vtag>` 는 규칙과 무관하게 **값이 안 변한다** — argmax 승자 =
+       max_c max_p cos = max_p cos = 전역 코사인 1위 = top-K 사다리의 1위이기 때문이다
+       (`_selftest_topk_ranks` 가 이 등식을 고정한다). 그래서 top1 대표를 유지해도
+       `@user/prompt-compare` 의 등식 조인과 저장뷰가 그대로 산다.
 
     ⚠️ 뱅크 npz 는 **읽기 전용**이다. 여기서 하는 일은 프레임 → 문장 매칭 결과를
        FiftyOne 문서에 쓰는 것뿐이고 프롬프트 자체는 아무것도 변하지 않는다.
+
+    ── frames 프로필 개방 (2026-08-18, Phase 1-1) ───────────────────────────
+    GT 불필요 스테이지라 `frames`(구 frames_captions) 에서도 성립한다 (계획서 §3 이식 판정 "그대로").
+    ⚠️ 대상은 **modality=frame 187,994장**이다 — 데이터셋 문서 수 199,972 는 캡션 11,978
+       (같은 필드에 든 **텍스트** 벡터)을 포함한 값이라, 그걸 프레임 수로 읽고 이미지 지표를
+       계산하면 모달리티가 섞인다. 원장(`frames_bank_ledger.py`)이 이미 frame 만 담으므로
+       여기서는 원장 키를 그대로 따르면 된다 (2026-08-18 라이브 실측: 199,972 / 187,994 / 21 project).
+    세 지점만 프로필화했다:
+      · 입구 — `load_matched()` (frames 는 embed.npz 부재 시 데이터셋 스트리밍)
+      · 조인 — `key_to_ids()` (frames 원장 key = sample id)
+      · GT 의존 산출 — 정확도는 **GT 있는 프레임만** 분모로 쓰고 tier 를 같이 찍는다
+        (frames 는 ls_finalized 40장뿐이라 전 프레임 분모로 재면 0.02% 상한의 가짜 성적표가
+         나온다). tier=no_gt 면 줄 자체를 안 찍는다.
     """
     import fiftyone as fo
 
@@ -1448,19 +2093,20 @@ def stage_attach() -> None:
     if not os.path.exists(path):
         raise SystemExit(f"뱅크 npz 없음: {path} — 먼저 `bank --csv <csv> --version {version}`")
 
-    keys, X, gt, src, banks = load_all()
-    z = np.load(path, allow_pickle=True)
-    bank = {"vec": z["vec"].astype(np.float32), "cls": z["cls"].astype(np.int64),
-            "prompt": [str(p) for p in z["prompt"]]}
+    keys, X, gt, src = load_matched()
+    bank = load_bank(version)                      # 문장은 DB 정본 (load_bank 주석)
     classes = sorted(set(bank["cls"].tolist()))
-    log(f"attach {version}: 문장 {len(bank['cls']):,} / 프레임 {len(keys):,} — 매칭 계산")
+    log(f"attach {version}: 문장 {len(bank['cls']):,} / 프레임 {len(keys):,} / "
+        f"규칙 {RULE}(k={RULE_K}) / GT tier={gt_tier(gt)} — 매칭 계산")
 
-    b1, _, a1 = bank_top2_stream(X, bank)
+    pr = _Pruner(X, gt, bank)
+    state = pr.score(None)                      # RULE=topk → 사다리 포함 / argmax → 옛 4-tuple
+    b1 = pr.best_of(state)                      # {c: [N]} 클래스별 최고 코사인 (두 규칙 공통)
     M = np.stack([b1[c] for c in classes], axis=1)
     order = np.sort(M, axis=1)
     pred_margin = (order[:, -1] - order[:, -2]).astype(np.float32)   # top1−top2 (GT 불필요)
     winner_col = M.argmax(axis=1)
-    pred = np.array(classes)[winner_col]
+    pred = np.array(classes)[winner_col]        # argmax_k1 슬롯 — 위 docstring 참조
     # 2위 클래스 — **승자 열을 마스킹하고 argmax** 한다. `np.argsort` 는 unstable quicksort 라
     # 동점(float32 코사인에서 실제 발생 가능)일 때 [:,1] 이 승자와 같아질 수 있다.
     # `argmax` 는 첫 인덱스를 보장하므로 pred 의 타이브레이크 규칙과도 일치한다.
@@ -1468,19 +2114,29 @@ def stage_attach() -> None:
     _mask = M.copy()
     _mask[np.arange(M.shape[0]), winner_col] = -np.inf
     second_col = _mask.argmax(axis=1)
-    gidx = {c: np.flatnonzero(bank["cls"] == c) for c in classes}
-    win_g = np.array([gidx[int(c)][a1[int(c)][i]] for i, c in enumerate(pred)])
+    win_g = pr.top1_gidx(state)                 # 전역 코사인 1위 = argmax 승자 (등식은 selftest)
     best = M.max(axis=1)
+    # 순위 사다리 2·3위 — `rank_gidx` 의 docstring 이 "순위" 정의와 argmax 미지원 근거를 갖는다
+    rank_g = {r: pr.rank_gidx(state, r - 1) for r in RANK_EXTRA}
+    rank_c = {r: pr.rank_cos(state, r - 1) for r in RANK_EXTRA}
+    if all(rank_g[r] is None for r in RANK_EXTRA):
+        log(f"attach {version}: ⚠️ 규칙 {RULE}(k={RULE_K}) 에는 2·3위 문장 **인덱스가 없다** "
+            "— 순위 필드를 만들지 않는다 (클래스 사다리로 대신 채우면 이름만 같은 딴 값). "
+            "RULE=topk 로 다시 돌리면 생긴다")
+    # 규칙 축 자기보고 — 이 스테이지가 쓰는 argmax 슬롯과 제품 규칙이 어디서 갈리는지
+    rule_pred = pr._pred_of(state)
+    n_split = int((rule_pred != pred).sum())
+    log(f"attach {version}: argmax_k1 ↔ {RULE}(k={RULE_K}) 판정 불일치 {n_split:,}/{len(pred):,} "
+        f"({n_split / max(1, len(pred)):.1%}) — 다수결 예측은 `vote_<vt>`(stage_vote) 소관이다")
 
     ds = fo.load_dataset(PROFILES[PROFILE]["dataset"])
-    key_to_id = {}
-    for s in ds.select_fields(["id", "filepath"]):
-        key_to_id[f"{os.path.basename(os.path.dirname(s.filepath))}/"
-                  f"{os.path.basename(s.filepath)}"] = s.id
-    ids = [key_to_id.get(k) for k in keys]
+    ids = key_to_ids(ds, keys)
     ok = [i for i, x in enumerate(ids) if x]
     if len(ok) < len(ids):
         log(f"attach: FiftyOne 매칭 {len(ok)}/{len(ids)} — 나머지 프레임은 필드 미설정")
+    if not ok:
+        raise SystemExit(f"attach: 원장 key 가 데이터셋과 하나도 안 붙는다 "
+                         f"(key_join={PROFILES[PROFILE]['key_join']}) — 조인 방식 확인")
 
     vt = version.replace(".", "_")
     if not vt.startswith("v"):
@@ -1502,17 +2158,18 @@ def stage_attach() -> None:
     if old_bank and old_bank != version:
         log(f"attach: ⚠️ 버전 중립 필드 6개를 {old_bank} → {version} 로 **덮어쓴다** "
             f"(cos_best_*/runner_up/close_call). 두 뱅크를 나란히 보려면 태그 필드를 쓸 것")
+    rank_flds = [f for r in RANK_EXTRA
+                 for f in (rank_gidx_field(tag, r), rank_prompt_field(vt, r))]
     for fld in (f"pred_{vt}", f"top_prompt_{vt}", f"pred_margin_{tag}",
                 f"winner_gidx_{tag}", "runner_up", "close_call", "attached_bank",
-                *cos_flds):
+                *cos_flds, *rank_flds):
         if fld in prev:
-            ds.clear_sample_field(fld)
-    ds.set_values(f"pred_{vt}",
-                  {ids[i]: fo.Classification(label=CLASS_NAMES[int(pred[i])],
-                                             confidence=float(best[i])) for i in ok},
-                  key_field="id")
-    ds.set_values(f"top_prompt_{vt}",
-                  {ids[i]: bank["prompt"][int(win_g[i])] for i in ok}, key_field="id")
+            ds.clear_sample_field(fld)   # 규칙을 바꿔 재실행하면 순위 필드도 stale 이 된다
+    pairs = [(ids[i], i) for i in ok]            # 배치 쓰기 단위 (set_values_batched 참조)
+    set_values_batched(ds, f"pred_{vt}", pairs,
+                       lambda i: fo.Classification(label=CLASS_NAMES[int(pred[i])],
+                                                   confidence=float(best[i])))
+    set_values_batched(ds, f"top_prompt_{vt}", pairs, lambda i: bank["prompt"][int(win_g[i])])
     # ⚠️ 문장을 **숫자 ID** 로도 내린다 — 이게 화면2(문장→프레임 역방향 조회)의 유일한 실용 경로다.
     # 이 App 은 Query Performance 모드(enable_query_performance=True)라 String/Classification
     # 필드가 타입·카디널리티 불문 전부 **자유텍스트 substring 검색**으로만 렌더된다
@@ -1522,10 +2179,29 @@ def stage_attach() -> None:
     # gidx 전역 오프셋 (GIDX_OFFSET 주석): -prompts 데이터셋의 gidx 와 등식 조인이 되도록
     # 버전 순번 오프셋을 더한다. BANK_A(=BANKS[0])는 0 이라 기존 v080 값과 동일.
     goff = (BANKS.index(version) if version in BANKS else 0) * GIDX_OFFSET
-    ds.set_values(f"winner_gidx_{tag}",
-                  {ids[i]: int(win_g[i]) + goff for i in ok}, key_field="id")
-    ds.set_values(f"pred_margin_{tag}",
-                  {ids[i]: float(pred_margin[i]) for i in ok}, key_field="id")
+    set_values_batched(ds, f"winner_gidx_{tag}", pairs, lambda i: int(win_g[i]) + goff)
+    set_values_batched(ds, f"pred_margin_{tag}", pairs, lambda i: float(pred_margin[i]))
+
+    # ── 순위 사다리 2·3위 (사용자 Q1: "선택된 것 말고 나머지 순위도 보여줘") ──
+    # 1위와 **같은 goff/같은 키공간**을 쓴다 — prune CSV·`-prompts` gidx 와 그대로 조인된다.
+    # gidx<0(빈 자리, 문장 3개 미만인 초소형 뱅크)은 **쓰지 않는다** — goff 를 더하면
+    # 엉뚱한 문장을 가리키게 되므로 null 로 남기는 게 맞다.
+    for r in RANK_EXTRA:
+        g = rank_g[r]
+        if g is None:
+            continue
+        live = [i for i in ok if g[i] >= 0]
+        lpairs = [(ids[i], i) for i in live]
+        set_values_batched(ds, rank_gidx_field(tag, r), lpairs, lambda i: int(g[i]) + goff)
+        set_values_batched(ds, rank_prompt_field(vt, r), lpairs,
+                           lambda i: bank["prompt"][int(g[i])])
+        cos = rank_c[r]
+        n_cross = int((bank["cls"][g[live]] != bank["cls"][win_g[live]]).sum()) if live else 0
+        log(f"attach {version}: {r}위 필드 {rank_gidx_field(tag, r)} / "
+            f"{rank_prompt_field(vt, r)} ({len(live):,}장, 고유문장 "
+            f"{len(set(g[live].tolist())):,}, 1위와 다른 클래스 {n_cross:,}장"
+            + (f", cos 중앙 {float(np.median(cos[live])):.3f}" if cos is not None and live else "")
+            + ")")
 
     # 긴 문장 원문이 썸네일 칩으로 깔리면 이미지가 안 보인다 → 그리드에 띄울 필드만 allowlist.
     # ⚠️ Color by 대상은 반드시 여기 있어야 한다 (없으면 App 이 TypeError 로 죽는다).
@@ -1537,14 +2213,13 @@ def stage_attach() -> None:
     #    stage_attach 가 원래 버전 태그 설계(다른 버전을 붙여도 안 덮어씀)라 따르되,
     #    은퇴한 태그는 clear 가 아니라 `delete_sample_fields` 로 지워야 스키마가 준다.
     for j, c in enumerate(classes):
-        ds.set_values(f"cos_best_{CLASS_NAMES[c]}",
-                      {ids[i]: float(M[i, j]) for i in ok}, key_field="id")
-    ds.set_values("runner_up",
-                  {ids[i]: fo.Classification(label=CLASS_NAMES[classes[int(second_col[i])]])
-                   for i in ok}, key_field="id")
+        set_values_batched(ds, f"cos_best_{CLASS_NAMES[c]}", pairs, lambda i, j=j: float(M[i, j]))
+    set_values_batched(ds, "runner_up", pairs,
+                       lambda i: fo.Classification(
+                           label=CLASS_NAMES[classes[int(second_col[i])]]))
     # 이 6개가 어느 뱅크 산출인지 — 버전을 필드명에서 뺀 대가로 반드시 있어야 한다
-    ds.set_values("attached_bank",
-                  {ids[i]: fo.Classification(label=version) for i in ok}, key_field="id")
+    set_values_batched(ds, "attached_bank", pairs,
+                       lambda i: fo.Classification(label=version))
     # 아슬아슬함 — 연속 float 은 App 에서 색이 안 나온다.
     # ⚠️ 경계를 **절대값으로 박지 않는다**: 이 파일이 이미 절대컷 0.005 를 기각했다
     #    ("절대컷은 뱅크의 성질이지 프레임의 성질" — v080 11.5%ile vs v084 8.1%ile).
@@ -1559,31 +2234,504 @@ def stage_attach() -> None:
             return "미정의"
         return q_lab[int(np.searchsorted(qs, m, side="left"))]
 
-    ds.set_values("close_call",
-                  {ids[i]: fo.Classification(label=_cc(float(pred_margin[i])))
-                   for i in ok}, key_field="id")
+    set_values_batched(ds, "close_call", pairs,
+                       lambda i: fo.Classification(label=_cc(float(pred_margin[i]))))
     log(f"attach {version}: 버전중립 필드 {len(classes) + 3}개 "
         f"(cos_best_*·runner_up·close_call·attached_bank) "
         f"· 마진 백분위 경계 {np.round(qs, 4).tolist()}")
 
     # relabel_transition 은 뺐다 — 재라벨 이력은 이 분석의 축이 아니고 소유자는 frames_eval.py 다
     # codex 지적: Color by 대상은 반드시 active_fields 에 있어야 한다 (없으면 App 크래시).
+    # ⚠️ 순위 필드(winner_gidx_r*/top_prompt_r*)는 **일부러 뺀다** — gidx 는 사람이 쓰는
+    #    필터가 아니라 패널 조인 키이고(스펙 §4-5), 문장 원문은 고카디널리티라 필터
+    #    부적합이다(P4/§4-4). 둘 다 모달에서 읽는 값이고, 여기 넣으면 그리드 칩이
+    #    이미지를 덮는다. G1(분석가가 보는 필터 증가율 0)도 이 원칙에서 나온다.
     active = [f for f in ("ground_truth", f"pred_{vt}", "runner_up", "close_call",
-                          "attached_bank", "environment", "camera")
+                          "attached_bank", "environment",
+                          PROFILES[PROFILE]["group_field"])   # sourceh=camera / frames=project
               if f in ds.get_field_schema()]
-    ds.app_config.active_fields = ActiveFields(paths=active, exclude=False)
+    active = set_active_fields(ds, ActiveFields, active)
+    # 규칙 출처 — 어느 규칙의 사다리인지 필드명에는 안 들어간다. probecache 의
+    # `probe_k_<tag>` 와 같은 자리(ds.info)에 남긴다. 스키마 비용 0.
+    made = [r for r in RANK_EXTRA if rank_g[r] is not None]   # 사다리 폭이 모자라면 일부만 난다
+    ds.info = {**(ds.info or {}),
+               f"attach_rule_{tag}": {"rule": RULE, "k": RULE_K, "bank": version,
+                                      "ranks": made, "gt_tier": gt_tier(gt)}}
     ds.save()
 
-    acc = float((pred == gt).mean())
     dist = collections.Counter(CLASS_NAMES[int(p)] for p in pred)
     n_used = len(set(win_g.tolist()))
     log(f"attach {version}: 필드 pred_{vt} / top_prompt_{vt} / pred_margin_{tag} / "
         f"winner_gidx_{tag} 기록 ({len(ok):,}장)")
-    log(f"attach {version}: 예측 분포 {dict(dist)} / GT 대비 정확도 {acc:.2%} "
-        f"/ 실제로 쓰인 문장 {n_used:,}개 ({n_used / len(bank['cls']):.2%})")
-    log(f"attach {version}: 그리드 표시 필드(active_fields) {active} "
-        "— 문장 원문은 모달에서 본다")
+    # ⚠️ tier 를 정확도와 **같은 줄**에 찍는다 — no_gt 인데 "정확도 0.00%" 만 보이면
+    #    성적표로 읽힌다 (prune 이 같은 이유로 tier 를 먼저 찍는다).
+    # ⚠️ 분모는 **GT 있는 프레임**뿐이다. 전 프레임을 분모로 쓰면 미검수(gt=−1)가 전부 오답으로
+    #    계산돼, frames(ls_finalized 40장/199,972) 에서 "정확도 0.02%" 라는 가짜 성적표가 난다.
+    #    sourceh 은 전 프레임이 검수돼 있어 값이 예전과 동일하다.
+    tier = gt_tier(gt)
+    m_gt = np.asarray(gt) >= 0
+    if tier == "no_gt":
+        acc_txt = f"GT[tier={tier}] — 정확도 생략 (검수 프레임 0장)"
+    else:
+        acc = float((pred[m_gt] == gt[m_gt]).mean())
+        acc_txt = (f"GT[tier={tier}, n={int(m_gt.sum()):,}] 대비 argmax_k1 정확도 {acc:.2%}"
+                   + ("" if m_gt.all() else f" (검수분만 — 전체 {len(pred):,}장 중)"))
+    log(f"attach {version}: 예측 분포 {dict(dist)} / {acc_txt} / "
+        f"실제로 쓰인 1위 문장 {n_used:,}개 ({n_used / len(bank['cls']):.2%})")
+    log(f"attach {version}: 그리드 표시 필드(active_fields) {active or 'None(제한 없음, 미변경)'} "
+        "— 문장 원문·순위 사다리는 모달에서 본다")
     log("attach 완료")
+
+
+# ────────────────────── site (화면4 — 사이트 범위 + LOPO 전이 검정) ──────────
+# 계획: docs/apo-fiftyone-plan-2026-08-03.md §4 Phase 1 (1-2·1-3·1-4) + §1 D3.
+# 전부 **GT-free** 다 — frames 의 GT 는 ls_finalized 40장(0.02%)뿐이고, 이 스테이지의 어떤
+# 숫자도 gt 를 안 읽는다. 그래도 산출물 최상단에 `gt_tier` 를 박는다: 옆 스테이지 산출물과
+# 섞여 읽힐 때 "GT 로 검증된 값"으로 오독되는 것을 막는 게 이 파일의 관례다(prune/attach 동일).
+SITE_NULL_PERM = int(os.environ.get("SITE_NULL_PERM", "50"))     # 널모델 순열 횟수
+SITE_SCREEN_CAP = int(os.environ.get("SITE_SCREEN_CAP", "5000"))  # Embeddings 패널 상한
+SITE_BRAIN = os.environ.get("SITE_BRAIN", "emb_viz")
+
+
+def _pick_brain(ds) -> str | None:
+    """화면4 가 쓸 시각화 brain run. 없는 키를 박으면 패널이 빈 채로 뜨거나 죽는다."""
+    try:
+        runs = list(ds.list_brain_runs())
+    except Exception:  # noqa: BLE001 — brain 미설치/미등록은 치명이 아니다
+        return None
+    if SITE_BRAIN in runs:
+        return SITE_BRAIN
+    viz = [r for r in runs if "viz" in r or "vis" in r]
+    return viz[0] if viz else None
+
+
+def _stratified_ids(ids: list, idx: list, strata: np.ndarray, cap: int) -> list:
+    """층 라운드로빈 표본 — 큰 project 가 5,000 슬롯을 통째로 먹지 않게.
+
+    FiftyOne Embeddings 패널은 **5,000점 상한**이라 199,972 전체를 못 그린다(계획서 §4).
+    무작위 take 로 자르면 cohort-b(73,390) 가 37% 를 가져가 사이트 비교가 성립하지 않는다.
+    결정적이다 — 원장 순서가 고정이므로 재실행 간 같은 표본이 나온다.
+    """
+    by_s: dict = {}
+    for i in idx:
+        by_s.setdefault(strata[i], []).append(i)
+    out: list = []
+    pos = 0
+    while len(out) < cap:
+        added = False
+        for s in sorted(by_s):
+            lst = by_s[s]
+            if pos < len(lst):
+                out.append(ids[lst[pos]])
+                added = True
+                if len(out) >= cap:
+                    break
+        if not added:
+            break
+        pos += 1
+    return out
+
+
+def stage_site() -> None:
+    """화면4 — 승자 문장의 **사이트 범위**(공통/사이트특이) + 널모델 게이트 + LOPO 전이 검정.
+
+    ── 정의 (수식) ───────────────────────────────────────────────────────────
+    그룹 축 g ∈ G = 프로필의 `group_field` (sourceh=카메라 / frames=project, 실측 21개).
+    문장 p 의 **승수 기반** 사이트 수 (top1(i) = 프레임 i 의 전역 코사인 1위 문장):
+        W(p, g) = |{프레임 i : g(i)=g 이고 top1(i)=p}|
+        n_win(p) = |{g : W(p,g) > 0}|
+    프레임 i 의 사이트 범위:
+        scope(i) = SCOPE(min(3, n_win(top1(i))))
+
+    ⚠️ **"이겼다" = top-1** 로 잡는다. source-h `stage_screens` 는 코드상 `contrib_frames`
+       (top-K 규칙에서는 "표를 넣은 문장")를 쓰는데, 그 정의를 frames 에 그대로 옮기면
+       **축이 죽는다**: K=10 이면 프레임당 10문장이 기여로 잡혀 문장 하나가 온 project 에
+       닿는다 (합성 검증에서 전 문장이 '공통 (3곳+)' 로 포화 — 계획서 §0-4 게이트 ③
+       "한 범주가 90% 넘지 않는가" 위반). 그리고 source-h 의 74.6% 불일치 실측은 **argmax 시절**
+       측정이라 그때의 `contrib_frames` == top-1 승수였다. 즉 top-1 기준이 "측정된 정의"를
+       보존하는 쪽이고, 규칙(topk/argmax)이 바뀌어도 값이 안 변한다는 이점까지 딸려온다
+       (`top1_gidx` 의 규칙 불변성은 `_selftest_topk_ranks` ②가 고정).
+       top-K 기여 기준은 버리지 않고 `n_<plural>_contrib` 컬럼 + 로그로 남긴다.
+    ⚠️ **`reach_g > 0` 기준을 쓰면 안 된다** — source-h 실측에서 실제 승수 기준과 승자 201개 중
+       74.6% 가 불일치했고 **전부 한 방향**이었다(reach 가 "공통"으로 과대포장, 119건 vs 0건).
+       reach 는 "그 사이트 어딘가에서 1등이 될 수 있었다"는 잠재력이라 별 컬럼
+       (`n_<plural>_reach`)으로 같이 낸다 — 계획서 §3 이 지목한 `bank_reach_stream(groups=)`
+       산출이 그것이고, 두 기준의 불일치율을 로그에 남겨 frames 판으로 재측정한다.
+
+    ── 널모델 (게이트 ②, 계획서 §0-4 "화면4가 project 색칠과 닮으면 폐기") ───
+    ① 순열: 프레임→그룹 사상만 무작위로 섞고(문장×프레임 기여쌍은 그대로) n_win 을 다시 센다.
+       그룹 크기 분포는 보존되므로, 관측 공통비율이 순열과 같으면 site_scope 는
+       **"큰 project 가 많은 문장을 먹는다"의 재인코딩**이다 → 화면4 폐기.
+       판정: z = (obs − mean_null)/sd_null 과 단측 경험 p. **obs 가 null 보다 낮아야**
+       (공통이 덜 나와야) 사이트 정보가 있다.
+    ② 재인코딩: 프레임 단위 (scope, group) 의 Cramér's V + scope→group 다수결 정확도 vs
+       최빈 group 기저율. V 가 1 에 가깝거나 정확도가 기저율을 크게 웃돌면 project 색칠이다.
+
+    ── LOPO (1-4, D3 의 frames 판) ──────────────────────────────────────────
+    각 그룹 q 에 대해 W(q) = {p : W(p,q)>0}, W_out(q) = ∪_{q'≠q} W(q') 로 두고
+        recall_out    = |W(q) ∩ W_out(q)| / |W(q)|      다른 곳 승자가 q 승자를 덮는 비율
+        jaccard       = |∩| / |∪|
+        topN_recall   = |W(q) ∩ TopN| / |W(q)|,  N=|W(q)|, TopN = s_out 상위 N
+                        (s_out(p) = p 가 이긴 **다른** 그룹 수, 동점은 out reach 최대값)
+                        기대값(무작위 N개) = N/M 을 나란히 찍는다 — 이게 없으면 큰 수가
+                        전이 성공처럼 보인다
+        frame_cover   = q 의 프레임 중 top1 승자가 W_out(q) 에 있던 비율
+                        (= "새 현장의 승자가 이미 다른 현장 승자였나". D3 의 예비군 66% 대응)
+        spearman      = ρ(max_{q'≠q} reach_{q'}, reach_q)  — 잠재력 랭킹의 전이
+    이벤트가 거의 없는 그룹은 제외가 아니라 **tier 표기**다: `minn_tier(이벤트 예측 프레임 수)`
+    (GT 가 아니라 규칙 예측이라 `event_tier` 라는 별 이름을 준다). pooled 요약은
+    `reportable` 만 쓰고 나머지도 표에는 남긴다 — 하드코딩 제외 목록을 만들지 않는다.
+    """
+    import csv as _csv
+
+    import fiftyone as fo
+
+    if PROFILE == "sourceh":
+        raise SystemExit("site 는 frames 프로필용이다 — sourceh 은 `screens` 가 같은 일을 "
+                         "카메라 축으로 이미 한다 (winner_site_scope_<tag>)")
+    version = os.environ.get("BANK_ATTACH", VERSIONS[0])
+    path = f"{PROMPT_DIR}/{version}.npz"
+    if not os.path.exists(path):
+        raise SystemExit(f"뱅크 npz 없음: {path} — 먼저 `bank --csv <csv> --version {version}`")
+    gfield = PROFILES[PROFILE]["group_field"]
+    plural = PROFILES[PROFILE]["group_plural"]
+    SL = scope_labels(PROFILES[PROFILE]["group_unit"])
+    tag = vtag(version)
+
+    keys, X, gt, src = load_matched()
+    if not keys:
+        raise SystemExit("site: 프레임 0장 — 원장/임베딩 먼저 확인")
+    groups = load_groups(keys)
+    tier = gt_tier(gt)
+    log(f"site {version}: tier={tier} (이 스테이지 전 지표는 GT-free — tier 는 오독 방지 표기) "
+        f"/ 규칙 {RULE}(k={RULE_K}) / 그룹축 {gfield}")
+
+    # 그룹별로 프레임을 **먼저 정렬**한다. reach 의 그룹 누적이 배치마다 21개 boolean 마스크로
+    # 타일을 복사하는데, 정렬해 두면 한 배치에 그룹이 1~2개만 걸려 그 복사가 사라진다
+    # (값은 그룹 내 max 라 순서 불변 — 재정렬은 결과를 바꾸지 않는다).
+    gnames = sorted(set(groups.tolist()))
+    gcode_of = {g: i for i, g in enumerate(gnames)}
+    gcode = np.array([gcode_of[g] for g in groups], dtype=np.int64)
+    order = np.argsort(gcode, kind="stable")
+    keys = [keys[i] for i in order]
+    X, gt, src, groups, gcode = X[order], gt[order], src[order], groups[order], gcode[order]
+    NG, N = len(gnames), len(keys)
+    sizes = np.bincount(gcode, minlength=NG)
+    log(f"site {version}: 프레임 {N:,} / {gfield} {NG}개 "
+        f"(최대 {gnames[int(sizes.argmax())]} {int(sizes.max()):,} / 최소 "
+        f"{gnames[int(sizes.argmin())]} {int(sizes.min()):,})")
+
+    bank = load_bank(version)                      # 문장은 DB 정본 (load_bank 주석)
+    M = len(bank["cls"])
+    pr = _Pruner(X, gt, bank)
+    state = pr.score(None)
+    pred = pr._pred_of(state)
+    win_g = pr.top1_gidx(state)
+    frames_all = np.arange(N, dtype=np.int64)
+    W = group_win_matrix(win_g, frames_all, gcode, M, NG)      # 정본: top-1 승수
+    n_win = (W > 0).sum(1)
+    is_winner = W.sum(1) > 0
+    sent_idx, frame_idx = contrib_pairs(pr, state)             # 진단: top-K 기여
+    Wc = group_win_matrix(sent_idx, frame_idx, gcode, M, NG)
+    n_contrib = (Wc > 0).sum(1)
+    log(f"site {version}: 문장 {M:,} 중 승자(top1) {int(is_winner.sum()):,} / "
+        f"기여(top-K) {int((Wc.sum(1) > 0).sum()):,} / 기여쌍 {len(sent_idx):,}")
+    sat = float((n_contrib[Wc.sum(1) > 0] >= min(3, NG)).mean()) if (Wc.sum(1) > 0).any() else 0.0
+    log(f"site {version}: [정의 대조] 기여기준으로 재면 '공통(3{PROFILES[PROFILE]['group_unit']}+)' 이 "
+        f"{sat:.1%} — 90% 를 넘으면 그 기준은 축이 죽은 것이다(게이트 ③). scope 는 top-1 기준")
+
+    # reach (잠재력) — 계획서 §3 의 `bank_reach_stream(groups=project)`
+    best = pr.best_of(state)
+    reach, reach_g = bank_reach_stream(X, bank, best, groups=groups)
+    R = np.stack([reach_g[g] for g in gnames], axis=1)
+    n_reach = (R > 0).sum(1)
+    dis = int((n_win[is_winner] != n_reach[is_winner]).sum())
+    over = int((n_reach[is_winner] > n_win[is_winner]).sum())
+    log(f"site {version}: 승수기준 vs reach>0 기준 불일치 {dis:,}/{int(is_winner.sum()):,} "
+        f"({dis / max(1, int(is_winner.sum())):.1%}) — 그중 reach 과대 {over:,} / 과소 {dis - over:,}"
+        " (source-h 실측은 74.6% 불일치·전부 과대. scope 는 승수기준을 쓴다)")
+
+    scope_code = np.minimum(3, np.maximum(1, n_win[win_g]))
+    scope = np.array([SL[int(c)] for c in scope_code], dtype=object)
+    fr_dist = collections.Counter(scope.tolist())
+    st_dist = collections.Counter(int(min(3, v)) for v in n_win[is_winner])
+    log(f"site {version}: scope(프레임) {dict(fr_dist)}")
+    log(f"site {version}: scope(문장, 승자분) {dict(sorted(st_dist.items()))} / "
+        f"공통(≥2{PROFILES[PROFILE]['group_unit']}) 문장 "
+        f"{int((n_win[is_winner] >= 2).sum()):,} ({(n_win[is_winner] >= 2).mean():.1%})")
+
+    # ── 널모델 ① 순열 ──
+    # 문장→프레임 승수 관계는 **그대로 두고** 프레임→그룹 사상만 섞는다. 그룹 크기 분포가
+    # 보존되므로, 관측이 순열과 같으면 "많이 이긴 문장이 자동으로 여러 곳에 걸린다"는
+    # 크기 효과만 본 것이다.
+    rng = np.random.default_rng(51)
+    obs_share = float((n_win[is_winner] >= 2).mean())
+    obs_mean = float(n_win[is_winner].mean())
+    obs_fr = float((scope_code == 1).mean())
+    null_share, null_mean, null_fr = [], [], []
+    for _ in range(SITE_NULL_PERM):
+        gp = gcode[rng.permutation(N)]
+        Wp = group_win_matrix(win_g, frames_all, gp, M, NG)
+        nwp = (Wp > 0).sum(1)
+        null_share.append(float((nwp[is_winner] >= 2).mean()))
+        null_mean.append(float(nwp[is_winner].mean()))
+        null_fr.append(float((np.minimum(3, np.maximum(1, nwp[win_g])) == 1).mean()))
+
+    def _z(obs: float, arr: list, direction: str) -> dict:
+        """관측 vs 순열분포. `direction` = 사이트 정보가 있을 때 관측이 향하는 쪽.
+
+        `p_lower` = P(null ≤ obs) 의 경험값(+1 보정). lower 방향 지표에서는 작을수록,
+        higher 방향 지표에서는 클수록 사이트 정보가 있다는 뜻이다 — 부호를 헷갈리기 쉬워
+        방향을 값 옆에 같이 싣는다.
+        """
+        a = np.asarray(arr, dtype=np.float64)
+        sd = float(a.std(ddof=1)) if len(a) > 1 else 0.0
+        return {"obs": obs, "null_mean": float(a.mean()), "null_sd": sd,
+                "z": (obs - float(a.mean())) / sd if sd > 0 else None,
+                "p_lower": float((a <= obs).sum() + 1) / (len(a) + 1),
+                "direction": direction}
+
+    null = {"n_perm": SITE_NULL_PERM,
+            "share_common_sentences": _z(obs_share, null_share, "lower_is_site_specific"),
+            "mean_n_groups_win": _z(obs_mean, null_mean, "lower_is_site_specific"),
+            "share_site_specific_frames": _z(obs_fr, null_fr, "higher_is_site_specific")}
+    s = null["share_common_sentences"]
+    log(f"site {version}: [널모델①] 공통문장 비율 관측 {s['obs']:.3f} vs 순열 "
+        f"{s['null_mean']:.3f}±{s['null_sd']:.3f} (z={s['z'] if s['z'] is None else round(s['z'], 2)}, "
+        f"p_lower={s['p_lower']:.3f}, perm={SITE_NULL_PERM})")
+
+    # ── 널모델 ② 재인코딩 (scope ↔ group) ──
+    sc_idx = (scope_code - 1).astype(np.int64)
+    v_cram = _cramers_v(sc_idx, gcode, 3, NG)
+    acc, base = _predict_acc(sc_idx, gcode, 3, NG)
+    null["reencoding"] = {"cramers_v": v_cram, "scope_to_group_acc": acc,
+                          "majority_group_baseline": base, "lift": acc - base}
+    log(f"site {version}: [널모델②] scope↔{gfield} Cramér's V {v_cram:.3f} / "
+        f"scope→{gfield} 다수결 정확도 {acc:.1%} vs 최빈 기저율 {base:.1%} "
+        f"(lift {acc - base:+.1%}) — 1.0/큰 lift 면 {gfield} 색칠의 재인코딩이다")
+
+    # ── 게이트 판정 (계획서 §0-4) — 해석을 사람에게 미루지 않는다 ──
+    # 경계값의 출처:
+    #   ① z ≤ −2 / p_lower ≤ 0.05 — 순열 50회에서 얻을 수 있는 최소 p 가 1/51≈0.020 이라
+    #      0.05 는 이 표본에서 의미가 있다. 방향은 "관측이 더 사이트특이" 쪽.
+    #   ② acc ≥ 0.84 — 이 파일이 이미 기각한 축들의 실측 대역이다 (err_cluster→camera
+    #      0.84~0.91, emb_viz 좌표→camera 0.998). 같은 자로 재야 일관된다.
+    #   ③ 한 범주 ≥ 90% — 계획서 §0-4 게이트 ③ 문구 그대로.
+    n_fr = sum(fr_dist.values())
+    top_share = max(fr_dist.values()) / n_fr if n_fr else 1.0
+    verdict = {
+        "perm_pass": bool(s["z"] is not None and s["z"] <= -2 and s["p_lower"] <= 0.05),
+        "not_reencoding_pass": bool(acc < 0.84 and v_cram < 0.8),
+        "category_balance_pass": bool(top_share < 0.90),
+        "max_scope_share": top_share,
+        "thresholds": {"z": -2, "p_lower": 0.05, "scope_to_group_acc": 0.84,
+                       "cramers_v": 0.8, "max_category_share": 0.90},
+    }
+    verdict["adopt"] = bool(verdict["perm_pass"] and verdict["not_reencoding_pass"]
+                            and verdict["category_balance_pass"])
+    null["verdict"] = verdict
+    log(f"site {version}: [게이트] 순열 {'통과' if verdict['perm_pass'] else '실패'} / "
+        f"비재인코딩 {'통과' if verdict['not_reencoding_pass'] else '실패'} / "
+        f"범주균형 {'통과' if verdict['category_balance_pass'] else '실패'}"
+        f"(최대범주 {top_share:.1%}) → 화면4 "
+        f"{'채택' if verdict['adopt'] else '**폐기 권고** (계획서 §0-4)'}")
+
+    # ── LOPO ──
+    # 이벤트 클래스는 **뱅크에서** 읽는다 — 모듈 상수 `EVENT_CLASSES`(1,2,3) 는 source-h 4클래스
+    # 시절 값이고 frames 프로필엔 smoking(4) 이 있다. tier 분모를 상수로 박으면 smoking 뱅크에서
+    # 이벤트 프레임이 통째로 안 세어진다.
+    ev_cls = [c for c in sorted(set(bank["cls"].tolist())) if c != 0]
+    ev = np.isin(pred, ev_cls)
+    log(f"site {version}: 이벤트 클래스 {[CLASS_NAMES.get(c, str(c)) for c in ev_cls]} / "
+        f"이벤트 예측 프레임 {int(ev.sum()):,} ({ev.mean():.1%}) — event_tier 의 분모")
+    rows_lopo = []
+    for qi, q in enumerate(gnames):
+        inq = gcode == qi
+        win_q = W[:, qi] > 0
+        others = [j for j in range(NG) if j != qi]
+        win_out = (W[:, others] > 0).any(1) if others else np.zeros(M, dtype=bool)
+        s_out = (W[:, others] > 0).sum(1) if others else np.zeros(M, dtype=np.int64)
+        r_out = R[:, others].max(1) if others else np.full(M, -np.inf, dtype=np.float32)
+        n_q = int(win_q.sum())
+        inter = int((win_q & win_out).sum())
+        union = int((win_q | win_out).sum())
+        n_ev = int(ev[inq].sum())
+        # 동점(같은 s_out) 은 out reach 로 가른다 — 랜덤 순서면 topN 이 실행마다 흔들린다
+        rank = np.lexsort((-r_out, -s_out))[:n_q]
+        top_mask = np.zeros(M, dtype=bool)
+        top_mask[rank] = True
+        rows_lopo.append({
+            "tier": tier, "rule": RULE, gfield: q,
+            "n_frames": int(inq.sum()),
+            # ⚠️ 크기 교락을 읽을 수 있게 **비중을 같은 행에 싣는다**. 초대형 그룹을 홀드아웃하면
+            #    남는 풀이 그만큼 작아져 `frame_coverage_out`·`recall_out` 이 구조적으로 낮게
+            #    나온다 (frames 실측: cohort-b 가 전체의 39%). 크기 축 없이 이 수치들을
+            #    나란히 읽으면 "이 사이트가 특이하다"로 오독한다.
+            "frame_share": round(float(inq.mean()), 5),
+            "n_frames_out": int((~inq).sum()),
+            "n_event_pred": n_ev,
+            "event_rate": round(float(ev[inq].mean()) if inq.any() else 0.0, 5),
+            "event_tier": event_tier(n_ev),
+            "n_winners": n_q,
+            "n_winners_out": int(win_out.sum()),
+            "recall_out": round(inter / n_q, 5) if n_q else None,
+            "precision_out": round(inter / max(1, int(win_out.sum())), 5),
+            "jaccard": round(inter / union, 5) if union else None,
+            "topN_recall": round(int((win_q & top_mask).sum()) / n_q, 5) if n_q else None,
+            "topN_recall_random": round(n_q / M, 5) if n_q else None,
+            "frame_coverage_out": round(float(win_out[win_g[inq]].mean()), 5) if inq.any() else None,
+            "spearman_reach_out": round(_spearman(r_out.astype(np.float64),
+                                                  R[:, qi].astype(np.float64)), 4),
+        })
+    rep = [r for r in rows_lopo if r["event_tier"] == "reportable"]
+    pool = rep or rows_lopo
+
+    def _avg(k: str) -> float | None:
+        vals = [r[k] for r in pool if r[k] is not None]
+        return round(float(np.mean(vals)), 4) if vals else None
+
+    summary = {"n_groups": NG, "n_reportable": len(rep),
+               "pool": "reportable" if rep else "all(reportable 0)",
+               # 크기 교락 경고를 요약에도 남긴다 — 요약만 인용될 때가 가장 위험하다
+               "max_frame_share": round(float(sizes.max() / N), 5),
+               "max_group": gnames[int(sizes.argmax())],
+               "size_confound_note": ("frame_coverage_out·recall_out 은 홀드아웃 그룹이 클수록 "
+                                      "잔여 풀이 줄어 낮아진다 — 행별 frame_share 와 같이 읽을 것"),
+               **{k: _avg(k) for k in ("recall_out", "jaccard", "topN_recall",
+                                       "topN_recall_random", "frame_coverage_out",
+                                       "spearman_reach_out")}}
+    log(f"site {version}: [LOPO] {gfield} {NG}개 중 event_tier=reportable {len(rep)}개 "
+        f"({summary['pool']} 기준 평균) recall_out {summary['recall_out']} / "
+        f"topN {summary['topN_recall']} vs 무작위 {summary['topN_recall_random']} / "
+        f"frame_cover {summary['frame_coverage_out']} / ρ(reach) {summary['spearman_reach_out']}")
+    for r in sorted(rows_lopo, key=lambda r: -r["n_frames"])[:5]:
+        log(f"site {version}: [LOPO] {r[gfield]} n={r['n_frames']:,}({r['frame_share']:.1%}) "
+            f"tier={r['event_tier']}(ev {r['n_event_pred']:,}) 승자 {r['n_winners']:,} "
+            f"recall_out {r['recall_out']} / frame_cover {r['frame_coverage_out']}")
+
+    # ── FiftyOne 반영 ──
+    ds = fo.load_dataset(PROFILES[PROFILE]["dataset"])
+    ids = key_to_ids(ds, keys)
+    ok = [i for i, x in enumerate(ids) if x]
+    if not ok:
+        raise SystemExit(f"site: 원장 key 가 데이터셋과 하나도 안 붙는다 "
+                         f"(key_join={PROFILES[PROFILE]['key_join']})")
+    if len(ok) < len(ids):
+        log(f"site: FiftyOne 매칭 {len(ok):,}/{len(ids):,} — 나머지는 필드 미설정")
+    sch = ds.get_field_schema()
+    for fld in ("winner_site_scope", "winner_n_sites"):
+        if fld in sch:
+            ds.clear_sample_field(fld)             # clear-then-set (stale 값 금지)
+    pairs = [(ids[i], i) for i in ok]
+    set_values_batched(ds, "winner_site_scope", pairs,
+                       lambda i: fo.Classification(label=scope[i]))
+    # 숫자 축은 Int 로도 내린다 — App 이 Query Performance 모드라 String/Classification 은
+    # 자유텍스트 검색으로만 뜨고 "≥2곳" 같은 필터가 안 된다 (winner_gidx 와 같은 이유).
+    set_values_batched(ds, "winner_n_sites", pairs, lambda i: int(n_win[win_g[i]]))
+
+    from fiftyone.core.odm.dataset import ActiveFields
+    vt = version.replace(".", "_")
+    if not vt.startswith("v"):
+        vt = "v" + vt
+    # ⚠️ Color by 대상(`winner_site_scope`)은 반드시 active_fields 에 있어야 한다.
+    #    `winner_n_sites` 는 **일부러 뺀다** — 필터용 Int 이고 그리드 칩으로 뜨면 자리만 먹는다.
+    active = set_active_fields(ds, ActiveFields,
+                               ["winner_site_scope", f"pred_{vt}", "attached_bank", gfield])
+
+    ds.info = {**(ds.info or {}),
+               f"site_run_{tag}": {"rule": RULE, "k": RULE_K, "bank": version,
+                                   "gt_tier": tier, "group_field": gfield, "n_groups": NG,
+                                   "null": null, "lopo": summary}}
+    ds.save()
+
+    # ── 산출물 ──
+    os.makedirs(GEO, exist_ok=True)
+    os.makedirs(REPORT_DIR, exist_ok=True)
+    with open(f"{GEO}/site.json", "w", encoding="utf-8") as f:
+        json.dump({"gt_tier": tier, "gt_free": True, "version": version,
+                   "rule": RULE, "k": RULE_K, "group_field": gfield,
+                   "scope_basis": "top1_win",   # ≠ top-K 기여. docstring 의 정의 주석 참조
+                   "n_frames": N, "n_prompts": M, "groups": gnames,
+                   "n_winners": int(is_winner.sum()),
+                   "contrib_basis_saturation": sat,
+                   "group_sizes": {g: int(sizes[i]) for i, g in enumerate(gnames)},
+                   "scope_frames": {k: int(v) for k, v in fr_dist.items()},
+                   "scope_sentences": {str(k): int(v) for k, v in sorted(st_dist.items())},
+                   "win_vs_reach_disagree": {"n": dis, "n_winners": int(is_winner.sum()),
+                                             "reach_over": over},
+                   "null_model": null, "lopo_summary": summary, "lopo": rows_lopo},
+                  f, ensure_ascii=False, indent=1)
+    lp = f"{REPORT_DIR}/site_lopo_{version}.csv"
+    with open(lp, "w", newline="", encoding="utf-8") as f:
+        w = _csv.DictWriter(f, fieldnames=list(rows_lopo[0]), extrasaction="ignore")
+        w.writeheader()
+        w.writerows(rows_lopo)
+    sp = f"{REPORT_DIR}/site_prompts_{version}.csv"
+    cols = ["tier", "gidx", "cls", "cls_name", "wins", "contribs",
+            f"n_{plural}_win", f"n_{plural}_contrib", f"n_{plural}_reach",
+            "site_scope", "reach", *[f"reach_{g}" for g in gnames],
+            *[f"wins_{g}" for g in gnames], "text"]
+    with open(sp, "w", newline="", encoding="utf-8") as f:
+        w = _csv.DictWriter(f, fieldnames=cols, extrasaction="ignore")
+        w.writeheader()
+        for g in range(M):
+            c = int(bank["cls"][g])
+            row = {"tier": tier, "gidx": g, "cls": c, "cls_name": CLASS_NAMES.get(c, str(c)),
+                   "wins": int(W[g].sum()), "contribs": int(Wc[g].sum()),
+                   f"n_{plural}_win": int(n_win[g]),
+                   f"n_{plural}_contrib": int(n_contrib[g]),
+                   f"n_{plural}_reach": int(n_reach[g]),
+                   "site_scope": SL[int(min(3, max(1, n_win[g])))] if W[g].sum() else "미승리",
+                   "reach": round(float(reach[g]), 5), "text": bank["prompt"][g]}
+            for j, nm in enumerate(gnames):
+                row[f"reach_{nm}"] = round(float(R[g, j]), 5)
+                row[f"wins_{nm}"] = int(W[g, j])
+            w.writerow(row)
+    # 저장뷰/워크스페이스는 **산출물 기록 뒤**에 만든다 — App UI 층 실패(slug 충돌 등)가
+    # 45초짜리 분석 결과(site.json/CSV)까지 날린 실사고(2026-08-18)의 재발 방지.
+    # 저장뷰 — Embeddings 패널 5,000점 상한이라 **뷰로 좁힌다** (계획서 §4)
+    spec_idx = [i for i in ok if scope_code[i] == 1]
+    v_spec = _stratified_ids(ids, spec_idx, groups, SITE_SCREEN_CAP)
+    mixed_strata = np.array([f"{groups[i]}|{scope_code[i]}" for i in range(len(keys))])
+    v_mix = _stratified_ids(ids, ok, mixed_strata, SITE_SCREEN_CAP)
+    # ⚠️ FiftyOne 저장뷰 slug 는 ASCII 만 남긴다 — 한글만 다른 두 이름이 같은 slug
+    #    ('04-projects')로 접혀 ValueError 가 난 실사고. 유일성은 ASCII 부분(04/04b)이 담당.
+    for nm, sel_ids, desc in (
+        (f"04_사이트특이_{plural}", v_spec,
+         f"{version} 승자가 1{PROFILES[PROFILE]['group_unit']}에서만 이기는 프레임 "
+         f"({len(spec_idx):,}장 중 {gfield} 층화 {len(v_spec):,}장 — Embeddings 5,000 상한)"),
+        (f"04b_사이트범위_표본_{plural}", v_mix,
+         f"{gfield}×scope 층화 표본 {len(v_mix):,}장 — 화면4 Color by winner_site_scope"),
+    ):
+        if nm in ds.list_saved_views():
+            ds.delete_saved_view(nm)
+        if not sel_ids:                            # 빈 뷰를 저장하면 화면4 가 조용히 백지가 된다
+            log(f"site: ⚠️ 뷰 {nm} 대상 0장 — 저장하지 않는다")
+            continue
+        ds.save_view(nm, ds.select(sel_ids, ordered=True), description=desc)
+
+    brain = _pick_brain(ds)
+    if brain is None:
+        log("site: ⚠️ 시각화 brain run 이 없다 — 화면4 를 Samples 단독으로 만든다 "
+            "(Embeddings 패널은 emb_viz 등록 후 다시 site 를 돌리면 붙는다)")
+        space = fo.Space(children=[fo.Panel(type="Samples", pinned=True)])
+    else:
+        space = fo.Space(children=[
+            fo.Space(children=[fo.Panel(type="Samples", pinned=True)]),
+            fo.Space(children=[fo.Panel(type="Embeddings",
+                                        state={"brainResult": brain,
+                                               "colorByField": "winner_site_scope.label"})]),
+        ], orientation="horizontal")
+    ws = "4-site"                                  # 워크스페이스명 ASCII (App slug 함정)
+    if ws in ds.list_workspaces():
+        ds.delete_workspace(ws)
+    ds.save_workspace(ws, space,
+                      description=f"{brain or 'Samples'} (색: winner_site_scope) — {version}")
+    log(f"site: 필드 winner_site_scope/winner_n_sites ({len(ok):,}장) / "
+        f"뷰 04_사이트특이_{plural}·04b_사이트범위_표본_{plural} / 워크스페이스 {ws}")
+    log(f"site: active_fields {active or 'None(제한 없음, 미변경)'} "
+        "— Color by winner_site_scope 는 제한 없음 상태에서도 안전하다")
+    log(f"site 완료 → {GEO}/site.json · {lp} · {sp} [tier={tier}, GT-free]")
 
 
 # ────────────────────── vote (Top-K APO 판정 규칙) ──────────────────────
@@ -1755,7 +2903,16 @@ def stage_vote() -> None:
 #                   게다가 오류 신호 방향이 클래스마다 뒤집힌다 — AUC GT=normal 0.886 vs GT=fire 0.009.
 #                   "라벨 의심"이라는 이름도 근거 없음: relabel 뒤집힘 lift 0.92배, AUC 0.409
 #   · emb_viz 위 어떤 색칠이든 — 좌표→카메라 kNN 예측력 0.998. 보이는 덩어리는 1순위 카메라다
-SCOPE_LABELS = {1: "사이트특이 (1대)", 2: "공통 (2대)", 3: "공통 (3대+)"}
+def scope_labels(unit: str) -> dict[int, str]:
+    """사이트 범위 라벨 — 단위 세는 말만 프로필이 갈아 끼운다 (카메라 "대" / project "곳").
+
+    ⚠️ sourceh 문자열은 **바꾸지 않는다**: `stage_screens` 의 저장뷰 `04_사이트특이_<tag>` 가
+       `SCOPE_LABELS[1]` 과 문자 등식으로 매칭한다 (라벨을 고치면 뷰가 조용히 0건이 된다).
+    """
+    return {1: f"사이트특이 (1{unit})", 2: f"공통 (2{unit})", 3: f"공통 (3{unit}+)"}
+
+
+SCOPE_LABELS = scope_labels("대")          # sourceh(카메라) 정본
 
 
 def score_p(win_frames: dict, cls_of, gt: np.ndarray, normal_cls: int = 0) -> dict:
@@ -1822,17 +2979,22 @@ def stage_probecache() -> None:
         f"{int((pred == gt).sum()):,}/{len(gt):,} ({(pred == gt).mean():.2%})")
 
     # sel 은 코사인 내림차순 → 마지막 칸이 진입 기준선이자 밀려날 자리
-    sel_c = sel[:, :, 0]
     kk = sel.shape[1]
     bar = np.full(len(gt), -2.0, dtype=np.float32)
     out_c = np.full(len(gt), -1, dtype=np.int64)
     allv = np.concatenate([vals[c] for c in cs], 1)
     lab = np.concatenate([np.full(vals[c].shape[1], c) for c in cs])
     order = np.argsort(-allv, axis=1)[:, :kk]
-    bar[:] = np.take_along_axis(allv, order, 1)[:, -1]
-    out_c[:] = lab[order][:, -1]
-    topc = np.stack([np.where(sel_c == c, np.take_along_axis(allv, order, 1), -2.0).max(1)
-                     for c in cs], 1)
+    ord_v = np.take_along_axis(allv, order, 1)
+    ord_c = lab[order]
+    bar[:] = ord_v[:, -1]
+    out_c[:] = ord_c[:, -1]
+    # ⚠️ 짝은 **이 블록 안에서만** 맞춘다 — 예전엔 `vote_topk` 이 만든 `sel_c` 와 여기서
+    #    독립적으로 만든 `order` 를 같은 자리로 짝지어 읽었다. 두 정렬이 동점에서 조금만
+    #    갈리면 topc(동표 해소값)가 조용히 틀리는 숨은 결합이었다. `ord_c`/`ord_v` 는 같은
+    #    `order` 에서 나오므로 정렬 kind 와 무관하게 항상 짝이 맞고, `max` 는 순서 불변이라
+    #    값도 기존과 동일하다.
+    topc = np.stack([np.where(ord_c == c, ord_v, -2.0).max(1) for c in cs], 1)
     vlist = [[int(v) for v in row] for row in votes]
     tlist = [[float(v) for v in row] for row in topc]
 
@@ -1875,6 +3037,15 @@ def stage_gen() -> None:
 
     ⚠️ 후보 풀은 이진 FP/FN 이 아니라 **오답 전체**다. fire 를 smoke 로 부른 프레임은
     FP 도 FN 도 아니라 예전 풀에서 빠졌는데, 개념 경계 붕괴라 생성이 가장 필요한 축이다.
+
+    ── 규칙 개작 전수 확인 (2026-08-18) ────────────────────────────────────
+    오답 풀은 오늘 `_pred_of` 로 규칙 중립이 됐고, 이 스테이지에 **남은 argmax 계산은
+    없다** — 중복제거(코사인)·층화(카메라×GT)·쿼터(층 크기)는 전부 판정규칙과 무관하다.
+    남아 있던 건 계산이 아니라 **출처 표기**였다:
+      · 어느 규칙으로 만든 오답 풀인지 로그·화면 어디에도 없었다 (규칙을 바꾸면 풀이
+        통째로 달라지는데 산출 필드명은 그대로다) → 로그·뷰 설명·`ds.info` 에 박는다.
+      · GT 미검수(−1) 행이 `pred != gt` 로 **전부 오답으로 계산**됐다. 부분검수 원장에서는
+        생성 후보가 "라벨이 없는 프레임"으로 뒤덮인다 — tier 표기가 그걸 드러낸다.
     """
     import fiftyone as fo
 
@@ -1884,15 +3055,24 @@ def stage_gen() -> None:
     tag = vtag(version)
     keys, X, gt, src, banks = load_all()
     cam = load_cameras(keys)
-    z = np.load(f"{PROMPT_DIR}/{version}.npz", allow_pickle=True)
-    bank = {"vec": z["vec"].astype(np.float32), "cls": z["cls"].astype(np.int64),
-            "prompt": [str(p) for p in z["prompt"]]}
+    bank = load_bank(version)                      # 문장은 DB 정본 (load_bank 주석)
 
+    tier = gt_tier(gt)
+    if tier == "no_gt":
+        raise SystemExit("gen: tier=no_gt — '오답 풀'은 GT 없이 정의되지 않는다 "
+                         "(전 프레임이 오답으로 잡혀 무작위 표집과 다를 게 없어진다). "
+                         "원장(gt_class)을 먼저 채울 것")
     pr = _Pruner(X, gt, bank)
-    _, _, _, pred = pr.score(None)
-    err = np.flatnonzero(pred != gt)
+    # ⚠️ `score()` 반환은 규칙마다 다르다 (argmax=4-tuple / top-K=dict). 여기서 4-tuple 로
+    #    풀면 기본값 RULE=topk 에서 통째로 죽는다 — 규칙을 모르는 채로 pred 만 꺼낸다.
+    pred = pr._pred_of(pr.score(None))
+    # ⚠️ 미검수(−1)는 오답이 아니라 **모름**이다. 빼지 않으면 풀이 라벨 공백으로 오염된다.
+    labeled = gt >= 0
+    err = np.flatnonzero(labeled & (pred != gt))
     fp = int(((gt[err] == 0) & (pred[err] != 0)).sum())
     fn = int(((gt[err] != 0) & (pred[err] == 0)).sum())
+    log(f"gen {version} [규칙 {RULE}(k={RULE_K}) · GT tier={tier}]: 검수 {int(labeled.sum()):,}"
+        f"/{len(gt):,} (미검수 {int((~labeled).sum()):,}장은 풀에서 제외)")
     log(f"gen {version}: 오답 풀 {len(err):,} = FP {fp:,} + FN {fn:,} + "
         f"오분류(이상↔이상) {len(err)-fp-fn:,}  ← 마지막 항이 이진 FP/FN 풀에서 빠져 있던 것")
 
@@ -1988,12 +3168,18 @@ def stage_gen() -> None:
     ], orientation="horizontal")
     if "1-generate" in ds.list_workspaces():
         ds.delete_workspace("1-generate")
-    ds.save_workspace("1-generate", space, description=f"emb_viz (색: {f_pk}.label)")
-    for nm, view in ((f"01_생성후보_{tag}", ds.match(F(f"{f_pk}.label") != None)),   # noqa: E711
-                     (f"02_이번에폭_{tag}", ds.match(F(f"{f_pk}.label") == "선정 (이번 에폭)"))):
+    # 규칙·tier 를 화면 설명에 박는다 — 이 풀은 규칙을 바꾸면 통째로 달라지는데 필드명은 같다
+    prov = f"규칙 {RULE}(k={RULE_K}) · GT tier={tier} · 뱅크 {version}"
+    ds.save_workspace("1-generate", space,
+                      description=f"emb_viz (색: {f_pk}.label) · {prov}")
+    for nm, view, desc in (
+            (f"01_생성후보_{tag}", ds.match(F(f"{f_pk}.label") != None),          # noqa: E711
+             f"오답 {len(err):,}장(중복포함) · {prov}"),
+            (f"02_이번에폭_{tag}", ds.match(F(f"{f_pk}.label") == "선정 (이번 에폭)"),
+             f"층화 선정 {len(picked)}장 / 목표 {n_epoch} · {prov}")):
         if nm in ds.list_saved_views():
             ds.delete_saved_view(nm)
-        ds.save_view(nm, view)
+        ds.save_view(nm, view, description=desc)
 
     from fiftyone.core.odm.dataset import ActiveFields
     cur = list(ds.app_config.active_fields.paths) if ds.app_config.active_fields else []
@@ -2001,8 +3187,12 @@ def stage_gen() -> None:
         if f not in cur:
             cur.insert(0, f)
     ds.app_config.active_fields = ActiveFields(paths=cur, exclude=False)
+    ds.info = {**(ds.info or {}),
+               f"gen_run_{tag}": {"rule": RULE, "k": RULE_K, "bank": version, "gt_tier": tier,
+                                  "n_labeled": int(labeled.sum()), "n_err": int(len(err)),
+                                  "n_picked": int(len(picked)), "dup_cos": dup_thr}}
     ds.save()
-    log(f"gen: 워크스페이스 1-generate / 뷰 01_생성후보_{tag}·02_이번에폭_{tag}")
+    log(f"gen: 워크스페이스 1-generate / 뷰 01_생성후보_{tag}·02_이번에폭_{tag} [{prov}]")
     log(f"gen: active_fields {cur}")
     log("gen 완료")
 
@@ -2027,9 +3217,7 @@ def stage_screens() -> None:
     tag = vtag(version)
     keys, X, gt, src, banks = load_all()
     cam = load_cameras(keys)
-    z = np.load(f"{PROMPT_DIR}/{version}.npz", allow_pickle=True)
-    bank = {"vec": z["vec"].astype(np.float32), "cls": z["cls"].astype(np.int64),
-            "prompt": [str(p) for p in z["prompt"]]}
+    bank = load_bank(version)                      # 문장은 DB 정본 (load_bank 주석)
 
     pr = _Pruner(X, gt, bank)
     state = pr.score(None)
@@ -2109,7 +3297,10 @@ def stage_screens() -> None:
             log(f"screens: 워크스페이스 {name} 실패 {exc!r}")
 
     for nm, view in (
-        (f"03_삭제영향_{tag}", ds.match(F(f"{f_eff}.label") != "미영향 (승자 유지)")),
+        # 8ea5f0d 라벨 개명("승자 유지"→"판정 유지") 때 이 비교식만 누락 — 문자열이 영원히
+        # 불일치라 "삭제영향" 뷰가 전건(~13,100)을 담았다 (실제 영향분은 ~3%). 생산자
+        # 상수(L3241)와 같은 문자열을 쓴다.
+        (f"03_삭제영향_{tag}", ds.match(F(f"{f_eff}.label") != "미영향 (판정 유지)")),
         (f"04_사이트특이_{tag}", ds.match(F(f"{f_scope}.label") == SCOPE_LABELS[1])),
         (f"05_오답_{tag}", ds.match(F(f"pred_{vt}.label") != F("ground_truth.label"))),
     ):
@@ -2252,14 +3443,13 @@ def stage_attrs() -> None:
     cam = load_cameras(keys)
     sess = requests.Session()
     ds = fo.load_dataset(PROFILES[PROFILE]["dataset"])
-    key_to_id = {}
-    for s in ds.select_fields(["id", "filepath"]):
-        key_to_id[f"{os.path.basename(os.path.dirname(s.filepath))}/"
-                  f"{os.path.basename(s.filepath)}"] = s.id
-    ids = [key_to_id.get(k) for k in keys]
+    ids = key_to_ids(ds, keys)
     ok = [i for i, x in enumerate(ids) if x]
     if len(ok) < len(ids):
         log(f"attrs: FiftyOne 매칭 {len(ok)}/{len(ids)}")
+    if not ok:
+        raise SystemExit(f"attrs: 원장 key 가 데이터셋과 하나도 안 붙는다 "
+                         f"(key_join={PROFILES[PROFILE]['key_join']}) — 조인 방식 확인")
 
     out, preds = {}, {}
     # ── DB 정본 축 (파이프라인 편입 완료 시 자동으로 채워진다) ──
@@ -2590,14 +3780,13 @@ def stage_wave() -> None:
 
     keys, X, gt, src, banks = load_all()
     ds = fo.load_dataset(PROFILES[PROFILE]["dataset"])
-    key_to_id = {}
-    for s in ds.select_fields(["id", "filepath"]):
-        key_to_id[f"{os.path.basename(os.path.dirname(s.filepath))}/"
-                  f"{os.path.basename(s.filepath)}"] = s.id
-    ids = [key_to_id.get(k) for k in keys]
+    ids = key_to_ids(ds, keys)
     ok = [i for i, x in enumerate(ids) if x]
     if len(ok) < len(ids):
         log(f"wave: FiftyOne 매칭 {len(ok)}/{len(ids)}")
+    if not ok:
+        raise SystemExit(f"wave: 원장 key 가 데이터셋과 하나도 안 붙는다 "
+                         f"(key_join={PROFILES[PROFILE]['key_join']}) — 조인 방식 확인")
 
     summary = {}
     for v in BANKS:
@@ -2686,10 +3875,26 @@ def stage_promptmap() -> None:
     keys, X, gt, src, banks = load_all()
     cam = load_cameras(keys)
 
-    # 썸네일 경로 — 소스 프레임 데이터셋에서 key → filepath
+    # 썸네일 경로 — 소스 프레임 데이터셋에서 key → filepath.
+    # ⚠️ 원장 키 형식은 프로필마다 다르다: sourceh/sourcei 는 `<folder>/<name>`(경로 파생)이라
+    #    basename 조인이 성립하지만, frames 는 키가 **image_id(hex)** 이고 미디어가 평면
+    #    (`media/<uuid>.jpg`)이라 basename 조인이 전량 미스한다 (2026-08-18 실사고 —
+    #    "최근접 프레임 스킵 12480" → UMAP 입력 0행). PROFILES 의 frame_key_field 가 있으면
+    #    그 샘플 필드로 조인한다.
     sds = fo.load_dataset(PROFILES[PROFILE]["dataset"])
-    key2fp = {f"{os.path.basename(os.path.dirname(fp))}/{os.path.basename(fp)}": fp
-              for fp in sds.values("filepath")}
+    _jf = PROFILES[PROFILE].get("frame_key_field")
+    _fps = sds.values("filepath")
+    if _jf:
+        _fkeys = [str(k) if k else None for k in sds.values(_jf)]
+    else:
+        _fkeys = [f"{os.path.basename(os.path.dirname(fp))}/{os.path.basename(fp)}"
+                  for fp in _fps]
+    key2fp = {k: fp for k, fp in zip(_fkeys, _fps) if k}
+    if not (set(keys[:64]) & set(key2fp)):
+        raise SystemExit(
+            f"promptmap: 원장 키와 {PROFILES[PROFILE]['dataset']} 조인 키가 전혀 겹치지 않는다 "
+            f"(원장 예: {keys[0]!r} / 조인 예: {next(iter(key2fp), None)!r}) — "
+            "frame_key_field 설정을 확인하라. 조용히 전량 스킵하는 것보다 여기서 죽는 게 낫다")
     # 최근접 프레임의 씬 조건 — "이 문장은 어떤 상황의 이미지에 붙나". attrs 가 먼저 돌아야
     # 채워진다 (없으면 그냥 생략). db_* 가 있으면 그걸 우선한다 (정본).
     sch0 = sds.get_field_schema()
@@ -2698,9 +3903,8 @@ def stage_promptmap() -> None:
         fld = f"db_{ax}" if f"db_{ax}" in sch0 else (ax if ax in sch0 else None)
         if not fld:
             continue
-        for fp, lab in zip(sds.values("filepath"), sds.values(f"{fld}.label")):
-            if lab:
-                k = f"{os.path.basename(os.path.dirname(fp))}/{os.path.basename(fp)}"
+        for k, lab in zip(_fkeys, sds.values(f"{fld}.label")):
+            if lab and k:
                 key2attr.setdefault(k, {})[ax] = lab
     if key2attr:
         log(f"promptmap: 최근접 프레임 씬 조건 {len(key2attr):,}장분 사용")
@@ -2763,9 +3967,13 @@ def stage_promptmap() -> None:
             s["text"] = bank["prompt"][g]
             s["category"] = fo.Classification(label=CLASS_NAMES[c])
             s["bank_version"] = fo.Classification(label=v)
-            s["nearest_gt"] = fo.Classification(label=CLASS_NAMES[ngt],
+            # gt=-1(미검수)은 CLASS_NAMES 에 없다 — frames 도메인은 GT 0 이 정상이라
+            # 여기서 KeyError 로 죽으면 -prompts 빌드 자체가 불가능해진다 (_prune_bank 의
+            # stolen no_gt 가드와 같은 계열). match 도 hit/miss 어느 쪽도 아니다.
+            s["nearest_gt"] = fo.Classification(label=CLASS_NAMES.get(ngt, "no_gt"),
                                                 confidence=float(ncos[g]))
-            s["match"] = fo.Classification(label="hit" if ngt == c else "miss")
+            s["match"] = fo.Classification(
+                label=("no_gt" if ngt < 0 else ("hit" if ngt == c else "miss")))
             s["nearest_key"] = keys[int(nidx[g])]
             for ax, lab in (key2attr.get(keys[int(nidx[g])]) or {}).items():
                 s[f"nearest_{ax}"] = fo.Classification(label=str(lab))
@@ -3023,31 +4231,79 @@ def stage_flips() -> None:
     """요구 #1·#2: 버전 전환으로 오탐→정탐(또는 반대)이 된 **프레임 각각**에 대해
     무엇이 왜 바뀌었는지를 FiftyOne 필드로 만든다.
 
-    이유 분해는 centered rel 점수(프레임 내 클래스 평균 제거 — 뱅크 간 가산 오프셋 상쇄):
-      · 자기 문장 접근  — GT 클래스 rel 점수가 올랐다 (새 뱅크 문장이 이 이미지에 더 접근)
-      · 경쟁 문장 소거  — 구 버전에서 이기던 오답 클래스의 rel 점수가 내렸다
-      · 복합/재배열    — 둘 다이거나 어느 쪽도 명확치 않음
-    `why_text` 에 전·후 승자 문장과 코사인을 그대로 적는다 (사람이 읽는 근거).
+    ── 규칙 개작 (2026-08-18) ──────────────────────────────────────────────
+    판정(`flip`)과 이유 분해가 둘 다 **현재 판정규칙**을 따른다. 예전엔 `cache.npz` 의
+    클래스별 최고 코사인을 argmax 해서 전이를 셌다 — 제품이 top-K 다수결로 넘어간 뒤에도
+    "argmax 시절의 전이"를 그리고 있었다는 뜻이다. 이제 두 뱅크를 각각 `_Pruner.score()`
+    로 채점하고, 규칙에 맞는 양으로 분해한다:
+
+      RULE=topk   자기Δ = GT 클래스 **득표** 변화 / 경쟁Δ = 오답 클래스 득표 변화 (정수 표)
+      RULE=argmax 자기Δ·경쟁Δ = centered rel 코사인 변화 (옛 정의 그대로 — 회귀 비교용)
+
+    분해 라벨 어휘(자기문장 접근 / 경쟁문장 소거 / …)는 **바꾸지 않는다** — `guide` 서사와
+    `report_charts.c3_flip_reasons` 가 이 키를 읽는다.
+
+    ⚠️ `rule_flip_<vtag>`(stage_vote)과 역할이 겹치지 않는다. 축이 직교한다:
+         `flip`           = **같은 규칙**으로 뱅크 A ↔ B 를 비교 (버전 축)
+         `rule_flip_<tag>` = **같은 뱅크**로 k=1 ↔ k=K 를 비교 (규칙 축)
+       그래서 통합·위임 대상이 아니고, 여기서 `rule_flip_*` 를 다시 쓰지도 않는다.
+
+    ⚠️ `margin_delta` 는 규칙을 안 따른다 — 정의가 "GT 클래스 코사인 마진의 버전차"라
+       판정규칙과 무관한 **기하량**이고, 뷰 30/31 의 심각도 정렬 키로 그 성질이 필요하다
+       (규칙 확신도는 `vote_margin_<tag>` 가 따로 있다 — P3 중복 금지).
+
+    `why_before`/`why_after` 에 전·후 대표 문장·코사인·(top-K 면) 득표와 **2·3위 사다리**를
+    적는다. 문장 전문은 attach 의 `top_prompt_r{2,3}_<vt>` 로 같은 프레임에서 열린다.
     """
     import fiftyone as fo
     from fiftyone import ViewField as F
 
     keys, X, gt, src, banks = load_all()
-    cache = np.load(f"{GEO}/cache.npz", allow_pickle=True)
-    tagged = {v: v.replace(".", "_") for v in VERSIONS}
-    best = {v: {c: cache[f"best_{tagged[v]}_{c}"] for c in CLASS_NAMES} for v in VERSIONS}
-    arg = {v: {c: cache[f"arg_{tagged[v]}_{c}"] for c in CLASS_NAMES} for v in VERSIONS}
     classes = sorted(CLASS_NAMES)
+    cidx = {c: i for i, c in enumerate(classes)}
+    tier = gt_tier(gt)
+    if tier == "no_gt":
+        raise SystemExit("flips: tier=no_gt — 정탐/오탐 전이는 GT 없이 정의되지 않는다. "
+                         "원장(gt_class)을 먼저 채울 것")
+    log(f"flips: 규칙 {RULE}(k={RULE_K}) / GT tier={tier} / 프레임 {len(keys):,} "
+        f"— 뱅크 2벌 재채점")
+
+    prn, state = {}, {}
+    for v in VERSIONS:
+        prn[v] = _Pruner(X, gt, banks[v])
+        missing = [CLASS_NAMES[c] for c in classes if c not in prn[v].classes]
+        if missing:
+            raise SystemExit(f"flips: {v} 뱅크에 클래스 {missing} 문장이 0개 — 전이 분해 불가")
+        state[v] = prn[v].score(None)
+    best = {v: prn[v].best_of(state[v]) for v in VERSIONS}
+    arg = {v: prn[v].class_best_local(state[v]) for v in VERSIONS}
     stacked = {v: np.stack([best[v][c] for c in classes], axis=1) for v in VERSIONS}
     rel = {v: stacked[v] - stacked[v].mean(axis=1, keepdims=True) for v in VERSIONS}
-    pred = {v: np.array(classes)[stacked[v].argmax(axis=1)] for v in VERSIONS}
-    cidx = {c: i for i, c in enumerate(classes)}
+    pred = {v: prn[v]._pred_of(state[v]) for v in VERSIONS}
     pidx = {v: {c: np.flatnonzero(banks[v]["cls"] == c) for c in classes} for v in VERSIONS}
+    # 규칙별 분해 재료. topk 는 표(정수), argmax 는 rel 코사인 — 단위가 달라 라벨 문구도 다르다.
+    by_votes = RULE != "argmax"
+    votes = ({v: vote_topk(state[v]["vals"], state[v]["idxs"])[1] for v in VERSIONS}
+             if by_votes else None)
+    vcls = {v: sorted(state[v]["vals"]) for v in VERSIONS} if by_votes else None
+    # 사다리 2·3위 (top-K 에서만). None 이면 문구에서 통째로 빠진다 — 없는 걸 지어내지 않는다.
+    ladder = {v: [(r, prn[v].rank_gidx(state[v], r - 1), prn[v].rank_cos(state[v], r - 1))
+                  for r in RANK_EXTRA] for v in VERSIONS}
 
     def sentence(v, c, i):
         return banks[v]["prompt"][pidx[v][c][arg[v][c][i]]]
 
-    EPS = 0.005
+    def vote_of(v, i, c):
+        """프레임 i 의 클래스 c 득표. 뱅크에 그 클래스가 없으면 0 (vote_topk 열 순서 주의)."""
+        cs = vcls[v]
+        return int(votes[v][i, cs.index(c)]) if c in cs else 0
+
+    def ladder_txt(v, i):
+        parts = [f"{r}위 {CLASS_NAMES[int(banks[v]['cls'][int(g[i])])]} {float(cc[i]):.3f}"
+                 for r, g, cc in ladder[v] if g is not None and cc is not None and g[i] >= 0]
+        return (" · 사다리 " + " / ".join(parts)) if parts else ""
+
+    EPS = 0.005                     # argmax 경로 전용 (코사인 단위). 표는 정수라 0 이 경계다
     n = len(keys)
     flip = np.empty(n, dtype=object)
     reason = np.empty(n, dtype=object)
@@ -3066,11 +4322,17 @@ def stage_flips() -> None:
         va, vb = (VERSIONS[0], VERSIONS[1])
         wrong_v, right_v = (va, vb) if flip[i] == "오탐→정탐" else (vb, va)
         r_wrong = int(pred[wrong_v][i])            # 오답이던 클래스
-        own_d = rel[vb][i, cidx[g]] - rel[va][i, cidx[g]]
-        rival_d = rel[vb][i, cidx[r_wrong]] - rel[va][i, cidx[r_wrong]]
+        if by_votes:
+            own_d = float(vote_of(vb, i, g) - vote_of(va, i, g))
+            rival_d = float(vote_of(vb, i, r_wrong) - vote_of(va, i, r_wrong))
+            eps, unit = 0.0, "표"
+        else:
+            own_d = float(rel[vb][i, cidx[g]] - rel[va][i, cidx[g]])
+            rival_d = float(rel[vb][i, cidx[r_wrong]] - rel[va][i, cidx[r_wrong]])
+            eps, unit = EPS, "rel"
         if flip[i] == "정탐→오탐":                  # 방향 반전해 같은 의미로 읽는다
             own_d, rival_d = -own_d, -rival_d
-        up, down = own_d > EPS, rival_d < -EPS
+        up, down = own_d > eps, rival_d < -eps
         # ⚠️ 방향별로 라벨이 달라야 한다 — 정탐→오탐은 부호를 뒤집어 계산하므로
         #    up 은 "자기문장이 (v084 에서) 약해짐", down 은 "경쟁문장이 새로 접근함"을 뜻한다.
         if flip[i] == "오탐→정탐":
@@ -3081,11 +4343,20 @@ def stage_flips() -> None:
                          "자기문장 약화" if up else "경쟁문장 등장" if down else "재배열(미세)")
         w_sent = sentence(wrong_v, r_wrong, i)
         r_sent = sentence(right_v, g, i)
+        w_vote = (f" | 표 {CLASS_NAMES[r_wrong]} {vote_of(wrong_v, i, r_wrong)}"
+                  f" vs {CLASS_NAMES[g]} {vote_of(wrong_v, i, g)}") if by_votes else ""
+        r_vote = (f" | 표 {CLASS_NAMES[g]} {vote_of(right_v, i, g)}"
+                  f" vs {CLASS_NAMES[r_wrong]} {vote_of(right_v, i, r_wrong)}") if by_votes else ""
         why[i] = (f"[{wrong_v}] 오답 {CLASS_NAMES[r_wrong]} «{w_sent[:80]}» "
-                  f"cos {best[wrong_v][r_wrong][i]:.3f} > {CLASS_NAMES[g]} {best[wrong_v][g][i]:.3f}\n"
+                  f"cos {best[wrong_v][r_wrong][i]:.3f} > {CLASS_NAMES[g]} "
+                  f"{best[wrong_v][g][i]:.3f}{w_vote}{ladder_txt(wrong_v, i)}\n"
                   f"[{right_v}] 정답 {CLASS_NAMES[g]} «{r_sent[:80]}» "
-                  f"cos {best[right_v][g][i]:.3f} ≥ 경쟁 {best[right_v][r_wrong][i]:.3f}\n"
-                  f"원인: {reason[i]} (자기Δrel {own_d:+.4f} / 경쟁Δrel {rival_d:+.4f})")
+                  f"cos {best[right_v][g][i]:.3f} ≥ 경쟁 "
+                  f"{best[right_v][r_wrong][i]:.3f}{r_vote}{ladder_txt(right_v, i)}\n"
+                  f"원인: {reason[i]} (자기Δ{unit} {own_d:+.4f} / 경쟁Δ{unit} {rival_d:+.4f})")
+    for v in VERSIONS:
+        log(f"flips: {v} {RULE} 정답 {int((pred[v] == gt).sum()):,}/{n:,} "
+            f"({(pred[v] == gt).mean():.2%})")
     log(f"flips: {dict(counts)}")
     rc = collections.Counter(reason[flip == "오탐→정탐"])
     log(f"flips: 오탐→정탐 이유 분해 {dict(rc)}")
@@ -3113,12 +4384,15 @@ def stage_flips() -> None:
     # 표현은 하나만: 전문은 why_before/after 문자열 필드가 담당 (속성 중복 제거 — codex)
     ds.set_values("flip_reason", {ids[k]: fo.Classification(label=str(reason[i]))
                                   for i, k in enumerate(keys) if ids[k]}, key_field="id")
-    # margin_delta = GT클래스 마진(자기−타클래스)의 버전차 — 뷰 30/31 의 심각도 정렬 키
+    # margin_delta = GT클래스 마진(자기−타클래스)의 버전차 — 뷰 30/31 의 심각도 정렬 키.
+    # 판정규칙과 무관한 **기하량**이라 topk 개작에서도 정의를 유지한다 (docstring 참고).
     md = {}
     for i, k in enumerate(keys):
         if not ids[k]:
             continue
         g = int(gt[i])
+        if g < 0:            # 미검수 행 — GT 기준 마진이 없다 (있는 척하면 정렬이 거짓말한다)
+            continue
         m0 = best[VERSIONS[0]][g][i] - max(best[VERSIONS[0]][o][i] for o in CLASS_NAMES if o != g)
         m1 = best[VERSIONS[1]][g][i] - max(best[VERSIONS[1]][o][i] for o in CLASS_NAMES if o != g)
         md[ids[k]] = round(float(m1 - m0), 5)
@@ -3139,7 +4413,10 @@ def stage_flips() -> None:
                           ("31_broken_정탐to오탐", "정탐→오탐", False)):
         if nm in ds.list_saved_views():
             ds.delete_saved_view(nm)
-        ds.save_view(nm, ds.match(F("flip.label") == lab).sort_by("margin_delta", desc))
+        # 뷰 설명에 규칙·tier 를 박는다 — 화면만 보고 "어느 규칙의 전이인가"를 알 수 있어야 한다
+        ds.save_view(nm, ds.match(F("flip.label") == lab).sort_by("margin_delta", desc),
+                     description=f"{VERSIONS[0]}→{VERSIONS[1]} {lab} · 규칙 {RULE}(k={RULE_K}) "
+                                 f"· GT tier={tier} · 정렬 margin_delta")
     try:
         space = fo.Space(children=[
             fo.Space(children=[fo.Panel(type="Samples", pinned=True)]),
@@ -3149,7 +4426,8 @@ def stage_flips() -> None:
         ], orientation="horizontal")
         if "flips" in ds.list_workspaces():
             ds.delete_workspace("flips")
-        ds.save_workspace("flips", space, description="emb_viz (색: flip.label)")
+        ds.save_workspace("flips", space,
+                          description=f"emb_viz (색: flip.label) · 규칙 {RULE}(k={RULE_K})")
     except Exception as exc:  # noqa: BLE001
         log(f"flips: 워크스페이스 실패 {exc!r}")
     # broken_reasons 도 덤프한다 — guide 의 서사(③ "지운 자석이 사실 일도 하고 있었다")가
@@ -3158,11 +4436,16 @@ def stage_flips() -> None:
     by_cls = {d: dict(collections.Counter(CLASS_NAMES[int(gt[i])]
                                           for i in np.flatnonzero(flip == d)))
               for d in ("오탐→정탐", "정탐→오탐")}
+    # rule/tier 를 산출물에 박는다 — guide 가 이 JSON 을 인용하는데, 규칙이 다른 두 런의
+    # 숫자가 같은 문장 틀에 들어가면 구분이 안 된다 (tier 표기 관례와 같은 이유).
     json.dump({"counts": dict(counts), "fixed_reasons": dict(rc), "broken_reasons": dict(bc),
-               "by_class": by_cls, "banks": list(VERSIONS)},
+               "by_class": by_cls, "banks": list(VERSIONS),
+               "rule": RULE, "rule_k": RULE_K, "gt_tier": tier,
+               "reason_unit": "votes" if by_votes else "rel_cosine"},
               open(f"{GEO}/flips.json", "w"), ensure_ascii=False)
     log(f"flips: 정탐→오탐 이유 분해 {dict(bc)}")
-    log("flips 완료 → 필드 flip/flip_reason/why_before/after, 뷰 30/31, 워크스페이스 flips")
+    log(f"flips 완료 [규칙 {RULE}(k={RULE_K}) · tier={tier}] → 필드 flip/flip_reason/"
+        "why_before/after, 뷰 30/31, 워크스페이스 flips")
 
 
 # ────────────────────── guide ──────────────────────
@@ -3515,6 +4798,10 @@ def stage_slim() -> None:
 
     # 00_analysis 재저장 (남은 필드 기준 노이즈 제외)
     excl = [f for f in SLIM_NOISE if f in ds.get_field_schema()]
+    # 순위 사다리(r2/r3)는 분석 뷰에서 뺀다 — gidx 는 패널 조인 키(스펙 §4-5), 문장 원문은
+    # 고카디널리티라 필터 부적합(P4/§4-4). 둘 다 모달에서 읽는 값이고, 뷰에 두면 뱅크가
+    # 늘 때마다 필터가 +4 씩 는다 (G1: 분석가가 보는 필터 증가율 0).
+    excl += [f for f in ds.get_field_schema() if RANK_FIELD_RE.match(f)]
     if "00_analysis" in ds.list_saved_views():
         ds.delete_saved_view("00_analysis")
     ds.save_view("00_analysis", ds.exclude_fields(excl))
@@ -3615,7 +4902,15 @@ def stage_report() -> None:
 
 
 def _load_frames_ledger() -> list[dict]:
-    return list(jsonl_load(f"{WORK}/ledger.jsonl").values())
+    """frames 프로필의 **두 번째 GT 입구**. `load_all()` 과 같은 ledger.jsonl 을 읽는다.
+
+    ⚠️ 실제 GT 소비 스테이지(`stage_score`/`stage_gtsync`/`stage_report_frames`)는
+    `load_all()` 을 안 거치고 여기로 들어온다 — 순도 체크를 `load_all()` 에만 걸면 frames
+    경로가 통째로 우회된다. 두 입구 모두에서 같은 계약으로 막는다.
+    """
+    rows = list(jsonl_load(f"{WORK}/ledger.jsonl").values())
+    assert_gt_source_pure(rows, context=f"_load_frames_ledger[{PROFILE}]")
+    return rows
 
 
 def _append_run(run_id: str, domain: str, **kw) -> None:
@@ -4004,7 +5299,7 @@ def stage_report_frames() -> None:
 
     L: list[str] = []
     A = L.append
-    A("# frames_captions 프롬프트 뱅크 평가 리포트\n")
+    A("# frames 프롬프트 뱅크 평가 리포트\n")
     A(f"- 생성: {time.strftime('%Y-%m-%d %H:%M')} | frame {total:,} (캡션 모달리티 제외)")
     A(f"- 커버리지: 뱅크 매핑 {sum(by_dom.values()):,}"
       f" ({dict(by_dom) if by_dom else '없음 — 0단계: bank_domain_map.yaml 시드 대기'})"
@@ -4079,9 +5374,252 @@ def _selftest_bankfrom() -> None:
     log("selftest: bankfrom OK")
 
 
+def _with_rule(rule: str, k: int):
+    """RULE/RULE_K 를 임시 교체하는 컨텍스트 — 두 규칙을 한 프로세스에서 태우기 위한 것.
+
+    두 값은 import 시점에 env 로 굳는 모듈 전역이고 함수들이 호출 시점에 읽는다. 테스트가
+    양쪽 분기를 다 타려면 여기서 갈아끼우는 수밖에 없다 (프로덕션 경로는 안 건드린다).
+    """
+    import contextlib
+
+    @contextlib.contextmanager
+    def _cm():
+        g = globals()
+        old = (g["RULE"], g["RULE_K"])
+        g["RULE"], g["RULE_K"] = rule, k
+        try:
+            yield
+        finally:
+            g["RULE"], g["RULE_K"] = old
+    return _cm()
+
+
+def _selftest_topk_ranks() -> None:
+    """top-K 순위 사다리 — 순위의 정의·필드 명명·r2/r3 산출 정확성.
+
+    ⚠️ `stage_selftest` **앞쪽**에서 부른다. 뒤쪽 `vtag` assert 가 29버전 재빌드로 stale 해져
+    실패하는 상태라(별 트랙), 뒤에 두면 이 검증에 영원히 도달하지 못한다 —
+    `_selftest_bankfrom` 이 같은 이유로 맨 앞에 있다.
+
+    고정하는 것 7가지:
+      ① sel 이 **전역 코사인 내림차순** (= rank 의 정의. 득표순이 아님)
+      ② rank 0 == `top1_gidx` == **argmax 규칙의 승자** (winner_gidx 가 규칙 전환에도 불변)
+      ③ rank r == 순진 계산의 전역 r위 문장
+      ④ RULE=argmax state 에서는 r≥1 이 None (클래스 사다리로 위조하지 않는다)
+      ⑤ 필드명이 D7 리졸버 정규식에서 **별 계열**로 파싱된다 (기존 계열 오염 금지)
+      ⑥ **under-fill 경계** — 뱅크 문장이 K 보다 적어 슬롯이 비면 `rank_gidx`=−1 인 그 자리에
+         `rank_cos` 는 **NaN**. 센티널 −2.0 이 새면 "코사인 −2.0" 이라는 없는 값이 필드로 나간다
+      ⑦ **동점 재현성** — 동일 벡터가 여러 클래스에 있어도 사다리 순서·값이 매 실행 동일하고,
+         `rank_cos` 가 `rank_gidx` 가 가리킨 **그 문장**의 코사인과 일치한다
+    """
+    rng = np.random.default_rng(7)
+    n, d, m = 40, 12, 37
+    X = rng.normal(size=(n, d)).astype(np.float32)
+    X /= np.linalg.norm(X, axis=1, keepdims=True)
+    V = rng.normal(size=(m, d)).astype(np.float32)
+    V /= np.linalg.norm(V, axis=1, keepdims=True)
+    cls = np.array([0] * 14 + [1] * 8 + [2] * 8 + [3] * 7, dtype=np.int64)
+    bank = {"vec": V, "cls": cls, "prompt": [f"s{i}" for i in range(m)]}
+    gt = rng.integers(0, 4, n).astype(np.int64)
+    S = X @ V.T                                        # 순진 전역 코사인 [n, m]
+    K = 5
+
+    with _with_rule("topk", K):
+        pr = _Pruner(X, gt, bank)
+        st = pr.score(None)
+        assert isinstance(st, dict), "RULE=topk 인데 state 가 dict 가 아니다"
+        # ① sel 은 코사인 내림차순 — vote_topk 의 argsort 계약
+        gid = {c: np.flatnonzero(cls == c) for c in sorted(set(cls.tolist()))}
+        sel = st["sel"]
+        for i in range(n):
+            cos = [float(S[i, gid[int(c)][int(j)]]) for c, j in sel[i] if j >= 0]
+            assert all(cos[t] >= cos[t + 1] - 1e-6 for t in range(len(cos) - 1)), \
+                f"sel 이 코사인 내림차순이 아니다 (프레임 {i}): {cos}"
+        # ②③ rank r == 순진 전역 r위. r=0 은 argmax 승자와 같은 문장이어야 한다
+        naive = np.argsort(-S, axis=1)                 # [n, m] 전역 내림차순
+        for r in range(3):
+            g = pr.rank_gidx(st, r)
+            assert g is not None and g.shape == (n,), f"rank {r} 미산출"
+            assert (g == naive[:, r]).all(), \
+                f"rank {r} 가 전역 {r + 1}위가 아니다: {g[:5]} vs {naive[:5, r]}"
+            cc = pr.rank_cos(st, r)
+            assert np.allclose(cc, S[np.arange(n), naive[:, r]], atol=1e-6), \
+                f"rank_cos {r} 가 그 문장의 코사인이 아니다"
+        assert (pr.top1_gidx(st) == naive[:, 0]).all(), "top1_gidx != 전역 1위"
+        assert pr.rank_gidx(st, K) is None, "사다리 폭(K) 밖인데 None 이 아니다"
+        # best_of/class_best_local 이 클래스별 1위를 정확히 가리킨다 (attach 의 argmax 슬롯 근거)
+        b, a = pr.best_of(st), pr.class_best_local(st)
+        for c in gid:
+            assert np.allclose(b[c], S[:, gid[c]].max(1), atol=1e-6), f"best_of c={c}"
+            assert np.allclose(S[np.arange(n), gid[c][a[c]]], b[c], atol=1e-6), \
+                f"class_best_local 이 클래스 1위를 안 가리킨다 c={c}"
+
+    with _with_rule("argmax", 1):
+        pr_a = _Pruner(X, gt, bank)
+        st_a = pr_a.score(None)
+        assert isinstance(st_a, tuple), "RULE=argmax 인데 state 가 4-tuple 이 아니다"
+        # ② 규칙이 달라도 **1위 문장은 같다** — max_c max_p cos == max_p cos.
+        #    `winner_gidx_<tag>` 를 top1 대표로 유지해도 값이 안 바뀐다는 근거가 이것이다.
+        assert (pr_a.top1_gidx(st_a) == naive[:, 0]).all(), "argmax 승자 != 전역 1위"
+        assert (pr_a.rank_gidx(st_a, 0) == naive[:, 0]).all()
+        # ④ 2·3위는 argmax state 에 **없다** — 클래스 사다리로 위조하지 않는다
+        for r in (1, 2):
+            assert pr_a.rank_gidx(st_a, r) is None, f"argmax 인데 rank {r} 를 지어냈다"
+            assert pr_a.rank_cos(st_a, r) is None
+
+    # ⑥ under-fill 경계 — 뱅크 문장 2개 < K 라 sel 슬롯 2·3·4번이 빈다.
+    #    (클래스가 적은 것만으로는 안 된다 — 다른 클래스가 사다리를 메운다. 뱅크 **전체**가
+    #     K 보다 작아야 빈 슬롯이 생긴다.)
+    with _with_rule("topk", K):
+        Vs = V[:2].copy()
+        bs = {"vec": Vs, "cls": np.array([0, 2], dtype=np.int64), "prompt": ["a", "b"]}
+        prs = _Pruner(X, gt, bs)
+        sts = prs.score(None)
+        Ss = X @ Vs.T
+        assert sts["sel"].shape[1] >= 3, "이 경계 검증은 사다리 폭 3 이상을 전제한다"
+        g0s, c0s = prs.rank_gidx(sts, 0), prs.rank_cos(sts, 0)
+        assert (g0s == Ss.argmax(1)).all(), "under-fill 뱅크에서 1위가 틀렸다"
+        assert np.isfinite(c0s).all() and np.allclose(c0s, Ss.max(1), atol=1e-6), \
+            "살아있는 슬롯의 rank_cos 가 코사인과 다르다"
+        g2s, c2s = prs.rank_gidx(sts, 2), prs.rank_cos(sts, 2)
+        assert g2s is not None and (g2s == -1).all(), "빈 슬롯인데 gidx 가 −1 이 아니다"
+        assert np.isnan(c2s).all(), "빈 슬롯 rank_cos 가 NaN 이 아니다"
+        assert not (c2s == -2.0).any(), \
+            "bank_topk_stream 의 채움 센티널 −2.0 이 rank_cos 로 누출됐다 (없는 값이 필드로 나간다)"
+
+    # ⑦ 동점 재현성 — 같은 벡터를 여러 클래스에 심어 정확한 동점을 만든다
+    with _with_rule("topk", K):
+        Vt = V.copy()
+        for pos in (0, 14, 22, 30):                 # 각 클래스 첫 문장을 동일 벡터로
+            Vt[pos] = V[0]
+        for pos in (1, 15, 23, 31):                 # 두 번째 동점 그룹
+            Vt[pos] = V[15]
+        bt = {"vec": Vt, "cls": cls, "prompt": bank["prompt"]}
+        prt = _Pruner(X, gt, bt)
+        St = X @ Vt.T
+        st1 = prt.score(None)
+        st2 = prt.score(None)
+        assert (st1["sel"] == st2["sel"]).all(), "동점에서 사다리가 실행마다 달라진다"
+        for r in range(3):
+            g, cc = prt.rank_gidx(st1, r), prt.rank_cos(st1, r)
+            assert (g == prt.rank_gidx(st2, r)).all(), f"rank {r} 재현 실패"
+            live = g >= 0
+            # 핵심: 값이 **그 문장**의 코사인이어야 한다 (독립 재정렬이면 동점에서 어긋난다)
+            assert np.allclose(cc[live], St[np.flatnonzero(live), g[live]], atol=1e-6), \
+                f"rank_cos 가 rank_gidx 가 가리킨 문장의 코사인이 아니다 (r={r}, 동점)"
+        c0t, c1t, c2t = (prt.rank_cos(st1, r) for r in range(3))
+        assert (c0t >= c1t - 1e-6).all() and (c1t >= c2t - 1e-6).all(), "사다리가 내림차순이 아니다"
+
+    # ⑤ 필드 명명 — 형제 필드의 접미사 세대 승계 + D7 계열 파싱
+    d7 = re.compile(r"^(?P<fam>.+?)_(?P<tag>v[\d_]+(?:-[\w]+)?)$")
+    assert rank_gidx_field("v1084", 2) == "winner_gidx_r2_v1084"
+    assert rank_prompt_field("v1_0_8_4", 3) == "top_prompt_r3_v1_0_8_4"
+    for f, want_fam in ((rank_gidx_field(vtag("v1.0.8.4"), 2), "winner_gidx_r2"),
+                        (rank_gidx_field(vtag("v1.0.13.2"), 3), "winner_gidx_r3"),
+                        (rank_prompt_field("v1_0_8_4", 2), "top_prompt_r2"),
+                        (rank_prompt_field("v1_0_8_4-prune205", 2), "top_prompt_r2")):
+        mm = d7.match(f)
+        assert mm and mm.group("fam") == want_fam, \
+            f"{f} → fam {mm and mm.group('fam')!r} (기대 {want_fam!r}) — 기존 계열을 오염시킨다"
+        assert RANK_FIELD_RE.match(f), f"{f} 가 RANK_FIELD_RE 에 안 걸린다 (slim 이 못 가린다)"
+    # 1위 필드는 순위 정규식에 **걸리면 안 된다** (걸리면 slim 이 조인 키를 뷰에서 지운다)
+    for f in ("winner_gidx_v1084", "top_prompt_v1_0_8_4", "pred_margin_v1084"):
+        assert not RANK_FIELD_RE.match(f), f"{f} 가 순위 필드로 오인된다"
+    log("selftest: topk 순위 사다리 OK (정의=전역 코사인 내림차순 / r1==argmax 승자 / "
+        "argmax 는 r2·r3 미정의 / under-fill 빈슬롯 cos=NaN / 동점 재현성·값-문장 정합)")
+
+
+def _selftest_site_scope() -> None:
+    """사이트 범위(화면4) 재료 — 벡터화 기여쌍·그룹 승수·널모델 통계량·라벨 계약.
+
+    ⚠️ `stage_selftest` **앞쪽**에서 부른다 (`_selftest_bankfrom`·`_selftest_topk_ranks` 와
+       같은 이유 — 뒤쪽 `vtag` assert 가 stale 해 도달을 막는다).
+
+    고정하는 것 6가지:
+      ① `contrib_pairs` == `_Pruner.contrib_frames` (두 규칙 모두, 집합 단위)
+      ② `group_win_matrix` == 순진 이중루프 카운트
+      ③ scope 라벨: sourceh 문자열 불변 + 단위만 프로필로 갈린다
+      ④ 널모델 ②(재인코딩) 통계량의 양 극단 — 완전 재인코딩 V=1 / 독립축 V≈0
+      ⑤ 순열 널모델이 **사이트특이를 실제로 구별한다** (구성상 특이 vs 섞은 것)
+      ⑥ `n_win` 은 그룹 축 순서·프레임 정렬에 불변 (stage_site 가 그룹 정렬을 하므로)
+    """
+    rng = np.random.default_rng(11)
+    n, d, m = 60, 10, 30
+    X = rng.normal(size=(n, d)).astype(np.float32)
+    X /= np.linalg.norm(X, axis=1, keepdims=True)
+    V = rng.normal(size=(m, d)).astype(np.float32)
+    V /= np.linalg.norm(V, axis=1, keepdims=True)
+    cls = np.array([0] * 12 + [1] * 6 + [2] * 6 + [3] * 6, dtype=np.int64)
+    bank = {"vec": V, "cls": cls, "prompt": [f"s{i}" for i in range(m)]}
+    gt = rng.integers(0, 4, n).astype(np.int64)
+    gcode = np.array([i % 4 for i in range(n)], dtype=np.int64)
+
+    for rule, k in (("topk", 5), ("argmax", 1)):
+        with _with_rule(rule, k):
+            pr = _Pruner(X, gt, bank)
+            st = pr.score(None)
+            want = pr.contrib_frames(st)
+            gi, fi = contrib_pairs(pr, st)
+            got: dict[int, set] = {}
+            for g, f in zip(gi.tolist(), fi.tolist()):
+                got.setdefault(g, set()).add(f)
+            assert set(got) == set(want), f"[{rule}] 기여 문장 집합 불일치"
+            for g in want:                                  # ①
+                assert got[g] == set(want[g].tolist()), f"[{rule}] 문장 {g} 기여 프레임 불일치"
+            # ② 그룹 승수 == 순진 카운트
+            W = group_win_matrix(gi, fi, gcode, m, 4)
+            naive = np.zeros((m, 4), dtype=np.int64)
+            for g, f in zip(gi.tolist(), fi.tolist()):
+                naive[g, gcode[f]] += 1
+            assert (W == naive).all(), f"[{rule}] group_win_matrix 불일치"
+            # ⑥ 프레임을 재정렬해도 문장별 그룹 수는 같다
+            perm = rng.permutation(n)
+            pr2 = _Pruner(X[perm], gt[perm], bank)
+            st2 = pr2.score(None)
+            gi2, fi2 = contrib_pairs(pr2, st2)
+            W2 = group_win_matrix(gi2, fi2, gcode[perm], m, 4)
+            assert ((W > 0).sum(1) == (W2 > 0).sum(1)).all(), f"[{rule}] n_win 이 정렬에 의존한다"
+
+    # ③ 라벨 계약 — sourceh 문자열은 저장뷰가 문자 등식으로 쓴다
+    assert scope_labels("대") == SCOPE_LABELS == {1: "사이트특이 (1대)", 2: "공통 (2대)",
+                                                  3: "공통 (3대+)"}
+    assert scope_labels("곳")[1] == "사이트특이 (1곳)" and scope_labels("곳")[3] == "공통 (3곳+)"
+
+    # ④ 재인코딩 통계량의 양 극단
+    a = np.array([i % 3 for i in range(300)])
+    assert abs(_cramers_v(a, a * 1, 3, 3) - 1.0) < 1e-9, "완전 재인코딩인데 V != 1"
+    acc, base = _predict_acc(a, a, 3, 3)
+    assert acc == 1.0 and abs(base - 1 / 3) < 0.01
+    b_ind = np.array([(i // 3) % 3 for i in range(300)])     # a 와 독립
+    assert _cramers_v(a, b_ind, 3, 3) < 0.1, "독립축인데 V 가 크다"
+    # event_tier: 경계는 minn_tier 와 같고 0 칸 이름만 다르다 (GT 얘기로 오독 금지)
+    assert [event_tier(k) for k in (0, 1, 29, 30, 99, 100)] == \
+        ["no_event", "counts_only", "counts_only", "exploratory", "exploratory", "reportable"]
+    assert minn_tier(0) == "no_gt" and event_tier(0) == "no_event"
+
+    # ⑤ 순열 널모델이 진짜 사이트특이를 구별하나 — 문장 0..3 은 각자 한 그룹에서만 이기고,
+    #    문장 4 는 전 그룹에서 이긴다. 섞으면 큰 문장은 그대로 공통, 특이 문장도 공통이 된다.
+    si = np.array([0, 1, 2, 3] + [4] * 40, dtype=np.int64)
+    fi = np.array([0, 1, 2, 3] + list(range(40)), dtype=np.int64)
+    gc = np.array([i % 4 for i in range(40)], dtype=np.int64)
+    nw = (group_win_matrix(si, fi, gc, 5, 4) > 0).sum(1)
+    assert nw.tolist() == [1, 1, 1, 1, 4], nw.tolist()
+    obs = float((nw[nw > 0] >= 2).mean())
+    r2 = np.random.default_rng(3)
+    nulls = []
+    for _ in range(40):
+        gp = gc[r2.permutation(40)]
+        nulls.append(float(((group_win_matrix(si, fi, gp, 5, 4) > 0).sum(1)[nw > 0] >= 2).mean()))
+    assert obs < float(np.mean(nulls)) + 1e-12, "널모델이 사이트특이를 못 구별한다"
+    log("selftest: site scope OK (기여쌍 벡터화 동치 / 그룹 승수 / 라벨 계약 / "
+        "재인코딩 V 양극단 / 순열 널모델 방향)")
+
+
 def stage_selftest() -> None:
     """데이터 불필요 자가검증 — 스트리밍 리덕션 == 순진 행렬곱, crosswalk fail-closed, min-n."""
     _selftest_bankfrom()
+    _selftest_topk_ranks()
+    _selftest_site_scope()
     rng = np.random.default_rng(0)
     X = rng.normal(size=(500, 64)).astype(np.float32)
     X /= np.linalg.norm(X, axis=1, keepdims=True)
@@ -4152,13 +5690,123 @@ def stage_selftest() -> None:
     assert minn_tier(0) == "no_gt" and minn_tier(5) == "counts_only"
     assert minn_tier(30) == "exploratory" and minn_tier(99) == "exploratory"
     assert minn_tier(100) == "reportable"
+    # gt_tier: "배열이 있다 ≠ GT 가 있다". 전부 −1 인 원장을 no_gt 로 안 부르면 선택 산출물이
+    # 성적표로 읽힌다 — prune 리포트 최상단 표기가 이 함수 하나에 걸려 있다.
+    assert gt_tier(None) == "no_gt"
+    assert gt_tier(np.array([], dtype=np.int64)) == "no_gt"
+    assert gt_tier(np.full(500, -1, dtype=np.int64)) == "no_gt", "전부 미검수(−1)면 no_gt"
+    assert gt_tier(np.array([-1] * 495 + [0] * 5)) == "counts_only"
+    assert gt_tier(np.zeros(120, dtype=np.int64)) == "reportable"
+
+    # gt_source 순도 — 프로필마다 기대값이 다르고, None(구 행)은 어디서나 통과해야 한다.
+    _prof = PROFILE
+    try:
+        set_profile("sourceh")
+        assert_gt_source_pure([{"gt_source": "nas_folder"}, {"gt_source": None}, {}],
+                              context="selftest")
+        for foreign in ("ls_finalized", "folder", "caption"):
+            try:
+                assert_gt_source_pure([{"gt_source": "nas_folder"}, {"gt_source": foreign}],
+                                      context="selftest")
+            except RuntimeError:
+                pass
+            else:
+                raise AssertionError(f"sourceh 원장에 {foreign} 가 섞였는데 통과했다")
+        set_profile("frames")
+        assert_gt_source_pure([{"gt_source": "ls_finalized"}, {"gt_source": None}], context="selftest")
+        try:
+            assert_gt_source_pure([{"gt_source": "nas_folder"}], context="selftest")
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError("frames 원장에 nas_folder 가 섞였는데 통과했다")
+        # sourcei 는 4값이 정상 공존 — 'none'(문자열)과 None(구 행)이 둘 다 통과해야 한다
+        set_profile("sourcei")
+        assert_gt_source_pure([{"gt_source": s} for s in
+                               ("folder", "filename", "caption", "none")] + [{"gt_source": None}],
+                              context="selftest")
+        try:
+            assert_gt_source_pure([{"gt_source": "ls_finalized"}], context="selftest")
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError("sourcei 원장에 ls_finalized 가 섞였는데 통과했다")
+    finally:
+        set_profile(_prof)
+
+    # 프로브 후보 CSV 로더 — 미지정이면 하드코딩과 **동일 객체**(하위호환), 지정하면 대체.
+    import tempfile as _tf
+    _saved = os.environ.pop("PROBE_CANDIDATES_CSV", None)
+    try:
+        assert load_probe_candidates() is PROBE_CANDIDATES, "미지정인데 기존 dict 가 아니다"
+        with _tf.TemporaryDirectory() as td:
+            good = f"{td}/probe.csv"
+            # BOM + 공백 패딩 — 엑셀이 실제로 내놓는 형태
+            with open(good, "w", encoding="utf-8-sig") as f:
+                f.write("class,prompt\nfire, A bright fire is burning. \n\nfire,Flames spread.\n"
+                        "smoke,Thin white smoke drifts upward.\n")
+            os.environ["PROBE_CANDIDATES_CSV"] = good
+            got = load_probe_candidates()
+            assert got == {"fire": ["A bright fire is burning.", "Flames spread."],
+                           "smoke": ["Thin white smoke drifts upward."]}, got
+            assert "falldown" not in got, "CSV 는 병합이 아니라 **대체**여야 한다"
+
+            bad = f"{td}/bad.csv"
+            with open(bad, "w", encoding="utf-8") as f:
+                f.write("class,prompt\nvehicle,A car is parked.\n")
+            os.environ["PROBE_CANDIDATES_CSV"] = bad
+            try:
+                load_probe_candidates()
+            except SystemExit:
+                pass
+            else:
+                raise AssertionError("어휘 밖 class 인데 통과했다 (fail-fast 아님)")
+
+            nocol = f"{td}/nocol.csv"
+            with open(nocol, "w", encoding="utf-8") as f:
+                f.write("klass,text\nfire,x\n")
+            os.environ["PROBE_CANDIDATES_CSV"] = nocol
+            try:
+                load_probe_candidates()
+            except SystemExit:
+                pass
+            else:
+                raise AssertionError("컬럼 누락인데 통과했다")
+
+            # 비이벤트 클래스만 담긴 CSV — 이게 통과하면 stage_gap 이 순회를 안 해서
+            # "프로브 0건"이 조용히 된다. normal 은 어느 프로필에서도 거부돼야 한다.
+            for cls_only in ("normal", "smoking"):
+                only = f"{td}/only_{cls_only}.csv"
+                with open(only, "w", encoding="utf-8") as f:
+                    f.write(f"class,prompt\n{cls_only},Nothing is happening.\n")
+                os.environ["PROBE_CANDIDATES_CSV"] = only
+                for prof in ("sourceh", "frames", "sourcei"):
+                    set_profile(prof)
+                    try:
+                        load_probe_candidates()
+                    except SystemExit:
+                        pass
+                    else:
+                        raise AssertionError(
+                            f"{prof}: 비이벤트 클래스 {cls_only!r} 만 있는 CSV 가 통과했다 "
+                            "— 프로브 0건이 조용히 된다")
+            set_profile(_prof)
+    finally:
+        set_profile(_prof)
+        os.environ.pop("PROBE_CANDIDATES_CSV", None)
+        if _saved is not None:
+            os.environ["PROBE_CANDIDATES_CSV"] = _saved
     # 사이드바 서브경로는 1단까지만 — 3단이 새면 App 모달이 TypeError 로 죽는다
     uni = ["class_best_v1", "class_best_v1.classifications",
            "class_best_v1.classifications.label", "flip_reason", "flip_reason.before"]
     assert sidebar_subpaths(["class_best_v1", "flip_reason"], uni) == [
         "class_best_v1.classifications", "flip_reason.before"]
-    assert vtag("v1.0.8.0") == "v080" and vtag("v1.0.8.4") == "v084"
-    assert vtag("v1.0.9.0") == "v090", "새 버전 값이 옛 이름 필드에 덮이면 안 된다"
+    # 2026-08-11 전 파트 조인 계약 (vtag docstring). 옛 "v080" 기대값이 여기 남아
+    # selftest 를 죽이는 바람에 frames_bank_eval.sh (1단계=selftest, set -e) 가
+    # 통째로 막혔었다 (2026-08-18) — 기대값은 코드가 아니라 계약을 따라간다.
+    assert vtag("v1.0.8.0") == "v1080" and vtag("v1.0.8.4") == "v1084"
+    assert vtag("v1.0.9.0") == "v1090", "새 버전 값이 옛 이름 필드에 덮이면 안 된다"
+    assert vtag("v1.0.5.0") != vtag("v2.0.5.0"), "마지막 3파트 조인이면 붕괴하는 실충돌 쌍"
     # wave: 제품 compute_hist_iou 재현 + bin 별 LOO 지름길 == 브루트포스 LOO.
     # 지름길("같은 bin 이면 ΔIoU 가 같다")이 틀리면 문장 기여도 전체가 조용히 거짓이 된다.
     ha, hb = np.array([0.5, 0.3, 0.2]), np.array([0.2, 0.3, 0.5])
@@ -4227,7 +5875,7 @@ def main() -> None:
     ap.add_argument("stage", choices=["bank", "bankfrom", "analyze", "ablate", "attach", "gap", "prune", "atlas",
                                       "wave", "promptmap", "attrs", "viz", "flips",
                                       "guide", "slim", "report", "gen", "screens", "vote", "probecache", "all", "selftest",
-                                      "score", "gtsync"])
+                                      "score", "gtsync", "site"])
     ap.add_argument("--profile", choices=list(PROFILES),
                     default=os.environ.get("BANK_PROFILE", "sourceh"))
     ap.add_argument("--csv", help="bank 스테이지: 프롬프트 CSV 경로")
@@ -4270,11 +5918,15 @@ def main() -> None:
         return
 
     if PROFILE == "frames":
-        sourceh_only = {"analyze", "ablate", "flips", "guide", "slim", "prune", "atlas", "attach", "vote"}
+        # ⚠️ `attach` 는 2026-08-18 에 이 목록에서 **빠졌다** — GT 불필요 스테이지라
+        #    frames 에서 성립한다는 판정이 계획서 §3(이식 판정 "그대로")에 있고, 코드도
+        #    프로필 3지점(입구/조인/GT 의존 산출)만 갈아 끼우면 그대로 돈다.
+        #    나머지(팩토리얼=동일도메인 뱅크 2벌, guide/flips/prune=GT 분모)는 여전히 sourceh 전용.
+        sourceh_only = {"analyze", "ablate", "flips", "guide", "slim", "prune", "atlas", "vote"}
         table = {"score": stage_score, "gap": stage_gap_frames, "viz": stage_viz_frames,
                  "gtsync": stage_gtsync, "report": stage_report_frames,
-                 "wave": stage_wave, "promptmap": stage_promptmap,
-                 "attrs": stage_attrs, "selftest": stage_selftest}
+                 "wave": stage_wave, "promptmap": stage_promptmap, "attach": stage_attach,
+                 "site": stage_site, "attrs": stage_attrs, "selftest": stage_selftest}
         stages = ["score", "gap", "viz", "gtsync", "report"] if args.stage == "all" else [args.stage]
         for st in stages:
             log(f"───── stage: {st} (profile=frames) ─────")
@@ -4301,6 +5953,9 @@ def main() -> None:
             continue
         if st in ("score", "gtsync"):
             raise SystemExit(f"{st} 는 frames 프로필 전용")
+        if st == "site":
+            raise SystemExit("site 는 frames 프로필 전용 — sourceh 의 같은 축은 `screens` 가 "
+                             "카메라 기준으로 이미 낸다 (winner_site_scope_<tag>)")
         if st == "bank":
             if not (args.csv and args.version):
                 raise SystemExit("bank 스테이지는 --csv 와 --version 이 필요하다")

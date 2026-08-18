@@ -8,7 +8,6 @@ Task 12부터 프롬프트 데이터셋은 세션 데이터셋 이름에서 "<na
 정본: docker/analysis/plugins/user-prompt-compare/ (git)
 배포: docker cp → /data/fiftyone/datasets/__plugins__/user-prompt-compare/
 """
-import re
 
 import fiftyone as fo
 import fiftyone.operators as foo
@@ -24,6 +23,10 @@ FRAMES_DATASET = "sourcei"
 VTAG = "v1080"   # 2026-08-11 전 파트 태그로 통일 (구 v080 — vtag 주석 참고)
 WINNER_FIELD = f"winner_gidx_{VTAG}"
 MAX_POINTS = 20_000
+# 벡터 전용(문장 미보유) 뱅크 버전의 자리표시자 접두사 — `prompt_geometry.PLACEHOLDER_PREFIX`
+# 와 **같은 문자열**. import 하지 않는 이유: 이 플러그인은 App 프로세스에서 돌고 /workspace 가
+# sys.path 에 없다. 두 곳에 사는 상수이므로 한쪽을 바꾸면 다른 쪽도 바꿔야 한다.
+PLACEHOLDER_PREFIX = "(텍스트 없음"
 #  ⚠️ 상한을 64MB → 192MB 로 올림 (2026-08-12). 64MB 는 28,605행 시절 예산이었고,
 #     29버전 리빌드로 603,318행이 되며 실측 ≈50.6MB 로 한계에 붙었다 — 필드가 몇 개만
 #     늘거나 버전이 추가되면 `AssertionError: 캐시 예산 64MB 초과` 로 패널이 죽는다.
@@ -486,7 +489,7 @@ OKABE_ITO_B = ["#0072B2", "#E69F00", "#009E73", "#D55E00",
 def build_mode_b(ds_name, group_field, groups, brain_key=BRAIN_KEY):
     """같은 데이터셋의 그룹 슬라이스들을 하나의 emb_viz 좌표 위에 overlay.
 
-    frames_captions(project 22개)이 본래 타깃 — 그룹당 1 trace, 같은 UMAP fit을 공유하므로
+    `frames`(구 frames_captions, project 22개)이 본래 타깃 — 그룹당 1 trace, 같은 UMAP fit을 공유하므로
     좌표 공간 비교가 정당하다 (스펙 §5.1b, 모드 A와 달리). 그룹 필드는 문자열/Classification
     모두 허용(카테고리 값이면 .label로 평탄화). Task 6 stratified_subsample로 그룹당
     MAX_POINTS/n 서브샘플 — 네이티브 Embeddings 패널의 5,000점 상한 우회.
@@ -494,7 +497,7 @@ def build_mode_b(ds_name, group_field, groups, brain_key=BRAIN_KEY):
     import numpy as np
     ds = fo.load_dataset(ds_name)
 
-    # 크래시 가드 (2026-08-10 실사용 오류): 기본 group_field="project"는 frames_captions
+    # 크래시 가드 (2026-08-10 실사용 오류): 기본 group_field="project"는 `frames`
     # 용이라 sourcei 등 다른 데이터셋엔 없다 — 무방비 ds.values()가 ValueError로 패널을
     # 죽였다. 조인 필드 부재와 같은 규약: 크래시 대신 안내 배너만 그린다.
     def _notice(text):
@@ -654,10 +657,21 @@ def _rows_to_markdown(rows, join_field_missing=None, total=None):
         note += f"*(선택 {total}개 중 상위 {len(rows)}개 표시)*\n\n"
     if not rows:
         return note + "*(선택된 프레임 없음)*"
+    # 자리표시자 경고 — 그 행의 text 는 문장이 아니다. `#N` 의 N 은 공급자 CSV/JSON 의 `ID`
+    # 컬럼이라 행을 식별하지도 못한다 (실측: v1.0.8.0 은 12,480행에 ID 2,405종, v1.0.6.2 는
+    # 16,125행 전부 ID=0 → 전부 `#0`). "0번 문장" 으로 읽히는 사고를 여기서 끊는다.
+    n_ph = sum(1 for r in rows
+               if str(r["text"]).lstrip().startswith(PLACEHOLDER_PREFIX))
+    if n_ph:
+        note += (f"*(⚠️ {n_ph}/{len(rows)}행은 문장 텍스트가 없는 뱅크 버전입니다 — "
+                 f"`{PLACEHOLDER_PREFIX} #N)` 의 N 은 공급자 ID 라 문장을 식별하지 않습니다. "
+                 f"복구는 `repair_bank_prompts.py`)*\n\n")
     header = "| gidx | text | wins | purity | n_cameras | wave_gain |\n|---|---|---|---|---|---|\n"
+    # wave_gain 은 `.3f` 로는 전 행의 99.6% 가 0.000 으로 뭉갠다 (실측 중앙값 |1.2e-05|,
+    # 90분위 |4.8e-05|, 최대 4.1e-03) — LOO ΔIoU 는 원래 이 스케일이다. 6자리로 편다.
     body = "".join(
         f"| {r['gidx']} | {str(r['text']).replace('|', chr(92) + '|')} | {r['wins']} | {r['purity']:.3f} | "
-        f"{r['n_cameras']} | {r['wave_gain']:.3f} |\n"
+        f"{r['n_cameras']} | {r['wave_gain']:.6f} |\n"
         for r in rows
     )
     return note + header + body
@@ -729,7 +743,7 @@ class PromptComparePanel(foo.Panel):
         ctx.panel.state.scatter_data = None
         if ctx.panel.state.mode == "B":
             # 모드 B는 ctx.dataset(현재 세션 데이터셋)을 그린다 — sourcei(ground_truth 등)에서도
-            # 열리지만 본용도는 frames_captions에서 project 간 비교.
+            # 열리지만 본용도는 `frames`(구 frames_captions)에서 project 간 비교.
             groups = [g.strip() for g in (ctx.panel.state.groups or "").split(",") if g.strip()]
             group_field = ctx.panel.state.group_field or "project"
             if groups and ctx.dataset is not None:
@@ -940,7 +954,6 @@ class PromptComparePanel(foo.Panel):
         frame_ids = []
         prompts_name = _prompts_dataset_name(ctx)
         if ids and fo.dataset_exists(prompts_name):
-            import numpy as np
             b = load_prompt_bundle(prompts_name)
             # 문장별 bank_version → 조인 필드로 버킷팅 (on_plot_click과 같은 per-문장 규칙).
             # 성능(codex 리뷰): lasso는 미채택 포함 최대 MAX_POINTS개 — gidx당 np.where 풀스캔
@@ -1606,6 +1619,13 @@ def selftest():
     # 상한 잘림 표기 (lasso 다중선택): 전체 수 > 표시 행 수면 안내가 붙는다
     md_trunc = _rows_to_markdown([row], total=5)
     assert "선택 5개 중 상위 1개" in md_trunc and f"| {g} |" in md_trunc
+    # 자리표시자 경고 (벡터 전용 뱅크) — 정상 문장 행에는 붙지 않아야 한다
+    assert "문장 텍스트가 없는 뱅크" not in md
+    md_ph = _rows_to_markdown([{**row, "text": "(텍스트 없음 #0)"}, row])
+    assert "⚠️ 1/2행" in md_ph and "문장 텍스트가 없는 뱅크" in md_ph
+    # wave_gain 표시 정밀도 — LOO ΔIoU 실측 스케일(1e-05)이 0.000 으로 뭉개지면 안 된다
+    assert "0.000012" in _rows_to_markdown([{**row, "wave_gain": 1.21e-05}])
+
     row_pipe = {**row, "text": "a|b|c"}
     md_pipe = _rows_to_markdown([row_pipe])
     assert "a\\|b\\|c" in md_pipe                    # 파이프가 이스케이프된 채 보존됨
@@ -1636,7 +1656,7 @@ def selftest():
     assert _dedup_guard(fctx, "sel_seen", []) is True             # 그 다음 스퓨리어스 빈 재발화만 스킵
 
     # 모드 B (Task 9): sourcei를 ground_truth 2클래스로 갈라 같은 좌표계 overlay (구조 검증용).
-    # frames_captions(project 22개)이 본용도지만 selftest는 App 없이 도는 sourcei로 검증한다.
+    # `frames`(project 22개)이 본용도지만 selftest는 App 없이 도는 sourcei로 검증한다.
     figb = build_mode_b(FRAMES_DATASET, "ground_truth", ["normal", "falldown"], BRAIN_KEY)
     assert len(figb["data"]) == 2 and all(t["type"] == "scattergl" for t in figb["data"])
     assert "같은 좌표계" in figb["banner"]
@@ -1851,38 +1871,45 @@ def selftest():
     panel_instance.on_rule_change(hctx)
 
     # ── Task 12: 프롬프트 짝이 없는 데이터셋에서 모드 A가 크래시 대신 안내를 낸다 ──
-    # frames_captions는 실측상 "frames_captions-prompts"가 없다(fo.list_datasets() 확인,
-    # 2026-08-07) — 정확히 요구사항 1이 다루는 케이스를 실 데이터셋으로 검증한다.
-    assert not fo.dataset_exists("frames_captions-prompts")
-    if fo.dataset_exists("frames_captions"):
-        class _FakeDatasetNP:
-            def __init__(self, name):
-                self.name = name
-        class _FakeCtxNoPair(_FakeCtxAttr):
-            def __init__(self, dataset_name):
-                super().__init__()
-                self.dataset = _FakeDatasetNP(dataset_name)
-        nopair_ctx = _FakeCtxNoPair("frames_captions")
-        panel_instance.on_load(nopair_ctx)
-        assert nopair_ctx.panel.state.prompts_available is False, \
-            "회귀: 프롬프트 짝 없는 데이터셋에서도 available=True로 남음"
-        assert all(c == "clear" for c in nopair_ctx.panel.data_calls), \
-            "회귀: set_data 호출됨 — patch 딥머지가 줄어든 배열을 못 지우므로 스키마 경로만 써야 한다"
-        assert "clear" in nopair_ctx.panel.data_calls, \
-            "회귀: data.clear() 미호출 — 옛 세션의 patched data가 스키마 data를 가린다"
-        assert _get_fig(nopair_ctx) == [], \
-            "회귀: 프롬프트 짝 없음인데 산점도에 데이터가 실림"
-        assert nopair_ctx.panel.state.scatter_data is None, \
-            "회귀: scatter_data 가 state 에 실림 — 훅 왕복 페이로드 2.5s/MB 재발"
-        assert NO_PROMPTS_PAIR_TEXT in nopair_ctx.panel.state.banner
-        nopair_schema = panel_instance.render(nopair_ctx)
-        # 모드 A 전용 컨트롤(규칙/표시/버전)이 비활성 — 안내 텍스트만 렌더.
-        nopair_ctrls = nopair_schema.type.properties["controls"].type.properties
-        # 안내는 컨트롤 셀이 아니라 배너로 나간다 (2026-08-12 UI 정리)
-        assert "no_prompts_notice" not in nopair_ctrls
-        assert "banner_md" in nopair_schema.type.properties
-        assert "bank_version_filter" not in nopair_ctrls
-        assert "rule" not in nopair_ctrls and "show_mode" not in nopair_ctrls
+    # 옛 픽스처는 라이브 `frames_captions`(2026-08-07 실측상 짝 없음)였는데, 그 데이터셋이
+    # 2026-08-19 에 `frames` 로 개명되면서 짝 `frames-prompts` 까지 생겨 no-pair 사례가 아니게
+    # 됐다. 라이브 데이터셋에 픽스처를 매달면 개명·개통 때마다 이렇게 조용히 무효가 되므로
+    # (옛 코드는 `if fo.dataset_exists(...)` 라 데이터셋이 사라지면 통째로 skip 됐다),
+    # **짝이 없음을 그 자리에서 단언하는 합성 이름**을 쓴다. on_load 는 기본 모드 A 에서
+    # `<name>-prompts` 존재 여부만 보고 즉시 반환하므로 본체 데이터셋은 실존할 필요가 없다.
+    nopair_name = "__user_selftest_nopair__"
+    assert not fo.dataset_exists(f"{nopair_name}-prompts")
+
+    class _FakeDatasetNP:
+        def __init__(self, name):
+            self.name = name
+
+    class _FakeCtxNoPair(_FakeCtxAttr):
+        def __init__(self, dataset_name):
+            super().__init__()
+            self.dataset = _FakeDatasetNP(dataset_name)
+
+    nopair_ctx = _FakeCtxNoPair(nopair_name)
+    panel_instance.on_load(nopair_ctx)
+    assert nopair_ctx.panel.state.prompts_available is False, \
+        "회귀: 프롬프트 짝 없는 데이터셋에서도 available=True로 남음"
+    assert all(c == "clear" for c in nopair_ctx.panel.data_calls), \
+        "회귀: set_data 호출됨 — patch 딥머지가 줄어든 배열을 못 지우므로 스키마 경로만 써야 한다"
+    assert "clear" in nopair_ctx.panel.data_calls, \
+        "회귀: data.clear() 미호출 — 옛 세션의 patched data가 스키마 data를 가린다"
+    assert _get_fig(nopair_ctx) == [], \
+        "회귀: 프롬프트 짝 없음인데 산점도에 데이터가 실림"
+    assert nopair_ctx.panel.state.scatter_data is None, \
+        "회귀: scatter_data 가 state 에 실림 — 훅 왕복 페이로드 2.5s/MB 재발"
+    assert NO_PROMPTS_PAIR_TEXT in nopair_ctx.panel.state.banner
+    nopair_schema = panel_instance.render(nopair_ctx)
+    # 모드 A 전용 컨트롤(규칙/표시/버전)이 비활성 — 안내 텍스트만 렌더.
+    nopair_ctrls = nopair_schema.type.properties["controls"].type.properties
+    # 안내는 컨트롤 셀이 아니라 배너로 나간다 (2026-08-12 UI 정리)
+    assert "no_prompts_notice" not in nopair_ctrls
+    assert "banner_md" in nopair_schema.type.properties
+    assert "bank_version_filter" not in nopair_ctrls
+    assert "rule" not in nopair_ctrls and "show_mode" not in nopair_ctrls
 
     # ── 2026-08-14: 드롭다운 desync 버그 수정 검증 (재발화 에코·이중 발화·벡터화) ──
     # ① 같은 값 에코는 _refresh 자체를 건너뛴다 — App 훅 재발화 캐스케이드 차단.

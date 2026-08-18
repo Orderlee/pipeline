@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""frames_captions → 뱅크 평가 원장 생산자.
+"""FiftyOne `frames` 데이터셋(구 frames_captions, 2026-08-19 개명) → 뱅크 평가 원장 생산자.
 
 분석기(prompt_geometry.py --profile frames)는 이 출력만 소비하고 DB 를 모른다 —
 source-h 의 ledger.jsonl/embed.npz 데이터 계약을 그대로 미러 (스펙 §4·§5-2).
@@ -37,21 +37,38 @@ def log(msg: str) -> None:
 
 
 def fetch_finalized_gt(crosswalk: dict) -> tuple[dict, collections.Counter, int]:
-    """image_id(str) → frame class 이름. 좌조인이라 무박스 finalized 도 잡힌다."""
+    """image_id(str) → frame class 이름. 좌조인이라 무박스 finalized 도 잡힌다.
+
+    ⚠️ 방어적 이중 확인: WHERE 절이 `review_status = 'finalized'` 하나뿐이라, 누군가 이
+    쿼리를 미래에 느슨하게 고치면(예: `IN ('finalized', 'reviewed')`) 이 함수가 조용히
+    non-finalized 행을 GT 로 흘려보낼 수 있다. 그래서 SELECT 에 `il.review_status` 를
+    중복으로 실어 코드에서 재검증한다 — SQL 필터를 신뢰하지 않고 행 단위로 재확인.
+    """
     q = """
-    SELECT il.image_id::text, ila.category
+    SELECT il.image_id::text, ila.category, il.review_status
     FROM image_labels il
     LEFT JOIN image_label_annotations ila ON ila.image_label_id = il.image_label_id
     WHERE il.review_status = 'finalized'
     """
     cats: dict[str, set] = collections.defaultdict(set)
     n_boxes = 0
+    bad_status: collections.Counter = collections.Counter()
     with psycopg2.connect(DSN) as conn, conn.cursor() as cur:
         cur.execute(q)
-        for image_id, category in cur.fetchall():
+        for image_id, category, review_status in cur.fetchall():
+            if review_status != "finalized":
+                bad_status[review_status] += 1
+                continue
             cats[image_id].add(category)          # None = 무박스 finalized
             if category is not None:
                 n_boxes += 1
+    if bad_status:
+        # SQL 의 WHERE 절과 행 단위 검증이 어긋났다 — 쿼리가 느슨해졌다는 신호이므로
+        # 조용히 걸러내지 않고 fail-closed 한다 (bank_gt 불변식, 스펙 §7).
+        raise RuntimeError(
+            "fetch_finalized_gt: SQL 이 review_status='finalized' 아닌 행을 반환했다 "
+            f"(WHERE 절이 느슨해졌을 가능성) — {dict(bad_status)}"
+        )
     gt: dict[str, str] = {}
     excluded: collections.Counter = collections.Counter()
     for image_id, cs in cats.items():
@@ -74,6 +91,29 @@ def fetch_finalized_gt(crosswalk: dict) -> tuple[dict, collections.Counter, int]
     return gt, excluded, n_boxes
 
 
+_ALLOWED_GT_SOURCES = {"ls_finalized", None}
+
+
+def assert_gt_source_pure(rows: list[dict]) -> None:
+    """이 원장은 LS finalized GT 전용이다 (bank_gt 불변식, 스펙 §7).
+
+    산업 현장(source-h) 프레임 GT 는 `frames_eval.py` 가 만드는 **별도 원장**
+    (gt_source='nas_folder', NAS 폴더명 파생)이고 이 파일과 절대 혼용되면 안 된다.
+    실행 시점 self-check 가 유일한 방어선이다 (이 코드는 CI pytest 게이트 밖 — analysis 는
+    CI 미대상). 방어 대상은 "미래에 누가 위 SQL/매핑을 느슨하게 고쳐 다른 gt_source 가
+    새는 것" 이다.
+    """
+    bad = collections.Counter(
+        r.get("gt_source") for r in rows if r.get("gt_source") not in _ALLOWED_GT_SOURCES
+    )
+    if bad:
+        raise RuntimeError(
+            "frames_bank_ledger: gt_source 오염 감지 — LS finalized 전용 원장에 허용되지 "
+            f"않는 gt_source 가 섞였다: {dict(bad)} (허용: 'ls_finalized' 또는 None). "
+            "nas_folder 계열 GT(frames_eval.py 원장)와 혼용 금지."
+        )
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--dry-run", action="store_true", help="파일 미기록, 스탬프만 출력")
@@ -90,7 +130,7 @@ def main() -> None:
     gt_by_image, excluded, n_boxes = fetch_finalized_gt(crosswalk)
     observed_at = time.strftime("%Y-%m-%dT%H:%M:%S")
 
-    ds = fo.load_dataset("frames_captions")
+    ds = fo.load_dataset("frames")
     view = ds.match(F("modality") == "frame")     # 캡션 11,978 = 같은 필드의 텍스트 벡터 → 제외 (필수)
     ids = view.values("id")
     image_ids = view.values("image_id")
@@ -120,6 +160,10 @@ def main() -> None:
     dom_counts = collections.Counter(r["domain"] for r in rows if r["domain"])
     log(f"[stamp] ledger: frame {len(rows):,} / 매핑 {dict(dom_counts) or '없음(0단계)'} / "
         f"GT 이미지 {n_gt} (box {n_boxes:,}) / crosswalk 제외 {dict(excluded) or '없음'}")
+
+    # 원장 쓰기 직전 self-check — dry-run 에서도 돌려 조기에 잡는다 (CI pytest 게이트 없음).
+    assert_gt_source_pure(rows)
+
     if args.dry_run:
         return
 

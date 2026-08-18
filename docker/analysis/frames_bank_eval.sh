@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# frames_captions 프롬프트 뱅크 평가 — 원커맨드 (스펙 §5-3).
+# `frames` 데이터셋 프롬프트 뱅크 평가 — 원커맨드 (스펙 §5-3).
+# (2026-08-19 개명: frames_captions → frames. 파일명/경로 `frames_bank*` 는 개명 대상 아님)
 #
 #   ./docker/analysis/frames_bank_eval.sh                           # 전체 사이클
 #   ./docker/analysis/frames_bank_eval.sh --bank v1.0.9.0 /path/text_features_v1.0.9.0.csv
@@ -14,9 +15,16 @@ REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 C="${ANALYSIS_CONTAINER:-docker-analysis-1}"
 
 # ambient /workspace 의존 금지 — 필요 파일 전부 명시 반입 (drift 차단, 스펙 §10 불채택 항목의 해소)
-for f in prompt_geometry.py frames_bank_ledger.py bank_domain_map.yaml fiftyone_presentation.py; do
-  docker cp "$REPO/docker/analysis/$f" "$C:/workspace/" >/dev/null
-done
+# ⚠️ 2026-08-18 부터 /workspace 는 repo bind mount 일 수 있다 — 그때 docker cp 를 하면
+#    root 소유로 repo 파일을 덮어써 이후 호스트 git 작업이 권한으로 막힌다. bind 면 skip
+#    (같은 파일이라 반입 자체가 무의미하기도 하다).
+if docker inspect -f '{{range .Mounts}}{{.Destination}}{{"\n"}}{{end}}' "$C" | grep -qx /workspace; then
+  echo "[frames_bank_eval] /workspace = bind mount — 반입 생략 (repo 가 곧 라이브)"
+else
+  for f in prompt_geometry.py frames_bank_ledger.py bank_domain_map.yaml fiftyone_presentation.py; do
+    docker cp "$REPO/docker/analysis/$f" "$C:/workspace/" >/dev/null
+  done
+fi
 
 run() { docker exec -e OMP_NUM_THREADS=4 -e OPENBLAS_NUM_THREADS=4 \
         -e BANK_DOMAIN_MAP=/workspace/bank_domain_map.yaml "$C" python3 "$@"; }
@@ -35,6 +43,6 @@ for st in score gap viz gtsync report; do
 done
 
 echo
-echo "완료 — http://10.0.0.10:5153/datasets/frames_captions"
+echo "완료 — http://10.0.0.10:5153/datasets/frames"
 echo "  · 워크스페이스 bank-eval / 뷰 'bank: <도메인> …' / 사이드바 ⑥ 프롬프트뱅크"
 echo "  · 리포트: docker exec $C cat /data/fiftyone/frames_bank/report/bank_eval_report.md"

@@ -143,6 +143,11 @@ def _dq_uniqueness(frm_n: int):
     try:
         import fiftyone as fo
 
+        # 2026-08-18: 구 'frames' 데이터셋 부재로 조용히 [] 였다 → 실존하던 frames_captions
+        # 로 교정. 2026-08-19 데이터셋 개명(frames_captions → frames)으로 정본 이름이 다시
+        # 'frames' 가 됐다 — **구 'frames' 와는 다른 데이터셋**이니 옛 이름 부활로 읽지 말 것.
+        # 이 데이터셋에는 uniqueness 필드가 없어 아래 values() 가 KeyError → except 로 빠져
+        # 여전히 [] 지만, 이제는 print 로 사유가 남는다 (brain 필드를 돌리면 그때부터 실값).
         if not fo.dataset_exists("frames"):
             return []
         ds = fo.load_dataset("frames")
@@ -180,6 +185,7 @@ def _class_separability_reason() -> str:
 
         import fiftyone as fo
 
+        # 2026-08-19 개명 후 정본 이름 = 'frames' (구 frames_captions).
         if not fo.dataset_exists("frames"):
             return "FiftyOne 'frames' 데이터셋이 없습니다."
         ds = fo.load_dataset("frames")

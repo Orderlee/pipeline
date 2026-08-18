@@ -2,7 +2,7 @@
 
 > 대상: 운영(`main`, `:3030`) 환경을 staging 에서 검증된 PG primary + `pg_duckdb`
 > 모드로 전환할 때의 단계·리스크·롤백 절차.
-> 전제: staging(`dev`, `:3031`) 에서 §[DBeaver 가이드](../references/dbeaver-pg-duckdb-test-guide.md)
+> 전제: staging(`dev`, `:3031`) 에서 §[DBeaver 가이드](../../references/dbeaver-pg-duckdb-test-guide.md)
 > §3 (`DuckDB → PG ATTACH`) 검증이 통과한 상태.
 
 작성: 2026-05-07 | 상태: **작성됨, 미실행** (실행 시 진행 상황을 본 문서 끝의 체크리스트에 기록)
