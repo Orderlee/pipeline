@@ -98,7 +98,9 @@ EVAL_ARTIFACTS = (
 FALLBACK_PROFILES = {
     "sourceh": {"root": "/data/fiftyone/sourceh_v2", "dataset": "source-h",
              "prompt_dir": "/data/fiftyone/sourceh/prompts"},
-    "frames": {"root": "/data/fiftyone/frames_bank", "dataset": "frames_captions",
+    # 2026-08-19 개명: 데이터셋 frames_captions → frames (root 경로 frames_bank 는 그대로).
+    # prompt_geometry.PROFILES["frames"]["dataset"] 과 문자 동일해야 한다.
+    "frames": {"root": "/data/fiftyone/frames_bank", "dataset": "frames",
                "prompt_dir": "/data/fiftyone/sourceh/prompts"},
     "sourcei": {"root": "/data/fiftyone/sourcei", "dataset": "sourcei",
                 "prompt_dir": "/data/fiftyone/sourceh/prompts"},

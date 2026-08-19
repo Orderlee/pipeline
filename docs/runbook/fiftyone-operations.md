@@ -10,7 +10,7 @@
 
 FiftyOne = 프레임 임베딩(PE-Core-L14-336, 1024-d, pgvector 적재)을 **UMAP/PCA 2D 투영으로 시각화**하고, 라벨(SAM3 detection)·캡션·프로젝트·카테고리별로 탐색하는 도구. 모델 학습 데이터 품질 분석용(B2C 아님).
 
-- **데이터셋**: `frames`(프레임 이미지, prod ≈187,994), `captions`(캡션, ≈11,978). MongoDB 사이드카에 메타데이터 영속.
+- **데이터셋**: `frames` = 2026-08-19 개명된 **통합 정본**(구 `frames_captions` — 프레임 187,994 + 캡션 11,978 = 199,972, `modality` 필드로 구분) + 짝 `frames-prompts`(문장, 캡션 편입 후 615,296). 독립 `captions` 데이터셋은 **현재 미실존**(빌드 중간산출). MongoDB 사이드카에 메타데이터 영속.
 - **두 surface**: FiftyOne App(:5153, 임베딩 산점도 + 그리드) / Streamlit 임베딩 대시보드(:8503, sunburst·UMAP·거리·검색 등).
 - 임베딩 자체는 Postgres `image_embeddings`(pgvector)에 있고, FiftyOne은 시각화/탐색 레이어.
 
@@ -69,7 +69,7 @@ docker exec $CTR sh -lc 'tail -n3 /tmp/fiftyone_relaunch.log'
 until [ "$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 http://127.0.0.1:5153/)" = "200" ]; do sleep 2; done; echo UP
 ```
 - `fiftyone_relaunch.py` = `fo.load_dataset("frames")` + `launch_app(port=5151)` + keep-alive. **재빌드 안 함.**
-- ⚠️ `fiftyone_prod_launch.py` 는 **풀 리빌드**(pgvector 로드+미디어 다운로드+UMAP, 1~3분, 그 동안 :5153 연결거부 정상) — 데이터셋이 없거나 새로 만들 때만.
+- ⚠️ `fiftyone_prod_launch.py` 는 **2026-08-19 superseded** — 실행 즉시 `SystemExit`(정본 overwrite 방지 가드), `FIFTYONE_LEGACY_BUILD=1` 강제 시에도 산출이 `frames_legacy` 로 고정돼 정본을 만들 수 없다. 정본 재빌드 경로 = `fiftyone_full_build.py`(`FFB_DATASET=frames_full` 명시) → `merge_frames_captions.py` → `enrich_frames_captions.py`.
 
 ### 3.2 Streamlit 임베딩 대시보드 재기동 (:8503) — Vertex 번역 env 포함
 ```bash
@@ -124,7 +124,7 @@ prod `datapipeline-analysis:latest` 이미지는 **2026-06-16 빌드라 stale**:
 
 ## 4. 데이터셋 구조 (`frames`)
 
-- **샘플** = 프레임 이미지 1장. prod ≈187,994.
+- **샘플** = 혼합 모달리티 199,972 (frame 187,994 / caption 11,978, `modality` 필드로 구분 — 캡션 샘플엔 detection 계열 필드 없음).
 - **필드**: `image_id`·`entity_id`·`asset_id`·`minio_key`·`embedding`(1024-d) / `project`(source_unit_name) / `caption`·`daynight`·`environment` / `detection_class`·`normalized_class` / `detections`(SAM3 bbox) / `caption_cluster`·`hdbscan_cluster` 등.
 - **brain runs**: `emb_viz`(UMAP 2D), `emb_viz_pca`(PCA 2D). `ds.list_brain_runs()` 로 확인. `points_field=None`(인덱스 미생성 — lasso 성능용 `create_index` 미적용, 정상).
 - **`detection_class` vs `normalized_class`**: 현재 prod 에선 사실상 **1:1 거의 중복**(`fallen person`→`fall` 하나만 다름, 나머지 fire/smoke/patient/person/none 동일). 이유: 2026-06-29 COCO 통합이 소스에서 유사어를 이미 병합 → normalize 가 할 일이 거의 사라짐. `normalized_class` 는 **새 SAM3 run 의 유사어 재발(통합은 일회성 백필)에 대한 정규화 안전망**으로 잔존 가치.
@@ -180,7 +180,7 @@ Saved View 는 단일 선택이라 union 불가. 임의 조합은 **MatchTags �
 > 색을 카테고리에 써야 하므로, 프로젝트 제한은 ①(뷰)이 담당. "Color by project + 범례"는 색을 project 가 차지해 카테고리를 못 보므로 이 목적엔 부적합.
 
 ### 5.6 기타
-- **텍스트→이미지 검색**: Streamlit 대시보드(:8503) "텍스트 검색" 탭(pgvector, Vertex KO→EN 번역). FiftyOne App 네이티브 텍스트검색은 별도 brain run 필요(현 frames 미빌드).
+- **텍스트→이미지 검색**: Streamlit 대시보드(:8503) "텍스트 검색" 탭(pgvector, Vertex KO→EN 번역). FiftyOne App 네이티브 텍스트검색도 가용 — 정본 `frames` 에 `text_search` brain run 실재 (brain runs 4종: `emb_viz`/`emb_viz_pca`/`text_search`/`bank_margin_viz`, 2026-08-20 실측).
 - **이미지→이미지 유사**: FiftyOne "Sort by similarity"(img_sim brain run).
 - **lasso → 그리드**: 패널에서 영역 lasso → 그리드가 그 샘플로. 대용량 효율엔 `create_index` 권장(현재 미적용, 정상 동작).
 
@@ -199,7 +199,7 @@ Saved View 는 단일 선택이라 union 불가. 임의 조합은 **MatchTags �
 ## 7. 데이터셋 운영
 
 ### 7.1 풀 빌드 (전체 188K 재구축, OOM 방지 배치)
-`fiftyone_full_build.py` — 미디어 ThreadPool 병렬DL + 청크 add + 라벨 bulk `set_values` + UMAP 샘플-fit(5만)→배치 transform. 임시셋 `frames_full` 에 빌드 후 rename swap(다운타임 최소). 적재 수 조절 = env `FFB_DATASET`/`FIFTYONE_FRAMES_LIMIT`. UMAP 재개만 = `fiftyone_umap_only.py`. **dagster 무관, 앱만 relaunch**.
+`fiftyone_full_build.py` — 미디어 ThreadPool 병렬DL + 청크 add + 라벨 bulk `set_values` + UMAP 샘플-fit(5만)→배치 transform. ⚠️ `FFB_DATASET` 기본값(`frames`)은 정본 충돌 가드로 `SystemExit` — **`FFB_DATASET=frames_full` 명시 필수**. 적재 수 조절 = `FFB_LIMIT`(`FIFTYONE_FRAMES_LIMIT` 는 superseded 레거시 빌더 전용). rename swap 은 현행 코드에 없다 — 산출물은 `frames_full` 로 남고 `merge_frames_captions.py` 가 정본 `frames` 를 만든다. UMAP 재개만 = `fiftyone_umap_only.py`. **dagster 무관, 앱만 relaunch**.
 
 ### 7.2 라벨/프로젝트 갱신 (앱 재기동 불필요, in-place)
 - `refresh_frames_labels.py` (prod cron): SAM3 detection/카테고리 갱신 → FiftyOne `set_values`. COCO 통합 등 라벨 변경분 반영.

@@ -145,7 +145,17 @@ docker exec docker-analysis-1 fiftyone plugins list   # 확인
 ### `-prompts` 데이터셋의 임베딩 패널 (`user-image-embeddings`, 2026-08-14)
 
 플러그인 하나가 패널 **2개**를 등록한다 — `image_embeddings`(프레임 좌표, 크로스 데이터셋
-조인) + `sentence_embeddings`(현재 데이터셋의 문장 좌표). `-prompts` compare 워크스페이스는
+조인) + `sentence_embeddings`(현재 데이터셋의 문장 좌표).
+
+**문장 텍스트 = Postgres 019 정본 (2026-08-19~).** 패널 3종(compare/embeddings/image-embeddings
+— 로직은 byte-identical 사본, 한 곳을 고치면 셋 다 고칠 것)은 문장을 데이터셋 `text` 가 아니라
+DB 에서 읽는다:
+- 조인 = (`bank_version` 정규화, `gidx % 100000`) → `bank_sentences` → `image_embeddings(entity_type='prompt')`
+- 데이터셋 `text` 는 npz 파생 **폴백**이고 43.3%가 자리표시자다
+- **fail-closed 게이트 3종**(DB 보유 / 행수 일치 / 클래스 일치) — 하나라도 어긋나면 그 버전
+  전체가 폴백되고 출처·사유가 배너에 실린다 (조용한 폴백 금지)
+- kill-switch: `PROMPT_DB=off` (DB 장애 시 데이터셋 필드로 폴백)
+- DSN env 후보: `BANK_DB_DSN` → `DATAOPS_POSTGRES_DSN`(compose 가 주입) → `POSTGRES_DSN` → `DATABASE_URL` `-prompts` compare 워크스페이스는
 좌하=문장, 우=이미지다. 좌하를 네이티브 Embeddings 로 두면 brain key 를 매번 손으로 골라야
 하거나(비워둘 때) 60만 점 렌더로 Chrome 이 죽는데(지정할 때), 자체 패널은 층화 서브샘플
 20,000 점을 **6.4초에 자동으로** 그린다. 화면 총 렌더 점: 610,816 → 27,497.
@@ -166,7 +176,10 @@ docker exec docker-analysis-1 sh -c \
   'cd /data/fiftyone/datasets/__plugins__/user-image-embeddings && python __init__.py'  # selftest
 docker exec docker-analysis-1 python /workspace/fiftyone_app_setup.py workspace-compare
 ```
-- 의존성(`umap-learn`, `scikit-learn`, `fiftyone-brain`)은 이미지에 이미 포함.
+- 의존성(`umap-learn`, `scikit-learn`, `fiftyone-brain`, `psycopg2-binary`)은 이미지에 이미 포함.
+  Postgres 접속은 `BANK_DB_DSN`/`DATAOPS_POSTGRES_DSN`/`POSTGRES_DSN`/`DATABASE_URL` 중 먼저
+  설정된 값 — compose `x-analysis-env` 가 `DATAOPS_POSTGRES_DSN` 을 이미 주입한다.
+  `PROMPT_DB=off` 로 이 경로를 끄면 옛 npz 폴백으로 되돌아간다.
 
 ### 쓰는 법
 
@@ -261,14 +274,18 @@ embedding-service 로 임베딩해 `captions` 에 이미지 임베딩 필드를 
 
 | 데이터셋 | `embedding` | `emb_viz` 의 의미 |
 |---|---|---|
-| `captions` | **캡션 텍스트** 임베딩 (`entity_type='caption'`) | 텍스트 공간 지도 |
-| `frames` / `frames_full` | **이미지** 임베딩 (`entity_type='frame'`) | 이미지 공간 지도 |
+| `captions` (빌드 중간산출 — 현재 미실존) | **캡션 텍스트** 임베딩 (`entity_type='caption'`) | 텍스트 공간 지도 |
+| `frames_full` (빌드 중간산출 — 현재 미실존) | **이미지** 임베딩 (`entity_type='frame'`) | 이미지 공간 지도 |
+
+> ⚠️ 2026-08-19 개명 전에는 이미지 전용 `frames` 데이터셋도 있었다. 지금 `frames` 는
+> **아래 통합 데이터셋**(구 `frames_captions`)을 가리킨다 — 옛 문서/스크립트에서 'frames' 를
+> 보면 어느 쪽인지 날짜로 구분할 것.
 
 검증법(둘 다 PE-Core-L14-336 1024-d 공유 공간): 저장된 벡터와 그 샘플 caption 을
 `fp._embed_text()` 로 재임베딩해 cosine 을 보면 `captions` 는 **1.0000**,
 `frames_full` 은 **0.158** 이다. 이름만 같고 모달리티가 다르므로 혼동 주의.
 
-## frames_captions — 이미지+캡션 통합 데이터셋 (2026-07-28)
+## frames — 이미지+캡션 통합 데이터셋 (2026-07-28 빌드 / 2026-08-19 `frames_captions` 에서 개명)
 
 `frames_full`(이미지 187,994) + `captions`(텍스트 11,978) = **199,972 샘플**을 PE-Core 공유
 1024-d 공간에 union. `modality` 필드(`frame`/`caption`)로 구분한다.
@@ -419,6 +436,9 @@ top-1 로 이겼다면 그 프레임의 `cos_best_<그 클래스>` 가 곧 그 �
 > (`rank: bank=… camera=… top_n=… sort_by=… missing_classes=…`)이 provenance 에 자동 기록된다.
 > ⚠️ `winner_gidx_*` 는 구 표기(`v084`)와 신 표기(`v1084`)가 섞여 있고 gidx 오프셋 세대도 다르다 —
 > 필드명은 둘 다 탐색하고, 조인은 `gidx % GIDX_OFFSET` 으로 맞춘다(등식 조인은 조용히 0건이 된다).
+> ⚠️ 뱅크 문장 수가 `GIDX_OFFSET`(=100,000)을 넘으면 gidx 블록이 겹쳐 **다른 버전 문장으로의
+> 조용한 오귀속**이 되므로, 2026-08-19부터 로더가 그 자리에서 `SystemExit` 로 죽는다
+> (정확히 100,000행은 합법). 근본 해결은 OFFSET 증설 + 전량 재백필로 별건.
 
 ### 큐레이션 한 바퀴 (App → CSV → 벡터)
 
@@ -456,7 +476,8 @@ docker exec docker-analysis-1 python /workspace/prompt_geometry.py \
 | 데이터셋 | 버튼 | 상태 |
 |---|---|---|
 | `sourcei` (7,498) | 프로브 · 문장 생성 | ✅ probe 캐시 `v080` + `top_prompt_v1_0_8_0` + GT 4클래스. FP 는 적고(fire 6/smoke 0/falldown 27) **FN 이 많다**(smoke 1,117 · falldown 897 · fire 131) → 「미검출 줄이기」로 쓰는 데이터셋 |
-| `sourcei-prompts` (28,605) | 뱅크 버전 만들기 | ✅ **자리표시자 0** — 실문장 보유(v080 12,480 + v084 16,125). 큐레이션 온전 |
+| `sourcei-prompts` (603,318) | 뱅크 버전 만들기 | ⚠️ **자리표시자 261,244행(43.3%)** — 2026-08-11 재빌드가 27버전 문장을 `(텍스트 없음 #N)` 으로 덮었다. 2026-08-19부터 문장 텍스트 정본은 Postgres `bank_sentences` 이고 패널이 거기서 읽는다 — fail-closed 게이트 통과 21버전은 실문장, 거부 8버전은 자리표시자 폴백. **큐레이션은 게이트 통과 버전에서만 온전** |
+| `frames` (199,972 = 프레임 187,994 + 캡션 11,978) | 뱅크 채점 · 캡션 연동 | ⚠️ **GT 40행(전부 normal)** = 대부분 도메인 `tier=no_gt`. 21도메인 채점·리뷰큐 대상. `daynight`/`environment` 는 distinct 1(죽은 축) — 다른 데이터셋의 필터 목록을 복사하지 말 것 |
 | ~~`source-h`~~ / ~~`source-h-prompts`~~ | – | ⚠️ **2026-08-18 사용자 요청으로 데이터셋 자체가 삭제됨** (`bank_health.sh` 커밋 참조). GT 원장은 `sourceh_v2/work/ledger.jsonl` 에 잔존 — **재생성 금지.** 현재 유효 목록은 `bank_health.sh` 의 `DATASETS` 가 정본 |
 
 > ⚠️ **`resolve_placement` 는 절대 예외를 던지면 안 된다.** `ctx.dataset` 이 `None` 인 시점에도
@@ -473,7 +494,7 @@ docker exec docker-analysis-1 python /workspace/prompt_geometry.py \
 ## 스크립트 지도 — 어느 데이터셋이 어디서 나오는가
 
 README 본문은 여러 데이터셋을 전제로 설명하는데, 그것들을 **만드는** 스크립트가 정리돼 있지
-않으면 재현이 불가능하다. 진입점은 다음 4개다.
+않으면 재현이 불가능하다. 진입점은 다음 8개다.
 
 | 스크립트 | 만드는 것 | 스테이지 | 비고 |
 |---|---|---|---|
@@ -481,23 +502,33 @@ README 본문은 여러 데이터셋을 전제로 설명하는데, 그것들을 
 | `frames_eval.py` | 프레임 단위 재라벨 데이터셋 | `scan` `copy` `angle` `embed` `score` `build` `report` `all` | `--limit` 지원 |
 | `bank_eval.sh` | 뱅크 **버전 비교** 원커맨드 | `analyze`→`gap`→`flips`→`prune`→`atlas`→`viz`→`guide`→`slim`→`report` | **순서 고정** — 앞 단계 산출을 뒤가 읽는다 |
 | `ablate_fields.py` | 절/구/단어 절제 측정 | – | env `AB_PROFILE` `AB_TOPN` `AB_WORDS` `AB_RETRY`. `user-prompt-probe` 와 지표 정의를 공유 |
+| `frames_bank_eval.sh` | 21도메인 뱅크 채점 사이클 | `ledger`→`gtsync`→`score`→`report` | 상세는 아래 「frames 프롬프트 뱅크 평가」 절 |
+| `caption_prompt_link.py` | 캡션 11,978 ↔ 뱅크 문장 양방향 연동 | `link`(최근접 top1~3 + `cap_prompt_gidx_r1`) `enrich-prompts`(`-prompts` 에 캡션 편입 + `emb_viz_cap`) | 기본 dry-run, `--apply`. 벡터 정본 = 데이터셋 `caption_embedding`(영어) — pgvector `entity_type='caption'` 은 한국어 붕괴본이라 폴백 시 경고+기록 |
+| `prompt_bank_load.py` | 뱅크 원장 → Postgres 019 적재 + 문장 벡터 흡수 | `load` `embed` `verify` | **패널 문장 정본의 적재·검증 경로**(88a3c5c~). `verify` = 적재 정합 4종 + 벡터 귀속 감사(문장 지문↔벡터 해시 1:1), 위반은 fail-soft(리포트만) |
+| `prompts_ws_setup.py` | `<X>-prompts` 에 `compare` 워크스페이스를 살아있는 원본에서 미러 | – | `workspace-compare`(코드 재생성)와 목적이 다름 — 이쪽은 원본 복제. 멱등 |
 
 - `bank_eval.sh` 사용례: `./docker/analysis/bank_eval.sh <기준버전> <신버전> [신버전 CSV경로]`
 - `bank_eval.sh` 의 `flips`/`prune` 단계가 만드는 뷰(`30_fixed`/`31_broken`)와 산출물
   `prompt_authoring_guide.md` 는 개별 스테이지만 돌리면 생기지 않는다 — 버전 비교는 래퍼로 돌릴 것.
 
-## frames_captions 프롬프트 뱅크 평가 (frames_bank_eval.sh)
+## frames 프롬프트 뱅크 평가 (frames_bank_eval.sh)
 
 - 전체 사이클: `./docker/analysis/frames_bank_eval.sh` — 매핑이 비어 있으면 0단계(스탬프만)로
-  정직하게 끝난다. **2026-08-18 기준 `fire_smoke` 도메인(bank_a=v1.0.8.0, bank_b=v1.0.8.4)은
-  이미 시드되어 0단계를 넘어 동작한다** — 아래 시드 절차는 추가 도메인을 열 때만 필요하다.
-  도메인을 열려면 `bank_domain_map.yaml` 의 `domains:` 를 노션
-  "프롬프트 버전/관리 체계 구축" 페이지 기준으로 시드하고 뱅크 CSV 를 `--bank` 로 등록.
+  정직하게 끝난다. **2026-08-19 기준 `bank_domain_map.yaml` 은 전 project(21개 도메인)로
+  확장 시드되어 전부 채점이 돈다**(전부 동일 쌍 bank_a=v1.0.8.0 / bank_b=v1.0.8.4) —
+  시드 절차는 이후 새 project 가 들어올 때만 필요하다.
+  ⚠️ **'시드됨' ≠ '숫자를 인용할 수 있음'** — GT 는 아직 40행(전부 normal)뿐이라 대부분
+  도메인의 `tier` 는 `no_gt`/`counts_only` 다 (min-n tier 절 참조).
+  도메인 목록·뱅크 배정의 정본은 문서가 아니라 `bank_domain_map.yaml` 자체다.
+  도메인을 열려면 `domains:` 를 노션 "프롬프트 버전/관리 체계 구축" 페이지 기준으로
+  시드하고 뱅크 CSV 를 `--bank` 로 등록.
 - GT(LS finalized)가 늘었을 때: 재채점 불필요 —
   `frames_bank_ledger.py` → `gtsync` → `report` 만 재실행 (래퍼 주석 참조).
 - sourcej GT(patient/person)는 `class_crosswalk` 에 사상을 등재해야 GT 축에 편입된다.
-- ⚠️ `slim` 스테이지는 source-h 전용(코드 가드 있음). frames_captions 의 필드 정리는 수동으로만.
-- 산출: FiftyOne 필드 6개(bank_*), 뷰 `bank: <도메인> scored/shifted/review-queue`,
+- ⚠️ `slim` 스테이지는 source-h 전용(코드 가드 있음). `frames` 의 필드 정리는 수동으로만.
+- 산출: FiftyOne 필드 6개(bank_*), 뷰 **도메인당 3개**(`bank: <도메인> scored/shifted/review-queue`
+  — 21도메인이면 최대 63개 저장뷰), 리뷰큐 **도메인당 상한 500**(최대 10,500건 + `<도메인>_queue.json` 21개).
+  도메인별 fail-forward — 한 도메인 실패해도 나머지는 계속 (실패는 `runs.jsonl` 기록),
   워크스페이스 `bank-eval`, 리포트 `/data/fiftyone/frames_bank/report/bank_eval_report.md`,
   런 원장 `/data/fiftyone/frames_bank/work/geometry/runs.jsonl`.
 
@@ -596,7 +627,7 @@ docker exec docker-analysis-1 nice -n 10 python /workspace/prompt_geometry.py pr
 
 ```bash
 docker exec docker-analysis-1 python /workspace/prompt_geometry.py attrs        # sourceh
-BANK_PROFILE=frames docker exec ... python /workspace/prompt_geometry.py attrs  # frames_captions
+BANK_PROFILE=frames docker exec ... python /workspace/prompt_geometry.py attrs  # 데이터셋 `frames`
 ```
 
 - 기존 프레임 임베딩 + `/embed_text` 프로브만 쓴다 (새 모델·GPU 불필요). 축을 늘리려면
@@ -696,7 +727,9 @@ BANK_A=v1.0.8.0 BANK_B=v1.0.8.0 ... prompt_geometry.py attach --profile sourcei
 - 프레임 필드 `wave_gain`/`wave_role`은 승자 문장 값의 **복사본**이다(실측 15/15 표본 바이트 일치,
   `winner_gidx_v080`↔`gidx` 조인) — 원 산출은 컨테이너 라이브 `/workspace/prompt_geometry.py:2523-2524`
   (`stage_promptmap`, 문장 단위 LOO gain), 프레임 복사는 git 미추적 1회성 스크립트
-  `/tmp/symmetric.py:85`가 수행. 분석/Panel 은 `sourcei-prompts` 쪽 필드를 정본으로 읽을 것.
+  `/tmp/symmetric.py:85`가 수행. 분석/Panel 은 `wave_gain`/`wave_role` 에 대해서는 `<DS>-prompts`
+  쪽 필드를 정본으로 읽을 것. ⚠️ **문장 텍스트는 예외** — 2026-08-19부터 패널은 Postgres
+  `bank_sentences` 를 정본으로 읽고 데이터셋 `text` 는 폴백이다(위 임베딩 패널 절 참조).
 - ⚠️ 이 worktree의 `docker/analysis/prompt_geometry.py`(git HEAD)는 `stage_wave`/`stage_promptmap`
   자체가 없는 별개 버전이다(`git log --all` 에도 부재) — 위 두 스테이지는 컨테이너 `/workspace`에만
   존재하는 git-미추적 코드이므로, 이 필드들의 grep 근거는 반드시 라이브 컨테이너 경로여야 한다.
@@ -705,16 +738,25 @@ BANK_A=v1.0.8.0 BANK_B=v1.0.8.0 ... prompt_geometry.py attach --profile sourcei
 
 정본 `docker/analysis/fiftyone_app_setup.py` (git). 배포·실행:
 
+서브커맨드는 아래 4개 외에 5개가 더 있다 (총 9): `dump <ds>` / `restore <file>` /
+`slots <ds> [--apply]` / `filters <ds> [--apply] [--slots A,B]` / (아래 4개).
+⚠️ **`filters --apply` 는 공유 호스트의 App 화면을 바꾼다** — 적용 전에 고지하고 `dump` 를
+먼저 받아둘 것(기본 dry-run). 그리고 `prompt_geometry` 의 `stage_viz_frames` 와 **순서 의존** —
+viz 를 먼저, `filters --apply` 를 나중에 (역순이면 판정 그룹이 비고 `bank_*` 가 접힌 뱅크
+그룹으로 끌려간다). `filters` 는 실측 선정된 `CURATED_DATASETS`(현재 2개)만 허용.
+
 ```bash
 # (bind mount 라 복사 불필요)
 docker exec docker-analysis-1 python /workspace/fiftyone_app_setup.py selftest              # 팔레트 위생 검사
-docker exec docker-analysis-1 python /workspace/fiftyone_app_setup.py colors [ds1,ds2,...]   # 기본: sourcei,sourcei-prompts,source-h,source-h-prompts
+docker exec docker-analysis-1 python /workspace/fiftyone_app_setup.py colors [ds1,ds2,...]   # 기본 5개(코드 DEFAULT_DATASETS) — 그중 삭제된 2개는 "skip (없음)" 으로 지나간다(에러 아님). 96d91e1 이 frames 추가. 실제 목록: sourcei,sourcei-prompts,source-h,source-h-prompts
 docker exec docker-analysis-1 python /workspace/fiftyone_app_setup.py workspace              # sourcei: rules (Samples | Embeddings, rule_cross 불일치)
 docker exec docker-analysis-1 python /workspace/fiftyone_app_setup.py workspace-compare       # sourcei: compare (Samples | Embeddings | Prompt Compare, H1)
 ```
 
-컨테이너 recreate 시 `/workspace` 는 매번 소실되므로(위 "운영 주의" 절 참고) 재배포 후 위 4개
-명령을 다시 실행해야 한다.
+`/workspace` 는 bind mount 라 recreate 에도 남고, 위 명령의 산출물(`app_config.color_scheme`·
+저장 워크스페이스)은 `fiftyone-mongo` 영속 볼륨에 있다 — **재배포 후 재실행은 불필요.**
+재실행이 필요한 경우는 둘뿐: (a) 누군가 App UI 의 "Save as default" 로 색을 덮었을 때,
+(b) `docker/data/` 를 밀어 mongo 볼륨이 사라졌을 때.
 
 - **색상 스킴(R3)**: `CLASS_COLORS`(Okabe-Ito 색맹 안전 팔레트 기반) 를 전 데이터셋에 고정 적용.
   ⚠️ **App UI("Color settings" → 필드/값 색 수동 조정)로 바꾼 색은 기본적으로 세션 한정이며,
@@ -729,16 +771,19 @@ docker exec docker-analysis-1 python /workspace/fiftyone_app_setup.py workspace-
 
 ### user-prompt-compare — 교차 데이터셋 비교 패널 (2026-08)
 
+- **문장 해석 정본 = Postgres (2026-08-19, 88a3c5c~)** — npz 간접 참조는 은퇴. DSN env 필요
+  (compose 가 `DATAOPS_POSTGRES_DSN` 주입), fail-closed 게이트 3종 통과 시 DB 문장, 위반
+  버전은 통째 폴백 + 배너에 출처/사유 표기. kill-switch `PROMPT_DB=off`. 동일 로직이
+  user-embeddings/user-image-embeddings 에 byte-identical 사본 — 한 곳 고치면 셋 다.
 - 정본 `docker/analysis/plugins/user-prompt-compare/` → 배포:
   (bind mount 라 복사 불필요 — 디렉토리 touch 만으로 캐시가 무효화된다)
 - 워크스페이스 `compare`(sourcei): Samples | Embeddings | Prompt Compare 3-패널(H1 확정안).
   모드 A=프레임↔문장(argmax_k1 조인, dist_iou 모드는 클릭 무효), 모드 B=같은
-  데이터셋 그룹 overlay(frames_captions에서 project 비교).
+  데이터셋 그룹 overlay(`frames` 에서 project 비교).
 - selftest(조인 불변식 3개): `docker exec docker-analysis-1 python /data/fiftyone/datasets/__plugins__/user-prompt-compare/__init__.py`
   — FiftyOne 업그레이드 전 필수 게이트. 실패 시 producer drift 의심.
 - 색상/워크스페이스 재설정: `python /workspace/fiftyone_app_setup.py colors|workspace|workspace-compare|workspace-fix`
   (`workspace-fix` = 전 데이터셋 워크스페이스 일괄 정규화 — Space>Panel 래핑/active_child=None 레거시가 빈 화면을 만든다. 멱등)
-  (컨테이너 recreate 후 재실행 필요 — 이 디렉토리 전체가 그렇듯)
 - **브라우저 검증**(2026-08-07, playwright): 워크스페이스 선택기의 기본 목록은 최근 항목만
   보여준다 — 새로 저장한 워크스페이스(`compare`)가 목록에 안 보이면 F5 로도 해결 안 되고,
   선택기의 "Search workspaces.." 검색창에 이름을 직접 타이핑해야 나온다(서버 조회는 정상,

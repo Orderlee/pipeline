@@ -245,12 +245,28 @@ def stage_embed(limit: int | None) -> None:
     led = jsonl_load(f"{WORK_DIR}/ledger.jsonl")
     path = f"{WORK_DIR}/embed.npz"
     cache: dict[str, np.ndarray] = {}
+    csize: dict[str, int] = {}
     if os.path.exists(path):
         d = np.load(path, allow_pickle=True)
         cache = {str(k): v for k, v in zip(d["key"], d["vec"])}
+        # 크기 교차검증 — stage_scan(177)·stage_copy(213) 은 size 변화를 보는데 여기만 못 봤다.
+        # 업로드 중이거나 재업로드된 프레임이 임베딩 후 바뀌면 `k not in cache` 가 영원히 False 라
+        # filepath 는 새 이미지, vec 은 옛 이미지가 되어 score/margin 이 조용히 틀린다.
+        if "size" in d.files:
+            csize = {str(k): int(z) for k, z in zip(d["key"], d["size"])}
+        elif cache:
+            # 구 캐시엔 size 축이 없어 소급 검증이 불가능하다. 전량 재임베딩은 실측상 대가가 크므로
+            # (frames_bank 187,994 / sourceh_v2 13,144 / sourcei 7,498 = 20만건 ≈ 29건/s → 2시간 GPU)
+            # 기본값으로 두지 않는다 — 현재 원장 크기를 채택하고 미검증 건수를 크게 남긴다.
+            # 강제 재검증이 필요하면 embed.npz 를 지우면 된다 (별도 플래그 불필요).
+            csize = {k: int(r["size"]) for k, r in led.items() if k in cache}
+            log(f"embed: 구 캐시 {len(cache):,}건은 size 축이 없어 **미검증 채택** "
+                f"— 이후 크기 변화는 잡힌다. 강제 재검증은 {path} 삭제")
     todo = [
         r for k, r in led.items()
-        if k not in cache and os.path.exists(os.path.join(FRAME_DIR, r["folder"], r["name"]))
+        # size 미상(구 캐시)은 -1 로 남아 있어 아래 비교에서 항상 불일치 → 재임베딩으로 해소된다.
+        if (k not in cache or csize.get(k, -1) != r["size"])
+        and os.path.exists(os.path.join(FRAME_DIR, r["folder"], r["name"]))
     ]
     if limit:
         todo = todo[:limit]
@@ -270,6 +286,7 @@ def stage_embed(limit: int | None) -> None:
             v = np.asarray(resp.json()["vector"], dtype=np.float32)
             nrm = float(np.linalg.norm(v))
             cache[r["key"]] = v / nrm if nrm > 0 else v
+            csize[r["key"]] = int(r["size"])   # 임베딩 시점의 바이트 크기를 같이 박제
             ok += 1
         except Exception as exc:  # noqa: BLE001
             err += 1
@@ -279,7 +296,8 @@ def stage_embed(limit: int | None) -> None:
             log(f"embed: {i}/{len(todo)} ({time.time() - t0:.0f}s)")
     keys = list(cache)
     np.savez_compressed(path, key=np.array(keys, dtype=object),
-                        vec=np.stack([cache[k] for k in keys]))
+                        vec=np.stack([cache[k] for k in keys]),
+                        size=np.array([csize.get(k, -1) for k in keys], dtype=np.int64))
     log(f"embed 완료: ok={ok} err={err} → 총 {len(cache)} 벡터")
 
 

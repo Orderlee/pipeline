@@ -12,6 +12,8 @@
   restore <file>         덤프 되돌리기
   slots <ds> [--apply]   규칙별 예측 슬롯 `pred_<rule>_<a|b>` 생성 — **유일하게 필드를 쓴다**
   filters <ds> [--apply] 사이드바 그룹 + active_fields + 저장뷰 생성 (설정 전용, dry-run 기본)
+                         필터 목록은 **데이터셋별 실측**으로 고른다 — `CURATED_DATASETS`
+                         (현재 sourcei / frames). 없는 데이터셋은 거부한다 (스펙 §4-4, §6).
 
 ⚠️ `filters` 는 **공유 호스트의 App 화면을 바꾼다**. 다른 세션이 같은 데이터셋을 보고
    있을 수 있으므로 `--apply` 전에 고지하고, `dump` 를 먼저 받아둘 것.
@@ -36,11 +38,15 @@ CLASS_COLORS = {
     "none":     "#BBBBBB",
 }
 
-DEFAULT_DATASETS = ["sourcei", "sourcei-prompts", "source-h", "source-h-prompts"]
+DEFAULT_DATASETS = ["sourcei", "sourcei-prompts", "source-h", "source-h-prompts", "frames"]
 # 클래스 값을 담는 필드 후보 중 **버전과 무관한** 것. 버전 접미 필드는 아래
 # class_field_candidates() 가 bank_run.slots 에서 파생한다 (구: pred_v1_0_8_0 /
 # wave_pred_v1_0_8_0 하드코딩 — 비교쌍이 바뀔 때마다 손으로 고쳐야 했다. 스펙 §1-4 5번).
-CLASS_FIELD_BASE = ["ground_truth", "category", "event_kind", "attached_bank"]
+# `bank_pred`/`cap_prompt_cls_r1` 은 frames 의 클래스 필드(normal/falldown/fire/smoke).
+# sourcei 스키마에 없으므로(2026-08-19 실측) 여기 추가해도 sourcei 색은 안 변한다 —
+# 목적은 "클래스 고정색은 전 데이터셋 동일"(스펙 §4 0-1) 을 frames 에도 적용하는 것.
+CLASS_FIELD_BASE = ["ground_truth", "category", "event_kind", "attached_bank",
+                    "bank_pred", "cap_prompt_cls_r1"]
 
 # ── 분석 필터 세트 (스펙 §4-5) ───────────────────────────────────────────────
 # `{A}`/`{B}` = `ds.info["bank_run"]["slots"]` 의 비교쌍. 실행 시 스키마에서 해석한다.
@@ -92,12 +98,68 @@ DUMP_SUBPATH_KEEP = ("label",)
 # 안 박혀 있는 것. 여기 없는 필드로 색칠하려면 App 사이드바에서 켜면 된다.
 # ⚠️ 숫자 필드는 넣지 말 것 — 카드마다 값이 찍혀 그리드가 난잡해진다 (2026-08-14 피드백).
 ACTIVE_EXTRA = ("camera",)
+
+# ── frames (구 frames_captions) — 2026-08-19 실측 선정 ────────────────────────
 # ⚠️ 위 FILTER_GROUPS 는 **sourcei 실측**으로 고른 목록이다. 분별력은 데이터의 성질이지
-#    코드의 성질이 아니다 — `daynight` 은 sourcei 에선 night 27% 로 살아있지만 source-h 은
-#    야간 프레임이 0장이라 죽은 축이고, 반대로 source-h 의 워크플로(flip 검수·사분면·프롬프트
-#    품질·gap)에 필요한 축은 여기 없다. 다른 데이터셋에 그대로 쓰면 **틀린 화면**이 된다.
+#    코드의 성질이 아니다 — `daynight` 은 sourcei 에선 night 27% 로 살아있지만 frames 는
+#    distinct 1(`none` 187,994/187,994)로 죽은 축이다. 아래 목록은 그 반대 방향의 증거다.
 #    새 데이터셋은 스펙 §4-4 의 분별력 측정을 먼저 돌리고 목록을 다시 고를 것 (스펙 §6).
-CURATED_DATASETS = {"sourcei"}
+#
+# 이 데이터셋의 분석 목적 (sourcei 의 "FP 스트레스" 자리에 오는 것):
+#   frames 는 **GT 가 없다** (`bank_gt` 40/187,994 = null 100.0%, 전부 normal —
+#   `caption_prompt_link.gt_tier="no_gt"`, `site_run.gt_tier="exploratory"`).
+#   따라서 질문은 "뱅크가 맞았나" 가 아니라 **"뱅크 v1.0.8.0 → v1.0.8.4 교체가
+#   21개 프로젝트 중 어디서 무엇을 바꿨고, 그 근거 문장이 얼마나 일반적인가"** 다.
+#   → ① 은 GT 앵커 없이 뱅크 자신의 산출(P5)만으로 구성된다.
+#
+# 측정 (분모를 모달리티로 가름 — frame 187,994 / caption 11,978. 전체 199,972 으로 재면
+# 캡션 필드가 일괄 null 94% 로 보여 전멸한다):
+#   채택  project 21/39.0% · modality 2/94.0%(구조축, 아래 참고) · bank_pred 4/80.2%
+#         · bank_shift 11/84.4% · runner_up 4/49.4% · close_call 5/25.0%
+#         · winner_site_scope 3/78.0% · winner_n_sites 13/15.2%
+#         · caption_cluster 12/17.3% · hdbscan_cluster 102/57.8% · caption_img_sim_bin 6/40.9%
+#         · normalized_class 6/59.9%(P5 — 별도 그룹) · detections 5/88.9%(P5)
+#   축출  daynight·environment distinct 1 / attached_bank·cap_prompt_bank distinct 1
+#         / has_keyframe distinct 1 / bank_gt null 100% / bank_gap null 90.0%
+#         / pred_v1_0_8_0 top1 91.9%(+P3: bank_shift 가 A→B 를 이미 담는다)
+#         / cap_prompt_cls_r1 top1 95.3% / detection_class ≡ normalized_class (P3, 1:1 대응)
+#         / bank_domain ≡ project (P3, 21값 1:1 — `-`→`_` sanitize 차이뿐)
+#         / bank_decision_margin·cos_best_*·caption_img_sim·cap_prompt_cos_* 연속값(P4)
+#         / image_id·entity_id·minio_key·asset_id·winner_gidx_* 키·조인축
+#         / caption(CAP 6,999)·caption_en·top_prompt_*·cap_prompt_r* 고카디널리티
+#
+# `modality` 는 top1 94.0% 로 P1 컷(90%)을 넘지만 **예외 채택**한다. P1 의 취지는 "데이터를
+# 안 가르는 축을 빼라" 인데 이 축은 반대로 **나머지 전 필드의 분모를 정의하는 축**이다
+# (설계문서 2026-07-31 §3: "`modality=='frame'` 필터 필수"). 이 축이 없으면 ③ 캡션 그룹의
+# 필드가 전부 "null 94%" 로 오독된다.
+#
+# ⚠️ `prompt_geometry.stage_viz_frames` → `_sidebar_bank_group()` 과 **순서 의존**이 있다.
+#    그쪽은 `bank_*` 6필드를 다른 그룹에서 빼내 접힌 `⑥ 프롬프트뱅크` 로 몰아넣는다.
+#    `filters --apply` 뒤에 stage_viz_frames 를 돌리면 ① 판정이 비고 bank_pred/bank_shift 가
+#    ⑥ 으로 끌려간다. **stage_viz_frames 를 먼저, `filters --apply` 를 나중에** 돌릴 것
+#    (둘 다 설정 전용·멱등이라 복구는 `filters --apply` 재실행이면 끝난다).
+FRAMES_FILTER_GROUPS = [
+    ("① 판정 (뱅크 채점 A→B)", True, ["bank_pred", "bank_shift"]),
+    ("② 층화", True, ["project", "modality"]),
+    # ③ 은 **접는다** — 캡션 전용 축이라 기본 화면(94% 가 프레임)에서 펼치면
+    #    빈 위젯 3개가 상시 노출된다. 분모는 `modality` 필터로 좁힌 뒤 펼쳐 쓴다.
+    ("③ 캡션 (분모 11,978)", False, ["caption_cluster", "hdbscan_cluster",
+                                     "caption_img_sim_bin", "caption", "caption_en"]),
+    # ④ 는 전부 argmax_k1 스테이지 산출(= `attached_bank` 가 말하는 v1.0.8.0)이다.
+    #    ① 의 bank_* 는 score 스테이지(A=v1.0.8.0, B=v1.0.8.4)라 **출처가 다르다** —
+    #    그래서 한 그룹에 섞지 않는다 (sourcei 는 `pred_wave_a` 의 description 이 출처를
+    #    말해주지만 frames 에는 슬롯 필드가 없다).
+    ("④ 근거·심각도", True, ["close_call", "runner_up",
+                             "winner_site_scope", "winner_n_sites"]),
+    # ⑤ P5 — SAM3 weak 라벨이라 **판정 앵커가 아니다** (`prompt_geometry.WEAK_TO_BANK`
+    #    주석: "weak concordance (참고 신호 — recall 아님)"). 그래도 지우지 않는다:
+    #    GT 0 인 이 데이터셋에서 "SAM3 는 fire 를 봤는데 뱅크는 normal" 은 사람 검수
+    #    후보를 고르는 축이다 (sourcei 가 SAM3 박스에서 뽑은 person_count_bin 을 층화로
+    #    살려둔 것과 같은 취급). 그룹명이 앵커가 아님을 화면에서 말한다.
+    ("⑤ 약라벨 (SAM3 · 앵커 아님)", False, ["normalized_class", "detections"]),
+]
+# 데이터셋 → 필터 세트. **여기 없는 데이터셋에는 `filters` 가 동작하지 않는다** (--force 예외).
+CURATED_DATASETS = {"sourcei": FILTER_GROUPS, "frames": FRAMES_FILTER_GROUPS}
 # 버전 접미사 — 세 세대 모두. `prompt_scores_export.suffixes()` 와 같은 규칙 (스펙 §3 D7).
 VER_RE = re.compile(r"_(v\d+(?:_\d+)*(?:-[\w.]+)?)(?=$|\.)")
 # `exclude_fields` 가 거부하는 FiftyOne 기본 필드 — 제외 목록에서 빼야 한다.
@@ -226,12 +288,33 @@ def _compare_space(fo, ds):
       로드 시 한 번도 실행되지 않아 "클릭해야 나온다" 증상 (task-11-report.md).
     """
     samples_panel = fo.Panel(type="Samples", pinned=True)
-    has_pair = (not ds.name.endswith("-prompts")) \
-        and fo.dataset_exists(f"{ds.name}-prompts")
+    is_prompts = ds.name.endswith("-prompts")
+    has_pair = (not is_prompts) and fo.dataset_exists(f"{ds.name}-prompts")
+    if not is_prompts and not has_pair:
+        # ponytail: 프레임 데이터셋인데 짝(`<name>-prompts`)이 아직 없는 세 번째 경우.
+        # 예전엔 `has_pair=False` 하나로 "-prompts 데이터셋"과 뭉뚱그려져 조용히 아래
+        # else 분기(sentence_embeddings + image_embeddings)로 떨어졌다. 그 두 패널은
+        # 짝 데이터셋에서 문장을 읽으므로 짝이 없으면 빈 화면이 된다 — 크래시가 아니라
+        # 조용한 오답. 2026-08-19 `frames` 가 정확히 이 경로였다(`frames-prompts` 생성
+        # 전에 compare 를 저장 → 짝이 생긴 뒤에도 재생성되지 않아 -prompts 레이아웃이
+        # 그대로 남아 사용자가 "prompt compare 가 안 나온다"고 보고).
+        raise ValueError(
+            f"{ds.name}: 짝 데이터셋 '{ds.name}-prompts' 가 없어 compare 를 만들 수 없다 "
+            f"(먼저 짝을 만든 뒤 다시 실행할 것)"
+        )
     if has_pair:
-        # 프레임 데이터셋의 emb_viz = 이미지 좌표 (sourcei 7,498 · source-h 13,144) — 가볍다.
-        embeddings_panel = fo.Panel(type="Embeddings",
-                                    state=dict(brainResult="emb_viz"))
+        # 프레임 데이터셋의 emb_viz = 이미지 좌표. 예전엔 네이티브 Embeddings 를 썼다
+        # ("sourcei 7,498 은 가볍다"). `frames` 199,972 에서 그 전제가 깨졌다 — 실측:
+        #   네이티브 /embeddings/plot 응답  frames 32,311,857 B  vs  sourcei 1,213,389 B
+        #   (점당 165 B. id 와 sample_id 가 같은 값인데 둘 다 나가고 selected 는 전부 true)
+        # 서버는 1.4초뿐이고 나머지가 전송+JSON.parse(32MB)+20만 점 WebGL 이라 완전 로드에
+        # 35~150초가 걸렸다(브라우저 캡처 실측). 자체 패널은 MAX_POINTS=20,000 층화
+        # 서브샘플이라 같은 화면을 훨씬 싸게 그린다 — 실측 figJSON frames 2.66 MB(12.1배
+        # 축소) / sourcei 1.02 MB. sourcei 는 7,498 < 20,000 이라 여전히 **전량** 그려서
+        # 잃는 게 없다. 그래서 크기 분기 없이 양쪽 다 이 패널을 쓴다.
+        # ⚠️ 짝: user-image-embeddings 의 lasso 는 `use_extended_selection=True` 여야
+        #    우측 user_prompt_compare 가 반응한다 (그 파일 _apply_selection 주석 참고).
+        embeddings_panel = fo.Panel(type="image_embeddings")
     else:
         # ⚠️ `-prompts` 의 emb_viz 는 **문장** 좌표라 603,318 점이다. 네이티브 Embeddings 는
         #    ⓐ brainResult 를 비워두면 매번 손으로 brain key 를 골라야 하고("일일이 선택해야
@@ -283,7 +366,11 @@ def cmd_workspace_compare(dataset_names=None):
         if "emb_viz" not in ds.list_brain_runs():
             print(f"skip (emb_viz 없음): {name}")
             continue
-        space, desc = _compare_space(fo, ds)
+        try:
+            space, desc = _compare_space(fo, ds)
+        except ValueError as e:  # 짝 없는 프레임 데이터셋 — 조용히 틀린 레이아웃 대신 skip
+            print(f"skip ({e})")
+            continue
         ds.save_workspace("compare", space, description=desc, overwrite=True)
         assert "compare" in ds.list_workspaces()
         print(f"{name}: workspace 'compare' 저장 완료 ({desc})")
@@ -393,6 +480,30 @@ def _is_categorical(ds, path):
     return isinstance(f, (fo.EmbeddedDocumentField, fo.StringField))
 
 
+# `active_fields` 는 **그리드 카드 표시** 목록이기도 하다. 문자열이라도 고유값이 많으면
+# 카드마다 자유 텍스트가 박혀 숫자 필드와 똑같은 문제를 만든다 — 2026-08-14 "samples 아래가
+# 왜 변했냐" 피드백의 문자열판이다. frames 배선(2026-08-19)에서 실제로 걸렸다:
+# `caption`(고유 7,000) / `caption_en`(6,077) 을 모달 표시용으로 keep 하니 그리드까지 따라왔다.
+# 상한은 sourcei 의 `src_video`(109) 가 살아남는 선.
+ACTIVE_MAX_DISTINCT = 200
+
+
+def _is_low_card(ds, path):
+    """Color-by·카드 표시로 감당되는 고유값 수인가 (문자열만 측정, 나머지는 통과).
+
+    측정 실패는 **fail-closed**(제외)다. 표시에서 빠질 뿐이고, "Color-by 대상이
+    allowlist 밖이면 App 이 죽는다" 는 위험은 워크스페이스 색 루트를 무조건 넣는
+    쪽에서 이미 막는다.
+    """
+    import fiftyone as fo
+    if not isinstance(ds.get_field(path), fo.StringField):
+        return True
+    try:
+        return len(ds.distinct(path)) <= ACTIVE_MAX_DISTINCT
+    except Exception:  # noqa: BLE001 — 집계 실패한 필드를 그리드에 얹을 이유가 없다
+        return False
+
+
 def _workspace_color_roots(ds):
     """저장된 워크스페이스가 Color by 로 쓰는 필드 루트.
 
@@ -421,11 +532,17 @@ def _workspace_color_roots(ds):
     return roots
 
 
-def build_filter_plan(ds, slots=None):
-    """사이드바 그룹 · active_fields · 뷰 제외목록을 계산한다 (저장하지 않음)."""
+def build_filter_plan(ds, slots=None, filter_groups=None):
+    """사이드바 그룹 · active_fields · 뷰 제외목록을 계산한다 (저장하지 않음).
+
+    필터 세트는 **데이터셋별**이다 (`CURATED_DATASETS`). 목록이 없는 데이터셋에
+    sourcei 목록을 적용하면 틀린 화면이 되므로 `cmd_filters` 가 먼저 막는다 —
+    여기서의 폴백은 `--force` 로 그 가드를 뚫고 들어온 경우뿐이다.
+    """
     import fiftyone as fo
 
     slots = slots or read_slots(ds)
+    filter_groups = filter_groups or CURATED_DATASETS.get(ds.name) or FILTER_GROUPS
     schema = ds.get_field_schema()
     universe_raw = list(ds.get_field_schema(flat=True))
 
@@ -447,7 +564,7 @@ def build_filter_plan(ds, slots=None):
     universe = [u for u in universe_raw if _usable(u)]
 
     groups, keep_top, unresolved = [], [], []
-    for name, expanded, tokens in FILTER_GROUPS:
+    for name, expanded, tokens in filter_groups:
         paths = []
         for t in tokens:
             f = _expand(t, schema, slots)
@@ -456,9 +573,16 @@ def build_filter_plan(ds, slots=None):
         subs = [s for s in sidebar_subpaths(paths, universe) if s not in paths]
         groups.append((name.format(A=slots[0], B=slots[1]), expanded, paths + subs))
 
+    # ⚠️ 덤프 그룹도 **1단 서브경로까지만** 담는다. `u.count(".") == 1` 이 없으면
+    #    `detections.detections.label` 같은 3단 경로가 `.label` 로 끝난다는 이유로
+    #    ⑧ 에 들어가고, 부모가 ListField(EmbeddedDocument) 라 모달을 여는 순간
+    #    `.map is not a function` 으로 App 이 죽는다 (`sidebar_subpaths` 와 같은 함정을
+    #    큐레이션 그룹에서만 막고 있었다). sourcei 는 `sam3` 삭제 후 Detections 필드가
+    #    없어 잠복해 있었고, frames 배선(2026-08-19)에서 드러났다.
     assigned = {p for _, _, ps in groups for p in ps}
     rest = [u for u in universe if u not in assigned
-            and ("." not in u or u.rsplit(".", 1)[-1] in DUMP_SUBPATH_KEEP)]
+            and ("." not in u or (u.count(".") == 1
+                                  and u.rsplit(".", 1)[-1] in DUMP_SUBPATH_KEEP))]
     noise = [u for u in rest if VER_RE.search(u)]
     other = [u for u in rest if u not in noise]
     groups.append((NOISE_GROUP, False, noise))
@@ -480,10 +604,12 @@ def build_filter_plan(ds, slots=None):
     # 타입으로 가르면 둘 다 안 생긴다.
     # 이미 켜져 있던 축은 **뺏지 않는다** — 누군가 그걸로 색칠하고 있었을 수 있고,
     # 목록에서 빠지면 그 순간 App 이 죽는다. 큐레이션은 더하는 쪽으로만 작동한다.
+    # 고유값 상한(`_is_low_card`)은 **새로 더하는 쪽에만** 건다. `prior` 에 걸면
+    # 이미 켜져 있던 축을 뺏게 되고, 그게 정확히 App 이 죽는 경로다.
     prior = list(getattr(ds.app_config.active_fields, "paths", None) or [])
     active = list(dict.fromkeys(
         _workspace_color_roots(ds)
-        + [p for p in keep_top if _is_categorical(ds, p)]
+        + [p for p in keep_top if _is_categorical(ds, p) and _is_low_card(ds, p)]
         + list(ACTIVE_EXTRA) + class_field_candidates(ds)
         + [p for p in prior if _is_categorical(ds, p)]))
     active = [p for p in active if p in schema]
@@ -528,11 +654,19 @@ def bank_order(prompts_name):
 
 
 def write_bank_run(ds, slots):
-    """M1 — 비교쌍 + 스키마 버전 태그 + **정본 뱅크 순서**를 기록."""
+    """M1 — 비교쌍 + 스키마 버전 태그 + **정본 뱅크 순서**를 기록.
+
+    ⚠️ **덮어쓰지 않고 병합**한다. `prompt_geometry.stage_score` 도 같은 키에 쓰는데
+    (`profile`/`domains`/`n_gt`/`total`), frames 의 라이브 값이 그 형태다. 통째로
+    replace 하면 채점 런의 출처가 사라지고, `dump` 는 `app_config` 만 담으므로
+    롤백도 안 된다. `prompt_bank_publish.sync-eval` 이 이 dict 를 그대로 MinIO 로
+    백업하는 소비자다 (2026-08-19 frames 배선 중 발견).
+    """
     tags = sorted({m.group(1) for m in
                    (VER_RE.search(f) for f in ds.get_field_schema()) if m})
     order = bank_order(f"{ds.name}-prompts")
-    ds.info["bank_run"] = {
+    merged = dict((ds.info or {}).get("bank_run") or {})
+    merged.update({
         "run_id": f"filters-{time.strftime('%Y%m%d-%H%M%S')}",
         "dataset": ds.name,
         "slots": {"a": slots[0], "b": slots[1]},
@@ -544,7 +678,8 @@ def write_bank_run(ds, slots):
         "gidx_max_used": max(order.get("headroom", {0: 0}).values(), default=0),
         "gidx_overflow": order.get("overflow", []),
         "ts": time.strftime("%Y-%m-%d %H:%M"),
-    }
+    })
+    ds.info["bank_run"] = merged
     ds.save()
     if order.get("overflow"):
         print(f"  ❌ gidx 블록 침범 — 문장 수가 GIDX_OFFSET({GIDX_OFFSET:,})을 넘은 뱅크: "
@@ -690,9 +825,10 @@ def cmd_filters(dataset_names, slots=None, apply=False, force=False):
             print(f"skip (없음): {name}")
             continue
         if name not in CURATED_DATASETS and not force:
-            print(f"skip ({name}): FILTER_GROUPS 는 sourcei 실측으로 고른 목록이라 다른 "
-                  f"데이터셋에 쓰면 틀린 화면이 된다. 스펙 §4-4 분별력 측정을 먼저 돌려 "
-                  f"목록을 다시 고르고 CURATED_DATASETS 에 추가할 것 (그래도 강행: --force)")
+            print(f"skip ({name}): 필터 목록은 **데이터셋별 실측**으로 고른 것이라 다른 "
+                  f"데이터셋에 쓰면 틀린 화면이 된다 (현재 큐레이션됨: "
+                  f"{', '.join(sorted(CURATED_DATASETS))}). 스펙 §4-4 분별력 측정을 먼저 "
+                  f"돌려 목록을 고르고 CURATED_DATASETS 에 추가할 것 (그래도 강행: --force)")
             continue
         ds = fo.load_dataset(name)
         plan = build_filter_plan(ds, slots)
@@ -779,6 +915,51 @@ def _selftest():
     core = [CLASS_COLORS[k] for k in ("fire", "smoke", "falldown", "normal")]
     assert len(set(core)) == 4
 
+    # ── compare 워크스페이스 3분기 (fo/ds 스텁 — fiftyone 불필요) ──
+    # 짝 없는 프레임 데이터셋이 조용히 -prompts 레이아웃으로 떨어지면 App 우측이 빈다.
+    class _P:
+        def __init__(self, type, **kw):
+            self.type = type
+            self.component_id = type
+
+    class _S:
+        def __init__(self, **kw):
+            self.__dict__.update(kw)
+            self.component_id = "s"
+
+    class _FO:
+        Panel = _P
+        Space = _S
+
+        def __init__(self, pairs):
+            self._pairs = pairs
+
+        def dataset_exists(self, n):
+            return n in self._pairs
+
+    class _DS:
+        def __init__(self, name):
+            self.name = name
+
+    def _leaf_types(sp):
+        return [c.type if isinstance(c, _P) else _leaf_types(c) for c in sp.children]
+
+    # ① 짝 있는 프레임 데이터셋 → 자체 image_embeddings(≤20k) + Prompt Compare.
+    #    네이티브 Embeddings 로 되돌리면 199,972점에서 32MB 를 브라우저로 밀어낸다.
+    sp, _ = _compare_space(_FO({"frames-prompts"}), _DS("frames"))
+    assert _leaf_types(sp) == [["Samples", "image_embeddings"],
+                               ["user_prompt_compare"]], _leaf_types(sp)
+    # ② "-prompts" 데이터셋 → 자체 패널 2종 (60만 점 네이티브 렌더 회피)
+    sp, _ = _compare_space(_FO(set()), _DS("frames-prompts"))
+    assert _leaf_types(sp) == [["Samples", "sentence_embeddings"], ["image_embeddings"]]
+    # ③ 짝 없는 프레임 데이터셋 → 조용한 오답 대신 거부 (2026-08-19 `frames` 실사고)
+    try:
+        _compare_space(_FO(set()), _DS("frames"))
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("짝 없는 프레임 데이터셋인데 compare 가 만들어졌다")
+
     # ── 필터 세트 (fiftyone 불필요) ──
     slots = ("v1.0.8.0", "v1.0.8.4")
     schema = {"ground_truth", "wave_pred_v1_0_8_0", "wave_pred_v1_0_8_4",
@@ -808,6 +989,8 @@ def _selftest():
     numeric_ish = ("wave_iou", "wave_gain", "event_index", "frame_in_event",
                    "wave_vs_topk", "_margin", "cos_best")
     assert not any(n in x for x in ACTIVE_EXTRA for n in numeric_ish), ACTIVE_EXTRA
+    # 문자열 고유값 상한 — sourcei `src_video`(109) 는 살고 frames `caption_en`(6,077) 은 죽는 선
+    assert 109 < ACTIVE_MAX_DISTINCT < 6077
 
     # 버전 접미사 인식 (세 세대 + 큐레이션 접미)
     for f, want in (("wave_pred_v1_0_8_0", "v1_0_8_0"), ("wave_iou_fire_v1080", "v1080"),
@@ -817,18 +1000,43 @@ def _selftest():
     assert VER_RE.search("person_count_bin") is None
     assert VER_RE.search("ground_truth.label") is None
 
-    # 필터 세트가 분별력 기준(§4-4)에서 탈락한 필드를 되들이지 않았는지
-    tokens = {t for _, _, ts in FILTER_GROUPS for t in ts}
-    banned = {"rule_cross", "environment", "weather", "sam3_hit", "sam3_n",
-              "sam3", "category", "adopted", "attached_bank", "view_unit"}
-    assert not (tokens & banned), tokens & banned
-    assert all(("{A}" in t) or ("{B}" in t) or ("{" not in t) for t in tokens)
-    # 그룹명에 버전을 넣지 않는다 (사용자 결정) — 출처는 필드 description 이 담당한다.
-    # 포맷 자체는 안전해야 한다: 미치환 `{` 가 남으면 사이드바에 리터럴로 노출된다.
-    names = [n.format(A=slots[0], B=slots[1]) for n, _, _ in FILTER_GROUPS]
-    assert all("{" not in n for n in names), names
-    assert not any(v in n for n in names for v in slots), \
-        f"그룹명에 버전이 들어갔다 (출처는 description 담당): {names}"
+    # 필터 세트가 분별력 기준(§4-4)에서 탈락한 필드를 되들이지 않았는지.
+    # **탈락 목록은 데이터셋별로 다르다** — `daynight` 은 sourcei 에선 night 27% 로
+    # 채택이고 frames 에선 distinct 1(`none`)로 축출이다. 그게 §6 이 "복사 금지" 라고
+    # 쓴 이유이므로, 여기서도 데이터셋별로 따로 검사한다.
+    banned_by_ds = {
+        "sourcei": {"rule_cross", "environment", "weather", "sam3_hit", "sam3_n",
+                    "sam3", "category", "adopted", "attached_bank", "view_unit"},
+        # frames 2026-08-19 실측 — 상수/전량결손/한통쏠림/P3중복/P4연속/조인키
+        "frames": {"daynight", "environment", "attached_bank", "cap_prompt_bank",
+                   "has_keyframe", "bank_gt", "bank_gap", "pred_v1_0_8_0",
+                   "cap_prompt_cls_r1", "detection_class", "bank_domain",
+                   "bank_decision_margin", "caption_img_sim", "cos_best_normal",
+                   "cos_best_falldown", "cos_best_fire", "cos_best_smoke",
+                   "image_id", "entity_id", "minio_key", "asset_id",
+                   "winner_gidx_v1080", "top_prompt_v1_0_8_0", "cap_prompt_gidx_r1"},
+    }
+    assert set(banned_by_ds) == set(CURATED_DATASETS), \
+        "큐레이션 데이터셋을 추가했으면 §4-4 탈락 목록도 같이 기록할 것"
+    for dsname, spec in CURATED_DATASETS.items():
+        tokens = {t for _, _, ts in spec for t in ts}
+        bad = tokens & banned_by_ds[dsname]
+        assert not bad, (dsname, bad)
+        assert all(("{A}" in t) or ("{B}" in t) or ("{" not in t) for t in tokens)
+        # P3 — 같은 필드를 두 그룹에 노출하지 않는다 (사이드바가 중복 렌더된다)
+        flat = [t for _, _, ts in spec for t in ts]
+        assert len(flat) == len(set(flat)), (dsname, "그룹 간 중복 토큰")
+        # P2 — 기본 펼침 위젯 예산. 스펙 §4-5 는 12 로 잡았지만 M9(규칙별 예측 슬롯)이
+        # sourcei ① 을 4→8 로 늘려 실측 16 이다. 상한은 그 실측에 맞추고, 그 위로는
+        # "사실상 전량 노출" 회귀로 본다 (frames 는 8).
+        n_open = sum(len(ts) for _, exp, ts in spec if exp)
+        assert n_open <= 16, (dsname, n_open)
+        # 그룹명에 버전을 넣지 않는다 (사용자 결정) — 출처는 필드 description 이 담당한다.
+        # 포맷 자체는 안전해야 한다: 미치환 `{` 가 남으면 사이드바에 리터럴로 노출된다.
+        names = [n.format(A=slots[0], B=slots[1]) for n, _, _ in spec]
+        assert all("{" not in n for n in names), (dsname, names)
+        assert not any(v in n for n in names for v in slots), \
+            f"{dsname} 그룹명에 버전이 들어갔다 (출처는 description 담당): {names}"
     # 예측 슬롯은 규칙 × A/B — 버전이 이름에 없어야 한다 (그게 슬롯의 존재 이유)
     slot_names = [f"pred_{r}_{k}" for r in PRED_SLOT_SOURCES for k in ("a", "b")]
     assert all(VER_RE.search(s) is None for s in slot_names), slot_names

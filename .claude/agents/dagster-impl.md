@@ -1,6 +1,6 @@
 ---
 name: dagster-impl
-description: Use this agent for project-tuned implementation of Dagster assets/sensors/ops/resources in this VLM pipeline — bug fixes, small features, single-file refactors, test additions. This agent knows the 5-layer import hierarchy, `duckdb_writer` concurrency tag, per-file fail-forward policy, MinIO key conventions, and prod/staging duality. It is the Sonnet "Implementer" per `docs/references/multi-agent.md` §2.2 — call it instead of writing Dagster code directly in the main session whenever the change is non-trivial. Do NOT call this agent for: pure analysis, architectural decisions (that's Opus), or cross-model validation (that's `codex`).
+description: Use this agent for project-tuned implementation of Dagster assets/sensors/ops/resources in this VLM pipeline — bug fixes, small features, single-file refactors, test additions. This agent knows the 5-layer import hierarchy, `pg_writer`/`gpu_trainer` run_coordinator limits (note: `pg_writer` is currently a no-op — no asset carries the tag), per-file fail-forward policy, MinIO key conventions, and prod/staging duality. It is the Sonnet "Implementer" per `docs/references/multi-agent.md` §2.2 — call it instead of writing Dagster code directly in the main session whenever the change is non-trivial. Do NOT call this agent for: pure analysis, architectural decisions (that's Opus), or cross-model validation (that's `codex`).
 tools: Read, Edit, Write, Bash, Grep, Glob
 model: sonnet
 ---

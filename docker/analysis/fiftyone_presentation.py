@@ -34,7 +34,7 @@
 
 파이프라인 자동화: 데이터셋 빌더 마지막에 `fp.apply(ds, dry_run=False)` 를 호출한다.
 멱등이라 매 빌드/리프레시마다 다시 불러도 안전하다.
-현재 배선: `fiftyone_full_build.py` (frames_captions 전체 빌드) 끝.
+현재 배선: `fiftyone_full_build.py` (프레임 전체 빌드) 끝.
 
 **손으로 짠 버전과의 관계**: `prompt_eval.py` 는 자체 `_configure_sidebar`/`_save_workspace`
 를 갖고 있다. 그쪽은 도메인 지식이 들어간 그룹명("⑥ 원점수 (버전간 직접비교 금지)" 처럼
@@ -72,7 +72,7 @@ def profile(ds, sample_n: int = PROFILE_SAMPLE, seed: int = 51) -> dict[str, dic
     """필드별 카디널리티/null 실측. 표본 기반이라 20만 샘플에서도 가볍다.
 
     ⚠️ **`limit` 을 쓰면 안 된다** — 앞쪽 N개만 보므로, 특정 프로젝트 구간에서만 null 인
-    필드가 '상수'로 오판된다(실측: frames_captions 에서 daynight/environment/modality/
+    필드가 '상수'로 오판된다(실측: `frames`(구 frames_captions) 에서 daynight/environment/modality/
     caption 이 전부 noise 로 잘못 분류됐다). 반드시 무작위 표본(`take`)을 쓴다.
     """
     view = ds.take(sample_n, seed=seed) if len(ds) > sample_n else ds
@@ -304,5 +304,5 @@ if __name__ == "__main__":
 
     import fiftyone as fo
 
-    name = sys.argv[1] if len(sys.argv) > 1 else os.environ.get("FO_DATASET", "frames_captions")
+    name = sys.argv[1] if len(sys.argv) > 1 else os.environ.get("FO_DATASET", "frames")
     apply(fo.load_dataset(name), dry_run="--apply" not in sys.argv)

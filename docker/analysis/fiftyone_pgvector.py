@@ -417,8 +417,8 @@ def attach_labels(ds):
         #      11,978 부풀어 오른다.
         # 되돌리려면 캡션 문서에서 필드를 지워야 하므로 **쓰기 전에** 막는 게 유일한 방어다.
         # frames 프레임의 image_id 커버리지는 100%(실측)라 정상 샘플이 스킵될 위험은 없다.
-        if not _sample_value(sample, "image_id"):
-            continue
+        if _sample_value(sample, "modality") == "caption" or not _sample_value(sample, "image_id"):
+            continue  # 명시적 modality 체크 병행 — "image_id 부재=캡션" 가정이 미래 스키마에서 깨져도 방어
         try:
             image_id = str(_sample_value(sample, "image_id", ""))
             asset_id = _sample_value(sample, "asset_id")
@@ -672,8 +672,8 @@ def add_caption_clusters(ds, k: int = 12, model_name: str = DEFAULT_MODEL):
     image_ids = [str(_sample_value(s, "image_id")) for s in samples if _sample_value(s, "image_id")]
     frame_asset_ids = _fetch_frame_asset_ids(image_ids)
     for sample in samples:
-        if not _sample_value(sample, "image_id"):
-            continue  # 캡션 모달리티 — 프레임 전용 필드를 쓰지 않는다 (docstring 참조)
+        if _sample_value(sample, "modality") == "caption" or not _sample_value(sample, "image_id"):
+            continue  # 캡션 모달리티 skip — 명시 체크 병행("image_id 부재=캡션" 가정이 깨져도 방어)
         try:
             image_id = _sample_value(sample, "image_id")
             asset_id = _sample_value(sample, "asset_id") or frame_asset_ids.get(str(image_id))
@@ -711,8 +711,8 @@ def add_caption_clusters(ds, k: int = 12, model_name: str = DEFAULT_MODEL):
         if cluster_ids
     }
     for sample in samples:
-        if not _sample_value(sample, "image_id"):
-            continue  # 캡션 모달리티 — 프레임 전용 필드를 쓰지 않는다 (docstring 참조)
+        if _sample_value(sample, "modality") == "caption" or not _sample_value(sample, "image_id"):
+            continue  # 캡션 모달리티 skip — 명시 체크 병행("image_id 부재=캡션" 가정이 깨져도 방어)
         try:
             asset_id = _sample_value(sample, "asset_id")
             sample["caption_cluster"] = asset_cluster.get(str(asset_id), "none") if asset_id else "none"
@@ -2278,7 +2278,8 @@ def _build_text_search_classes():
 
 def _compute_class_centroids(
     embeddings_by_class: dict[str, list[list[float]]],
-) -> dict[str, "np.ndarray"]:  # type: ignore[name-defined]
+) -> dict[str, "np.ndarray"]:  # noqa: F821 — 문자열 annotation, 런타임 미평가 (np 는 아래 함수 내 import)
+    # type: ignore[name-defined]
     """각 클래스의 임베딩 리스트 → L2-정규화된 평균 centroid."""
     import numpy as np
 

@@ -1,6 +1,8 @@
 # frames_captions 프롬프트 뱅크 기하 분석 확장 — 설계
 
 - 날짜: 2026-07-31
+- ⚠️ 2026-08-19 개명: 본문의 frames_captions = 현 `frames` — 파일명·`frames_bank` 경로는 개명
+  대상 아님. `stage_slim` 금지는 코드 가드가 프로필 dataset 값으로 강제하므로 개명과 무관하게 유효.
 - 상태: 사용자 승인됨 (접근안 1: 프로필 확장 + 원장 어댑터)
 - 선행 작업: source-h 뱅크 기하 분석 (`docker/analysis/prompt_geometry.py`,
   `docs/prompt-analysis-report-2026-07-31.md`)

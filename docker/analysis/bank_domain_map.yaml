@@ -11,6 +11,87 @@ domains:
     projects: [fire_smoke]       # `frames` 데이터셋의 project 필드 값들
     bank_a: v1.0.8.0             # A 슬롯 = 기준 — /data/fiftyone/sourceh/prompts/<ver>.npz
     bank_b: v1.0.8.4             # B 슬롯 = 신버전
+  # ── 전역 확장 2026-08-19 (사용자 지시): 21개 project 전부 동일 쌍으로 채점. ──
+  source-e:
+    projects: [source-e]
+    bank_a: v1.0.8.0
+    bank_b: v1.0.8.4
+  source-f:
+    projects: [source-f]
+    bank_a: v1.0.8.0
+    bank_b: v1.0.8.4
+  site-f:
+    projects: [site-f]
+    bank_a: v1.0.8.0
+    bank_b: v1.0.8.4
+  site-c:
+    projects: [site-c]
+    bank_a: v1.0.8.0
+    bank_b: v1.0.8.4
+  source-n:
+    projects: [source-n]
+    bank_a: v1.0.8.0
+    bank_b: v1.0.8.4
+  source-d:
+    projects: [source-d]
+    bank_a: v1.0.8.0
+    bank_b: v1.0.8.4
+  loc-c_de_identified_data_export:
+    projects: [loc-c_de-identified_data_export]
+    bank_a: v1.0.8.0
+    bank_b: v1.0.8.4
+  loc-c_raw:
+    projects: [loc-c_raw]
+    bank_a: v1.0.8.0
+    bank_b: v1.0.8.4
+  loc-c_reenactment_data:
+    projects: [loc-c_reenactment_data]
+    bank_a: v1.0.8.0
+    bank_b: v1.0.8.4
+  cohort-b:
+    projects: [cohort-b]
+    bank_a: v1.0.8.0
+    bank_b: v1.0.8.4
+  loc-a_port_data:
+    projects: [loc-a_port_data]
+    bank_a: v1.0.8.0
+    bank_b: v1.0.8.4
+  partner-d_poc:
+    projects: [partner-d_poc]
+    bank_a: v1.0.8.0
+    bank_b: v1.0.8.4
+  sourcea:
+    projects: [sourcea]
+    bank_a: v1.0.8.0
+    bank_b: v1.0.8.4
+  source-m-cohort_2024:
+    projects: [source-m-cohort_2024]
+    bank_a: v1.0.8.0
+    bank_b: v1.0.8.4
+  source-m-cohort_2025:
+    projects: [source-m-cohort_2025]
+    bank_a: v1.0.8.0
+    bank_b: v1.0.8.4
+  appdata:
+    projects: [appdata]
+    bank_a: v1.0.8.0
+    bank_b: v1.0.8.4
+  source-o:
+    projects: [source-o]
+    bank_a: v1.0.8.0
+    bank_b: v1.0.8.4
+  sourcej:
+    projects: [sourcej]
+    bank_a: v1.0.8.0
+    bank_b: v1.0.8.4
+  cohort-a:
+    projects: [cohort-a]
+    bank_a: v1.0.8.0
+    bank_b: v1.0.8.4
+  violence:
+    projects: [violence]
+    bank_a: v1.0.8.0
+    bank_b: v1.0.8.4
 class_crosswalk:
   # box category(image_label_annotations.category) → frame class. 미등재 = 그 이미지 GT 제외.
   fire: fire

@@ -20,6 +20,12 @@
    선택한 샘플(또는 현재 뷰)의 미디어를 실제로 옮기거나 지운다. 이동은 `filepath` 까지
    갱신해 데이터셋이 안 깨지게 한다.
 
+5. `compute_visualization` 의 **prompt DB 임베딩 소스** (2026-08-19 "DB 연결 해야해
+   이제 gidx 그걸로 하지마") — `<X>-prompts` 데이터셋은 문서 부피 때문에 1024-d 벡터를
+   샘플에 저장하지 않는다. 그래서 이 오퍼레이터는 그 데이터셋에서 "임베딩 필드가 없습니다"
+   로 막혀 있었다. 이제 (bank_version, gidx) → Postgres `bank_sentences` ⨝
+   `image_embeddings(entity_type='prompt')` 로 벡터를 끌어와 계산한다 — npz 경유 아님.
+
 로직 자체 검증: 컨테이너에서 `python __init__.py` (파일 이동/충돌 처리 assert).
 """
 
@@ -28,6 +34,7 @@ import gc
 import os
 import random
 import shutil
+import threading
 
 import numpy as np
 
@@ -73,6 +80,329 @@ def _set_values_batched(dataset, field, mapping_items):
         dataset.set_values(field, dict(chunk), key_field="id")
         gc.collect()
 
+# ══════════════════════════════════════════════════════════════════════════════
+# prompt DB (Postgres 019 스키마) — 문장·벡터 **정본** 해석
+# ══════════════════════════════════════════════════════════════════════════════
+# ⚠️ **사본 동기화 블록** — 이 섹션(`PDB_*` / `pdb_*` / `_pdb_*`)은
+#      plugins/user-prompt-compare · user-image-embeddings · user-embeddings
+#    세 곳에 **글자 단위로 같은 사본**으로 들어 있다. 플러그인 디렉토리가 각각 독립
+#    배포 단위(`docker cp <디렉토리>`)라 공유 import 경로가 없다 — CLASS_COLORS·
+#    PLACEHOLDER_PREFIX 복제와 같은 관례다. **한 곳을 고치면 나머지 둘도 같이 고칠 것.**
+#
+# 왜 DB 인가 (2026-08-19 사용자 요청: "DB 연결 해야해 이제 gidx 그걸로 하지마"):
+#   `<X>-prompts` 데이터셋의 `text` 필드는 npz(`PROMPT_DIR/<ver>.npz`)의 `prompt`
+#   배열을 `gidx % GIDX_OFFSET` 행으로 퍼온 **파생물**이다. 2026-08-11 재빌드가 27버전의
+#   문장을 자리표시자로 덮어써서 sourcei-prompts 603,318행 중 **261,244행(43.3%)** 이
+#   `(텍스트 없음 #N)` 이다(2026-08-19 실측). 정본은 Postgres 019 스키마다:
+#
+#     prompt_banks(bank_id, version_tag, sentence_storage, …)
+#       ⨝ bank_sentences(bank_id, gidx, text, class_label, content_hash)   [UNIQUE(bank_id,gidx)]
+#       ⨝ image_embeddings(entity_type='prompt', entity_id=content_hash)   → 1024-d 벡터
+#
+#   조인 키 = (샘플 `bank_version.label` 정규화, 샘플 `gidx % PDB_GIDX_OFFSET`)
+#           → (prompt_banks.version_tag 정규화, bank_sentences.gidx)
+#   실측 커버리지: prompt 벡터 121,614행 = bank_sentences 고유 content_hash 121,614개
+#   (고아 0) — 문장이 DB 에 있으면 벡터도 반드시 있다.
+#
+# fail-closed 게이트 (repair_bank_prompts.check_candidate 와 같은 규약 — 조용히 틀린
+# 문장을 넣느니 폴백한다):
+#   ① 그 버전이 DB 에 있고 문장을 보유해야 한다 (`external_only` = 문장 없음이 사실)
+#   ② DB 문장 수 == 그 버전의 **데이터셋 행 수**(= npz 행 수). 다르면 gidx 정렬을
+#      신뢰할 수 없다 — 실측 v1.0.2.0 은 DB 12,568 vs 데이터셋 14,600 이라 gidx 로
+#      읽으면 **다른 문장**이 나온다(표본 10개 중 9개 불일치).
+#   ③ 가져온 행의 `class_label` == 샘플의 `category.label`
+#   하나라도 어긋나면 그 **버전 전체**가 폴백이고, 어느 소스를 썼는지 `pdb_note()` 가
+#   배너에 싣는다 — **조용한 폴백 금지**(2026-08-19 요구사항).
+
+PDB_DSN_ENV = ("BANK_DB_DSN", "DATAOPS_POSTGRES_DSN", "POSTGRES_DSN", "DATABASE_URL")
+PDB_MODEL = os.environ.get("BANK_EMBED_MODEL", "facebook/PE-Core-L14-336")
+PDB_GIDX_OFFSET = 100_000        # prompt_geometry.GIDX_OFFSET 와 같은 값 (복제 상수)
+PDB_MEMO_CAP = 300_000           # (버전, 로컬 gidx) → 문장 메모 상한. 넘으면 통째로 비운다
+PDB_SRC_DB = "DB 정본(bank_sentences)"
+PDB_SRC_FALLBACK = "데이터셋 text 필드(npz 파생)"
+
+_PDB_BANKS = None                # norm_ver -> (bank_id, version_tag, storage, n_sent)
+_PDB_BANKS_ERR = None            # 마지막 뱅크 조회 실패 사유 — 배너에 그대로 싣는다
+_PDB_TEXT = {}                   # (norm_ver, local_gidx) -> (text, class_label)
+_PDB_CONN = None
+_PDB_LOCK = threading.Lock()
+
+
+def pdb_enabled():
+    """`PROMPT_DB=off` 로 DB 경로를 끌 수 있다 (DB 장애 시 탈출구 — 폴백은 데이터셋 필드)."""
+    return os.environ.get("PROMPT_DB", "on").strip().lower() not in ("0", "off", "false", "no")
+
+
+def pdb_norm_ver(v):
+    """`V1.0.10.3` / `v1.0.10.3` / `1.0.10.3` → `1.0.10.3`.
+
+    `prompt_banks.version_tag` 는 대소문자·`v` 접두가 흔들린다 (실측 52행에 `V1.0.10.3`
+    과 `1.0.13.0` 이 함께 있다) — 정규화 없이 등식 조인하면 조용히 0건이 된다.
+    """
+    return str(v if v is not None else "").strip().lstrip("vV")
+
+
+def pdb_local_gidx(g):
+    """FiftyOne 전역 gidx → 뱅크-로컬 행 번호 (= `bank_sentences.gidx`)."""
+    return None if g is None else int(g) % PDB_GIDX_OFFSET
+
+
+def _pdb_dsn():
+    return next((os.environ[k] for k in PDB_DSN_ENV if os.environ.get(k)), None)
+
+
+def _pdb_query(sql, params):
+    """커넥션 1개를 프로세스 수명 동안 재사용. 끊겼으면 **한 번만** 재연결 후 재시도.
+
+    App 은 유휴 시간이 길어 커넥션이 서버측에서 끊기는 일이 잦다 — 요청마다 새로
+    연결하면 버전당 왕복이 붙고(전체 필터 = 최대 29버전), 안 하면 첫 조회가 죽는다.
+    """
+    global _PDB_CONN
+    import psycopg2
+
+    with _PDB_LOCK:
+        for last in (False, True):
+            try:
+                if _PDB_CONN is None or _PDB_CONN.closed:
+                    dsn = _pdb_dsn()
+                    if not dsn:
+                        raise RuntimeError("DSN 미설정 (" + "/".join(PDB_DSN_ENV) + ")")
+                    _PDB_CONN = psycopg2.connect(dsn, connect_timeout=5)
+                    _PDB_CONN.autocommit = True     # 읽기 전용 — 트랜잭션을 열어두지 않는다
+                with _PDB_CONN.cursor() as cur:
+                    cur.execute(sql, params)
+                    return cur.fetchall()
+            except psycopg2.Error:
+                try:
+                    if _PDB_CONN is not None:
+                        _PDB_CONN.close()
+                except Exception:       # noqa: BLE001 — 이미 끊긴 커넥션
+                    pass
+                _PDB_CONN = None
+                if last:
+                    raise
+    return []
+
+
+def pdb_banks(refresh=False):
+    """norm_ver -> (bank_id, version_tag, sentence_storage, n_sent). 52행 — 1회만 읽는다.
+
+    실패는 예외가 아니라 **빈 dict + 사유 기록**이다 (패널이 죽으면 안 된다).
+    """
+    global _PDB_BANKS, _PDB_BANKS_ERR
+    if _PDB_BANKS is not None and not refresh:
+        return _PDB_BANKS
+    if not pdb_enabled():
+        _PDB_BANKS, _PDB_BANKS_ERR = {}, "PROMPT_DB=off (수동 비활성)"
+        return _PDB_BANKS
+    try:
+        rows = _pdb_query(
+            "SELECT b.bank_id, b.version_tag, b.sentence_storage, count(s.sentence_id) "
+            "  FROM prompt_banks b LEFT JOIN bank_sentences s USING (bank_id) "
+            " WHERE b.source = 'userwatch' "          # gidx 규약(userwatch:<tag>)을 쓰는 원장만
+            " GROUP BY 1, 2, 3", ())
+    except Exception as e:      # noqa: BLE001 — DSN 부재·DB 다운 전부 폴백 대상
+        _PDB_BANKS, _PDB_BANKS_ERR = {}, f"{type(e).__name__}: {e}"
+        return _PDB_BANKS
+    out = {}
+    for bank_id, tag, storage, n in rows:
+        key = pdb_norm_ver(tag)
+        # 대소문자만 다른 두 행이 같은 버전으로 접히면 문장이 많은 쪽을 쓴다.
+        if key not in out or int(n) > out[key][3]:
+            out[key] = (bank_id, tag, storage, int(n))
+    _PDB_BANKS, _PDB_BANKS_ERR = out, None
+    return out
+
+
+def pdb_fetch_texts(version, locals_):
+    """(버전, 로컬 gidx 목록) → {local_gidx: (text, class_label)}.
+
+    `WHERE bank_id = %s AND gidx = ANY(%s)` — UNIQUE(bank_id, gidx) 인덱스를 그대로 탄다.
+    **전량 로드 금지**: 뷰에 그려지는 행만 묻는다(패널 기준 최대 MAX_POINTS).
+    같은 (버전, 행)은 프로세스 안에서 두 번 묻지 않는다 — 서브샘플이 캐시돼 있어
+    두 번째 갱신부터는 전부 메모 적중이다.
+    """
+    bank = pdb_banks().get(pdb_norm_ver(version))
+    if bank is None:
+        return {}
+    key = pdb_norm_ver(version)
+    want = sorted({int(g) for g in locals_ if g is not None})
+    got = {g: _PDB_TEXT[(key, g)] for g in want if (key, g) in _PDB_TEXT}
+    miss = [g for g in want if g not in got]
+    if miss:
+        rows = _pdb_query(
+            "SELECT gidx, text, class_label FROM bank_sentences "
+            " WHERE bank_id = %s AND gidx = ANY(%s)", (bank[0], miss))
+        if len(_PDB_TEXT) > PDB_MEMO_CAP:
+            _PDB_TEXT.clear()
+        for g, text, label in rows:
+            got[int(g)] = (text, label)
+            _PDB_TEXT[(key, int(g))] = (text, label)
+    return got
+
+
+def pdb_fetch_vectors(version, locals_):
+    """(버전, 로컬 gidx 목록) → {local_gidx: [float, …]} (1024-d).
+
+    `bank_sentences.content_hash` → `image_embeddings(entity_type='prompt')` 조인.
+    pgvector 값은 psycopg2 어댑터가 없어 `'[0.1,0.2,…]'` 문자열로 온다 — `::text` 로
+    의도를 못박고 여기서 파싱한다. 메모하지 않는다(1024-d × 수만 행 = GB 단위).
+    """
+    bank = pdb_banks().get(pdb_norm_ver(version))
+    if bank is None:
+        return {}
+    want = sorted({int(g) for g in locals_ if g is not None})
+    if not want:
+        return {}
+    rows = _pdb_query(
+        "SELECT s.gidx, e.embedding::text FROM bank_sentences s "
+        "  JOIN image_embeddings e ON e.entity_type = 'prompt' "
+        "   AND e.entity_id = s.content_hash AND e.model_name = %s "
+        " WHERE s.bank_id = %s AND s.gidx = ANY(%s)", (PDB_MODEL, bank[0], want))
+    return {int(g): [float(x) for x in str(v).strip("[]").split(",")] for g, v in rows}
+
+
+def pdb_version_counts(versions):
+    """버전별 행 수 — 게이트 ②의 분모(그 버전이 데이터셋에서 차지하는 행 수)."""
+    counts = {}
+    for v in versions:
+        if v is not None:
+            counts[str(v)] = counts.get(str(v), 0) + 1
+    return counts
+
+
+def pdb_resolve_texts(versions, gidxs, fallback, ver_counts, categories=None):
+    """샘플 정렬 시퀀스 → (문장 리스트, 출처 메타). 위 게이트 ①②③ 적용.
+
+    versions[i]  샘플의 `bank_version.label`   gidxs[i]  샘플의 전역 `gidx`
+    fallback[i]  데이터셋 `text` 필드 값(폴백)  categories[i]  `category.label`(게이트 ③)
+    ver_counts   {버전: 데이터셋 전체 행 수} — `pdb_version_counts()` 로 만든다.
+                 (전체가 아닌 표시분으로 만들면 게이트 ②가 항상 실패한다.)
+    """
+    out = list(fallback)
+    meta = {"db_rows": 0, "db_versions": [], "reject": {}, "err": None}
+    if not pdb_enabled():
+        meta["err"] = "PROMPT_DB=off"
+        return out, meta
+    banks = pdb_banks()
+    if not banks:
+        meta["err"] = _PDB_BANKS_ERR or "prompt_banks 0행"
+        return out, meta
+
+    by_ver = {}
+    for i, v in enumerate(versions):
+        if v is not None and gidxs[i] is not None:
+            by_ver.setdefault(str(v), []).append(i)
+
+    def _reject(why, detail):
+        meta["reject"].setdefault(why, []).append(detail)
+
+    for version, idxs in by_ver.items():
+        bank = banks.get(pdb_norm_ver(version))
+        if bank is None or bank[3] == 0:
+            _reject("DB 문장 미보유(external_only)", version)
+            continue
+        want = ver_counts.get(version) if ver_counts else None
+        if want is not None and int(want) != bank[3]:
+            # ② 행수 불일치 = gidx 정렬 붕괴. 실측 v1.0.2.0 이 여기서 걸린다.
+            _reject("행수 불일치(gidx 정렬 불가)", f"{version} DB {bank[3]:,}≠뷰 {int(want):,}")
+            continue
+        locs = [pdb_local_gidx(gidxs[i]) for i in idxs]
+        try:
+            got = pdb_fetch_texts(version, locs)
+        except Exception as e:      # noqa: BLE001 — 폴백이 있다
+            meta["err"] = f"{type(e).__name__}: {e}"
+            _reject("조회 실패", version)
+            continue
+        if categories is not None:
+            bad = next(
+                (f"{version} gidx {g}: DB {got[g][1]} ≠ 뷰 {categories[i]}"
+                 for i, g in zip(idxs, locs)
+                 if g in got and categories[i] is not None and got[g][1] != categories[i]),
+                None)
+            if bad:
+                _reject("class 불일치(정렬 붕괴)", bad)
+                continue
+        n = 0
+        for i, g in zip(idxs, locs):
+            row = got.get(g)
+            if row is not None:
+                out[i] = row[0]
+                n += 1
+        if n:
+            meta["db_rows"] += n
+            meta["db_versions"].append(version)
+    return out, meta
+
+
+def pdb_note(meta, label="문장"):
+    """배너 한 줄 — **어느 소스를 몇 행에 썼는지 항상 밝힌다** (조용한 폴백 금지).
+
+    ⚠️ 배너는 단일 문단이어야 하므로 개행을 넣지 않는다 (형제 패널의 stale 문단 함정).
+    """
+    if meta.get("db_rows"):
+        note = (f"{label} 출처: **{PDB_SRC_DB}** {meta['db_rows']:,}행"
+                f"/{len(meta['db_versions'])}버전")
+    else:
+        note = f"{label} 출처: **{PDB_SRC_FALLBACK}** — DB 해석 0행"
+    for why, items in sorted(meta.get("reject", {}).items()):
+        head = ", ".join(sorted(items)[:2])
+        more = f" 외 {len(items) - 2}" if len(items) > 2 else ""
+        note += f" · ⚠️ 폴백 {len(items)}버전 [{why}: {head}{more}]"
+    if meta.get("err"):
+        note += f" · ⚠️ DB 오류: {meta['err']}"
+    return note
+
+
+def pdb_selftest():
+    """DB 없이 도는 순수부 계약 (세 사본 모두 같은 검사를 갖는다)."""
+    assert pdb_norm_ver("V1.0.10.3") == pdb_norm_ver("v1.0.10.3") == "1.0.10.3"
+    assert pdb_norm_ver(None) == "" and pdb_norm_ver("1.0.13.0") == "1.0.13.0"
+    assert pdb_local_gidx(300_012) == 12 and pdb_local_gidx(12) == 12
+    assert pdb_local_gidx(None) is None
+    assert pdb_version_counts(["a", "a", None, "b"]) == {"a": 2, "b": 1}
+
+    global _PDB_BANKS, _PDB_BANKS_ERR
+    saved, saved_err, saved_text = _PDB_BANKS, _PDB_BANKS_ERR, dict(_PDB_TEXT)
+    try:
+        # 게이트 ②: 행수가 다르면 그 버전은 통째로 폴백 (v1.0.2.0 실측 케이스)
+        _PDB_BANKS, _PDB_BANKS_ERR = {"1.0.2.0": ("bid", "v1.0.2.0", "db_backed", 12568)}, None
+        vers, gid, fb = ["v1.0.2.0"] * 2, [0, 1], ["(텍스트 없음 #0)", "(텍스트 없음 #1)"]
+        out, meta = pdb_resolve_texts(vers, gid, fb, {"v1.0.2.0": 14600})
+        assert out == fb and meta["db_rows"] == 0, (out, meta)
+        assert "행수 불일치(gidx 정렬 불가)" in meta["reject"], meta
+        assert "폴백" in pdb_note(meta) and "\n" not in pdb_note(meta)
+
+        # 게이트 ①: external_only(문장 0행)도 폴백
+        _PDB_BANKS = {"1.0.13.0": ("bid", "v1.0.13.0", "external_only", 0)}
+        out, meta = pdb_resolve_texts(["v1.0.13.0"], [7], ["(텍스트 없음 #7)"], {"v1.0.13.0": 45840})
+        assert out == ["(텍스트 없음 #7)"] and "DB 문장 미보유(external_only)" in meta["reject"]
+
+        # 게이트 ③ + 정상 경로: 행수가 맞고 class 도 맞으면 DB 가 이긴다
+        _PDB_BANKS = {"1.0.8.0": ("bid", "v1.0.8.0", "db_backed", 3)}
+        _PDB_TEXT.clear()
+        for g, (t, c) in {0: ("A.", "fire"), 1: ("B.", "smoke"), 2: ("C.", "fire")}.items():
+            _PDB_TEXT[("1.0.8.0", g)] = (t, c)
+        vers, gid = ["v1.0.8.0"] * 3, [300_000, 300_001, 300_002]
+        out, meta = pdb_resolve_texts(vers, gid, ["x", "y", "z"], {"v1.0.8.0": 3},
+                                      categories=["fire", "smoke", "fire"])
+        assert out == ["A.", "B.", "C."] and meta["db_rows"] == 3, (out, meta)
+        assert not meta["reject"] and "DB 정본" in pdb_note(meta)
+        out, meta = pdb_resolve_texts(vers, gid, ["x", "y", "z"], {"v1.0.8.0": 3},
+                                      categories=["fire", "fire", "fire"])
+        assert out == ["x", "y", "z"], out                 # class 어긋나면 그 버전 전체 폴백
+        assert "class 불일치(정렬 붕괴)" in meta["reject"], meta
+
+        # 뱅크를 못 읽으면 전부 폴백 + 사유가 배너에 실린다
+        _PDB_BANKS, _PDB_BANKS_ERR = {}, "OperationalError: down"
+        out, meta = pdb_resolve_texts(["v1.0.8.0"], [0], ["fb"], {})
+        assert out == ["fb"] and "down" in pdb_note(meta)
+    finally:
+        _PDB_BANKS, _PDB_BANKS_ERR = saved, saved_err
+        _PDB_TEXT.clear()
+        _PDB_TEXT.update(saved_text)
+
+
 METHODS = (
     ("umap", "UMAP", "비선형 — 국소 군집이 잘 갈린다 (기본)"),
     ("tsne", "t-SNE", "비선형 — 느리지만 촘촘한 군집에 강함"),
@@ -89,6 +419,83 @@ def _vector_fields(dataset):
             out.append(name)
         elif isinstance(field, fo.ListField) and isinstance(field.field, numeric):
             out.append(name)
+    return out
+
+
+# ── prompt DB 임베딩 소스 ────────────────────────────────────────────────────
+# `<X>-prompts` 데이터셋은 문서 부피(1024-d × 60만) 때문에 벡터를 샘플에 저장하지
+# 않는다 → `_vector_fields()` 가 빈 리스트라 이 오퍼레이터가 통째로 막혀 있었다.
+# 정본 벡터는 Postgres 에 있다 (`image_embeddings`, entity_type='prompt', 121,614행,
+# `bank_sentences.content_hash` 로 조인). 드롭다운에 이 소스를 하나 더 단다.
+PDB_EMBED_CHOICE = "__prompt_db__"
+PDB_EMBED_LABEL = "prompt DB (Postgres) — 문장 벡터"
+# 1024-d float 을 파이썬으로 끌어오는 경로다 (1만행 ≈ 40MB + 파싱). App 프로세스 안에서
+# 동기로 도는 오퍼레이터라 상한을 두고 뷰를 좁히게 만든다 — MAX_FILE_OPS 와 같은 규약.
+PDB_MAX_VECTORS = 60_000
+PDB_FETCH_BATCH = 5_000
+
+
+def _pdb_source_available(dataset):
+    """이 데이터셋에서 prompt DB 소스를 제시해도 되는가 (스키마만 본다 — 쿼리 없음)."""
+    try:
+        schema = dataset.get_field_schema()
+    except Exception:       # noqa: BLE001 — 드롭다운 구성 실패로 폼이 죽으면 안 된다
+        return False
+    return "gidx" in schema and "bank_version" in schema
+
+
+def _pdb_embeddings(target):
+    """뷰의 샘플 순서대로 (N, 1024) 배열. `compute_visualization(points=…)` 규약과 동일.
+
+    ⚠️ 반환 배열은 `target.values("id")` 순서다 — `fob.compute_visualization` 이
+    embeddings 를 그 순서로 해석한다. 벡터가 없는 샘플이 하나라도 있으면 **조용히 건너뛰지
+    않고 거부**한다: 행이 빠지면 좌표↔샘플 대응이 통째로 밀려 "엉뚱한 점" 이 된다.
+    """
+    n = target.count()
+    if n > PDB_MAX_VECTORS:
+        raise ValueError(
+            f"{n:,}개는 한 번에 너무 많습니다 (상한 {PDB_MAX_VECTORS:,}) — 뷰를 좁히세요. "
+            "prompt DB 벡터는 1024-d 라 전량 로드가 App 프로세스를 멈춥니다.")
+    gidx, bver = target.values(["gidx", "bank_version.label"])
+    counts = pdb_version_counts(bver)
+    banks = pdb_banks()
+    if not banks:
+        raise ValueError(f"prompt DB 를 읽을 수 없습니다: {_PDB_BANKS_ERR}")
+
+    out = np.zeros((n, 0), dtype="float32")
+    missing, rejected = [], []
+    by_ver = {}
+    for i, v in enumerate(bver):
+        if v is not None and gidx[i] is not None:
+            by_ver.setdefault(str(v), []).append(i)
+    for version, idxs in by_ver.items():
+        bank = banks.get(pdb_norm_ver(version))
+        # 게이트 ①② — 문장 해석과 **같은 규약**. 행수가 다르면 gidx 정렬을 못 믿는다.
+        if bank is None or bank[3] == 0:
+            rejected.append(f"{version}(DB 문장 미보유)")
+            continue
+        if int(counts.get(version, 0)) != bank[3]:
+            rejected.append(f"{version}(행수 DB {bank[3]:,}≠뷰 {counts.get(version, 0):,})")
+            continue
+        locs = [pdb_local_gidx(gidx[i]) for i in idxs]
+        got = {}
+        for chunk in _batches(locs, PDB_FETCH_BATCH):
+            got.update(pdb_fetch_vectors(version, chunk))
+        for i, g in zip(idxs, locs):
+            vec = got.get(g)
+            if vec is None:
+                missing.append(i)
+                continue
+            if out.shape[1] == 0:
+                out = np.zeros((n, len(vec)), dtype="float32")
+            out[i] = vec
+    holes = sorted(set(missing) | (set(range(n)) - {i for v in by_ver.values() for i in v}))
+    if rejected or holes:
+        raise ValueError(
+            f"prompt DB 벡터가 {len(holes):,}/{n:,}행에서 비었습니다 — 좌표가 밀리므로 "
+            f"계산하지 않습니다. 거부된 뱅크: {', '.join(rejected[:5]) or '없음'}"
+            f"{f' 외 {len(rejected) - 5}' if len(rejected) > 5 else ''}. "
+            "그 버전을 빼고 뷰를 좁히세요 (사이드바 bank_version 필터).")
     return out
 
 
@@ -116,8 +523,12 @@ class ComputeVisualization(foo.Operator):
     def resolve_input(self, ctx):
         inputs = types.Object()
         fields = _vector_fields(ctx.dataset)
+        # `<X>-prompts` 는 벡터를 샘플에 저장하지 않는다 — 정본은 Postgres 다 (위 주석).
+        sources = list(fields)
+        if _pdb_source_available(ctx.dataset):
+            sources.append(PDB_EMBED_CHOICE)
 
-        if not fields:
+        if not sources:
             inputs.view(
                 "none",
                 types.Error(label="임베딩 필드가 없습니다 (숫자 ListField/VectorField)"),
@@ -133,17 +544,32 @@ class ComputeVisualization(foo.Operator):
 
         # ponytail: 임베딩 필드가 하나면 고를 게 없다 — 기본값으로 박고 폼에서 감춘다.
         embeddings_choices = types.DropdownView()
-        for name in fields:
-            embeddings_choices.add_choice(name, label=name)
+        for name in sources:
+            if name == PDB_EMBED_CHOICE:
+                embeddings_choices.add_choice(
+                    name, label=PDB_EMBED_LABEL,
+                    description="bank_sentences ⨝ image_embeddings(entity_type='prompt') "
+                                "— (bank_version, gidx) 조인, npz 경유 아님")
+            else:
+                embeddings_choices.add_choice(name, label=name)
         inputs.enum(
             "embeddings",
-            fields,
-            default=fields[0],
+            sources,
+            # 저장된 벡터 필드가 없는 데이터셋에서는 DB 소스가 유일한 선택지가 된다.
+            default=sources[0],
             required=True,
             label="Embeddings",
-            description="이미 계산된 임베딩 필드",
+            description="이미 계산된 임베딩 필드 또는 prompt DB",
             view=embeddings_choices,
         )
+        if ctx.params.get("embeddings") == PDB_EMBED_CHOICE:
+            inputs.view(
+                "pdb",
+                types.Notice(label=(
+                    f"prompt DB 는 1024-d 를 파이썬으로 끌어옵니다 — 상한 "
+                    f"{PDB_MAX_VECTORS:,}행. 뱅크 버전 하나로 뷰를 좁혀 쓰세요 "
+                    "(행수/클래스 게이트에 걸리는 버전이 섞이면 계산을 거부합니다)")),
+            )
 
         method_choices = types.DropdownView()
         for value, label, desc in METHODS:
@@ -193,6 +619,21 @@ class ComputeVisualization(foo.Operator):
             ctx.dataset.delete_brain_run(brain_key)
 
         n = target.count()
+        source = "필드"
+        if embeddings == PDB_EMBED_CHOICE:
+            # DB 벡터는 필드가 아니라 배열로 넘긴다. `_big_projection` 은 필드명을 받아
+            # 배치로 다시 읽는 구조라 이 경로에는 쓰지 않는다 — 대신 PDB_MAX_VECTORS 가
+            # 상한을 지키므로 통짜 fit 이 성립한다.
+            embeddings = _pdb_embeddings(target)
+            source = PDB_EMBED_LABEL
+            with _thread_cap():
+                fob.compute_visualization(
+                    target, embeddings=embeddings, method=method,
+                    brain_key=brain_key, num_dims=2,
+                )
+            return {"brain_key": brain_key, "count": n, "method": method,
+                    "source": source}
+
         with _thread_cap():
             if n <= FIT_MAX:
                 fob.compute_visualization(
@@ -206,13 +647,14 @@ class ComputeVisualization(foo.Operator):
                 points = _big_projection(target, embeddings, method, n)
                 fob.compute_visualization(target, points=points, brain_key=brain_key)
 
-        return {"brain_key": brain_key, "count": n, "method": method}
+        return {"brain_key": brain_key, "count": n, "method": method, "source": source}
 
     def resolve_output(self, ctx):
         outputs = types.Object()
         outputs.str("brain_key", label="생성된 brain key")
         outputs.str("method", label="method")
         outputs.int("count", label="샘플 수")
+        outputs.str("source", label="임베딩 출처")
         outputs.view(
             "hint", types.Notice(label="F5 로 새로고침한 뒤 왼쪽 드롭다운에서 선택하세요")
         )
@@ -710,6 +1152,31 @@ def _self_check():
         assert samples[0].filepath == os.path.join(normal, "a.jpg")
         assert not os.path.exists(os.path.join(fall, "a.jpg"))
         assert os.path.exists(os.path.join(fall, "b.jpg"))  # 충돌 건은 그대로
+
+    pdb_selftest()          # prompt DB 해석 계층 (DB 없이 도는 순수부)
+
+    # prompt DB 소스 제시 조건 = 조인 키 두 개가 스키마에 있을 때만 (쿼리 없이 판정)
+    class _Schema:
+        def __init__(self, keys):
+            self._k = keys
+
+        def get_field_schema(self):
+            return dict.fromkeys(self._k, object())
+
+    assert _pdb_source_available(_Schema(["gidx", "bank_version", "text"]))
+    assert not _pdb_source_available(_Schema(["gidx"]))
+    assert not _pdb_source_available(_Schema(["filepath"]))
+
+    # 상한 초과는 **조용히 자르지 않고** 거부한다 (좌표↔샘플 대응이 밀리면 최악의 오답)
+    class _Big:
+        def count(self):
+            return PDB_MAX_VECTORS + 1
+
+    try:
+        _pdb_embeddings(_Big())
+        raise AssertionError("상한 초과인데 통과했다")
+    except ValueError as e:
+        assert "상한" in str(e), e
 
     print("self-check OK")
 

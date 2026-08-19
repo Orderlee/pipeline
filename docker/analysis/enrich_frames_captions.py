@@ -1,4 +1,6 @@
-"""`frames_captions` 에 모달리티별 명시 필드 3종 추가 — 배치·저부하·재개 가능.
+"""정본 통합 데이터셋 `frames` 에 모달리티별 명시 필드 3종 추가 — 배치·저부하·재개 가능.
+
+(2026-08-19 개명: 데이터셋 이름 frames_captions → frames. 파일명은 그대로 둔다.)
 
 ## 왜 필요한가
 
@@ -34,7 +36,7 @@ KO→EN R@1 0.10~0.13, 같은 의미 영어 문장끼리는 0.567).
   GPU(embedding-service)는 dagster torch 와 GPU0 공유 → 병렬도 낮게.
 
 env:
-  EFC_DATASET       기본 'frames_captions'
+  EFC_DATASET       기본 'frames'
   EFC_BATCH         샘플 배치        기본 5000
   EFC_WORKERS       /embed 병렬      기본 3
   EFC_MIN_AVAIL_MB  메모리 하한      기본 3000
@@ -63,7 +65,7 @@ import fiftyone as fo
 
 import fiftyone_pgvector as fp
 
-DATASET = os.getenv("EFC_DATASET", "frames_captions")
+DATASET = os.getenv("EFC_DATASET", "frames")
 BATCH = int(os.getenv("EFC_BATCH", "5000"))
 WORKERS = int(os.getenv("EFC_WORKERS", "3"))
 MIN_AVAIL_MB = int(os.getenv("EFC_MIN_AVAIL_MB", "3000"))

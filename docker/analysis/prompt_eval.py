@@ -903,7 +903,7 @@ def stage_build(dataset_name: str = "source-h") -> None:
         import fiftyone.brain as fob
 
         # brain_key 는 반드시 이 배포의 관례인 `emb_viz` — Embeddings 패널은 마지막에 쓰던
-        # 브레인 키를 데이터셋 간에 기억하므로, frames_captions 등과 이름이 다르면 패널이
+        # 브레인 키를 데이터셋 간에 기억하므로, `frames` 등과 이름이 다르면 패널이
         # "no brain method run key 'emb_viz'" 로 죽고 그 상태에선 Color by 도 안 뜬다.
         # 필드명으로 넘겨 샘플 순서 정렬 문제도 원천 배제 (repo 관례: fiftyone_umap_only.py)
         res = fob.compute_visualization(

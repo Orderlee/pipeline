@@ -1,5 +1,8 @@
 # FiftyOne 뱅크 버전 스키마 & 분석 필터 설계
 
+> ⚠️ 2026-08-19 개명(frames_captions→frames)·2026-08-18 데이터셋 1종 삭제 — 본문 스니펫/표의
+> 데이터셋 목록은 `bank_health.sh` 의 `DATASETS` 정본을 따를 것. CURATED_DATASETS 는 2개로 확장됨(96d91e1).
+
 - 작성일: 2026-08-14
 - 대상: `sourcei` (1차) → `source-h` → 신규 데이터셋 전체
 - 관련 코드: `docker/analysis/prompt_geometry.py`, `docker/analysis/plugins/user-prompt-probe/`,

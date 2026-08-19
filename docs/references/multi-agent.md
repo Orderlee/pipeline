@@ -26,7 +26,7 @@
 ### 2.1 Opus — 리더 아키텍트 (Orchestrator)
 
 - **모델**: `opus` 별칭 (frontmatter `model: opus`) — 그 시점의 최신 Opus 로 resolve
-- **페르소나**: `cto`(오케스트레이터/아키텍트), `ai-modeler`·`qa-strategist`(고추론 판단 역할). main session 이 오케스트레이터로 동작할 때도 이 tier 에 해당
+- **페르소나**: `cto`(오케스트레이터/아키텍트), `platform-architect`·`ai-modeler`·`qa-strategist`·`db-architect`·`security-architect`(고추론 판단 역할). main session 이 오케스트레이터로 동작할 때도 이 tier 에 해당
 - **컨텍스트**: 대용량 (전체 코드베이스 보유)
 - **호출 빈도**: 낮음 (전체의 약 10–20%)
 
@@ -47,7 +47,7 @@
 ### 2.2 Sonnet — 메인 구현 에이전트 (Implementer)
 
 - **모델**: `sonnet` 별칭 (frontmatter `model: sonnet`)
-- **페르소나**: 단일 에이전트가 아니라 **여러 구현 페르소나** — `data-engineer`, `dataops-engineer`, `ai-data-engineer`, `ai-engineer`, `mlops-engineer`, `dagster-impl`(범용 Dagster 구현), `pipeline-explorer`(읽기 전용 탐색), `deploy-auditor`(배포 감사), `tech-scout`(신기술 조사). 도메인별 분담은 [`agent-teams.md`](agent-teams.md) §1
+- **페르소나**: 단일 에이전트가 아니라 **여러 구현 페르소나** — `data-engineer`, `dataops-engineer`, `ai-data-engineer`, `ai-engineer`, `mlops-engineer`, `dagster-impl`(범용 Dagster 구현), `pipeline-explorer`(읽기 전용 탐색), `deploy-auditor`(배포 감사), `tech-scout`(신기술 조사), `perf-engineer`(성능/용량), `viz-engineer`(분석/시각화 스택). 도메인별 분담은 [`agent-teams.md`](agent-teams.md) §1
 - **컨텍스트**: 작업에 필요한 파일만 전달 (전체 코드베이스 X)
 - **호출 빈도**: 높음 (전체의 약 55–65%)
 

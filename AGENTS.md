@@ -12,7 +12,8 @@
    - `docs/design-docs/index.md`
    - `docs/exec-plans/index.md`
    - `docs/references/index.md`
-5. 에이전트 라우팅·effort·escalation 룰: `docs/references/multi-agent.md`
+5. 에이전트 라우팅·effort·escalation 룰: `docs/references/multi-agent.md` +
+   페르소나 로스터/라우팅표: `docs/references/agent-teams.md`
 6. 작업별 운영 절차: `.agent/skill/<name>/SKILL.md` (**코드를 짜기 전에 먼저 검색**)
 
 ## 프로젝트 한 줄

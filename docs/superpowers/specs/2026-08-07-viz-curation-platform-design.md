@@ -1,6 +1,7 @@
 # 시각화·큐레이션 플랫폼 (FiftyOne 병행) — 설계/계획서
 
 - 작성: 2026-08-07
+- ⚠️ 2026-08-19 개명 — 본문의 frames_captions = 현 `frames`
 - 검토 방식: 페르소나 병렬(pipeline-explorer / tech-scout / cto) + **codex 3라운드**
   (독립 의견 → cto 판정 반론 → 개정 판정 최종 검토). "자체 플랫폼" 포지션은 steelman 으로
   최강 형태를 세운 뒤 기각. 라이브 실측(도커 컨테이너·DB) 근거 병기.
