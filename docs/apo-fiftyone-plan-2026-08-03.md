@@ -1,6 +1,7 @@
 # APO 개선용 FiftyOne 시각화 — 단계 계획서
 
 - 작성: 2026-08-03
+- ⚠️ 2026-08-19 개명 — 본문의 frames_captions = 현 `frames` (짝 `frames-prompts`)
 - 목적: **APO(Auto Prompt Optimization) 성능 개선**. 현장 배포 시 성능이 안 나오는 문제를
   FiftyOne 에서 진단·개입 가능하게 만든다.
 - 상태: **Phase 0 진행 중** (source-h 프로토타입, 지표 스펙 적대적 검증 단계)

@@ -19,6 +19,14 @@ CCTV/보안 영상을 수집 → 중복제거 → Gemini 라벨링 → SAM3 bbox
 
 - **Skill Discovery First:** 사용자가 작업을 지시하면, 스스로 코드를 처음부터 짜기 전에 반드시 시스템 도구를 거쳐 `.agent/skill/` 디렉토리를 먼저 검색하세요.
 - 요청과 관련된 스킬 문서가 발견되면, 해당 문서(`SKILL.md`)의 지침을 완벽하게 읽고 그 룰에 맞추어 작업을 수행하세요.
+- **페르소나 라우팅 힌트는 훅이 자동으로 준다:** `.claude/settings.json` 의 `UserPromptSubmit` 이
+  `.claude/hooks/persona_router.py` 를 실행해, 프롬프트에 트리거 키워드가 보이면 상위 3개
+  페르소나를 위임 후보로 제안한다 (합계 2점 미만이면 침묵, 예외는 조용히 통과). 페르소나 정의는
+  `.claude/agents/*.md` 19종, 라우팅표 정본은 `docs/references/agent-teams.md` §2.
+- **새 페르소나를 추가할 때:** 라우터는 별도 키워드 테이블이 아니라 `.claude/agents/<name>.md`
+  frontmatter `description` 안의 `Triggers — <쉼표 구분 키워드>` 구간만 읽는다. 그 구간이 없으면
+  파일이 있어도 **라우팅 대상이 아니다**(수동 위임만 가능) — 현재 19종 중
+  `codex`/`dagster-impl`/`deploy-auditor`/`pipeline-explorer`/`qa-strategist` 5종이 이 상태다.
 
 ---
 

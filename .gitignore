@@ -166,6 +166,9 @@ pyproject.toml
 !.claude/settings.json
 !.claude/agents/
 !.claude/agents/**
+# persona-router hook — settings.json 의 UserPromptSubmit 배선이 참조하는 본체 (2026-08-19)
+!.claude/hooks/
+!.claude/hooks/persona_router.py
 # (the following stay ignored under the .claude/* pattern above; listed for clarity)
 # .claude/settings.local.json   — contains LINEAR_API_KEY, per-user permissions
 # .claude/agent-log.jsonl       — runtime hook output, append-only session activity

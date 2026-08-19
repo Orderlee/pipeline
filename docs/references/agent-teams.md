@@ -16,6 +16,9 @@ The roster is organized by **plane**. Each persona maps to one model tier (multi
 | [`cto`](../../.claude/agents/cto.md) | r/w | Lead architect / Opus orchestrator. Decomposes work, routes to personas, owns architecture & deploy-risk decisions and final pre-merge review. Delegates the typing (§2.1 — delegation of *decisions* prohibited) |
 | [`ai-modeler`](../../.claude/agents/ai-modeler.md) | r/w | Model **science**: experiment & fine-tune design, eval-gate design (per-metric margin + per-class non-regression floor), promote/reject decisions, GT policy. Statistical judgment |
 | [`qa-strategist`](../../.claude/agents/qa-strategist.md) | read-only | QA **architecture**: coverage gap analysis, test-plan design, regression risk. Authoring & execution are delegated |
+| [`platform-architect`](../../.claude/agents/platform-architect.md) | ADR-only writes | **Platform / integration architecture**: how heterogeneous stacks compose — new-service placement (compose project/profile), network & port wiring, inter-service contracts (HTTP-boundary canon), state placement, lifecycle/reboot survival, GPU slotting. Sits between `tech-scout` (facts) and `cto` (verdict) |
+| [`db-architect`](../../.claude/agents/db-architect.md) | read-only | **Database architecture**: schema/index/query-plan design review, migration-file review (one-`DO $$`-per-file runner rule), pgvector/HNSW strategy, 3-instance DB topology. DDL authoring is delegated to `data-engineer` |
+| [`security-architect`](../../.claude/agents/security-architect.md) | read-only | **Security architecture**: threat modeling, secrets/credential exposure review, PII (CCTV) egress decisions, presigned-URL/auth/backup posture. Fixes delegated to domain personas; validated by `codex` `ultra` |
 
 ### Data plane — Sonnet (multi-agent.md §2.2)
 
@@ -40,6 +43,8 @@ The roster is organized by **plane**. Each persona maps to one model tier (multi
 | [`pipeline-explorer`](../../.claude/agents/pipeline-explorer.md) | read-only | Project-specific **code** navigator. "Where is X / trace this flow" — compressed pointers (paths + line ranges), protects parent context |
 | [`deploy-auditor`](../../.claude/agents/deploy-auditor.md) | read-only | Deploy blast-radius auditor + prod/staging drift detector. Knows the two CI workflows, rsync + `git reset --hard` mechanism, `detect_image_rebuild` triggers, healthcheck endpoints |
 | [`tech-scout`](../../.claude/agents/tech-scout.md) | read-only | New/unfamiliar-tech first responder. Verifies against CURRENT docs (context7 + web), **never from memory**. Reports fit / integration cost / risk; `cto` decides adopt/reject |
+| [`perf-engineer`](../../.claude/agents/perf-engineer.md) | r/w | Performance & capacity on the shared host: RAM/OOM & swap, CIFS IO saturation, GPU VRAM contention, container limits & cache sizing. **Measures first** (PSI/smem/nvidia-smi); sysctl/quota specs routed to human ops |
+| [`viz-engineer`](../../.claude/agents/viz-engineer.md) | r/w | Analysis/visualization stack: FiftyOne (+`user-*` plugins), Streamlit dashboard, JupyterLab — the 3-service `docker/analysis/` stack with its bind-mount deploy contract and shared-session constraints |
 
 ### Observation plane — Haiku (multi-agent.md §2.4)
 
@@ -57,17 +62,17 @@ In addition, **skills** in [`.agent/skill/`](../../.agent/skill/) are workflow m
 
 ### 1.1 Model allocation
 
-Persona count ≠ model usage. Fourteen personas collapse onto four model tiers:
+Persona count ≠ model usage. Nineteen personas collapse onto four model tiers:
 
 | Model | Personas | Assigned work (what/why · how · is-it-alive · is-it-correct) | Target call frequency |
 |---|---|---|---|
-| **Opus** (§2.1) | `cto`, `ai-modeler`, `qa-strategist` + main session | **what & why** — decomposition, architecture, model-science & QA judgment, hard-debug final stage, arbitration | ~10–20% |
-| **Sonnet** (§2.2) | `data-engineer`, `dataops-engineer`, `ai-data-engineer`, `ai-engineer`, `mlops-engineer`, `dagster-impl`, `pipeline-explorer`, `deploy-auditor`, `tech-scout` | **how** — implementation, dataset/label plumbing, ops automation, exploration, auditing, tech recon | ~55–65% |
+| **Opus** (§2.1) | `cto`, `ai-modeler`, `qa-strategist`, `platform-architect`, `db-architect`, `security-architect` + main session | **what & why** — decomposition, platform/integration & DB & security design judgment, model-science & QA judgment, hard-debug final stage, arbitration | ~10–20% |
+| **Sonnet** (§2.2) | `data-engineer`, `dataops-engineer`, `ai-data-engineer`, `ai-engineer`, `mlops-engineer`, `dagster-impl`, `pipeline-explorer`, `deploy-auditor`, `tech-scout`, `perf-engineer`, `viz-engineer` | **how** — implementation, dataset/label plumbing, ops automation, exploration, auditing, tech recon, perf tuning, viz stack | ~55–65% |
 | **Haiku** (§2.4) | `ops-engineer` | **is-it-alive** — runtime health, log triage, status snapshots. Cheap, no fixed target | as needed |
 | **GPT-5.x (Codex)** (§2.3) | `codex` + `codex_*` skills | **is-it-correct** — cross-validation, test-quality review (§3.3 `medium`), security/migration `ultra` | ~15–20% |
 
 **Principles**:
-1. Decisions that require reasoning effort (architecture, model science, QA strategy, security judgment) → Opus (`cto` / `ai-modeler` / `qa-strategist`).
+1. Decisions that require reasoning effort (architecture, stack composition, model science, QA strategy, DB design, security judgment) → Opus (`cto` / `platform-architect` / `ai-modeler` / `qa-strategist` / `db-architect` / `security-architect`).
 2. Pattern/implementation work → the Sonnet persona whose **domain** fits (data / model / general); `dagster-impl` when none fits cleanly.
 3. "Is the running system healthy?" → Haiku (`ops-engineer`) — never spend Opus/Sonnet budget on a status check.
 4. Work that benefits from a different-family second look → Codex.
@@ -80,9 +85,11 @@ This is `multi-agent.md` §3.1's model-tier matrix resolved to this project's pe
 | Task type | Primary owner | Secondary / validator | Notes |
 |---|---|---|---|
 | Architecture decision / new resource / bucket / cross-cutting change | **`cto`** (Opus) | (optional) `codex` analysis | multi-agent.md §2.1 — decisions not delegated |
-| "Should we use X" / new library / version upgrade / migration guide | **`tech-scout`** (verify current docs) | `cto` (adopt/reject) | Never answer new-tech from memory |
+| "Should we use X" / new library / version upgrade / migration guide | **`tech-scout`** (verify current docs) | `platform-architect` (integration design, if adopted) → `cto` (adopt/reject) | Never answer new-tech from memory |
+| **New service / stack integration / inter-service boundary design** | **`platform-architect`** (Opus) | `tech-scout` (facts in), `cto` (verdict), domain persona (build) | Deliverable = full integration checklist (placement/network/contract/state/deploy/lifecycle/GPU/failure) |
 | **Ingest / dedup / dispatch / sensor / raw_files / manifest / ffprobe / phash / checksum** | **`data-engineer`** | `codex` (50+ lines) | Core ETL & orchestration plumbing |
-| **Postgres/DuckDB schema / migration authoring** | `data-engineer` + `codex_db_migration` skill | `codex` `ultra` | one `DO $$` block per migration (runner applies the first only) — §3.3 subtle hazard |
+| **Schema / index / query-plan design review, DB perf** | **`db-architect`** (Opus) | `data-engineer` (authoring) + `codex` `ultra` | Design review BEFORE DDL is typed; hot-table migrations are also a deploy-timing decision (`cto`) |
+| **Postgres/DuckDB schema / migration authoring** | `data-engineer` + `codex_db_migration` skill | `db-architect` (design) + `codex` `ultra` | one `DO $$` block per migration (runner applies the first only) — §3.3 subtle hazard |
 | **Reconciliation / backfill / dedup cleanup / checksum recompute / retention / NAS quota** | **`dataops-engineer`** | `codex` (if destructive) | Operates the data; doesn't write pipeline code |
 | **Labeling (Gemini) / Label Studio / GT curation / dataset build / pseudo-label QA / DVC** | **`ai-data-engineer`** | `ai-modeler` (if it feeds training) | `labels` = per-event; **0 rows ≠ failure** |
 | **Model serving / inference / SAM3 / YOLO / embedding-service / GPU alloc / maintenance drain / promote mechanics** | **`ai-engineer`** | `codex` `high` (contract) | Serves what `ai-modeler` decides |
@@ -104,7 +111,9 @@ This is `multi-agent.md` §3.1's model-tier matrix resolved to this project's pe
 | Staging reset / clean re-test | `staging_reset` / `duckdb_staging_wiper` skill | — | Operational — user approval required |
 | Dagster lineage validation / repair | `dagster_lineage_fixer` skill | scope w/ `pipeline-explorer`, fix w/ `data-engineer` or `dagster-impl` | |
 | MLOps finetune run (end-to-end) | `mlops-finetune` skill | `ai-modeler` (decisions) + `mlops-engineer` (ops) | Weights promotion stays manual |
-| Security / auth / secrets | domain persona authoring | `codex` `ultra` + `cto` final review | multi-agent.md §3.3 |
+| Security / auth / secrets / PII-egress review | **`security-architect`** (Opus) threat-model + finding spec | domain persona fixes → `codex` `ultra` + `cto` final review | multi-agent.md §3.3; payload = CCTV of real people |
+| **Performance / OOM / IO·GPU saturation / capacity** | **`perf-engineer`** (measure → attribute → tune) | `cto` (architectural fixes), owning persona (app inefficiency) | PSI/smem/nvidia-smi evidence first — this host's incidents are usually misattributed |
+| **FiftyOne / Streamlit / analysis stack / `user-*` plugins** | **`viz-engineer`** | `db-architect` (heavy query shapes), `perf-engineer` (host-level slowness) | bind mount = live code; shared session — don't restart casually |
 | Label Studio / Slack / external API integration | `ai-data-engineer` (LS) or `data-engineer` | `codex` `high` (contract consistency) | Watch webhook URL, presigned URL expiry |
 | Daily work log | `daily_worklog` skill | — | Auto-organizes WORKLOG.md |
 | Documentation / comments / README | domain persona (or main) | — | Default "do not write" — CLAUDE.md rule |
@@ -315,7 +324,7 @@ python3 scripts/agent_stats.py --since 2026-02-01 --json    # JSON for further p
 What to look for:
 
 - **Model distribution drift** — if Codex is under ~10% of calls, you're under-validating. If Opus (`cto` + `ai-modeler` + `qa-strategist`) is over ~25%, you're over-decomposing.
-- **Plane coverage, not per-persona** — with 14 personas a long tail is expected. Check that each *plane* (data / model / decision / observation / validation) sees traffic, not that every persona does. A persona with zero calls over a quarter is a candidate to fold into a sibling or to fix its routing/description.
+- **Plane coverage, not per-persona** — with 19 personas a long tail is expected. Check that each *plane* (data / model / decision / observation / validation) sees traffic, not that every persona does. A persona with zero calls over a quarter is a candidate to fold into a sibling or to fix its routing/description.
 - **Haiku share** — `ops-engineer` should carry the cheap status checks. If Sonnet/Opus personas are being called for "is it healthy?", the routing is leaking upward and burning budget.
 - **Decisions log size** — many `revisit: Y` entries mean Sonnet fallback ran long; flag to user for batched re-review.
 - **Sub-agent error rate** — track manually for now. If `status: failed` exceeds ~10%, tighten the persona's description/triggers.

@@ -1,4 +1,10 @@
-"""`frames_full`(이미지) + `captions`(텍스트) → 공유 임베딩 공간 단일 데이터셋.
+"""`frames_full`(이미지) + `captions`(텍스트) → 공유 임베딩 공간 단일 데이터셋 `frames`.
+
+⚠️ 2026-08-19 개명으로 이 스크립트의 산출물 이름이 `frames_captions` → **`frames`(정본)** 이
+됐다. 아래 "union 은 멱등하지 않다"가 그대로 유효하다 — 재실행하면 기존 `frames` 를
+**삭제하고 처음부터** 만든다. enrich/reembed/뱅크평가가 얹은 필드도 같이 사라지므로,
+전체 재빌드 의도가 아니면 실행하지 말 것. (`MFC_TARGET` 로 다른 이름에 만들 수 있다.)
+※ 입력 `frames_full` 은 이 개명과 무관한 별개 데이터셋이다 — 정본 `frames` 가 아니다.
 
 ## 왜 이 방식인가 (2026-07-28 실측)
 
@@ -29,7 +35,7 @@ PE-Core-L14-336 은 이미지·텍스트를 **같은 1024-d 공간**에 넣는 C
   - BLAS 스레드 캡 + `os.nice`
 
 env:
-  MFC_TARGET        결과 데이터셋명   기본 'frames_captions'
+  MFC_TARGET        결과 데이터셋명   기본 'frames'  (2026-08-19 개명 전 'frames_captions')
   MFC_FRAMES        기본 'frames_full'
   MFC_CAPTIONS      기본 'captions'
   MFC_FIT           UMAP fit 샘플     기본 30000
@@ -62,7 +68,7 @@ import numpy as np
 import fiftyone as fo
 import fiftyone.brain as fob
 
-TARGET = os.getenv("MFC_TARGET", "frames_captions")
+TARGET = os.getenv("MFC_TARGET", "frames")
 FRAMES = os.getenv("MFC_FRAMES", "frames_full")
 CAPTIONS = os.getenv("MFC_CAPTIONS", "captions")
 FIT = int(os.getenv("MFC_FIT", "30000"))

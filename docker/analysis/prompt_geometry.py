@@ -270,6 +270,14 @@ def load_all():
     gt = np.array([led[k]["gt_class"] for k in keys], dtype=np.int64)
     src = np.array([led[k]["src_video"] for k in keys])
     banks = {v: load_bank(v) for v in VERSIONS}
+    for v, b in banks.items():
+        # gidx 블록 = 뱅크당 GIDX_OFFSET. 넘치면 크래시가 아니라 **다른 버전 문장으로의
+        # 조용한 오귀속**이다 (gidx % GIDX_OFFSET 이 이웃 블록을 가리킴). 2026-08-19 실측
+        # 최대 뱅크 79,842/100,000 = 80% 소진, 추세 가파름 — 넘는 날 여기서 시끄럽게 멈춘다.
+        # 근본 해결(GIDX_OFFSET 증설 + 전량 재백필)은 별건.
+        if len(b["cls"]) > GIDX_OFFSET:
+            raise SystemExit(f"뱅크 {v} 문장 {len(b['cls']):,} > GIDX_OFFSET {GIDX_OFFSET:,} — "
+                             "gidx 블록 충돌(조용한 버전 오귀속). GIDX_OFFSET 증설+재백필 필요")
     return keys, X, gt, src, banks
 
 
@@ -1399,13 +1407,17 @@ def stage_gap() -> None:
         km = KMeans(n_clusters=k, n_init=5, random_state=51).fit(X[miss])
         others = np.max(np.stack([best4[o] for o in CLASS_NAMES if o != c]), axis=0)
         clusters = []
+        # 뱅크 전체 스캔(12,480~16,125 문장)을 member 마다 반복하지 않는다 — 예측 클래스는
+        # 3~5종뿐이라 클래스당 한 번이면 충분하다 (_Pruner.__init__ 의 self.gidx 와 같은 패턴).
+        gidx_of = {pc: np.flatnonzero(banks[V4]["cls"] == pc)
+                   for pc in {int(x) for x in pred4[miss]}}
         for ci in range(k):
             members = miss[km.labels_ == ci]
             # 이 군집을 실제로 잡아먹는 승자 프롬프트 (예측 클래스의 best)
             winner_texts = collections.Counter()
             for i in members:
                 pc = int(pred4[i])
-                pidx = np.flatnonzero(banks[V4]["cls"] == pc)[arg4[pc][i]]
+                pidx = gidx_of[pc][arg4[pc][i]]
                 winner_texts[banks[V4]["prompt"][pidx]] += 1
             deficit = float((others[members] - best4[c][members]).mean())
             # 프로브: 후보 문장을 라이브 임베딩해 이 군집에서 would-win 측정
@@ -3812,18 +3824,24 @@ def stage_wave() -> None:
                       "multi_fire": multi, "bins": WAVE_BINS, "thr": WAVE_THR,
                       "rule_k": RULE_K}
 
-        for j, e in enumerate(events):
-            ds.set_values(f"wave_iou_{CLASS_NAMES[e]}_{tag}",
-                          {ids[i]: float(iou[i, j]) for i in ok}, key_field="id")
-        conf = 1.0 - iou.min(axis=1)
-        ds.set_values(f"wave_pred_{vt}",
-                      {ids[i]: fo.Classification(label=CLASS_NAMES[int(pred[i])],
-                                                 confidence=float(conf[i])) for i in ok},
-                      key_field="id")
-        ds.set_values(f"wave_vs_topk_{tag}",
-                      {ids[i]: fo.Classification(
-                          label=f"{CLASS_NAMES[int(pk[i])]}→{CLASS_NAMES[int(pred[i])]}")
-                          for i in ok if pk[i] != pred[i]}, key_field="id")
+        # WAVE_WRITE_FIELDS=0 — npz(문장 기여도, promptmap/-prompts 가 소비)만 내고 프레임
+        # 필드는 생략한다. 29버전 × 필드 6종 ≈ 170 필드가 flat 스키마에 얹히는 게 스펙
+        # §1-4 명명 부채의 본체라, -prompts wave 축 목적이면 npz 로 충분하다 (2026-08-19).
+        if os.environ.get("WAVE_WRITE_FIELDS", "1") != "0":
+            for j, e in enumerate(events):
+                ds.set_values(f"wave_iou_{CLASS_NAMES[e]}_{tag}",
+                              {ids[i]: float(iou[i, j]) for i in ok}, key_field="id")
+            conf = 1.0 - iou.min(axis=1)
+            ds.set_values(f"wave_pred_{vt}",
+                          {ids[i]: fo.Classification(label=CLASS_NAMES[int(pred[i])],
+                                                     confidence=float(conf[i])) for i in ok},
+                          key_field="id")
+            ds.set_values(f"wave_vs_topk_{tag}",
+                          {ids[i]: fo.Classification(
+                              label=f"{CLASS_NAMES[int(pk[i])]}→{CLASS_NAMES[int(pred[i])]}")
+                              for i in ok if pk[i] != pred[i]}, key_field="id")
+        else:
+            log(f"wave {v}: WAVE_WRITE_FIELDS=0 — 프레임 필드 생략 (npz 만)")
 
     with open(f"{GEO}/wave.json", "w", encoding="utf-8") as f:
         json.dump(summary, f, ensure_ascii=False, indent=1)
@@ -3937,8 +3955,12 @@ def stage_promptmap() -> None:
             for c in classes:
                 g = gidx[c]
                 lo_q, hi_q = np.percentile(signed[g], [10, 90])
-                wrole[g[signed[g] >= hi_q]] = "유익 상위10%"
-                wrole[g[signed[g] <= lo_q]] = "유해 하위10%"
+                # 부호 실재 조건 — gain=0(무기여) 동점 덩어리가 백분위에 걸리면 "하위10%"
+                # 라벨이 40%+ 를 담는 거짓이 된다 (frames 실측 43.6%, 정상 위주 데이터셋의
+                # 퇴화 — sourcei 는 이벤트 밀도 덕에 우연히 무증상). 유해=음의 기여 실재,
+                # 유익=양의 기여 실재일 때만.
+                wrole[g[(signed[g] >= hi_q) & (signed[g] > 0)]] = "유익 상위10%"
+                wrole[g[(signed[g] <= lo_q) & (signed[g] < 0)]] = "유해 하위10%"
         else:
             log(f"promptmap {v}: {wpath} 없음 — wave 축 생략 (`wave` 스테이지 먼저)")
 
@@ -4966,7 +4988,10 @@ def stage_score() -> None:
 
     z = np.load(f"{WORK}/embed.npz", allow_pickle=True)
     key2i = {str(k): i for i, k in enumerate(z["key"])}
-    Xall = z["vec"].astype(np.float32)
+    # copy=False — npz 의 vec 은 이미 float32 라 기본 astype 은 **쓸데없이 한 벌 더** 뜬다
+    # (frames 187,994x1024 = 770 MB). NpzFile 은 접근마다 새로 풀어주므로 in-place 나눗셈이
+    # 다른 참조를 건드릴 위험도 없다. 이 호스트는 스왑이 말라 있어 순간 할당이 곧 비용이다.
+    Xall = z["vec"].astype(np.float32, copy=False)
     Xall /= np.linalg.norm(Xall, axis=1, keepdims=True)
 
     ok_doms: list[str] = []
@@ -5038,7 +5063,13 @@ def _score_domain(ds, m: dict, dom: str, drows: list, key2i: dict,
         for k, a, b in zip(keys, pred_a, pred_b)}, key_field="id")
 
     # weak concordance (참고 신호 — recall 아님, 스펙 §7)
-    weak = ds.select(keys, ordered=True).values("normalized_class")
+    # ⚠️ `ds.select(ordered=True)` 는 데이터셋에 없는 id 를 **조용히 빼고** 반환한다
+    # (실측: 요청 4 → 반환 3). 그대로 위치로 zip 하면 첫 결측 이후 weak[i] 가 pred_b[i] 와
+    # 다른 프레임을 가리켜 concordance 가 무의미한 수가 된다. key 로 되짚어 정렬을 강제한다
+    # (_stream_frames_embeddings 의 live 필터와 같은 방어).
+    _wid, _wcls = ds.select(keys, ordered=True).values(["id", "normalized_class"])
+    _wmap = dict(zip(_wid, _wcls))
+    weak = [_wmap.get(k) for k in keys]
     wmask = [i for i, w in enumerate(weak) if WEAK_TO_BANK.get(w or "")]
     concordance = (float(np.mean([CLASS_NAMES[int(pred_b[i])] == WEAK_TO_BANK[weak[i]]
                                   for i in wmask])) if wmask else None)
@@ -5070,7 +5101,10 @@ def stage_gap_frames() -> None:
         return
     z = np.load(f"{WORK}/embed.npz", allow_pickle=True)
     key2i = {str(k): i for i, k in enumerate(z["key"])}
-    Xall = z["vec"].astype(np.float32)
+    # copy=False — npz 의 vec 은 이미 float32 라 기본 astype 은 **쓸데없이 한 벌 더** 뜬다
+    # (frames 187,994x1024 = 770 MB). NpzFile 은 접근마다 새로 풀어주므로 in-place 나눗셈이
+    # 다른 참조를 건드릴 위험도 없다. 이 호스트는 스왑이 말라 있어 순간 할당이 곧 비용이다.
+    Xall = z["vec"].astype(np.float32, copy=False)
     Xall /= np.linalg.norm(Xall, axis=1, keepdims=True)
 
     run_id = f"gap-{time.strftime('%Y%m%d-%H%M%S')}"
