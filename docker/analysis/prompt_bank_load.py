@@ -12,7 +12,7 @@
 사용:
     python3 prompt_bank_load.py load  <ledger_dir> --apply
     python3 prompt_bank_load.py embed <ledger_dir> --apply     # 재개 가능(기적재분 skip)
-    python3 prompt_bank_load.py verify
+    python3 prompt_bank_load.py verify           # 적재 정합 + 벡터 귀속 감사
 
 정본: docker/analysis/prompt_bank_load.py
 """
@@ -155,6 +155,72 @@ def cmd_embed(args) -> int:
 
 
 # ────────────────────── verify ──────────────────────
+NPZ_DIR = os.environ.get("BANK_NPZ_DIR", "/data/fiftyone/sourceh/prompts")
+
+
+def vector_hash(path: str) -> "tuple[str, tuple]":
+    """뱅크 npz 의 벡터 배열 지문. 문장 텍스트와 무관하게 **좌표만** 본다."""
+    import hashlib
+
+    import numpy as np
+    v = np.ascontiguousarray(np.load(path, allow_pickle=True)["vec"])
+    return hashlib.sha256(v.tobytes()).hexdigest()[:16], tuple(v.shape)
+
+
+def audit_vector_attribution(cur, npz_dir: str = NPZ_DIR) -> "list[str]":
+    """문장 지문 ↔ 벡터 해시가 **1:1** 인지 검사. 어긋나면 벡터 귀속이 틀린 것이다.
+
+    ⚠️ "다른 version_tag 가 같은 벡터" 를 곧바로 오류로 보면 **안 된다** — 실측 29버전 중
+       4건이 벡터를 공유하는데 그 중 3건은 문장이 진짜 같아서 벡터도 같은 정상이다:
+         0e17ad9c  V1.0.11.0·v1.0.6.1·v1.0.7.0·v1.0.8.0  12,480행 · 문장지문 동일 ✅
+         66e6e132  v1.0.5.1·v1.0.6.0                     12,381행 · 동일        ✅
+         f31e23a4  v1.0.1.0·v1.0.5.0                     12,568행 · 동일        ✅
+         c1a2b4db  v1.0.2.0(12,568/869f3371) ≠ v1.0.2.1(14,600/df5a733f)       ❌
+       마지막만 손상이다: v1.0.2.0 은 문장이 v1.0.1.0 과 같은데 벡터는 v1.0.2.1 것이다
+       (공급자 JSON 두 개가 md5 동일 — 2026-08-19 확인). 그래서 규칙은 개수도 이름도
+       아닌 **대응 관계**다. 양방향 다 본다: 한 벡터가 두 문장집합에 붙어도, 한 문장집합이
+       두 벡터에 붙어도 위반이다.
+    """
+    import collections
+    import glob
+
+    cur.execute("""
+        SELECT b.version_tag,
+               md5(string_agg(s.content_hash, ',' ORDER BY s.gidx)) AS text_fp
+        FROM prompt_banks b JOIN bank_sentences s USING (bank_id)
+        GROUP BY b.version_tag
+    """)
+    text_fp = {v: fp for v, fp in cur.fetchall()}
+
+    vec_fp, shapes = {}, {}
+    for f in sorted(glob.glob(f"{npz_dir}/*.npz")):
+        ver = f.rsplit("/", 1)[-1][:-4]
+        vec_fp[ver], shapes[ver] = vector_hash(f)
+
+    both = [v for v in vec_fp if v in text_fp]
+    if not both:
+        return [f"{npz_dir} 의 npz 버전과 DB 문장 버전이 하나도 안 겹친다 — 경로/표기 확인"]
+
+    by_vec, by_text = collections.defaultdict(set), collections.defaultdict(set)
+    for v in both:
+        by_vec[vec_fp[v]].add(text_fp[v])
+        by_text[text_fp[v]].add(vec_fp[v])
+
+    bad = []
+    for h, fps in by_vec.items():
+        if len(fps) > 1:
+            vers = sorted(v for v in both if vec_fp[v] == h)
+            bad.append(f"벡터 {h} 가 문장집합 {len(fps)}개에 붙어 있다: "
+                       + ", ".join(f"{v}(문장 {text_fp[v][:8]}, {shapes[v][0]:,}행)"
+                                   for v in vers))
+    for fp, hs in by_text.items():
+        if len(hs) > 1:
+            vers = sorted(v for v in both if text_fp[v] == fp)
+            bad.append(f"문장집합 {fp[:8]} 이 벡터 {len(hs)}종에 붙어 있다: "
+                       + ", ".join(f"{v}(벡터 {vec_fp[v]})" for v in vers))
+    return bad
+
+
 def cmd_verify(args) -> int:
     q = {
         "prompt_banks": "SELECT count(*) FROM prompt_banks",
@@ -187,6 +253,17 @@ def cmd_verify(args) -> int:
         orphan = cur.fetchone()[0]
         if orphan:
             bad.append(f"prompt 벡터 {orphan:,}개가 bank_sentences 에 없는 문장을 가리킨다")
+        # 벡터 귀속 계약 — 문장 지문 ↔ 벡터 해시 1:1 (위 함수 주석에 근거)
+        if args.skip_vector_audit:
+            print("  벡터 귀속 감사        건너뜀 (--skip-vector-audit)")
+        else:
+            try:
+                viol = audit_vector_attribution(cur, args.npz_dir)
+            except Exception as e:              # noqa: BLE001 — 감사 실패가 verify 를 못 죽인다
+                print(f"  벡터 귀속 감사        ⚠️ 불가: {type(e).__name__}: {e}")
+            else:
+                print(f"  벡터 귀속 감사        위반 {len(viol)}건")
+                bad.extend(viol)
     if bad:
         print("❌ " + "\n❌ ".join(bad))
         return 1
@@ -205,6 +282,10 @@ def main() -> int:
             p.add_argument("--apply", action="store_true", help="실제 쓰기 (기본 dry-run)")
         p.add_argument("--dsn", default=DSN)
         p.add_argument("--join-bank", default="v1.0.8.0")
+        p.add_argument("--npz-dir", default=NPZ_DIR,
+                       help="뱅크 벡터 npz 디렉토리 (벡터 귀속 감사용)")
+        p.add_argument("--skip-vector-audit", action="store_true",
+                       help="벡터 귀속 감사 생략 (npz 가 없는 환경)")
         p.set_defaults(func=fn)
     args = ap.parse_args()
     return args.func(args)

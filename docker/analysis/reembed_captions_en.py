@@ -34,7 +34,7 @@ PE-Core 텍스트 타워가 한국어를 사실상 못 읽는다. 의미가 다�
   배치마다 `MemAvailable` 가드 + BLAS 캡 + `os.nice`.
 
 env:
-  RCE_DATASET      기본 'frames_captions'
+  RCE_DATASET      기본 'frames'   (2026-08-19 개명 전 이름은 frames_captions)
   RCE_TR_WORKERS   번역 병렬     기본 6
   RCE_EM_WORKERS   임베딩 병렬   기본 4
   RCE_BATCH        샘플 배치     기본 5000
@@ -67,7 +67,7 @@ import fiftyone as fo
 
 import fiftyone_pgvector as fp
 
-DATASET = os.getenv("RCE_DATASET", "frames_captions")
+DATASET = os.getenv("RCE_DATASET", "frames")
 TR_WORKERS = int(os.getenv("RCE_TR_WORKERS", "6"))
 EM_WORKERS = int(os.getenv("RCE_EM_WORKERS", "4"))
 BATCH = int(os.getenv("RCE_BATCH", "5000"))

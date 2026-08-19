@@ -5,9 +5,19 @@
 Task 12부터 프롬프트 데이터셋은 세션 데이터셋 이름에서 "<name>-prompts"로 자동 유도된다
 (sourcei 세션 → sourcei-prompts, source-h 세션 → source-h-prompts) — 짝이 없으면 안내만 뜨고
 크래시하지 않는다. 뱅크 버전이 여럿이면 "전체"/버전별 선택기로 산점도를 필터링한다.
+
+문장 텍스트는 **Postgres 019 스키마(`bank_sentences`)가 정본**이다 (2026-08-19) — 데이터셋의
+`text` 필드는 npz 를 `gidx % GIDX_OFFSET` 로 퍼온 파생물이라 43.3%가 자리표시자다. 아래
+"prompt DB" 블록 참고. DB 를 못 읽거나 게이트에서 거부되면 데이터셋 필드로 폴백하고 그
+사실을 배너에 싣는다.
+
 정본: docker/analysis/plugins/user-prompt-compare/ (git)
 배포: docker cp → /data/fiftyone/datasets/__plugins__/user-prompt-compare/
+      + 플러그인 **디렉토리 touch** (plugins_cache dir_state 무효화)
 """
+
+import os
+import threading
 
 import fiftyone as fo
 import fiftyone.operators as foo
@@ -22,7 +32,18 @@ BRAIN_KEY = "emb_viz"          # 하드코딩 — App이 다른 키에서 죽는
 FRAMES_DATASET = "sourcei"
 VTAG = "v1080"   # 2026-08-11 전 파트 태그로 통일 (구 v080 — vtag 주석 참고)
 WINNER_FIELD = f"winner_gidx_{VTAG}"
-MAX_POINTS = 20_000
+# 그리는 점 상한. 2026-08-19 20,000 → 700,000 (사용자: "전체 이미지 및 프롬프트가 나와야
+# 분석이 가능"). 603,318 전량을 통과시킨다. 형제 패널 image_embeddings 와 같은 판단이다 —
+# 속도 이득은 점 수 축소가 아니라 payload 축소에서 나온다(전량 실측 20초).
+MAX_POINTS = 700_000
+# 호버 텍스트를 실을 최대 점 수. **여기가 전량 표시의 열쇠였다** — 실측 분해:
+#   drawn 603,318 → fig 107.58MB 중 text 77.21MB(72%) · ids 6.45MB · 나머지 좌표
+#   호버 내용물이 문장 원문(≤80자)이라 원리적으로 안 줄어든다.
+# 호버를 끄면 30.37MB, 좌표 반올림까지 하면 그 절반이다. 잃는 건 툴팁뿐이고 상세는
+# **선택 → 문장 표**(_rows_to_markdown)가 이미 담당한다 — 즉 LOD 의 상세 단계가
+# 새로 만들 것 없이 이미 있다. (FiftyOne PlotlyView 는 줌 이벤트를 노출하지 않아
+# 줌 기반 LOD 는 불가능하다 — on_click/on_selected 둘뿐. 그래서 선택을 트리거로 쓴다.)
+HOVER_BUDGET = 20_000
 # 벡터 전용(문장 미보유) 뱅크 버전의 자리표시자 접두사 — `prompt_geometry.PLACEHOLDER_PREFIX`
 # 와 **같은 문자열**. import 하지 않는 이유: 이 플러그인은 App 프로세스에서 돌고 /workspace 가
 # sys.path 에 없다. 두 곳에 사는 상수이므로 한쪽을 바꾸면 다른 쪽도 바꿔야 한다.
@@ -52,6 +73,337 @@ SHOW_ALL_LABEL = "전체 (미채택 포함)"
 SHOW_ADOPTED_LABEL = "채택만"
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# prompt DB (Postgres 019 스키마) — 문장·벡터 **정본** 해석
+# ══════════════════════════════════════════════════════════════════════════════
+# ⚠️ **사본 동기화 블록** — 이 섹션(`PDB_*` / `pdb_*` / `_pdb_*`)은
+#      plugins/user-prompt-compare · user-image-embeddings · user-embeddings
+#    세 곳에 **글자 단위로 같은 사본**으로 들어 있다. 플러그인 디렉토리가 각각 독립
+#    배포 단위(`docker cp <디렉토리>`)라 공유 import 경로가 없다 — CLASS_COLORS·
+#    PLACEHOLDER_PREFIX 복제와 같은 관례다. **한 곳을 고치면 나머지 둘도 같이 고칠 것.**
+#
+# 왜 DB 인가 (2026-08-19 사용자 요청: "DB 연결 해야해 이제 gidx 그걸로 하지마"):
+#   `<X>-prompts` 데이터셋의 `text` 필드는 npz(`PROMPT_DIR/<ver>.npz`)의 `prompt`
+#   배열을 `gidx % GIDX_OFFSET` 행으로 퍼온 **파생물**이다. 2026-08-11 재빌드가 27버전의
+#   문장을 자리표시자로 덮어써서 sourcei-prompts 603,318행 중 **261,244행(43.3%)** 이
+#   `(텍스트 없음 #N)` 이다(2026-08-19 실측). 정본은 Postgres 019 스키마다:
+#
+#     prompt_banks(bank_id, version_tag, sentence_storage, …)
+#       ⨝ bank_sentences(bank_id, gidx, text, class_label, content_hash)   [UNIQUE(bank_id,gidx)]
+#       ⨝ image_embeddings(entity_type='prompt', entity_id=content_hash)   → 1024-d 벡터
+#
+#   조인 키 = (샘플 `bank_version.label` 정규화, 샘플 `gidx % PDB_GIDX_OFFSET`)
+#           → (prompt_banks.version_tag 정규화, bank_sentences.gidx)
+#   실측 커버리지: prompt 벡터 121,614행 = bank_sentences 고유 content_hash 121,614개
+#   (고아 0) — 문장이 DB 에 있으면 벡터도 반드시 있다.
+#
+# fail-closed 게이트 (repair_bank_prompts.check_candidate 와 같은 규약 — 조용히 틀린
+# 문장을 넣느니 폴백한다):
+#   ① 그 버전이 DB 에 있고 문장을 보유해야 한다 (`external_only` = 문장 없음이 사실)
+#   ② DB 문장 수 == 그 버전의 **데이터셋 행 수**(= npz 행 수). 다르면 gidx 정렬을
+#      신뢰할 수 없다 — 실측 v1.0.2.0 은 DB 12,568 vs 데이터셋 14,600 이라 gidx 로
+#      읽으면 **다른 문장**이 나온다(표본 10개 중 9개 불일치).
+#   ③ 가져온 행의 `class_label` == 샘플의 `category.label`
+#   하나라도 어긋나면 그 **버전 전체**가 폴백이고, 어느 소스를 썼는지 `pdb_note()` 가
+#   배너에 싣는다 — **조용한 폴백 금지**(2026-08-19 요구사항).
+
+PDB_DSN_ENV = ("BANK_DB_DSN", "DATAOPS_POSTGRES_DSN", "POSTGRES_DSN", "DATABASE_URL")
+PDB_MODEL = os.environ.get("BANK_EMBED_MODEL", "facebook/PE-Core-L14-336")
+PDB_GIDX_OFFSET = 100_000        # prompt_geometry.GIDX_OFFSET 와 같은 값 (복제 상수)
+PDB_MEMO_CAP = 300_000           # (버전, 로컬 gidx) → 문장 메모 상한. 넘으면 통째로 비운다
+PDB_SRC_DB = "DB 정본(bank_sentences)"
+PDB_SRC_FALLBACK = "데이터셋 text 필드(npz 파생)"
+
+_PDB_BANKS = None                # norm_ver -> (bank_id, version_tag, storage, n_sent)
+_PDB_BANKS_ERR = None            # 마지막 뱅크 조회 실패 사유 — 배너에 그대로 싣는다
+_PDB_TEXT = {}                   # (norm_ver, local_gidx) -> (text, class_label)
+_PDB_CONN = None
+_PDB_LOCK = threading.Lock()
+
+
+def pdb_enabled():
+    """`PROMPT_DB=off` 로 DB 경로를 끌 수 있다 (DB 장애 시 탈출구 — 폴백은 데이터셋 필드)."""
+    return os.environ.get("PROMPT_DB", "on").strip().lower() not in ("0", "off", "false", "no")
+
+
+def pdb_norm_ver(v):
+    """`V1.0.10.3` / `v1.0.10.3` / `1.0.10.3` → `1.0.10.3`.
+
+    `prompt_banks.version_tag` 는 대소문자·`v` 접두가 흔들린다 (실측 52행에 `V1.0.10.3`
+    과 `1.0.13.0` 이 함께 있다) — 정규화 없이 등식 조인하면 조용히 0건이 된다.
+    """
+    return str(v if v is not None else "").strip().lstrip("vV")
+
+
+def pdb_local_gidx(g):
+    """FiftyOne 전역 gidx → 뱅크-로컬 행 번호 (= `bank_sentences.gidx`)."""
+    return None if g is None else int(g) % PDB_GIDX_OFFSET
+
+
+def _pdb_dsn():
+    return next((os.environ[k] for k in PDB_DSN_ENV if os.environ.get(k)), None)
+
+
+def _pdb_query(sql, params):
+    """커넥션 1개를 프로세스 수명 동안 재사용. 끊겼으면 **한 번만** 재연결 후 재시도.
+
+    App 은 유휴 시간이 길어 커넥션이 서버측에서 끊기는 일이 잦다 — 요청마다 새로
+    연결하면 버전당 왕복이 붙고(전체 필터 = 최대 29버전), 안 하면 첫 조회가 죽는다.
+    """
+    global _PDB_CONN
+    import psycopg2
+
+    with _PDB_LOCK:
+        for last in (False, True):
+            try:
+                if _PDB_CONN is None or _PDB_CONN.closed:
+                    dsn = _pdb_dsn()
+                    if not dsn:
+                        raise RuntimeError("DSN 미설정 (" + "/".join(PDB_DSN_ENV) + ")")
+                    _PDB_CONN = psycopg2.connect(dsn, connect_timeout=5)
+                    _PDB_CONN.autocommit = True     # 읽기 전용 — 트랜잭션을 열어두지 않는다
+                with _PDB_CONN.cursor() as cur:
+                    cur.execute(sql, params)
+                    return cur.fetchall()
+            except psycopg2.Error:
+                try:
+                    if _PDB_CONN is not None:
+                        _PDB_CONN.close()
+                except Exception:       # noqa: BLE001 — 이미 끊긴 커넥션
+                    pass
+                _PDB_CONN = None
+                if last:
+                    raise
+    return []
+
+
+def pdb_banks(refresh=False):
+    """norm_ver -> (bank_id, version_tag, sentence_storage, n_sent). 52행 — 1회만 읽는다.
+
+    실패는 예외가 아니라 **빈 dict + 사유 기록**이다 (패널이 죽으면 안 된다).
+    """
+    global _PDB_BANKS, _PDB_BANKS_ERR
+    if _PDB_BANKS is not None and not refresh:
+        return _PDB_BANKS
+    if not pdb_enabled():
+        _PDB_BANKS, _PDB_BANKS_ERR = {}, "PROMPT_DB=off (수동 비활성)"
+        return _PDB_BANKS
+    try:
+        rows = _pdb_query(
+            "SELECT b.bank_id, b.version_tag, b.sentence_storage, count(s.sentence_id) "
+            "  FROM prompt_banks b LEFT JOIN bank_sentences s USING (bank_id) "
+            " WHERE b.source = 'userwatch' "          # gidx 규약(userwatch:<tag>)을 쓰는 원장만
+            " GROUP BY 1, 2, 3", ())
+    except Exception as e:      # noqa: BLE001 — DSN 부재·DB 다운 전부 폴백 대상
+        _PDB_BANKS, _PDB_BANKS_ERR = {}, f"{type(e).__name__}: {e}"
+        return _PDB_BANKS
+    out = {}
+    for bank_id, tag, storage, n in rows:
+        key = pdb_norm_ver(tag)
+        # 대소문자만 다른 두 행이 같은 버전으로 접히면 문장이 많은 쪽을 쓴다.
+        if key not in out or int(n) > out[key][3]:
+            out[key] = (bank_id, tag, storage, int(n))
+    _PDB_BANKS, _PDB_BANKS_ERR = out, None
+    return out
+
+
+def pdb_fetch_texts(version, locals_):
+    """(버전, 로컬 gidx 목록) → {local_gidx: (text, class_label)}.
+
+    `WHERE bank_id = %s AND gidx = ANY(%s)` — UNIQUE(bank_id, gidx) 인덱스를 그대로 탄다.
+    **전량 로드 금지**: 뷰에 그려지는 행만 묻는다(패널 기준 최대 MAX_POINTS).
+    같은 (버전, 행)은 프로세스 안에서 두 번 묻지 않는다 — 서브샘플이 캐시돼 있어
+    두 번째 갱신부터는 전부 메모 적중이다.
+    """
+    bank = pdb_banks().get(pdb_norm_ver(version))
+    if bank is None:
+        return {}
+    key = pdb_norm_ver(version)
+    want = sorted({int(g) for g in locals_ if g is not None})
+    got = {g: _PDB_TEXT[(key, g)] for g in want if (key, g) in _PDB_TEXT}
+    miss = [g for g in want if g not in got]
+    if miss:
+        rows = _pdb_query(
+            "SELECT gidx, text, class_label FROM bank_sentences "
+            " WHERE bank_id = %s AND gidx = ANY(%s)", (bank[0], miss))
+        if len(_PDB_TEXT) > PDB_MEMO_CAP:
+            _PDB_TEXT.clear()
+        for g, text, label in rows:
+            got[int(g)] = (text, label)
+            _PDB_TEXT[(key, int(g))] = (text, label)
+    return got
+
+
+def pdb_fetch_vectors(version, locals_):
+    """(버전, 로컬 gidx 목록) → {local_gidx: [float, …]} (1024-d).
+
+    `bank_sentences.content_hash` → `image_embeddings(entity_type='prompt')` 조인.
+    pgvector 값은 psycopg2 어댑터가 없어 `'[0.1,0.2,…]'` 문자열로 온다 — `::text` 로
+    의도를 못박고 여기서 파싱한다. 메모하지 않는다(1024-d × 수만 행 = GB 단위).
+    """
+    bank = pdb_banks().get(pdb_norm_ver(version))
+    if bank is None:
+        return {}
+    want = sorted({int(g) for g in locals_ if g is not None})
+    if not want:
+        return {}
+    rows = _pdb_query(
+        "SELECT s.gidx, e.embedding::text FROM bank_sentences s "
+        "  JOIN image_embeddings e ON e.entity_type = 'prompt' "
+        "   AND e.entity_id = s.content_hash AND e.model_name = %s "
+        " WHERE s.bank_id = %s AND s.gidx = ANY(%s)", (PDB_MODEL, bank[0], want))
+    return {int(g): [float(x) for x in str(v).strip("[]").split(",")] for g, v in rows}
+
+
+def pdb_version_counts(versions):
+    """버전별 행 수 — 게이트 ②의 분모(그 버전이 데이터셋에서 차지하는 행 수)."""
+    counts = {}
+    for v in versions:
+        if v is not None:
+            counts[str(v)] = counts.get(str(v), 0) + 1
+    return counts
+
+
+def pdb_resolve_texts(versions, gidxs, fallback, ver_counts, categories=None):
+    """샘플 정렬 시퀀스 → (문장 리스트, 출처 메타). 위 게이트 ①②③ 적용.
+
+    versions[i]  샘플의 `bank_version.label`   gidxs[i]  샘플의 전역 `gidx`
+    fallback[i]  데이터셋 `text` 필드 값(폴백)  categories[i]  `category.label`(게이트 ③)
+    ver_counts   {버전: 데이터셋 전체 행 수} — `pdb_version_counts()` 로 만든다.
+                 (전체가 아닌 표시분으로 만들면 게이트 ②가 항상 실패한다.)
+    """
+    out = list(fallback)
+    # `corrupt` = **그리면 조용한 오답이 되는 버전**. `reject` 와 다르다:
+    #   · external_only  → 텍스트만 없고 벡터는 유효 → reject 이지만 corrupt 아님 (그린다)
+    #   · 행수 불일치·class 불일치 → gidx 정렬이 깨져 **벡터 귀속 자체가 틀렸다** → corrupt
+    # v1.0.2.0 이 후자다: 공급자 JSON 이 v1.0.2.1 과 **바이트 동일**(md5 6c387ea8… 실측)이라
+    # 뷰의 14,600점은 v1.0.2.1 의 벡터다. 텍스트는 자리표시자라 눈에 보이지만, 기하 비교에
+    # 끼면 v1.0.2.1 을 자기 자신과 비교하게 된다 — 경고만으로는 못 막는다.
+    meta = {"db_rows": 0, "db_versions": [], "reject": {}, "corrupt": [], "err": None}
+    if not pdb_enabled():
+        meta["err"] = "PROMPT_DB=off"
+        return out, meta
+    banks = pdb_banks()
+    if not banks:
+        meta["err"] = _PDB_BANKS_ERR or "prompt_banks 0행"
+        return out, meta
+
+    by_ver = {}
+    for i, v in enumerate(versions):
+        if v is not None and gidxs[i] is not None:
+            by_ver.setdefault(str(v), []).append(i)
+
+    def _reject(why, detail):
+        meta["reject"].setdefault(why, []).append(detail)
+
+    for version, idxs in by_ver.items():
+        bank = banks.get(pdb_norm_ver(version))
+        if bank is None or bank[3] == 0:
+            _reject("DB 문장 미보유(external_only)", version)
+            continue
+        want = ver_counts.get(version) if ver_counts else None
+        if want is not None and int(want) != bank[3]:
+            # ② 행수 불일치 = gidx 정렬 붕괴. 실측 v1.0.2.0 이 여기서 걸린다.
+            _reject("행수 불일치(gidx 정렬 불가)", f"{version} DB {bank[3]:,}≠뷰 {int(want):,}")
+            meta["corrupt"].append(version)
+            continue
+        locs = [pdb_local_gidx(gidxs[i]) for i in idxs]
+        try:
+            got = pdb_fetch_texts(version, locs)
+        except Exception as e:      # noqa: BLE001 — 폴백이 있다
+            meta["err"] = f"{type(e).__name__}: {e}"
+            _reject("조회 실패", version)
+            continue
+        if categories is not None:
+            bad = next(
+                (f"{version} gidx {g}: DB {got[g][1]} ≠ 뷰 {categories[i]}"
+                 for i, g in zip(idxs, locs)
+                 if g in got and categories[i] is not None and got[g][1] != categories[i]),
+                None)
+            if bad:
+                _reject("class 불일치(정렬 붕괴)", bad)
+                meta["corrupt"].append(version)
+                continue
+        n = 0
+        for i, g in zip(idxs, locs):
+            row = got.get(g)
+            if row is not None:
+                out[i] = row[0]
+                n += 1
+        if n:
+            meta["db_rows"] += n
+            meta["db_versions"].append(version)
+    return out, meta
+
+
+def pdb_note(meta, label="문장"):
+    """배너 한 줄 — **어느 소스를 몇 행에 썼는지 항상 밝힌다** (조용한 폴백 금지).
+
+    ⚠️ 배너는 단일 문단이어야 하므로 개행을 넣지 않는다 (형제 패널의 stale 문단 함정).
+    """
+    if meta.get("db_rows"):
+        note = (f"{label} 출처: **{PDB_SRC_DB}** {meta['db_rows']:,}행"
+                f"/{len(meta['db_versions'])}버전")
+    else:
+        note = f"{label} 출처: **{PDB_SRC_FALLBACK}** — DB 해석 0행"
+    for why, items in sorted(meta.get("reject", {}).items()):
+        head = ", ".join(sorted(items)[:2])
+        more = f" 외 {len(items) - 2}" if len(items) > 2 else ""
+        note += f" · ⚠️ 폴백 {len(items)}버전 [{why}: {head}{more}]"
+    if meta.get("err"):
+        note += f" · ⚠️ DB 오류: {meta['err']}"
+    return note
+
+
+def pdb_selftest():
+    """DB 없이 도는 순수부 계약 (세 사본 모두 같은 검사를 갖는다)."""
+    assert pdb_norm_ver("V1.0.10.3") == pdb_norm_ver("v1.0.10.3") == "1.0.10.3"
+    assert pdb_norm_ver(None) == "" and pdb_norm_ver("1.0.13.0") == "1.0.13.0"
+    assert pdb_local_gidx(300_012) == 12 and pdb_local_gidx(12) == 12
+    assert pdb_local_gidx(None) is None
+    assert pdb_version_counts(["a", "a", None, "b"]) == {"a": 2, "b": 1}
+
+    global _PDB_BANKS, _PDB_BANKS_ERR
+    saved, saved_err, saved_text = _PDB_BANKS, _PDB_BANKS_ERR, dict(_PDB_TEXT)
+    try:
+        # 게이트 ②: 행수가 다르면 그 버전은 통째로 폴백 (v1.0.2.0 실측 케이스)
+        _PDB_BANKS, _PDB_BANKS_ERR = {"1.0.2.0": ("bid", "v1.0.2.0", "db_backed", 12568)}, None
+        vers, gid, fb = ["v1.0.2.0"] * 2, [0, 1], ["(텍스트 없음 #0)", "(텍스트 없음 #1)"]
+        out, meta = pdb_resolve_texts(vers, gid, fb, {"v1.0.2.0": 14600})
+        assert out == fb and meta["db_rows"] == 0, (out, meta)
+        assert "행수 불일치(gidx 정렬 불가)" in meta["reject"], meta
+        assert "폴백" in pdb_note(meta) and "\n" not in pdb_note(meta)
+
+        # 게이트 ①: external_only(문장 0행)도 폴백
+        _PDB_BANKS = {"1.0.13.0": ("bid", "v1.0.13.0", "external_only", 0)}
+        out, meta = pdb_resolve_texts(["v1.0.13.0"], [7], ["(텍스트 없음 #7)"], {"v1.0.13.0": 45840})
+        assert out == ["(텍스트 없음 #7)"] and "DB 문장 미보유(external_only)" in meta["reject"]
+
+        # 게이트 ③ + 정상 경로: 행수가 맞고 class 도 맞으면 DB 가 이긴다
+        _PDB_BANKS = {"1.0.8.0": ("bid", "v1.0.8.0", "db_backed", 3)}
+        _PDB_TEXT.clear()
+        for g, (t, c) in {0: ("A.", "fire"), 1: ("B.", "smoke"), 2: ("C.", "fire")}.items():
+            _PDB_TEXT[("1.0.8.0", g)] = (t, c)
+        vers, gid = ["v1.0.8.0"] * 3, [300_000, 300_001, 300_002]
+        out, meta = pdb_resolve_texts(vers, gid, ["x", "y", "z"], {"v1.0.8.0": 3},
+                                      categories=["fire", "smoke", "fire"])
+        assert out == ["A.", "B.", "C."] and meta["db_rows"] == 3, (out, meta)
+        assert not meta["reject"] and "DB 정본" in pdb_note(meta)
+        out, meta = pdb_resolve_texts(vers, gid, ["x", "y", "z"], {"v1.0.8.0": 3},
+                                      categories=["fire", "fire", "fire"])
+        assert out == ["x", "y", "z"], out                 # class 어긋나면 그 버전 전체 폴백
+        assert "class 불일치(정렬 붕괴)" in meta["reject"], meta
+
+        # 뱅크를 못 읽으면 전부 폴백 + 사유가 배너에 실린다
+        _PDB_BANKS, _PDB_BANKS_ERR = {}, "OperationalError: down"
+        out, meta = pdb_resolve_texts(["v1.0.8.0"], [0], ["fb"], {})
+        assert out == ["fb"] and "down" in pdb_note(meta)
+    finally:
+        _PDB_BANKS, _PDB_BANKS_ERR = saved, saved_err
+        _PDB_TEXT.clear()
+        _PDB_TEXT.update(saved_text)
+
+
 def _bundle_nbytes(b):
     import numpy as np
     return sum(v.nbytes for v in b.values() if isinstance(v, np.ndarray))
@@ -70,7 +422,16 @@ def load_prompt_bundle(dataset_name=PROMPTS_DATASET):
     key = (dataset_name, BRAIN_KEY, str(ds.last_modified_at))
     if key in _CACHE:
         return _CACHE[key]
-    xy = np.asarray(ds.load_brain_results(BRAIN_KEY).points, dtype="float32")
+    res = ds.load_brain_results(BRAIN_KEY)
+    xy = np.asarray(res.points, dtype="float32")
+    # ⚠️ 좌표↔메타 정렬은 **brain result 의 sample_ids 기준**이다 (형제 패널
+    #    user-image-embeddings.load_image_bundle 와 같은 계약). 구현은 `ds.values(...)`
+    #    순서가 곧 좌표 순서라고 가정했는데, brain run 이 데이터셋 일부만 덮으면 그 가정이
+    #    깨진다 — 2026-08-19 실측: `frames-prompts` 는 샘플 615,296 인데 `emb_viz` 는
+    #    603,318점(캡션 11,978행 제외)이라 `build_mode_a` 가 IndexError 로 죽었고,
+    #    반대로 메타가 더 짧았다면 **크래시 없이 좌표가 통째로 밀려** 엉뚱한 점에 엉뚱한
+    #    문장이 붙는다. sample_ids 로 명시 정렬해 두 경우를 모두 없앤다.
+    brain_ids = [str(i) for i in res.sample_ids]
     b = {"xy": xy}
     schema = ds.get_field_schema()
     # ⚠️ 필드별 `ds.values(f)` 를 돌면 컬렉션을 **필드 수만큼 전체 순회**한다. 28,605행 시절엔
@@ -82,15 +443,24 @@ def load_prompt_bundle(dataset_name=PROMPTS_DATASET):
     #    `category` 25s vs `category.label` 1.9s / `wave_role` 25.3s vs 2.7s — **9~13배**다.
     #    META_FIELDS 의 embedded 4종(category·adopted·wave_role·bank_version)이 로드 시간의
     #    거의 전부였다(105s 중 ~100s). 값은 아래 후처리가 뽑던 것과 **동일한 문자열**이다.
-    have, paths = [], []
+    have, paths = [], ["id"]
     for f in META_FIELDS:
         if f not in schema:
             continue
         have.append(f)
         paths.append(f + ".label"
                      if type(schema[f]).__name__ == "EmbeddedDocumentField" else f)
-    cols = ds.values(paths) if paths else []
-    got = dict(zip(have, cols))
+    cols = ds.values(paths)
+    pos = {str(v): i for i, v in enumerate(cols[0])}
+    order = [pos.get(sid, -1) for sid in brain_ids]
+    if any(o < 0 for o in order):        # brain 에만 있고 데이터셋엔 없는 잔재 방어
+        keep = [k for k, o in enumerate(order) if o >= 0]
+        xy = b["xy"] = xy[np.asarray(keep, dtype=np.int64)]
+        order = [order[k] for k in keep]
+    if order == list(range(len(cols[0]))):
+        got = dict(zip(have, cols[1:]))   # 순서 동일 — 재색인 비용 0 (sourcei-prompts 경로)
+    else:
+        got = {f: [col[o] for o in order] for f, col in zip(have, cols[1:])}
     for f in META_FIELDS:
         if f not in schema:
             b[f] = None
@@ -276,10 +646,70 @@ COLOR_BY_WAVE_ROLE = "wave_role"
 COLOR_BY_LABELS = {COLOR_BY_CATEGORY: "클래스", COLOR_BY_WAVE_ROLE: "wave 역할"}
 
 
-def _hover(b, i):
-    return (f"[{b['gidx'][i]}] {str(b['text'][i])[:80]}<br>"
-            f"class={b['category'][i]} wins={b['wins'][i]} "
-            f"purity={b['purity'][i]} wave_gain={b['wave_gain'][i]}")
+def _bundle_ver_counts(b):
+    """번들 전체의 버전별 행 수 (게이트 ② 분모). 1회 계산해 번들에 얹는다.
+
+    ⚠️ **표시분이 아니라 데이터셋 전체** 기준이어야 한다 — 서브샘플된 개수로 재면
+    DB 행수와 항상 어긋나 모든 버전이 폴백된다.
+    """
+    counts = b.get("_ver_counts")
+    if counts is None:
+        bv = b.get("bank_version")
+        counts = pdb_version_counts([] if bv is None else list(bv))
+        b["_ver_counts"] = counts
+    return counts
+
+
+def _resolve_text(b, idxs):
+    """번들 행 인덱스들 → (DB 정본 문장 리스트, 출처 메타).
+
+    문장은 DB(`bank_sentences`)가 정본이고 데이터셋 `text` 는 npz 파생 폴백이다 —
+    자세한 근거·게이트는 위 "prompt DB" 블록 주석 참고. 뷰에 그려지는 행만 묻는다.
+    """
+    idxs = [int(i) for i in idxs]
+    bv, cat, txt, gid = (b.get("bank_version"), b.get("category"),
+                         b.get("text"), b.get("gidx"))
+
+    def _cell(arr, i):
+        """배열 자체가 없거나(필드 부재) 그 칸이 None 이면 None — `"None"` 문자열 금지.
+
+        ⚠️ `str(arr[i])` 로 뭉치면 frames-prompts 의 캡션 행(11,978개, bank_version·
+        category 가 NULL)이 `"None"` 이라는 가짜 뱅크 버전으로 묶여 배너에 폴백 사유가
+        허위로 뜬다. 그런 행은 애초에 뱅크 문장이 아니라 조인 대상이 아니다.
+        """
+        if arr is None or arr[i] is None:
+            return None
+        return str(arr[i])
+
+    return pdb_resolve_texts(
+        [_cell(bv, i) for i in idxs],
+        [None if gid is None or gid[i] is None else int(gid[i]) for i in idxs],
+        [("" if txt is None else _cell(txt, i) or "") for i in idxs],
+        _bundle_ver_counts(b),
+        categories=None if cat is None else [_cell(cat, i) for i in idxs],
+    )
+
+
+def _val(b, field, i, default="-"):
+    """번들 칸 하나. **필드가 없는 데이터셋에서도 죽지 않는다.**
+
+    `load_prompt_bundle` 은 스키마에 없는 META_FIELDS 를 `None` 으로 채우는데(예:
+    `frames-prompts` 에는 `wave_gain`·`wave_role` 이 없다) 호출부가 곧바로 `[i]` 로
+    첨자하면 `'NoneType' object is not subscriptable` 로 패널이 통째로 죽는다
+    (2026-08-19 실측 — 좌표 정렬을 고친 뒤 드러난 다음 층 크래시).
+    """
+    arr = b.get(field)
+    return default if arr is None else arr[i]
+
+
+def _hover(b, i, texts=None):
+    """호버 한 줄. `texts` 는 {번들 행 인덱스: 문장} — 주면 DB 정본을 싣는다."""
+    text = (texts or {}).get(int(i))
+    if text is None:
+        text = _val(b, "text", i, "")
+    return (f"[{_val(b, 'gidx', i)}] {str(text)[:80]}<br>"
+            f"class={_val(b, 'category', i)} wins={_val(b, 'wins', i)} "
+            f"purity={_val(b, 'purity', i)} wave_gain={_val(b, 'wave_gain', i)}")
 
 
 def build_mode_a(bundle, rule, show_unadopted, selected_gidx, bank_version_filter=None,
@@ -342,17 +772,47 @@ def build_mode_a(bundle, rule, show_unadopted, selected_gidx, bank_version_filte
         idx_all = cached
         adopted = b["adopted"][idx_all].astype(bool)
 
+    # ── 호버 문장을 **DB 정본**으로 (2026-08-19: "이제 gidx 그걸로 하지마") ──
+    #    데이터셋 `text` 는 npz 를 `gidx % GIDX_OFFSET` 로 퍼온 파생물이라 603,318행 중
+    #    261,244행(43.3%)이 `(텍스트 없음 #N)` 이다. 여기서 **그려지는 행만**(≤MAX_POINTS)
+    #    배치 조회한다 — 서브샘플이 캐시돼 있어 두 번째 갱신부터는 전부 메모 적중이다.
+    #    실패·거부는 아래 배너가 버전 단위로 밝힌다 (조용한 폴백 금지).
+    hov_texts, text_meta = _resolve_text(b, idx_all)
+    hov = dict(zip((int(i) for i in idx_all), hov_texts))   # 인덱스 키 — 아래 축소와 무관
+    # ── 정렬 붕괴 버전은 **그리지 않는다** (2026-08-19) ──
+    #    경고 배너만으로는 조용한 오답이 남는다: 화면에 점이 있는 한 분석자는 그 버전을
+    #    비교에 넣는다. `corrupt` 판정 근거는 `_resolve_text` 주석 참고.
+    bad_vers = set(text_meta.get("corrupt") or ())
+    bv_all = b.get("bank_version")
+    if bad_vers and bv_all is not None:
+        keep = np.asarray([str(bv_all[i]) not in bad_vers for i in idx_all], dtype=bool)
+        if not keep.all():
+            text_meta["dropped_n"] = int((~keep).sum())
+            idx_all = idx_all[keep]
+            adopted = b["adopted"][idx_all].astype(bool)
+    # 호버는 예산 안에서만 **전송**한다. DB 조회 자체는 계속 한다 — 배너의 문장 출처
+    # 회계(폴백 몇 버전, DB 정본 몇 행)가 거기서 나오므로 끊으면 조용한 폴백이 된다.
+    hover_on = len(idx_all) <= HOVER_BUDGET
+
     def trace(mask, color, size, name, opacity):
         # "ids" (customdata 아님) — FiftyOne PlotlyView의 onClick 이벤트는 trace.ids[pointIndex]만
         # ctx.params["id"]로 전달한다 (App 번들 getIdForTrace 실측, 문서의 "data.customdata"는 오기).
         ii = idx_all[mask]
-        return {
+        # ⚠️ 좌표는 float64 로 넓힌 **뒤** 3자리 반올림. float32 를 그대로 round 하면
+        #    1.3 이 float64 확장에서 1.2999999523162842 로 되살아나 무동작이다(실측).
+        t = {
             "type": "scattergl", "mode": "markers", "name": name,
-            "x": b["xy"][ii, 0].tolist(), "y": b["xy"][ii, 1].tolist(),
+            "x": np.round(b["xy"][ii, 0].astype("float64"), 3).tolist(),
+            "y": np.round(b["xy"][ii, 1].astype("float64"), 3).tolist(),
             "ids": [str(int(b["gidx"][i])) for i in ii],
-            "text": [_hover(b, i) for i in ii], "hoverinfo": "text",
             "marker": {"color": color, "size": size, "opacity": opacity},
         }
+        if hover_on:
+            t["text"] = [_hover(b, i, hov) for i in ii]
+            t["hoverinfo"] = "text"
+        else:
+            t["hoverinfo"] = "skip"
+        return t
 
     # Task 12: 배너에 현재 버전 필터 표기 (BANNER_RULE/BANNER_WAVE_NOCLICK/BANNER_COORDS_A는
     # `in` 검사로 selftest가 고정하므로 접미사 추가는 기존 assert를 깨지 않는다).
@@ -445,7 +905,8 @@ def build_mode_a(bundle, rule, show_unadopted, selected_gidx, bank_version_filte
            if int(b["gidx"][idx_all[i]]) in (selected_gidx or set())]
     hi = idx_all[sel]
     data.append({"type": "scattergl", "mode": "markers", "name": "선택",
-                 "x": b["xy"][hi, 0].tolist(), "y": b["xy"][hi, 1].tolist(),
+                 "x": np.round(b["xy"][hi, 0].astype("float64"), 3).tolist(),
+                 "y": np.round(b["xy"][hi, 1].astype("float64"), 3).tolist(),
                  "ids": [str(int(b["gidx"][i])) for i in hi],
                  # 다크 배경에서 #000000 링은 안 보인다 — Okabe-Ito 노랑(클래스 색과 무교집합)
                  "marker": {"color": "#F0E442", "size": 14, "symbol": "circle-open",
@@ -464,11 +925,25 @@ def build_mode_a(bundle, rule, show_unadopted, selected_gidx, bank_version_filte
                    + (f", 채택 비율 {bias:.0f}배 과대" if bias >= 1.5 else ""))
     else:
         banner += f" · 표시 {shown_n:,}/{pop_n:,} (전량)"
+    if not hover_on:
+        # 호버가 꺼진 사실을 **반드시** 밝힌다 — 말없이 툴팁이 안 뜨면 고장으로 읽힌다.
+        banner += (f" · 호버 off ({shown_n:,} > {HOVER_BUDGET:,}) — "
+                   f"**드래그로 선택하면 문장 표**로 나온다")
+    # 문장 출처를 **항상** 밝힌다 (2026-08-19): DB 정본이 몇 행이고 어느 버전이 폴백인지
+    # 안 적으면, 자리표시자가 섞인 화면을 정본으로 오독한다 — 조용한 폴백 금지.
+    banner += " · " + pdb_note(text_meta)
+    dropped_n = int(text_meta.get("dropped_n") or 0)
+    if dropped_n:
+        banner += (f" · ⛔ **정렬 붕괴 {len(bad_vers)}버전 {dropped_n:,}점 제외**"
+                   f" ({', '.join(sorted(bad_vers))}) — 벡터 귀속이 틀려 기하 비교 불가")
     # banner 는 layout.title 이 아니라 **별도 키**다 (2026-08-12): plotly title 은 modebar
     # (우상단 아이콘 줄)와 같은 영역에 그려져 글자와 아이콘이 겹쳐 판독 불가였고, 자동 줄바꿈이
     # 없어 패널 폭을 넘으면 문장 중간에서 잘렸다. 패널이 이걸 md 로 렌더한다(render 참고).
     return {"data": data,
             "banner": banner,
+            # 기계용 — banner 는 사람용 문장이라 테스트/호출자가 파싱하면 안 된다.
+            "dropped_n": dropped_n,
+            "dropped_versions": sorted(bad_vers),
             "layout": {"showlegend": True, "dragmode": "pan",
                        "xaxis": {"visible": False}, "yaxis": {"visible": False},
                        # height 고정 금지 — PlotlyView는 style.height(=view의 height kwarg,
@@ -663,9 +1138,12 @@ def _rows_to_markdown(rows, join_field_missing=None, total=None):
     n_ph = sum(1 for r in rows
                if str(r["text"]).lstrip().startswith(PLACEHOLDER_PREFIX))
     if n_ph:
-        note += (f"*(⚠️ {n_ph}/{len(rows)}행은 문장 텍스트가 없는 뱅크 버전입니다 — "
+        # 2026-08-19 이후 이 표의 문장은 **DB(bank_sentences) 정본**을 먼저 본다 — 그러고도
+        # 자리표시자가 남았다면 그 뱅크는 DB 에도 문장이 없다(`sentence_storage='external_only'`)
+        # 거나 행수/class 게이트에서 거부된 것이다. 즉 여기 남은 자리표시자는 **사실**이다.
+        note += (f"*(⚠️ {n_ph}/{len(rows)}행은 DB 정본에도 문장이 없는 뱅크 버전입니다 — "
                  f"`{PLACEHOLDER_PREFIX} #N)` 의 N 은 공급자 ID 라 문장을 식별하지 않습니다. "
-                 f"복구는 `repair_bank_prompts.py`)*\n\n")
+                 f"원본 CSV 가 있으면 `repair_bank_prompts.py`, 없으면 벡터 전용이 사실)*\n\n")
     header = "| gidx | text | wins | purity | n_cameras | wave_gain |\n|---|---|---|---|---|---|\n"
     # wave_gain 은 `.3f` 로는 전 행의 99.6% 가 0.000 으로 뭉갠다 (실측 중앙값 |1.2e-05|,
     # 90분위 |4.8e-05|, 최대 4.1e-03) — LOO ΔIoU 는 원래 이 스케일이다. 6자리로 편다.
@@ -813,12 +1291,18 @@ class PromptComparePanel(foo.Panel):
             # 정렬 = wins 내림차순: 넓은 box select는 미채택(wins 0)이 다수라 gidx순으로는
             # 승자 문장이 상한 밖으로 밀린다 (2026-08-10 실측: 7,716개 선택 중 대부분 미채택).
             idxs = np.nonzero(np.isin(b["gidx"], np.asarray(sorted(sel))))[0]
-            for i in idxs[np.argsort(-b["wins"][idxs].astype(int), kind="stable")][:50]:
-                i = int(i)
-                rows.append({"gidx": int(b["gidx"][i]), "text": str(b["text"][i]),
-                             "wins": int(b["wins"][i]), "purity": float(b["purity"][i]),
-                             "n_cameras": int(b["n_cameras"][i]),
-                             "wave_gain": float(b["wave_gain"][i])})
+            top = [int(i) for i in idxs[np.argsort(-b["wins"][idxs].astype(int),
+                                                   kind="stable")][:50]]
+            # 표의 문장도 DB 정본으로 (≤50행 — 호버와 같은 메모를 공유해 대개 왕복 0회).
+            texts, _meta = _resolve_text(b, top)
+            for i, text in zip(top, texts):
+                # `_val` 폴백 — 필드 없는 데이터셋(frames-prompts 의 wave_gain 등)에서
+                # 표가 죽지 않게. 자세한 근거는 `_val` docstring.
+                rows.append({"gidx": int(b["gidx"][i]), "text": str(text),
+                             "wins": int(_val(b, "wins", i, 0)),
+                             "purity": float(_val(b, "purity", i, 0.0)),
+                             "n_cameras": int(_val(b, "n_cameras", i, 0)),
+                             "wave_gain": float(_val(b, "wave_gain", i, 0.0))})
         ctx.panel.state.top_table = rows
         ctx.panel.state.sel_total = len(sel)
 
@@ -1334,8 +1818,34 @@ def selftest():
     FiftyOne 업그레이드 게이트로도 쓴다. 셋째가 깨지면 producer drift 의심.
     """
     import numpy as np
+
+    pdb_selftest()          # prompt DB 해석 계층 (DB 없이 도는 순수부)
     b = load_prompt_bundle()
     frames = fo.load_dataset(FRAMES_DATASET)
+
+    # 좌표↔메타 정렬 (2026-08-19): 길이가 어긋나면 크래시(길면) 또는 **조용한 오귀속**(짧으면).
+    for f in META_FIELDS:
+        if b.get(f) is not None:
+            assert len(b[f]) == len(b["xy"]), (f, len(b[f]), len(b["xy"]))
+
+    # ── 문장 정본 = DB (2026-08-19) ──
+    # 데이터셋 `text` 는 npz 파생 폴백이므로, DB 가 살아 있으면 표시 문장이 그쪽에서 와야
+    # 한다. DB 가 없는 환경(오프라인)에서는 폴백이 정상 동작이므로 강제하지 않고,
+    # **어느 소스를 썼는지 배너가 반드시 말한다**는 계약만 고정한다.
+    probe_idx = list(range(min(200, len(b["gidx"]))))
+    ptexts, pmeta = _resolve_text(b, probe_idx)
+    assert len(ptexts) == len(probe_idx)
+    assert "출처" in pdb_note(pmeta) and "\n" not in pdb_note(pmeta)
+    if pmeta["db_rows"]:
+        assert PDB_SRC_DB in pdb_note(pmeta), pdb_note(pmeta)
+        # DB 로 해석된 행에 자리표시자가 남으면 안 된다 (DB 는 NOT NULL + 빈 문자열 금지)
+        assert not any(str(t).lstrip().startswith(PLACEHOLDER_PREFIX)
+                       for t, v in zip(ptexts, (b["bank_version"][i] for i in probe_idx))
+                       if str(v) in pmeta["db_versions"]), "DB 해석분에 자리표시자"
+    # 게이트 ② 분모는 **데이터셋 전체** 행 수여야 한다 (표시분으로 재면 전부 폴백)
+    counts = _bundle_ver_counts(b)
+    assert sum(counts.values()) == int(np.count_nonzero(
+        [v is not None for v in b["bank_version"]])), counts
 
     # 다중 뱅크 버전 (2026-08-11 리빌드): 버전별 문장 행 마스크 — 이하 불변식은 버전 단위다
     bv_all = b.get("bank_version")
@@ -1458,8 +1968,13 @@ def selftest():
     w_traces = fig_w["data"][:-1]
     n_w = sum(len(t["x"]) for t in w_traces)
     if len(b["gidx"]) <= MAX_POINTS:
-        assert n_w == len(b["gidx"]), \
-            "회귀: dist_iou가 전 문장을 그리지 않음 — adopted 마스크가 부활했나"
+        # 정렬 붕괴 버전(벡터 귀속이 틀린 것)은 의도적으로 제외된다 — **그만큼만** 빠져야
+        # 하고 그 이상 빠지면 adopted 마스크 부활 회귀다. 제외량은 fig 가 구조화해 준다
+        # (banner 는 사람용 문장이라 파싱 금지).
+        assert n_w == len(b["gidx"]) - fig_w["dropped_n"], \
+            (n_w, len(b["gidx"]), fig_w["dropped_n"])
+        if fig_w["dropped_n"]:
+            assert fig_w["dropped_versions"], "제외했는데 버전 목록이 비었다"
     else:
         # 서브샘플: 채택 전수 보존 + 미채택 층화(반올림 미달 허용) ≈ MAX_POINTS
         assert MAX_POINTS * 0.98 <= n_w <= MAX_POINTS, n_w
@@ -1554,12 +2069,15 @@ def selftest():
     n_all = sum(len(t["x"]) for t in fig_all["data"][:-1])
     n_v0 = sum(len(t["x"]) for t in fig_v0["data"][:-1])
     if len(b["gidx"]) <= MAX_POINTS:
-        assert n_all == len(b["gidx"])                 # "전체" = 전수
+        # "전체" = 전수 **에서 정렬 붕괴 버전만 뺀 것**. 그 버전은 벡터 귀속이 틀려
+        # 기하 비교에 넣으면 안 된다 (2026-08-19, v1.0.2.0 실측).
+        assert n_all == len(b["gidx"]) - fig_all["dropped_n"], \
+            (n_all, len(b["gidx"]), fig_all["dropped_n"])
     else:
         assert MAX_POINTS * 0.98 <= n_all <= MAX_POINTS   # 채택 전수 + 층화(미달 허용)
     assert n_v0 <= n_all                       # 특정 버전은 부분집합
     # 버전 필터는 그 버전 문장만 남긴다 (2026-08-11 다중 버전 리빌드 후 실효 검증)
-    assert n_v0 == min(int(vmasks[v0].sum()), MAX_POINTS)
+    assert n_v0 == min(int(vmasks[v0].sum()) - fig_v0["dropped_n"], MAX_POINTS)
     assert f"버전: {v0}" in fig_v0["banner"]
     assert f"버전: {ALL_VERSIONS_LABEL}" in fig_all["banner"]
     # bank_version_filter 기본값(None)은 필터 없음과 동일해야 한다(하위호환 — 기존 호출부).
@@ -1595,6 +2113,17 @@ def selftest():
     else:
         print("source-h-prompts not found — skip smoke")
 
+    # brain run 이 데이터셋 일부만 덮는 경우 (frames-prompts: 615,296 샘플 / emb_viz
+    # 603,318점 — 캡션 11,978행 제외). 2026-08-19 이전에는 여기서 IndexError 로 죽었다.
+    if fo.dataset_exists("frames-prompts"):
+        b_fr = load_prompt_bundle("frames-prompts")
+        assert len(b_fr["gidx"]) == len(b_fr["xy"]), (len(b_fr["gidx"]), len(b_fr["xy"]))
+        fig_fr = build_mode_a(b_fr, rule="argmax_k1", show_unadopted=True, selected_gidx=set())
+        assert sum(len(t["x"]) for t in fig_fr["data"][:-1]) > 0
+        assert "출처" in fig_fr["banner"], fig_fr["banner"]
+        _CACHE.clear()
+        load_prompt_bundle(PROMPTS_DATASET)
+
     # _rows_to_markdown join_field_missing 안내 (표 내용은 그대로 유지).
     row12 = {"gidx": g, "text": "hello12", "wins": 1, "purity": 0.5,
              "n_cameras": 1, "wave_gain": 0.1}
@@ -1620,9 +2149,9 @@ def selftest():
     md_trunc = _rows_to_markdown([row], total=5)
     assert "선택 5개 중 상위 1개" in md_trunc and f"| {g} |" in md_trunc
     # 자리표시자 경고 (벡터 전용 뱅크) — 정상 문장 행에는 붙지 않아야 한다
-    assert "문장 텍스트가 없는 뱅크" not in md
+    assert "DB 정본에도 문장이 없는 뱅크" not in md
     md_ph = _rows_to_markdown([{**row, "text": "(텍스트 없음 #0)"}, row])
-    assert "⚠️ 1/2행" in md_ph and "문장 텍스트가 없는 뱅크" in md_ph
+    assert "⚠️ 1/2행" in md_ph and "DB 정본에도 문장이 없는 뱅크" in md_ph
     # wave_gain 표시 정밀도 — LOO ΔIoU 실측 스케일(1e-05)이 0.000 으로 뭉개지면 안 된다
     assert "0.000012" in _rows_to_markdown([{**row, "wave_gain": 1.21e-05}])
 
@@ -1711,8 +2240,12 @@ def selftest():
     assert scatter_view.data, \
         "회귀: render() 스키마의 초기 data가 비어있음 — 최초 마운트 시 빈 산점도(Task 11) 재발"
     n_schema = sum(len(t["x"]) for t in scatter_view.data[:-1])
-    assert min(len(b["gidx"]), MAX_POINTS) * 0.98 <= n_schema <= min(len(b["gidx"]), MAX_POINTS), \
-        "회귀: 스키마에 구운 data 포인트 수가 전체 gidx 수와 불일치"
+    # 상한 = 전수에서 정렬 붕괴 버전을 뺀 값 (그 버전은 벡터 귀속이 틀려 안 그린다).
+    _cap = min(len(b["gidx"]) - build_mode_a(
+        b, rule="argmax_k1", show_unadopted=True, selected_gidx=set())["dropped_n"],
+        MAX_POINTS)
+    assert _cap * 0.98 <= n_schema <= _cap, \
+        f"회귀: 스키마에 구운 data 포인트 수({n_schema})가 기대치({_cap})와 불일치"
     assert scatter_view.layout, "회귀: render() 스키마의 초기 layout이 비어있음"
     # 컨트롤 드롭다운 4개 (2026-08-10 피드백): h_stack("controls") 한 줄 + _sync_controls 미러링
     ctrl_props = schema.type.properties["controls"].type.properties
