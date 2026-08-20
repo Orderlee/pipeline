@@ -703,6 +703,40 @@ def _gidx_to_class(prompts_name):
     return dict(zip(p.values("gidx"), p.values("category.label")))
 
 
+def gidx_shift(ds, src_field, prompts_name, version):
+    """프레임 필드 gidx → `<ds>-prompts` gidx 공간 보정값 (0 = 세대 일치).
+
+    ⚠️ **사본 동기화** — `plugins/user-prompt-compare/__init__.py:gidx_shift` 와 같은 계약.
+       플러그인은 컨테이너에서 `/workspace` 를 import 할 수 없어 공유 모듈이 없다
+       (GIDX_OFFSET 복제와 같은 관례). 한쪽을 고치면 다른 쪽도 고칠 것.
+
+    왜 필요한가: gidx 오프셋은 `prompt_geometry` 가 `BANKS.index(version) * GIDX_OFFSET`
+    로 붙이는데 `BANKS` 가 런타임 env(`BANK_LIST`/`BANK_A`/`BANK_B`)에서 오므로 **같은
+    데이터셋도 실행마다 다른 블록**을 쓴다. 실측(2026-08-20): `frames.winner_gidx_v1080`
+    블록 0 vs `frames-prompts` v1.0.8.0 블록 18 → `_gidx_to_class` 등식 조회가
+    **v1.0.1.0 문장의 클래스**를 돌려준다(조용한 오답 — `pred_argmax_*` 슬롯이 통째로 오염).
+    `sourcei` 는 두 세대가 같아 파일럿에서 안 보였다.
+    """
+    import fiftyone as fo
+    if not fo.dataset_exists(prompts_name):
+        return 0
+    p = fo.load_dataset(prompts_name)
+    if "gidx" not in p.get_field_schema() or "bank_version" not in p.get_field_schema():
+        return 0
+    try:
+        flo, fhi = ds.bounds(src_field)
+        plo, phi = p.match(fo.ViewField("bank_version.label") == version).bounds("gidx")
+    except Exception:      # noqa: BLE001 — 진단 실패가 슬롯 생성을 죽이면 안 된다
+        return 0
+    if None in (flo, fhi, plo, phi):
+        return 0
+    fb0, fb1 = int(flo) // GIDX_OFFSET, int(fhi) // GIDX_OFFSET
+    pb0, pb1 = int(plo) // GIDX_OFFSET, int(phi) // GIDX_OFFSET
+    if fb0 != fb1 or pb0 != pb1:
+        return 0           # 한 필드가 여러 블록에 걸침 = 이미 오염 (bank_run 의 overflow 경보)
+    return (pb0 - fb0) * GIDX_OFFSET
+
+
 def cmd_slots(dataset_names, slots=None, apply=False, force=False):
     """규칙별 예측 슬롯 `pred_<rule>_<a|b>` 생성 — 버전 없는 이름으로 A/B 비교.
 
@@ -731,7 +765,12 @@ def cmd_slots(dataset_names, slots=None, apply=False, force=False):
                     if not src or not g2c:
                         print(f"  ⏭  {target}: winner_gidx 또는 prompts 매핑 없음 — 생략")
                         continue
-                    labels = [g2c.get(g) if g is not None else None
+                    # 오프셋 세대 보정 (gidx_shift 주석) — 없으면 남의 버전 클래스가 붙는다
+                    shift = gidx_shift(ds, src, f"{name}-prompts", ver)
+                    if shift:
+                        print(f"     ↳ gidx 세대 보정 {shift:+,} "
+                              f"(프레임 블록 ≠ {ver} 문장 블록)")
+                    labels = [g2c.get(g + shift) if g is not None else None
                               for g in ds.values(src)]
                 else:
                     src = _resolve(schema, tmpl, ver)

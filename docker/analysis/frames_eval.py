@@ -92,6 +92,12 @@ _STD_SCAN_FIELDS = {
 }
 
 
+# App 은 URL 로 데이터셋이 안 붙는다 — 접속 시 **서버 세션의 현재 데이터셋**에
+# 스스로 동기화한다(2026-08-20 실측: /datasets/sourcei-prompts 이동이 계속 frames 로
+# 되돌아갔고, 클라이언트는 브라우저 하나뿐이었다). 전환은 헤더 선택기로만 된다.
+DATASET_URL_NOTE = (" — 열리면 헤더 데이터셋 선택기로 전환할 것"
+                    " (URL 만으로는 안 붙는다: App 이 서버 세션에 동기화)")
+
 def log(msg: str) -> None:
     print(f"[{time.strftime('%H:%M:%S')}] {msg}", flush=True)
 
@@ -687,7 +693,8 @@ def stage_build(dataset_name: str = "source-h-frames") -> None:
             ds.save_view(nm, view)
         except Exception as exc:  # noqa: BLE001
             log(f"build: view {nm} 실패 {exc!r}")
-    log(f"build 완료 → http://10.0.0.10:5153/datasets/{dataset_name}")
+    log(f"build 완료 → http://10.0.0.10:5153/datasets/{dataset_name}"
+        f"{DATASET_URL_NOTE}")
 
 
 # ────────────────────────── 6. report ──────────────────────────
