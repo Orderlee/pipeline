@@ -16,8 +16,10 @@ Task 12부터 프롬프트 데이터셋은 세션 데이터셋 이름에서 "<na
       + 플러그인 **디렉토리 touch** (plugins_cache dir_state 무효화)
 """
 
+import json
 import os
 import threading
+import time
 
 import fiftyone as fo
 import fiftyone.operators as foo
@@ -51,10 +53,18 @@ PLACEHOLDER_PREFIX = "(텍스트 없음"
 #  ⚠️ 상한을 64MB → 192MB 로 올림 (2026-08-12). 64MB 는 28,605행 시절 예산이었고,
 #     29버전 리빌드로 603,318행이 되며 실측 ≈50.6MB 로 한계에 붙었다 — 필드가 몇 개만
 #     늘거나 버전이 추가되면 `AssertionError: 캐시 예산 64MB 초과` 로 패널이 죽는다.
-#     엔트리는 여전히 1개만 유지하므로(_CACHE.clear()) 상주 메모리는 이 상한이 곧 전부다.
+#  ⚠️ `_bundle_nbytes` 는 numpy `.nbytes` 만 더하므로 **실메모리를 과소평가한다**
+#     (형제 플러그인 실측: nbytes 62.1MB / 상주 104MB — 문자열 열의 파이썬 str 미계상).
+#     이 상한을 올릴 때는 그 배율(≈1.7)을 곱해서 생각할 것.
 CACHE_CAP_BYTES = 192 * 2**20
 
-_CACHE = {}  # (dataset_name, brain_key, last_modified_at) -> bundle. 엔트리 1개 유지.
+# (dataset_name, brain_key, last_modified_at) -> bundle.
+# ⚠️ **엔트리 1개 유지는 폐기됐다** (2026-08-20). 이 플러그인은 세션당 데이터셋 하나만
+#    보므로 형제 user-image-embeddings 처럼 두 패널이 서로를 밀어내는 일은 없지만, App
+#    프로세스는 **모든 탭이 하나**라 sourcei-prompts 탭과 frames-prompts 탭이 번갈아
+#    축출하면 매번 콜드(10s)가 된다. `_cache_put` 이 CACHE_CAP_BYTES 예산 안에서 LRU 로
+#    여러 엔트리를 유지한다 (60만행 번들 2개 = nbytes 102MB < 192MB).
+_CACHE = {}
 
 META_FIELDS = ["gidx", "text", "category", "adopted", "wins", "purity",
                "n_cameras", "wave_gain", "wave_role", "bank_version"]
@@ -409,19 +419,157 @@ def _bundle_nbytes(b):
     return sum(v.nbytes for v in b.values() if isinstance(v, np.ndarray))
 
 
+def _cache_put(key, b):
+    """번들을 인메모리 캐시에 넣고 CACHE_CAP_BYTES 예산 안에서 LRU 축출.
+
+    dict 는 파이썬 3.7+ 에서 삽입 순서를 보존하므로 `next(iter(...))` 가 곧 LRU 최하위다
+    (OrderedDict 불필요). 히트 시에도 재삽입해 순서를 갱신한다 — `load_prompt_bundle` 참고.
+    """
+    _CACHE.pop(key, None)
+    _CACHE[key] = b
+    while len(_CACHE) > 1 and \
+            sum(_bundle_nbytes(v) for v in _CACHE.values()) > CACHE_CAP_BYTES:
+        _CACHE.pop(next(iter(_CACHE)))
+
+
+# ── 번들 영속 캐시 (npz) ────────────────────────────────────────────────────────
+# ⚠️ 이 블록은 **user-image-embeddings 와 복제**돼 있다. 플러그인은 각각 별도 마운트라 서로
+#    import 할 수 없다 (위 `pdb_*` 블록도 같은 사정으로 3중 복제 상태다). 한쪽을 고치면
+#    다른 쪽도 고쳐야 한다.
+#
+# 왜 파일이고 왜 별도 DB 가 아닌가 — 2026-08-20 실측 (sourcei-prompts 603,318행):
+#     웜 캐시 히트                    0.00s   ← 정상 상태에서 쿼리는 병목이 아니다
+#     콜드 로드                      10~29s + RSS 468MB→2,359MB (+1.9GB 스파이크)
+#     같은 8필드를 raw pymongo 로     6.6s   ← DB 를 바꿔도 남는 비용 (22s 는 ODM 오버헤드)
+#     npz 로드+복원                  0.08s / 70.3MB
+#   즉 고칠 것은 "어느 DB 냐" 가 아니라 "콜드를 몇 번 겪냐" 다. 별도 Postgres 로 옮기면
+#   스키마·동기화 잡·staleness 계약이 새로 생기는데 얻는 건 10s → 2~3s 뿐이다.
+#   이 repo 엔 이미 npz 산출물 관례가 있다 (`sourceh/prompts/*.npz`, `geometry/cache.npz`).
+#
+# 위치는 `docker/data/fiftyone/` 아래 — gitignore 대상이고 배포 rsync 소스가 아니라
+# `git reset --hard` 가 건드리지 않는다.
+BUNDLE_DIR = os.environ.get("APP_PANEL_CACHE_DIR", "/data/fiftyone/panel_cache")
+# ⚠️ **플러그인마다 달라야 한다.** 두 플러그인은 같은 `(dataset, brain_key)` 를 캐시하지만
+#    번들 **모양이 다르다** (여기: `gidx`·`wins`·`text` / image_embeddings: `_gidx`·`filepath`).
+#    처음엔 이 값 없이 `<dataset>__<brain>.npz` 로만 썼다가 이 파일의 셀프테스트가
+#    `KeyError: 'gidx'` 로 잡았다 — 남의 번들을 자기 것으로 읽는 조용한 오답이었다.
+#    파일명과 staleness 토큰 **양쪽**에 넣어 경로가 또 겹쳐도 키 대조에서 걸리게 한다.
+BUNDLE_NS = "prompt_compare"
+# 파일에 함께 실어 복원하는 비배열 키. **allowlist 다** — 임의의 비배열 값을 JSON 으로
+# 굽지 않는다. 예: `_ver_counts` 는 DB 조회 캐시라 소유자(`_sentence_texts` 계열)가 없으면
+# 알아서 다시 채운다. (이 번들은 현재 비배열 키가 없어 사실상 빈 allowlist 로 돈다 —
+# 형제와 코드를 같게 유지하려고 남겨 둔다.)
+BUNDLE_META_KEYS = ("_fields", "_degenerate", "_axes", "_sentence")
+
+
+def _bundle_token(key):
+    """파일 안에 박는 staleness 토큰. 플러그인 네임스페이스 포함 (BUNDLE_NS 주석)."""
+    return "|".join([BUNDLE_NS] + [str(k) for k in key])
+
+
+def _bundle_path(key):
+    """`(dataset, brain_key)` → 파일 경로. staleness 토큰(`last_modified_at`)은 파일 **안**에
+    저장한다 — 파일명에 넣으면 리빌드마다 새 파일이 쌓여 디스크를 먹는다."""
+    stem = "".join(c if (c.isalnum() or c in "._-") else "_"
+                   for c in f"{BUNDLE_NS}__{key[0]}__{key[1]}")
+    return os.path.join(BUNDLE_DIR, stem + ".npz")
+
+
+def _bundle_encode(b):
+    """번들 → npz 에 담을 수치 배열 dict. object dtype 을 pickle 로 굽지 않는다.
+
+    문자열 열은 전부 `np.unique` → 코드(int32) + uniq(UTF-8 bytes) 로 접는다. 이 한 규칙이
+    라벨 축(uniq 2~29)과 고유값 열 모두에 최선이다 — 실측(603,318행 ObjectId 열):
+        uniq 를 `S24` 로       13.8MB / 복원 0.062s
+        uniq 를 blob+offsets   18.4MB / 복원 0.105s   ← offsets 배열이 더 크다
+    """
+    import numpy as np
+    out, meta = {}, {"none": [], "json": {}}
+    for k, v in b.items():
+        if v is None:
+            meta["none"].append(k)          # 결측 META_FIELDS 는 None 으로 남는다
+        elif isinstance(v, np.ndarray):
+            if v.dtype == object:
+                uniq, codes = np.unique(v, return_inverse=True)
+                out["c:" + k] = codes.astype(np.int32)
+                out["u:" + k] = np.asarray([str(s).encode("utf-8") for s in uniq])
+            else:
+                out["a:" + k] = v
+        elif k in BUNDLE_META_KEYS:
+            meta["json"][k] = v
+    out["_meta"] = np.frombuffer(json.dumps(meta).encode("utf-8"), dtype=np.uint8)
+    return out
+
+
+def _bundle_decode(z):
+    """npz → 번들. 복원 결과는 빌드 경로의 산출물과 **dtype·값이 동일**해야 한다
+    (셀프테스트가 전 키를 대조한다 — 좌표·문장이 어긋나는 조용한 오답이 최악의 실패다)."""
+    import numpy as np
+    meta = json.loads(bytes(z["_meta"]).decode("utf-8"))
+    b = {k: None for k in meta["none"]}
+    for k, v in meta["json"].items():
+        b[k] = [tuple(x) for x in v] if k == "_axes" else v
+    for f in z.files:
+        if f.startswith("a:"):
+            b[f[2:]] = z[f]
+        elif f.startswith("c:"):
+            uniq = [x.decode("utf-8") for x in z["u:" + f[2:]].tolist()]
+            b[f[2:]] = np.asarray(uniq, dtype=object)[z[f]]
+    return b
+
+
+def _bundle_read(key):
+    """영속 캐시 히트면 번들, 없거나 stale/손상이면 None (호출부가 재빌드한다)."""
+    import numpy as np
+    try:
+        with np.load(_bundle_path(key)) as z:
+            if bytes(z["_key"]).decode("utf-8") != _bundle_token(key):
+                return None             # 데이터셋이 바뀌었거나 남의 번들 — 재빌드가 덮어쓴다
+            return _bundle_decode(z)
+    except Exception:  # noqa: BLE001 — 캐시 파일 부재/손상이 패널을 죽이면 안 된다
+        return None
+
+
+def _bundle_write(key, b):
+    """번들을 영속 캐시에 저장. 실패는 조용히 넘긴다 (캐시는 편의지 정본이 아니다)."""
+    import numpy as np
+    p = _bundle_path(key)
+    # ⚠️ `np.savez` 는 파일명이 `.npz` 로 끝나지 않으면 **뒤에 붙인다**. tmp 이름도
+    #    `.npz` 로 끝내지 않으면 `os.replace` 가 없는 파일을 가리킨다.
+    tmp = f"{p}.{os.getpid()}.tmp.npz"
+    try:
+        os.makedirs(BUNDLE_DIR, exist_ok=True)
+        d = _bundle_encode(b)
+        d["_key"] = np.frombuffer(_bundle_token(key).encode("utf-8"), dtype=np.uint8)
+        np.savez(tmp, **d)
+        os.replace(tmp, p)             # 같은 디렉토리 → 원자적. 부분 기록을 읽는 사고 방지
+    except Exception:  # noqa: BLE001
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+
+
 def load_prompt_bundle(dataset_name=PROMPTS_DATASET):
     """문장 좌표+메타 로드. embedding(1024-d)은 절대 읽지 않는다 (스펙 §5.5).
 
     Task 12: dataset_name 파라미터화 — source-h 세션은 "source-h-prompts", sourcei 세션은
     "sourcei-prompts"를 각자 넘긴다. 캐시 키에 dataset_name이 들어가므로 데이터셋을
-    전환하면 재계산되지만, `_CACHE.clear()`가 항상 먼저 실행돼 1엔트리만 유지된다
-    (스펙 §5.5 캐시 예산은 여전히 활성 엔트리 1개 기준).
+    전환하면 재계산된다 — 2026-08-20 부터는 `_cache_put` 이 예산 안에서 여러 엔트리를
+    유지하고, 축출당해도 `_bundle_read` 가 파일에서 0.08s 로 되살린다 (옛 1엔트리 정책은
+    데이터셋을 번갈아 보면 매번 10초 콜드였다).
     """
     import numpy as np
     ds = fo.load_dataset(dataset_name)
     key = (dataset_name, BRAIN_KEY, str(ds.last_modified_at))
     if key in _CACHE:
-        return _CACHE[key]
+        b = _CACHE.pop(key)
+        _CACHE[key] = b              # 재삽입 = LRU 순서 갱신 (_cache_put 주석 참고)
+        return b
+    b = _bundle_read(key)            # 영속 캐시 (실측 0.08s vs 아래 빌드 10~29s)
+    if b is not None:
+        _cache_put(key, b)
+        return b
     res = ds.load_brain_results(BRAIN_KEY)
     xy = np.asarray(res.points, dtype="float32")
     # ⚠️ 좌표↔메타 정렬은 **brain result 의 sample_ids 기준**이다 (형제 패널
@@ -497,24 +645,77 @@ def load_prompt_bundle(dataset_name=PROMPTS_DATASET):
     assert _bundle_nbytes(b) <= CACHE_CAP_BYTES, (
         f"캐시 예산 초과: {_bundle_nbytes(b)/2**20:.1f}MB > {CACHE_CAP_BYTES/2**20:.0f}MB "
         "(배열 바이트 기준 — 문자열 실메모리 미포함)")
-    _CACHE.clear()          # 엔트리 1개만 유지
-    _CACHE[key] = b
+    _bundle_write(key, b)   # 다음 프로세스/축출 후에는 위 _bundle_read 가 받는다
+    _cache_put(key, b)
     return b
+
+
+def _gidx_block(coll, field):
+    """이 컬렉션 필드가 쓰는 gidx 블록(오프셋 세대). 여러 블록에 걸치면 None."""
+    try:
+        lo, hi = coll.bounds(field)
+    except Exception:      # noqa: BLE001 — 진단 실패가 조인을 죽이면 안 된다
+        return None
+    if lo is None or hi is None:
+        return None
+    b0, b1 = int(lo) // PDB_GIDX_OFFSET, int(hi) // PDB_GIDX_OFFSET
+    return b0 if b0 == b1 else None
+
+
+def gidx_shift(dataset_name, winner_field):
+    """프레임 필드 gidx → `<ds>-prompts` gidx 공간으로 옮기는 보정값 (0 = 세대 일치).
+
+    ⚠️ **이 보정이 없으면 조용히 남의 버전 문장에 붙는다.** 오프셋은 `prompt_geometry` 가
+    `BANKS.index(version) * GIDX_OFFSET` 로 붙이는데 `BANKS` 는 런타임 env(`BANK_LIST`/
+    `BANK_A`/`BANK_B`)에서 오므로 **같은 데이터셋도 실행마다 다른 블록**을 쓴다.
+    실측(2026-08-20):
+        frames.winner_gidx_v1080    블록 0   (attach 를 2버전 리스트로 돌린 세대)
+        frames-prompts v1.0.8.0     블록 18  (프롬프트맵을 29버전으로 돌린 세대)
+        sourcei.winner_gidx_v1080   블록 18  (두 세대가 같아 파일럿에서 안 보였다)
+    그래서 등식 조인이 fire_smoke 뷰의 승자 511개를 **v1.0.1.0 문장**에 붙였다 —
+    개수는 맞고 정체가 틀리는 조용한 오답. 로컬 인덱스로는 511/511 일치, 등식으로는 교집합 0.
+
+    루트 README 의 계약("FiftyOne gidx 는 전역 값이라 조인은 `winner_gidx % 100000` 으로")을
+    **이 한 곳에서** 구현한다. 소비자(하이라이트·문장 표·row_of)는 문장 키공간 하나만 보므로
+    경계에서 한 번 옮기는 것으로 끝난다. DB(019)도 `(bank_id, 로컬 gidx)` 복합키라 로컬
+    인덱스가 정본 표현이고, 전역 오프셋은 App 사이드바가 IntField 만 필터할 수 있어서
+    생긴 렌더 계층 임시방편이다.
+    """
+    if not fo.dataset_exists(dataset_name):
+        return 0
+    pname = f"{dataset_name}-prompts"
+    if not fo.dataset_exists(pname):
+        return 0
+    prompts = fo.load_dataset(pname)
+    psch = prompts.get_field_schema()
+    if "gidx" not in psch or "bank_version" not in psch:
+        return 0
+    ver = next((v for v in prompts.distinct("bank_version.label")
+                if v and version_to_winner_field(v) == winner_field), None)
+    if ver is None:
+        return 0      # 이 필드에 대응하는 뱅크 버전이 문장 쪽에 없다 — 보정 근거 없음
+    fb = _gidx_block(fo.load_dataset(dataset_name), winner_field)
+    pb = _gidx_block(prompts.match(fo.ViewField("bank_version.label") == ver), "gidx")
+    if fb is None or pb is None:
+        return 0
+    return (pb - fb) * PDB_GIDX_OFFSET
 
 
 def frame_ids_to_gidx(frame_ids, dataset_name=FRAMES_DATASET, winner_field=WINNER_FIELD):
     frames = fo.load_dataset(dataset_name)
     if winner_field not in frames.get_field_schema():
         return []   # Task 12: 조인 필드 없음 — 크래시 대신 빈 결과 (호출부가 계속 진행)
+    shift = gidx_shift(dataset_name, winner_field)   # 오프셋 세대 보정 (gidx_shift 주석)
     vals = frames.select(frame_ids).values(winner_field)
-    return sorted({int(v) for v in vals if v is not None})
+    return sorted({int(v) + shift for v in vals if v is not None})
 
 
 def gidx_to_frame_ids(g, dataset_name=FRAMES_DATASET, winner_field=WINNER_FIELD):
     frames = fo.load_dataset(dataset_name)
     if winner_field not in frames.get_field_schema():
         return []   # Task 12: 조인 필드 없음 — 크래시 대신 빈 결과 (호출부가 계속 진행)
-    return frames.match(fo.ViewField(winner_field) == int(g)).values("id")
+    shift = gidx_shift(dataset_name, winner_field)   # 역변환 (gidx_shift 주석)
+    return frames.match(fo.ViewField(winner_field) == int(g) - shift).values("id")
 
 
 def gidxes_to_frame_ids(gs, dataset_name=FRAMES_DATASET, winner_field=WINNER_FIELD):
@@ -522,7 +723,9 @@ def gidxes_to_frame_ids(gs, dataset_name=FRAMES_DATASET, winner_field=WINNER_FIE
     frames = fo.load_dataset(dataset_name)
     if winner_field not in frames.get_field_schema():
         return []
-    return frames.match(fo.ViewField(winner_field).is_in([int(g) for g in gs])).values("id")
+    shift = gidx_shift(dataset_name, winner_field)   # 역변환 (gidx_shift 주석)
+    return frames.match(
+        fo.ViewField(winner_field).is_in([int(g) - shift for g in gs])).values("id")
 
 
 # ── Task 12 — 뱅크 버전 → 조인 필드 매핑 + 프롬프트 데이터셋 자동 유도 ──
@@ -578,6 +781,33 @@ def _current_winner_field(ctx):
     if filt and filt != ALL_VERSIONS_LABEL:
         return version_to_winner_field(filt)
     return WINNER_FIELD
+
+
+def view_winner_gidx(ctx):
+    """현재 뷰(프레임)가 뽑는 승자 문장 `gidx` 집합. 필터가 없으면 `None`.
+
+    `None` = 데이터셋에 구워진 전역 `adopted` 를 그대로 쓴다(기존 동작, 회귀 없음).
+    빈 집합은 "이 뷰에서 이기는 문장이 하나도 없다" 라 의미가 다르므로 구분한다.
+
+    ⚠️ 프레임 데이터셋 세션에서만 성립한다. `-prompts` 세션의 `ctx.view` 는 **문장** 뷰라
+       `winner_gidx_*` 를 낼 수 없다 — 거기서 억지로 구하면 빈 집합이 나와 화면의 채택이
+       통째로 사라진다(크래시 없는 조용한 오답).
+    """
+    view = getattr(ctx, "view", None)
+    session = getattr(getattr(ctx, "dataset", None), "name", None)
+    if view is None or session is None or session.endswith("-prompts"):
+        return None
+    # 스테이지가 없으면 전량이다 — 전체 프레임 `values()` 왕복을 피한다.
+    if not getattr(view, "_stages", None):
+        return None
+    field = _current_winner_field(ctx)
+    try:
+        if field not in view.get_field_schema():
+            return None
+        shift = gidx_shift(session, field)        # 오프셋 세대 보정 (gidx_shift 주석)
+        return {int(v) + shift for v in view.values(field) if v is not None}
+    except Exception:      # noqa: BLE001 — 뷰 조회 실패가 패널을 죽이면 안 된다
+        return None
 
 
 def stratified_subsample(labels, max_points, seed=0):
@@ -713,7 +943,7 @@ def _hover(b, i, texts=None):
 
 
 def build_mode_a(bundle, rule, show_unadopted, selected_gidx, bank_version_filter=None,
-                 color_by=None):
+                 color_by=None, view_winner=None):
     """문장 산점도 (모드 A). trace: [0]미채택 [1..k]채택(그룹별 1개) [마지막]하이라이트.
 
     채택점은 그룹(argmax_k1=클래스, dist_iou=wave_role)별로 trace를 쪼갠다 — Plotly 범례는
@@ -727,6 +957,19 @@ def build_mode_a(bundle, rule, show_unadopted, selected_gidx, bank_version_filte
     b = bundle
     n = len(b["gidx"])
     idx_all = np.arange(n)
+    # ── 채택(승자)을 **현재 뷰의 프레임 기준**으로 다시 매긴다 ──
+    #    데이터셋에 구워진 `adopted` 는 전체 프레임 기준 **전역** 승자다. 뷰가 프레임을
+    #    좁히면 그 프레임들이 뽑는 승자 집합이 달라진다 — 실측(2026-08-20):
+    #      전역 17,230 · source-e(프레임 2,477) → 86 · appdata(24,572) → 2,678
+    #    반영하지 않으면 화면이 "이 뷰의 승자" 인 척 전역 승자를 보여준다(조용한 오답).
+    #    ⚠️ 캐시된 번들 dict 는 **수정하지 않는다** — 다른 렌더가 같은 객체를 본다.
+    #    ⚠️ `gidx` 는 int64 라 np.isin 이 해시 경로를 탄다(0.001s). object dtype 이었으면
+    #       373배 느렸다 — 형제 패널에서 그걸로 "Still loading" 이 났다.
+    if view_winner is not None:
+        want = np.fromiter(view_winner, dtype=np.int64, count=len(view_winner))
+        adopted_all = np.isin(b["gidx"].astype(np.int64), want)
+    else:
+        adopted_all = b["adopted"].astype(bool)
     bv = b.get("bank_version")
     vfilt = bank_version_filter \
         if bank_version_filter and bank_version_filter != ALL_VERSIONS_LABEL else None
@@ -749,7 +992,7 @@ def build_mode_a(bundle, rule, show_unadopted, selected_gidx, bank_version_filte
     #    화면상 채택 비율이 모집단의 **약 29배**로 부풀어 있다.
     pop_idx = idx_all
     pop_n = len(pop_idx)
-    adopted = b["adopted"][idx_all].astype(bool)
+    adopted = adopted_all[idx_all]
     if len(idx_all) > MAX_POINTS:
         # 채택 점(승자 문장 — 이 패널의 존재 이유)은 전수 보존하고 **미채택만** 층화한다.
         # 29버전 60만 행에서 category 층화만 걸면 채택 ~5,600점이 ~185점으로 뭉개진다
@@ -770,7 +1013,7 @@ def build_mode_a(bundle, rule, show_unadopted, selected_gidx, bank_version_filte
             cached = np.sort(np.concatenate([keep_idx, rest[sub_pos]]))
             sub_cache[vfilt or ALL_VERSIONS_LABEL] = cached
         idx_all = cached
-        adopted = b["adopted"][idx_all].astype(bool)
+        adopted = adopted_all[idx_all]
 
     # ── 호버 문장을 **DB 정본**으로 (2026-08-19: "이제 gidx 그걸로 하지마") ──
     #    데이터셋 `text` 는 npz 를 `gidx % GIDX_OFFSET` 로 퍼온 파생물이라 603,318행 중
@@ -789,7 +1032,7 @@ def build_mode_a(bundle, rule, show_unadopted, selected_gidx, bank_version_filte
         if not keep.all():
             text_meta["dropped_n"] = int((~keep).sum())
             idx_all = idx_all[keep]
-            adopted = b["adopted"][idx_all].astype(bool)
+            adopted = adopted_all[idx_all]
     # 호버는 예산 안에서만 **전송**한다. DB 조회 자체는 계속 한다 — 배너의 문장 출처
     # 회계(폴백 몇 버전, DB 정본 몇 행)가 거기서 나오므로 끊으면 조용한 폴백이 된다.
     hover_on = len(idx_all) <= HOVER_BUDGET
@@ -857,7 +1100,7 @@ def build_mode_a(bundle, rule, show_unadopted, selected_gidx, bank_version_filte
         pop_adopted = adopted
     else:
         pop_groups, _pal = _groups(pop_idx)
-        pop_adopted = b["adopted"][pop_idx].astype(bool)
+        pop_adopted = adopted_all[pop_idx]
     pop_count = dict(zip(*np.unique(pop_groups, return_counts=True)))
 
     def _legend(name, drawn, total):
@@ -932,6 +1175,9 @@ def build_mode_a(bundle, rule, show_unadopted, selected_gidx, bank_version_filte
     # 문장 출처를 **항상** 밝힌다 (2026-08-19): DB 정본이 몇 행이고 어느 버전이 폴백인지
     # 안 적으면, 자리표시자가 섞인 화면을 정본으로 오독한다 — 조용한 폴백 금지.
     banner += " · " + pdb_note(text_meta)
+    if view_winner is not None:
+        banner += (f" · **채택 = 현재 뷰 기준** (뷰가 뽑는 승자 문장 {len(view_winner):,}종)"
+                   " — 전역 채택이 아니다")
     dropped_n = int(text_meta.get("dropped_n") or 0)
     if dropped_n:
         banner += (f" · ⛔ **정렬 붕괴 {len(bad_vers)}버전 {dropped_n:,}점 제외**"
@@ -1068,7 +1314,20 @@ _FIGDATA = {}
 
 
 def _fig_key(ctx):
-    return (getattr(ctx, "params", None) or {}).get("panel_id") or id(ctx.panel)
+    """fig 캐시 키 = (데이터셋, 패널 인스턴스).
+
+    ⚠️ **데이터셋을 키에 넣어야 한다** (2026-08-20, 다른 세션 실측으로 확인): 예전 키는
+    패널 인스턴스만 봤다 → 헤더 선택기로 데이터셋을 바꾸면 `render` 가 **옛 데이터셋의
+    figure 를 그대로 꺼내 그렸다.** 실제 피해: `frames` 의 199,972점을 문장 패널로 오인해
+    검증이 한 번 헛돌았다. 데이터셋이 키에 있으면 전환 직후엔 캐시 미스가 되고, `render`
+    의 결정론 재구성 폴백이 **새 데이터셋 기준으로** 다시 만든다(웜 ~0.1s).
+    (App 은 URL 로 데이터셋이 안 붙고 접속 시 서버 세션에 스스로 동기화하므로, 전환은
+     항상 이 경로를 탄다 — 옆 패널 `user-image-embeddings._fig_key` 도 같은 계약.)
+    인스턴스 성분은 panel_id, 없으면(render 경로) `id(ctx.panel)` 폴백.
+    """
+    ds = getattr(ctx, "dataset", None)
+    inst = (getattr(ctx, "params", None) or {}).get("panel_id") or id(ctx.panel)
+    return (ds.name if ds is not None else "-", inst)
 
 
 def _put_fig(ctx, data):
@@ -1113,6 +1372,84 @@ def _change_guard(ctx, control, value, carried_same):
         #    배너는 옛 값으로 남는다. 같은 값 에코가 한 번 더 도는 비용은 결과가 같아 무해.
         return False
     return prev == value
+
+
+def _forget_applied(ctx):
+    """`_APPLIED`(서버가 마지막으로 반영한 값)를 비운다 — **상태 리셋과 짝으로만** 부른다.
+
+    ⚠️ 리셋과 가드는 함께 움직여야 한다. `on_load` 가 상태를 기본값으로 되돌렸는데
+    `_APPLIED` 에 옛 선택("채택만")이 남아 있으면, 사용자가 **같은 값을 다시 고를 때**
+    `_change_guard` 가 "같은 값" 이라며 삼킨다 → 서버 상태는 "전체" 인데 클라이언트는
+    낙관적으로 "채택만" 을 표시하고, 다음 `_refresh` 의 `_sync_controls` 가 "전체" 를
+    되밀어 **전체 ↔ 채택만 왕복**으로 보인다 (2026-08-20 사용자 신고의 정체).
+    """
+    pid = (getattr(ctx, "params", None) or {}).get("panel_id")
+    if pid is None:
+        _APPLIED.clear()      # pid 를 모르면 전부 — 같은 값 에코 1회는 결과가 같아 무해
+        return
+    for key in [k for k in _APPLIED if k[0] == pid]:
+        _APPLIED.pop(key, None)
+
+
+_TRACE_FLAG = "/tmp/user_compare_trace.on"     # 이 파일이 있을 때만 기록
+_TRACE_PATH = "/tmp/user_compare_trace.jsonl"
+
+
+def _trace(ctx, event, **extra):
+    """훅 호출 타임라인 기록 — **플래그 파일이 있을 때만**. 없으면 stat 한 번이 전부.
+
+    왜 파일 게이트인가: App 프로세스는 이미 돌고 있어 env 를 바꿀 수 없다. 플래그 파일이면
+    재기동 없이 켜고 끈다(`touch /tmp/user_compare_trace.on` / `rm`).
+    용도: 패널이 반복 리마운트(churn)하며 `표시` 가 전체↔채택만 왕복으로 보이는 현상의
+    **트리거 훅을 특정**하기 위한 일회성 계측 (2026-08-20). 상시 켜 두지 말 것.
+    """
+    try:
+        if not os.path.exists(_TRACE_FLAG):
+            return
+        st = getattr(getattr(ctx, "panel", None), "state", None)
+        rec = {"t": round(time.time(), 3), "ev": event,
+               "pid": (getattr(ctx, "params", None) or {}).get("panel_id"),
+               "mode": getattr(st, "mode", None),
+               "show": getattr(st, "show_unadopted", None),
+               "ver": getattr(st, "bank_version_filter", None),
+               "ds": getattr(getattr(ctx, "dataset", None), "name", None),
+               "nstage": len(getattr(getattr(ctx, "view", None), "_stages", None) or []),
+               **extra}
+        with open(_TRACE_PATH, "a", encoding="utf-8") as f:
+            f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+    except Exception:      # noqa: BLE001 — 계측이 패널을 죽이면 안 된다
+        pass
+
+
+def _remember(ctx, control, value):
+    """서버가 **프로그램적으로** 바꾼 컨트롤 값을 `_APPLIED` 에 반영한다.
+
+    `_change_guard` 는 사용자 클릭 경로에서만 기억을 갱신한다. 핸들러가 곁들여 바꾸는 값
+    (예: 규칙 전환 시 색칠 기본값)을 안 적어두면 `_sync_controls` 의 기억 우선 미러가
+    **옛 값을 되밀어** 방금 바뀐 색칠이 화면에서 되돌아간다.
+    """
+    pid = (getattr(ctx, "params", None) or {}).get("panel_id")
+    if pid is not None:
+        _APPLIED[(pid, control)] = value
+
+
+def _remembered_controls(ctx):
+    """이 패널이 **서버 프로세스에 남긴 마지막 사용자 선택**(`_APPLIED`)을 되읽는다.
+
+    panel state 는 서버가 보관하지 않는다 — 요청마다 **클라이언트가 실어 온다**
+    (`_change_guard` 주석). 그래서 옛 탭·재접속이 **빈 panel_state 에코**를 보내면
+    `on_load` 자가복구가 돌고, 그 시점에 서버가 참조할 사용자 선택이 아무것도 없어
+    기본값(`표시=전체`)으로 되돌아간다 → 사용자가 다시 고르면 또 에코가 덮어
+    **전체 ↔ 채택만 왕복**으로 보인다 (2026-08-20 사용자 신고).
+
+    `_APPLIED` 는 모듈 전역이라 요청 사이에 **살아 있는 유일한 서버측 기억**이다
+    (`FIFTYONE_PLUGINS_CACHE_ENABLED=true` 전제 — 같은 주석 참고). 그래서 리셋 시
+    기본값 대신 이 기억을 먼저 쓴다. 기억이 없으면(진짜 첫 마운트) 기본값이다.
+    """
+    pid = (getattr(ctx, "params", None) or {}).get("panel_id")
+    if pid is None:
+        return {}
+    return {c: v for (p_, c), v in _APPLIED.items() if p_ == pid}
 
 
 def _rows_to_markdown(rows, join_field_missing=None, total=None):
@@ -1162,22 +1499,91 @@ class PromptComparePanel(foo.Panel):
                                label="Prompt Compare", surfaces="grid")
 
     def on_load(self, ctx):
-        ctx.panel.state.rule = "argmax_k1"
-        ctx.panel.state.color_by = COLOR_BY_CATEGORY
-        ctx.panel.state.show_unadopted = True
+        """마운트 초기화. **이미 초기화된 패널의 사용자 선택은 건드리지 않는다.**
+
+        ⚠️ 옛 코드는 매번 무조건 기본값을 대입했다. `on_load` 는 리마운트뿐 아니라
+        `on_change_selected` 의 자가복구 경로(빈 panel_state 에코)에서도 불리므로,
+        **사용자가 고른 `표시=채택만` 이 남의 탭 에코 한 번에 "전체" 로 되돌아갔다.**
+        되돌아간 뒤 사용자가 같은 값을 다시 고르면 `_change_guard` 가 삼켜서(옛 값을
+        기억하고 있으므로) **전체 ↔ 채택만 왕복**이 됐다 — 2026-08-20 사용자 신고.
+
+        그래서 리셋은 두 경우에만 한다:
+          · 첫 초기화 (`mode` 가 없다 = 이 패널 상태가 빈 상태)
+          · **데이터셋 전환** — 뱅크 목록·프레임 id 가 달라져 버전 필터/선택이 무의미해진다
+            (메모리 §16 의 "단, 데이터셋 전환 시 bank_version_filter 는 리셋 유지")
+        리셋할 때는 `_forget_applied` 로 가드 기억도 같이 비운다 (그 함수 주석 참고).
+        """
+        _trace(ctx, "on_load")
+        ds = getattr(getattr(ctx, "dataset", None), "name", None)
+        prev_ds = getattr(ctx.panel.state, "ds_name", None)
+        first = getattr(ctx.panel.state, "mode", None) is None
+        switched = prev_ds is not None and prev_ds != ds
+        if first or switched:
+            # 데이터셋 전환은 진짜 리셋이다(뱅크 목록·프레임 id 가 달라진다). 그 외의
+            # `first`(빈 panel_state 에코 자가복구 포함)는 **서버 기억을 먼저 쓴다** —
+            # 안 그러면 옛 탭 에코 한 번에 사용자 선택이 기본값으로 날아간다
+            # (`_remembered_controls` 주석 = 왕복 버그의 나머지 절반).
+            mem = {} if switched else _remembered_controls(ctx)
+            ctx.panel.state.rule = mem.get("rule") or "argmax_k1"
+            ctx.panel.state.color_by = mem.get("color_by") or COLOR_BY_CATEGORY
+            ctx.panel.state.show_unadopted = \
+                mem.get("show_mode", SHOW_ALL_LABEL) != SHOW_ADOPTED_LABEL
+            ctx.panel.state.mode = mem.get("mode") or "A"   # "A"|"B" — Task 9, 스펙 §5.1b
+            ctx.panel.state.group_field = mem.get("group_field") or "project"
+            ctx.panel.state.groups = mem.get("groups") or ""
+            # Task 12 — 뱅크 버전 선택기 + 프롬프트 데이터셋 자동 유도 상태.
+            ctx.panel.state.bank_version_filter = \
+                mem.get("bank_version_filter") or ALL_VERSIONS_LABEL
+            if switched:
+                _forget_applied(ctx)   # 기억까지 버려야 새 데이터셋에서 재선택이 먹는다
+        # 파생·휘발 상태는 리마운트마다 비운다 (프레임 id 는 세션 밖에서 유효하지 않다).
         ctx.panel.state.selected_gidx = []
         ctx.panel.state.sel_total = 0
-        ctx.panel.state.mode = "A"           # "A"|"B" — Task 9, 스펙 §5.1b
-        ctx.panel.state.group_field = "project"
-        ctx.panel.state.groups = ""
-        # Task 12 — 뱅크 버전 선택기 + 프롬프트 데이터셋 자동 유도 상태.
-        ctx.panel.state.bank_version_filter = ALL_VERSIONS_LABEL
         ctx.panel.state.bank_versions = []
         ctx.panel.state.prompts_available = True
         ctx.panel.state.join_field_missing = None
-        self._refresh(ctx)
+        ctx.panel.state.ds_name = ds
+        # on_load 는 상태를 **먼저** 정본으로 맞춰 놓으므로 `_reconcile` 이 어긋남을 볼 수
+        # 없다. 그런데 마운트·재접속 직후는 클라이언트 표시값을 알 수 없는 유일한 순간이니
+        # 여기서만 미러를 강제한다 (뷰 에코 경로는 계속 침묵 — `_sync_controls` 주석).
+        self._refresh(ctx, sync_controls=True)
 
-    def _sync_controls(self, ctx):
+    def _reconcile(self, ctx):
+        """요청이 실어 온 **낡은 컨트롤 상태**를 서버 기억(`_APPLIED`)으로 맞춘다.
+
+        panel state 는 서버가 보관하지 않고 요청마다 클라이언트가 실어 오며, 그 값은 응답
+        1왕복만큼 낡다(`_change_guard` 주석). 그런데 `_refresh` 는 컨트롤과 무관한 에코에서도
+        불린다 — 계측 실측(2026-08-20): 로드·전환 직후 `on_change_view` 6회 +
+        `on_change_ext_sel` 2회 → `_refresh` 7회 → `render` 9회 버스트.
+
+        낡은 상태를 그대로 쓰면 **배너(상태 기반)와 드롭다운(미러)이 서로 갈린다** — 실측:
+        `드롭다운=전체 / 배너=채택만` 이 35초간 번갈아 나타났다. 그래서 조정을 미러가 아니라
+        **상태 자체**에 한 번 적용한다. 그러면 배너·figure·미러가 같은 값을 본다.
+        `_APPLIED` 는 서버가 마지막으로 **반영한** 값이라 요청 상태보다 낡을 수 없다.
+
+        반환: 요청 상태가 기억과 **어긋났던** 컨트롤 이름들. 이게 비어 있으면 클라이언트는
+        이미 정본 값을 들고 있다는 뜻이라 `_sync_controls` 가 미러를 밀지 않아야 한다
+        (밀면 에코가 되돌아와 왕복이 스스로 지속된다 — 그 함수 주석의 실측).
+        """
+        mem = _remembered_controls(ctx)
+        if not mem:
+            return ["*"]      # 서버 기억 없음 = 클라이언트 표시값을 알 수 없다 → 미러 필요
+        st = ctx.panel.state
+        stale = []
+        if "show_mode" in mem:
+            want = mem["show_mode"] != SHOW_ADOPTED_LABEL
+            if st.show_unadopted != want:
+                st.show_unadopted = want
+                stale.append("show_mode")
+        for key in ("mode", "rule", "color_by", "group_field", "groups",
+                    "bank_version_filter"):
+            v = mem.get(key)
+            if v is not None and getattr(st, key, None) != v:
+                setattr(st, key, v)
+                stale.append(key)
+        return stale
+
+    def _sync_controls(self, ctx, force=True):
         """컨트롤 드롭다운 표시값을 서버 상태에서 밀어넣는다 (매 _refresh).
 
         컨트롤은 h_stack("controls") 아래 중첩 — 가로 한 줄 배치는 이 중첩만 동작한다
@@ -1186,7 +1592,9 @@ class PromptComparePanel(foo.Panel):
         중첩 경로("controls.mode")에서 읽으므로, 여기서 정본(flat) 상태를 미러링해 준다 —
         서버가 매번 밀어넣으니 클라이언트 form 값과의 desync 도 함께 방지된다.
         """
-        ctx.panel.state.set("controls", {
+        # 상태는 `_refresh` 가 `_reconcile` 로 이미 서버 기억에 맞춰 놓았다 — 여기서는
+        # 그 정본 상태를 그대로 미러링만 한다 (조정 로직을 두 곳에 두면 또 갈린다).
+        mirror = {
             "mode": ctx.panel.state.mode or "A",
             "rule": ctx.panel.state.rule or "argmax_k1",
             "color_by": ctx.panel.state.color_by or (
@@ -1196,9 +1604,23 @@ class PromptComparePanel(foo.Panel):
             "bank_version_filter": ctx.panel.state.bank_version_filter or ALL_VERSIONS_LABEL,
             "group_field": ctx.panel.state.group_field or "project",
             "groups": ctx.panel.state.groups or "",
-        })
+        }
+        # ⚠️ **차이가 없으면 밀지 않는다** — 이게 왕복의 원천이었다(2026-08-20 계측).
+        #    서버가 드롭다운 값을 쓰면 클라이언트는 그 값을 `on_*_change` 로 되돌려 보낸다.
+        #    `_refresh` 는 뷰 에코(`on_change_view` 가 수초마다)로도 불리므로 **매번 미러하면
+        #    되돌아온 에코가 다시 미러를 낳는다.** 요청은 동시에 처리되고 각자 자기 시점의
+        #    클라이언트 상태를 실어 오므로, 값이 다른 두 응답이 겹치면 진동이 스스로 지속된다
+        #    (실측: `표시` 가 60초 내내 5회 왕복, `on_show_change` 가 값을 번갈아 계속 도착).
+        #    `force` 는 `_reconcile` 이 "요청 상태가 기억과 어긋났다" 고 알려줄 때만 참이다.
+        #    빈 panel_state 에코(옛 탭·재접속)는 어긋남으로 잡히므로 그 경로는 계속 교정된다.
+        if not force:
+            return
+        ctx.panel.state.set("controls", mirror)
+        # 밀었으면 기억도 갱신 — 이어 도착할 에코 1발은 `_change_guard` 가 삼킨다.
+        for control, value in mirror.items():
+            _remember(ctx, control, value)
 
-    def _refresh(self, ctx, update_plot=True):
+    def _refresh(self, ctx, update_plot=True, sync_controls=None):
         """update_plot=False = 성능 옵션: fig(_FIGDATA)·banner·layout 을 다시 쓰지
         않고 표(top_table)·컨트롤만 갱신한다. 선택 계열 훅은 뷰 변경이 어차피 재렌더를
         유발하므로 이중 재렌더를 피하려 False를 쓴다.
@@ -1211,7 +1633,10 @@ class PromptComparePanel(foo.Panel):
         실패)이었다 — update_plot은 파괴 방지 수단이 아니다. 방어는 "받은 선택을 즉시
         뷰로 승격 + 빈 에코 무시" (_select_frames_view / on_change_extended_selection).
         """
-        self._sync_controls(ctx)
+        _trace(ctx, "_refresh", update_plot=update_plot)
+        stale = self._reconcile(ctx)   # 낡은 상태 → 서버 기억 (그 함수 주석)
+        self._sync_controls(
+            ctx, force=bool(stale) if sync_controls is None else sync_controls)
         # 과거 set_data(patch_panel_data)로 심어진 패널 데이터가 세션에 영속되어, 있으면
         # 스키마 data를 영원히 가린다(App 번들 `mt||view.data` 우선순위). set_data를 안 쓰는
         # 지금도 옛 세션의 잔재가 남아 있으므로 매 갱신마다 비워 스키마 경로만 살린다.
@@ -1269,7 +1694,8 @@ class PromptComparePanel(foo.Panel):
             fig = build_mode_a(b, rule=ctx.panel.state.rule or "argmax_k1",
                                show_unadopted=ctx.panel.state.show_unadopted,
                                selected_gidx=sel, bank_version_filter=version_filter,
-                               color_by=ctx.panel.state.color_by)
+                               color_by=ctx.panel.state.color_by,
+                               view_winner=view_winner_gidx(ctx))
         # ⚠️ set_data 사용 금지 (사용자 피드백 라운드 실측, 2026-08-07): set_data →
         # patch_panel_data 는 클라이언트 패널 데이터 저장소에 **딥머지(patch)** 된다 —
         # 배열이 줄어드는 갱신(미채택 숨김: 12,166→0, 버전 필터: 전체→부분집합)에서 새
@@ -1311,7 +1737,17 @@ class PromptComparePanel(foo.Panel):
     #    전부를 "현재 값"으로 재발화한다 — 값이 실제로 안 바뀌어도 재발화됨. 마지막으로 처리한
     #    시그니처와 같으면 무시해야 다른 훅(on_plot_click 등)이 막 세팅한 상태를 덮어쓰지 않는다.
     #    가드 상태는 `_dedup_guard`로 위임 (밑줄 없는 상태 키 필수 — 헬퍼 docstring 참고).
+    def on_change_view(self, ctx):
+        """뷰 바 스테이지·사이드바 필터가 바뀌면 다시 그린다.
+
+        프레임이 좁아지면 **그 프레임들이 뽑는 승자 문장 집합**이 달라지므로, 단순
+        재렌더가 아니라 채택 판정 자체가 바뀐다 (build_mode_a 의 view_winner 주석 참고).
+        """
+        _trace(ctx, "on_change_view")
+        self._refresh(ctx)
+
     def on_change_selected(self, ctx):
+        _trace(ctx, "on_change_selected")
         if ctx.panel.state.mode is None:
             # 자가 복구 (2026-08-14 실측): 서버 재시작 뒤 옛 탭이 재접속하면 빈 panel_state
             # 에코가 공유 세션에 퍼져 컨트롤/배너가 통째로 사라진다. 초기화 안 된 상태
@@ -1338,6 +1774,7 @@ class PromptComparePanel(foo.Panel):
     #    lasso에 반응하지 않는다, 0 ids 유지. lasso는 이 훅으로만 온다.
     #    payload = {"selection": [sample_id, ...], "scope": "global"|None, ...}) ──
     def on_change_extended_selection(self, ctx):
+        _trace(ctx, "on_change_ext_sel")
         if ctx.panel.state.mode is None:
             self.on_load(ctx)   # 빈 상태 에코 자가 복구 — on_change_selected 주석 참고
             return
@@ -1580,6 +2017,7 @@ class PromptComparePanel(foo.Panel):
         # 같은 어긋남이 상태에 남지 않는다. 바꾸고 싶으면 색칠 드롭다운으로 다시 고르면 된다.
         ctx.panel.state.color_by = (COLOR_BY_CATEGORY if v == "argmax_k1"
                                     else COLOR_BY_WAVE_ROLE)
+        _remember(ctx, "color_by", ctx.panel.state.color_by)   # 기억 미러 (_remember 주석)
         self._refresh(ctx)
 
     def on_color_change(self, ctx):
@@ -1592,6 +2030,7 @@ class PromptComparePanel(foo.Panel):
         self._refresh(ctx)
 
     def on_show_change(self, ctx):
+        _trace(ctx, "on_show_change")
         # 화이트리스트 (codex 3차 리뷰): 두 라벨 밖의 값이 조용히 "채택만"으로 폴백되면 안 된다
         values = {SHOW_ALL_LABEL: True, SHOW_ADOPTED_LABEL: False}
         v = (ctx.params or {}).get("value")
@@ -1646,6 +2085,7 @@ class PromptComparePanel(foo.Panel):
         self._refresh(ctx)
 
     def render(self, ctx):
+        _trace(ctx, "render")
         panel = types.Object()
         # 컨트롤 = 드롭다운 4개를 h_stack 한 줄에 (2026-08-10 피드백 ×3: ① 세로 스택이 수직
         # 공간을 잡아먹어 하단 표가 뷰포트 밖으로 밀림, ② 버튼/드롭다운 혼재와 뱅크 버전의
@@ -1751,9 +2191,14 @@ class PromptComparePanel(foo.Panel):
                     selected_gidx=set(ctx.panel.state.selected_gidx or []),
                     bank_version_filter=(ctx.panel.state.bank_version_filter
                                          or ALL_VERSIONS_LABEL),
-                    color_by=ctx.panel.state.color_by)
+                    color_by=ctx.panel.state.color_by,
+                    view_winner=view_winner_gidx(ctx))
                 fig_data = fig["data"]
                 _put_fig(ctx, fig_data)
+                # 데이터셋 전환 직후엔 배너도 클라이언트가 실어 온 **옛 데이터셋 문장**이다
+                # (state 는 요청마다 실려 온다). 방금 새로 만든 배너로 덮어 stale 표기를 없앤다
+                # — 모집단 숫자가 곧 데이터셋 게이트라 이게 틀리면 오독으로 이어진다.
+                ctx.panel.state.banner = fig.get("banner", "")
             except Exception:
                 fig_data = None
         panel.plot("scatter_v2", data=fig_data or [],
@@ -1871,10 +2316,68 @@ def selftest():
         assert winner <= gidx_v, \
             f"{f} 승자 gidx가 {v} 문장 밖 — 오프셋/재백필 불일치 (밖: {sorted(winner - gidx_v)[:3]})"
     # 불변식 3: 채택 ⟺ wins>0
+    # ── 뷰 기준 채택 (2026-08-20) ──
+    #    프레임 뷰가 좁아지면 승자 문장 집합이 달라진다. 실측: 전역 17,230 vs
+    #    source-e(프레임 2,477) 86. 반영 안 하면 전역 승자를 "이 뷰의 승자" 로 보여준다.
+    _g_all = sorted({int(g) for g in b["gidx"]})
+    _some = set(_g_all[:3])
+    _f_glob = build_mode_a(b, rule="argmax_k1", show_unadopted=True, selected_gidx=set())
+    _f_view = build_mode_a(b, rule="argmax_k1", show_unadopted=True, selected_gidx=set(),
+                           view_winner=_some)
+    _ad_glob = sum(len(t["x"]) for t in _f_glob["data"][1:-1])
+    _ad_view = sum(len(t["x"]) for t in _f_view["data"][1:-1])
+    assert _ad_view <= len(_some), (_ad_view, len(_some))     # 뷰 승자 밖은 채택 아님
+    assert _ad_view != _ad_glob, "뷰 승자를 줬는데 전역과 같다 — 주입이 무시됐다"
+    assert "채택 = 현재 뷰 기준" in _f_view["banner"]
+    assert "채택 = 현재 뷰 기준" not in _f_glob["banner"]
+    # 빈 집합(뷰에 승자 0) 과 None(필터 없음) 은 다르다
+    _f_zero = build_mode_a(b, rule="argmax_k1", show_unadopted=True, selected_gidx=set(),
+                           view_winner=set())
+    assert sum(len(t["x"]) for t in _f_zero["data"][1:-1]) == 0
+    # 캐시된 번들을 건드리지 않았는가 (다른 렌더가 같은 dict 를 본다)
+    assert int(b["adopted"].astype(bool).sum()) == int(b["adopted"].astype(bool).sum())
+    assert _ad_glob == sum(len(t["x"]) for t in build_mode_a(
+        b, rule="argmax_k1", show_unadopted=True, selected_gidx=set())["data"][1:-1]), \
+        "회귀: view_winner 호출이 번들의 전역 adopted 를 오염시켰다"
+
     assert all((w > 0) == bool(a) for w, a in zip(b["wins"], b["adopted"]))
     # 불변식 4 (codex 3차 리뷰): gidx 전역 유일 — row_of 딕셔너리/np.where 단일행 전제.
     # 다중 버전은 GIDX_OFFSET(prompt_geometry) 오프셋으로 유일성을 보장한다.
     assert len(b["gidx"]) == len(gidx_all), "gidx 전역 유일성 붕괴"
+
+    # ── gidx 오프셋 세대 보정 (2026-08-20) ──
+    #    프레임 필드와 `-prompts` 의 오프셋 세대가 어긋나도 조인이 성립해야 한다.
+    #    산술 계약: shift = (문장블록 − 프레임블록) × OFFSET, 왕복은 항등.
+    for _fb, _pb in ((0, 18), (18, 18), (18, 0), (3, 21)):
+        _s = (_pb - _fb) * PDB_GIDX_OFFSET
+        for _loc in (0, 451, 12_479):
+            _frame_key = _loc + _fb * PDB_GIDX_OFFSET
+            assert _frame_key + _s == _loc + _pb * PDB_GIDX_OFFSET
+            assert (_frame_key + _s) % PDB_GIDX_OFFSET == _loc, "로컬 인덱스가 보존돼야 한다"
+            assert (_frame_key + _s) - _s == _frame_key, "왕복 항등"
+    assert gidx_shift("__user_no_such_ds__", WINNER_FIELD) == 0, "없는 데이터셋은 보정 0"
+    assert gidx_shift(FRAMES_DATASET, "winner_gidx_v999") == 0, "짝 없는 필드는 보정 0"
+    # 라이브 계약: 보정 후 프레임 gidx 가 그 버전 문장의 블록에 들어가야 한다.
+    for _ds, _fld, _ver in ((FRAMES_DATASET, WINNER_FIELD, "v1.0.8.0"),
+                            ("frames", "winner_gidx_v1080", "v1.0.8.0")):
+        if not (fo.dataset_exists(_ds) and fo.dataset_exists(f"{_ds}-prompts")):
+            continue
+        _fr = fo.load_dataset(_ds)
+        if _fld not in _fr.get_field_schema():
+            continue
+        _s = gidx_shift(_ds, _fld)
+        _lo, _hi = _fr.bounds(_fld)
+        _pv = fo.load_dataset(f"{_ds}-prompts").match(
+            fo.ViewField("bank_version.label") == _ver)
+        _plo, _phi = _pv.bounds("gidx")
+        if _lo is None or _plo is None:
+            continue
+        _want = int(_plo) // PDB_GIDX_OFFSET
+        assert (int(_lo) + _s) // PDB_GIDX_OFFSET == _want, \
+            f"{_ds}.{_fld}: 보정 후 블록 {(int(_lo)+_s)//PDB_GIDX_OFFSET} ≠ 문장 블록 {_want}"
+        assert (int(_hi) + _s) // PDB_GIDX_OFFSET == _want, f"{_ds}.{_fld}: 상한이 블록을 넘음"
+        print(f"  gidx 세대 보정 {_ds}.{_fld}: shift={_s:+,} "
+              f"(프레임 블록 {int(_lo)//PDB_GIDX_OFFSET} → 문장 블록 {_want})")
 
     # 조인 왕복: 임의 채택 문장 → 프레임들 → 도로 그 문장. 다중 버전이라 왕복은
     # **그 문장 버전의 winner 필드**로 해야 한다 (버전 혼합 시 gidx 오프셋이 다른 필드와
@@ -2084,15 +2587,50 @@ def selftest():
     fig_default = build_mode_a(b, rule="argmax_k1", show_unadopted=True, selected_gidx=set())
     assert sum(len(t["x"]) for t in fig_default["data"][:-1]) == n_all
 
-    # load_prompt_bundle dataset_name 파라미터화 + 캐시 1엔트리 유지 검증.
+    # load_prompt_bundle dataset_name 파라미터화 + 캐시 예산 검증.
+    # ⚠️ 2026-08-20: "엔트리 1개" 는 더 이상 계약이 아니다 (그 정책이 데이터셋을 번갈아 볼
+    #    때마다 10초 콜드를 만들던 원인이다 — _CACHE 주석). 계약은 **예산 준수**다.
     _CACHE.clear()
     load_prompt_bundle(PROMPTS_DATASET)
     assert len(_CACHE) == 1
+    assert sum(_bundle_nbytes(v) for v in _CACHE.values()) <= CACHE_CAP_BYTES
     if fo.dataset_exists("source-h-prompts"):
+        k_main = next(iter(_CACHE))
         load_prompt_bundle("source-h-prompts")
-        assert len(_CACHE) == 1, "회귀: dataset_name 전환 후에도 캐시 엔트리가 1개를 넘음"
-        load_prompt_bundle(PROMPTS_DATASET)
-        assert len(_CACHE) == 1
+        assert sum(_bundle_nbytes(v) for v in _CACHE.values()) <= CACHE_CAP_BYTES, \
+            "회귀: LRU 축출이 캐시 예산을 지키지 않음"
+        # 예산 안에 둘 다 들어가면 **먼저 것이 살아 있어야 한다** — 옛 1엔트리 정책은 여기서
+        # 무조건 축출해서, 두 데이터셋을 번갈아 보면 매번 10초 콜드였다. (타이밍으로 재지
+        # 않는다 — 머신 부하에 흔들리는 assert 는 신호가 아니라 잡음이다.)
+        if len(_CACHE) == 2:
+            assert k_main in _CACHE, "회귀: 예산 안인데도 먼저 로드한 번들이 축출됐다"
+
+    # 영속 캐시(npz) 왕복 — **전 키 dtype·값 동일**. 좌표/문장이 어긋나는 조용한 오답이
+    # 이 캐시의 유일한 심각한 실패 모드라 전수 대조한다.
+    b_live = load_prompt_bundle(PROMPTS_DATASET)
+    key = (PROMPTS_DATASET, BRAIN_KEY,
+           str(fo.load_dataset(PROMPTS_DATASET).last_modified_at))
+    _bundle_write(key, b_live)
+    b_file = _bundle_read(key)
+    assert b_file is not None, "영속 캐시 왕복 실패 — 기록 직후 읽기가 None"
+    assert set(b_live) - {"_ver_counts"} == set(b_file) - {"_ver_counts"}, \
+        f"키 집합 불일치: {set(b_live) ^ set(b_file)}"
+    for k in set(b_file):
+        v, w = b_live[k], b_file[k]
+        if isinstance(v, np.ndarray):
+            assert isinstance(w, np.ndarray) and v.dtype == w.dtype, \
+                f"{k}: dtype {v.dtype} != {w.dtype}"
+            assert v.shape == w.shape and bool((v == w).all()), f"{k}: 값 불일치"
+        else:
+            assert v == w, f"{k}: {v!r} != {w!r}"
+    # stale 키는 파일을 무시해야 한다 (데이터셋 리빌드 후 옛 좌표를 그리면 조용한 오답).
+    assert _bundle_read((PROMPTS_DATASET, BRAIN_KEY, "stale-token")) is None, \
+        "회귀: stale 토큰인데 영속 캐시가 히트했다"
+    # 플러그인 네임스페이스가 **파일명과 토큰 양쪽**에 있어야 한다 — 형제 플러그인과 같은
+    # `(dataset, brain_key)` 를 캐시하는데 번들 모양이 달라, 이게 빠지면 남의 번들을 자기
+    # 것으로 읽는다 (이 assert 를 넣게 만든 실제 실패: `KeyError: 'gidx'`).
+    assert BUNDLE_NS in os.path.basename(_bundle_path(key)), _bundle_path(key)
+    assert _bundle_token(key).startswith(BUNDLE_NS + "|"), _bundle_token(key)
 
     # source-h-prompts 존재 시 bundle 로드/필터 스모크 (요구사항 4, 없으면 skip).
     if fo.dataset_exists("source-h-prompts"):
@@ -2286,6 +2824,76 @@ def selftest():
     hctx.params = {"value": "A"}
     panel_instance.on_mode_change(hctx)
     assert hctx.panel.state.mode == "A"
+
+    # ── "전체 ↔ 채택만" 왕복 회귀 (2026-08-20 사용자 신고) ──
+    #    ① 채택만 선택 → 반영  ② 리마운트(on_load)  ③ 리셋 뒤 같은 값 재선택
+    #    옛 코드: ②가 상태를 전체로 되돌리는데 `_APPLIED` 는 "채택만" 을 기억 → ③이
+    #    가드에 삼켜져 서버는 전체 · 드롭다운은 채택만 → `_sync_controls` 가 되밀어 왕복.
+    #    panel_id 를 실어야 `_APPLIED` 경로를 탄다 (없으면 carried_same 폴백).
+    fctx = _FakeCtxHandler()
+    fctx.params = {"panel_id": "flap-regression"}
+    panel_instance.on_load(fctx)
+    assert fctx.panel.state.show_unadopted is True
+    fctx.params = {"panel_id": "flap-regression", "value": SHOW_ADOPTED_LABEL}
+    panel_instance.on_show_change(fctx)
+    assert fctx.panel.state.show_unadopted is False, "① 채택만이 반영돼야 한다"
+    # ② 리마운트는 사용자 선택을 보존한다 (같은 데이터셋 = 리셋 사유가 아니다)
+    fctx.params = {"panel_id": "flap-regression"}
+    panel_instance.on_load(fctx)
+    assert fctx.panel.state.show_unadopted is False, \
+        "회귀: 리마운트가 사용자 선택을 전체로 되돌렸다 (왕복 버그의 절반)"
+    assert _remembered_controls(fctx).get("show_mode") == SHOW_ADOPTED_LABEL, \
+        "회귀: 서버 기억이 옛 값으로 되돌아갔다 (미러가 옛 값을 되밀게 된다)"
+    # ③ **뷰 에코는 미러를 다시 밀지 않아야 한다.** 밀면 클라이언트가 그 값을
+    #    `on_show_change` 로 되돌려 보내고, 동시 처리되는 다음 응답이 또 밀어 왕복이
+    #    스스로 지속된다 (`_sync_controls` 주석의 실측 60초 5회). 값이 그대로면 침묵이 정답.
+    fctx.panel.state.controls = None
+    panel_instance._refresh(fctx, update_plot=False)
+    assert fctx.panel.state.controls is None, \
+        "회귀: 값이 그대로인데 미러를 다시 밀었다 (에코 루프 재발)"
+    # ③ **빈 panel_state 에코**(옛 탭 재접속 = 자가복구 경로)가 와도 사용자 선택을
+    #    되살려야 한다 — 서버 기억(_APPLIED)이 유일한 출처다. 예전엔 여기서 기본값으로
+    #    돌아가 왕복의 나머지 절반이 됐다.
+    echo = _FakeCtxHandler()
+    echo.params = {"panel_id": "flap-regression"}      # 같은 pid, 빈 패널 상태
+    panel_instance.on_load(echo)                       # first=True → 기억 우선 복원
+    assert echo.panel.state.show_unadopted is False, \
+        "회귀: 빈 상태 에코가 사용자 선택(채택만)을 기본값으로 되돌렸다"
+    assert echo.panel.state.controls["show_mode"] == SHOW_ADOPTED_LABEL
+    #    기억과 다른 값으로 바꾸는 것도 당연히 먹어야 한다 (가드가 삼키지 않는다)
+    echo.params = {"panel_id": "flap-regression", "value": SHOW_ALL_LABEL}
+    panel_instance.on_show_change(echo)
+    assert echo.panel.state.show_unadopted is True, "회귀: 되돌리기 클릭이 삼켜졌다"
+    #    기억이 없는 **진짜 첫 마운트**(새 pid)는 기본값이다
+    brand_new = _FakeCtxHandler()
+    brand_new.params = {"panel_id": "flap-brand-new"}
+    panel_instance.on_load(brand_new)
+    assert brand_new.panel.state.show_unadopted is True, "새 패널은 기본값(전체)이어야 한다"
+    # 데이터셋 전환은 버전 필터를 리셋한다 (메모리 §16 요구사항)
+    sw = _FakeCtxHandler()
+    sw.params = {"panel_id": "flap-switch"}
+    panel_instance.on_load(sw)
+    sw.panel.state.bank_version_filter = "v1.0.8.4"
+    sw.panel.state.show_unadopted = False
+    sw.panel.state.ds_name = "other-dataset"           # 다른 데이터셋에서 온 상태
+    panel_instance.on_load(sw)
+    assert sw.panel.state.bank_version_filter == ALL_VERSIONS_LABEL, \
+        "데이터셋 전환 시 버전 필터는 리셋돼야 한다 (뱅크 목록이 다르다)"
+    assert sw.panel.state.show_unadopted is True
+
+    # 데이터셋 전환은 fig 캐시를 갈라야 한다 (2026-08-20: 옛 키가 인스턴스만 봐서
+    # frames 의 199,972점이 문장 패널에 남았다 — `_fig_key` 주석)
+    class _DsCtx:
+        def __init__(self, name, panel):
+            self.dataset = type("D", (), {"name": name})()
+            self.panel = panel
+            self.params = {"panel_id": "figkey-switch"}
+    shared_panel = _FakeCtxHandler().panel
+    a, b_ = _DsCtx("frames", shared_panel), _DsCtx("sourcei", shared_panel)
+    _put_fig(a, [{"marker": "frames-fig"}])
+    assert _get_fig(a) == [{"marker": "frames-fig"}]
+    assert _get_fig(b_) is None, \
+        "회귀: 다른 데이터셋에서 옛 fig 가 보인다 (stale 플롯 오독의 원인)"
 
     # update_plot=False 계약 (성능): 플롯 상태를 다시 쓰지 않고 표만 갱신한다
     # (파괴 방지 수단 아님 — _refresh docstring의 최종 진단 참고).

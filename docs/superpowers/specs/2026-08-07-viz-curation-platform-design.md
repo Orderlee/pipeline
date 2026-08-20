@@ -2,6 +2,9 @@
 
 - 작성: 2026-08-07
 - ⚠️ 2026-08-19 개명 — 본문의 frames_captions = 현 `frames`
+- ⚠️ 2026-08-20 필드 세대 교체 — 본문의 `winner_gidx_v080` 필드는 리빌드가 삭제(현행은 신 태그
+  `winner_gidx_v1080` 등). §불변식의 `set(frames.winner_gidx)⊆set(prompts.gidx)` 는 **gidx 블록
+  세대가 같을 때만** raw 등식으로 성립 — 세대가 다르면 shift 보정 후 판정(소비자가 보정함).
 - 검토 방식: 페르소나 병렬(pipeline-explorer / tech-scout / cto) + **codex 3라운드**
   (독립 의견 → cto 판정 반론 → 개정 판정 최종 검토). "자체 플랫폼" 포지션은 steelman 으로
   최강 형태를 세운 뒤 기각. 라이브 실측(도커 컨테이너·DB) 근거 병기.
