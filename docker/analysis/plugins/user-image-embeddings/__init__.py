@@ -21,6 +21,7 @@
 배포: docker cp → /data/fiftyone/datasets/__plugins__/user-image-embeddings/
       + 플러그인 **디렉토리 touch** (plugins_cache dir_state 무효화)
 """
+import json
 import os
 import threading
 
@@ -37,15 +38,35 @@ PROMPTS_SUFFIX = "-prompts"
 # 200,000 은 이미지(199,972)를 **전량** 통과시키면서 문장 60만은 막는 경계다.
 # ⚠️ 문장까지 전량(603,318)을 그리려면 점당 바이트를 줄여야 한다 — 실측 분해:
 #   text(호버) 49.43MB(54.8%) · ids 16.89MB(18.7%) · x+y 23.88MB(26.4%)
-#   호버는 문장 원문(≤110자)이라 원리적으로 안 줄어든다. 전량을 원하면 호버를 포기하고
-#   클릭→패널 표시로 바꿔야 한다(26.09MB). 그건 UX 트레이드오프라 사용자 결정 사항.
+#   호버는 문장 원문(≤110자)이라 원리적으로 안 줄어든다 → 2026-08-20 사용자 결정으로
+#   **예산 초과 시 호버를 포기하고 선택→문장 표시**로 바꿨다 (아래 HOVER_BUDGET).
 MAX_POINTS = 200_000
+# 호버 문장을 payload 에 **싣는** 상한. 초과하면 trace 의 `text` 를 생략하고 배너가 그 사실을
+# 밝히며, 상세는 드래그/클릭 선택 → render() 의 문장 블록이 담당한다 (LOD 의 상세 단계).
+# ⚠️ 형제 플러그인 user-prompt-compare 의 HOVER_BUDGET 과 **같은 값**이다 — 두 패널이 같은
+#    워크스페이스에 나란히 있어 한쪽만 호버가 꺼지면 사용자가 고장으로 읽는다. 한쪽을
+#    바꾸면 다른 쪽도 바꿔야 한다.
+# 이 값 아래 실측: sourcei 7,498 · 필터된 뷰 2,477 → 호버 유지. frames 199,972 · 문장
+# 200,000 → 호버 off (payload 23.50MB → 10.6MB).
+HOVER_BUDGET = 20_000
 # 이미지 단위라 문장 번들(192MB)보다 훨씬 작다. 다만 `<X>-prompts` 세션에서 문장 패널이
 # 쓰는 번들은 60만 행 × 축 10개라 2026-08-19 실측 59.8MB 로 옛 64MB 예산에 붙어 있었다
-# (DB 조인 키인 `gidx` 열 하나만 더해도 터진다) → 96MB. 엔트리는 여전히 1개만 유지한다.
+# (DB 조인 키인 `gidx` 열 하나만 더해도 터진다) → 96MB.
+# ⚠️ `_bundle_nbytes` 는 numpy `.nbytes` 만 더하므로 **실메모리를 과소평가한다** — 같은
+#    번들이 nbytes 62.1MB / 실측 상주 104MB 다 (`id` 열의 603,318개 파이썬 str). 이 상한을
+#    올릴 때는 그 배율(≈1.7)을 곱해서 생각할 것.
 CACHE_CAP_BYTES = 96 * 2**20
 
-_CACHE = {}   # (dataset_name, brain_key, last_modified_at) -> bundle. 엔트리 1개 유지.
+# (dataset_name, brain_key, last_modified_at) -> bundle.
+# ⚠️ **엔트리 1개 유지는 폐기됐다** (2026-08-20). 이 모듈은 패널을 2개 등록하는데
+#    (ImageEmbeddingsPanel → `<X>`, SentenceEmbeddingsPanel → `<X>-prompts`) compare
+#    워크스페이스가 둘을 **동시에** 띄운다. 1엔트리 캐시를 공유하면 한쪽이 로드할 때마다
+#    다른 쪽 번들이 증발한다 — 실측 재현:
+#        sourcei-prompts 11.84s(콜드) → sourcei 0.49s(603k 축출) → sourcei-prompts 9.07s
+#    `on_change_view` 가 두 패널 모두에서 울리므로 뷰를 건드릴 때마다 한쪽은 반드시 콜드고,
+#    콜드 1회는 10~29초 **+ RSS 1.9GB 스파이크**다. 이제 `_cache_put` 이 CACHE_CAP_BYTES
+#    예산 안에서 LRU 로 여러 엔트리를 유지한다 (2엔트리 실측 62.9MB < 96MB).
+_CACHE = {}
 
 # 색칠 후보 — 프레임 데이터셋에 **실제로 있는 것만** 드롭다운에 뜬다 (sourcei/source-h 스키마가
 # 다르다: sourcei 는 event_kind·category 보유, source-h 은 없음).
@@ -580,6 +601,139 @@ def _bundle_nbytes(b):
     return sum(v.nbytes for v in b.values() if isinstance(v, np.ndarray))
 
 
+def _cache_put(key, b):
+    """번들을 인메모리 캐시에 넣고 CACHE_CAP_BYTES 예산 안에서 LRU 축출.
+
+    dict 는 파이썬 3.7+ 에서 삽입 순서를 보존하므로 `next(iter(...))` 가 곧 LRU 최하위다
+    (OrderedDict 불필요). 히트 시에도 재삽입해 순서를 갱신한다 — `load_image_bundle` 참고.
+    """
+    _CACHE.pop(key, None)
+    _CACHE[key] = b
+    while len(_CACHE) > 1 and \
+            sum(_bundle_nbytes(v) for v in _CACHE.values()) > CACHE_CAP_BYTES:
+        _CACHE.pop(next(iter(_CACHE)))
+
+
+# ── 번들 영속 캐시 (npz) ────────────────────────────────────────────────────────
+# ⚠️ 이 블록은 **user-prompt-compare 와 복제**돼 있다. 플러그인은 각각 별도 마운트라 서로
+#    import 할 수 없다 (같은 파일 안의 `pdb_*` 블록도 같은 사정으로 3중 복제 상태다).
+#    한쪽을 고치면 다른 쪽도 고쳐야 한다.
+#
+# 왜 파일이고 왜 별도 DB 가 아닌가 — 2026-08-20 실측 (sourcei-prompts 603,318행):
+#     웜 캐시 히트                    0.00s   ← 정상 상태에서 쿼리는 병목이 아니다
+#     콜드 로드                      9~29s + RSS 468MB→2,359MB (+1.9GB 스파이크)
+#     같은 8필드를 raw pymongo 로     6.6s   ← DB 를 바꿔도 남는 비용 (22s 는 ODM 오버헤드)
+#     npz 로드+복원                  0.15s / 48.6MB
+#   즉 고칠 것은 "어느 DB 냐" 가 아니라 "콜드를 몇 번 겪냐" 다. 별도 Postgres 로 옮기면
+#   스키마·동기화 잡·staleness 계약이 새로 생기는데 얻는 건 10s → 2~3s 뿐이다.
+#   이 repo 엔 이미 npz 산출물 관례가 있다 (`sourceh/prompts/*.npz`, `geometry/cache.npz`).
+#
+# 위치는 `docker/data/fiftyone/` 아래 — gitignore 대상이고 배포 rsync 소스가 아니라
+# `git reset --hard` 가 건드리지 않는다.
+BUNDLE_DIR = os.environ.get("APP_PANEL_CACHE_DIR", "/data/fiftyone/panel_cache")
+# ⚠️ **플러그인마다 달라야 한다.** 두 플러그인은 같은 `(dataset, brain_key)` 를 캐시하지만
+#    번들 **모양이 다르다** (여기: `_gidx`·`filepath`·축 10개 / compare: `gidx`·`wins`·`text`).
+#    처음엔 이 값 없이 `<dataset>__<brain>.npz` 로만 썼다가 compare 셀프테스트가
+#    `KeyError: 'gidx'` 로 잡았다 — 남의 번들을 자기 것으로 읽는 조용한 오답이었다.
+#    파일명과 staleness 토큰 **양쪽**에 넣어 경로가 또 겹쳐도 키 대조에서 걸리게 한다.
+BUNDLE_NS = "image_embeddings"
+# 파일에 함께 실어 복원하는 비배열 키. **allowlist 다** — 임의의 비배열 값을 JSON 으로
+# 굽지 않는다. 예: `_ver_counts` 는 DB 조회 캐시라 소유자(`_sentence_texts`)가 없으면
+# 알아서 다시 채운다. 여기 없는 키는 조용히 버려지는 게 아니라 **원래 그렇게 재계산된다**.
+BUNDLE_META_KEYS = ("_fields", "_degenerate", "_axes", "_sentence")
+
+
+def _bundle_token(key):
+    """파일 안에 박는 staleness 토큰. 플러그인 네임스페이스 포함 (BUNDLE_NS 주석)."""
+    return "|".join([BUNDLE_NS] + [str(k) for k in key])
+
+
+def _bundle_path(key):
+    """`(dataset, brain_key)` → 파일 경로. staleness 토큰(`last_modified_at`)은 파일 **안**에
+    저장한다 — 파일명에 넣으면 리빌드마다 새 파일이 쌓여 디스크를 먹는다."""
+    stem = "".join(c if (c.isalnum() or c in "._-") else "_"
+                   for c in f"{BUNDLE_NS}__{key[0]}__{key[1]}")
+    return os.path.join(BUNDLE_DIR, stem + ".npz")
+
+
+def _bundle_encode(b):
+    """번들 → npz 에 담을 수치 배열 dict. object dtype 을 pickle 로 굽지 않는다.
+
+    문자열 열은 전부 `np.unique` → 코드(int32) + uniq(UTF-8 bytes) 로 접는다. 이 한 규칙이
+    라벨 축(uniq 2~29)과 `id`(uniq = n) 모두에 최선이다 — 실측(603,318행 `id`):
+        uniq 를 `S24` 로       13.8MB / 복원 0.062s
+        uniq 를 blob+offsets   18.4MB / 복원 0.105s   ← offsets 배열이 더 크다
+    ObjectId 가 전부 24자라 패딩 낭비가 0 이고, 라벨 축은 uniq 자체가 작아 무관하다.
+    """
+    import numpy as np
+    out, meta = {}, {"none": [], "json": {}}
+    for k, v in b.items():
+        if v is None:
+            meta["none"].append(k)          # compare 번들은 결측 필드를 None 으로 남긴다
+        elif isinstance(v, np.ndarray):
+            if v.dtype == object:
+                uniq, codes = np.unique(v, return_inverse=True)
+                out["c:" + k] = codes.astype(np.int32)
+                out["u:" + k] = np.asarray([str(s).encode("utf-8") for s in uniq])
+            else:
+                out["a:" + k] = v
+        elif k in BUNDLE_META_KEYS:
+            meta["json"][k] = v
+    out["_meta"] = np.frombuffer(json.dumps(meta).encode("utf-8"), dtype=np.uint8)
+    return out
+
+
+def _bundle_decode(z):
+    """npz → 번들. 복원 결과는 빌드 경로의 산출물과 **dtype·값이 동일**해야 한다
+    (셀프테스트가 전 키를 대조한다 — 좌표·라벨이 어긋나는 조용한 오답이 최악의 실패다)."""
+    import numpy as np
+    meta = json.loads(bytes(z["_meta"]).decode("utf-8"))
+    b = {k: None for k in meta["none"]}
+    for k, v in meta["json"].items():
+        # `_axes` 는 `(field, label, desc)` 튜플 리스트다 — JSON 왕복은 list 로 만드므로
+        # 되돌린다 (`axes_for` 반환형과 같아야 소비자가 구분을 못 느낀다).
+        b[k] = [tuple(x) for x in v] if k == "_axes" else v
+    for f in z.files:
+        if f.startswith("a:"):
+            b[f[2:]] = z[f]
+        elif f.startswith("c:"):
+            uniq = [x.decode("utf-8") for x in z["u:" + f[2:]].tolist()]
+            b[f[2:]] = np.asarray(uniq, dtype=object)[z[f]]
+    return b
+
+
+def _bundle_read(key):
+    """영속 캐시 히트면 번들, 없거나 stale/손상이면 None (호출부가 재빌드한다)."""
+    import numpy as np
+    try:
+        with np.load(_bundle_path(key)) as z:
+            if bytes(z["_key"]).decode("utf-8") != _bundle_token(key):
+                return None             # 데이터셋이 바뀌었거나 남의 번들 — 재빌드가 덮어쓴다
+            return _bundle_decode(z)
+    except Exception:  # noqa: BLE001 — 캐시 파일 부재/손상이 패널을 죽이면 안 된다
+        return None
+
+
+def _bundle_write(key, b):
+    """번들을 영속 캐시에 저장. 실패는 조용히 넘긴다 (캐시는 편의지 정본이 아니다)."""
+    import numpy as np
+    p = _bundle_path(key)
+    # ⚠️ `np.savez` 는 파일명이 `.npz` 로 끝나지 않으면 **뒤에 붙인다**. tmp 이름도
+    #    `.npz` 로 끝내지 않으면 `os.replace` 가 없는 파일을 가리킨다.
+    tmp = f"{p}.{os.getpid()}.tmp.npz"
+    try:
+        os.makedirs(BUNDLE_DIR, exist_ok=True)
+        d = _bundle_encode(b)
+        d["_key"] = np.frombuffer(_bundle_token(key).encode("utf-8"), dtype=np.uint8)
+        np.savez(tmp, **d)
+        os.replace(tmp, p)             # 같은 디렉토리 → 원자적. 부분 기록을 읽는 사고 방지
+    except Exception:  # noqa: BLE001
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+
+
 def _reduce_list_labels(v):
     """`Detections` 류 ListField 값(샘플당 label 리스트) → 색칠 가능한 스칼라 카테고리.
 
@@ -610,7 +764,13 @@ def load_image_bundle(dataset_name):
     ds = fo.load_dataset(dataset_name)
     key = (dataset_name, BRAIN_KEY, str(ds.last_modified_at))
     if key in _CACHE:
-        return _CACHE[key]
+        b = _CACHE.pop(key)
+        _CACHE[key] = b              # 재삽입 = LRU 순서 갱신 (_cache_put 주석 참고)
+        return b
+    b = _bundle_read(key)            # 영속 캐시 (실측 0.15s vs 아래 빌드 9~29s)
+    if b is not None:
+        _cache_put(key, b)
+        return b
 
     res = ds.load_brain_results(BRAIN_KEY)
     xy = np.asarray(res.points, dtype="float32")
@@ -688,8 +848,8 @@ def load_image_bundle(dataset_name):
     assert _bundle_nbytes(b) <= CACHE_CAP_BYTES, (
         f"캐시 예산 초과: {_bundle_nbytes(b)/2**20:.1f}MB "
         f"> {CACHE_CAP_BYTES/2**20:.0f}MB (배열 바이트 기준)")
-    _CACHE.clear()
-    _CACHE[key] = b
+    _bundle_write(key, b)            # 다음 프로세스/축출 후에는 위 _bundle_read 가 받는다
+    _cache_put(key, b)
     return b
 
 
@@ -853,8 +1013,58 @@ def _none_group_label(bundle, row_idx):
     return f"(캡션) {n_cap} · (라벨없음·프레임) {n_oth}", "(캡션/라벨없음)"
 
 
+def _id_mask(ids, wanted):
+    """`ids`(object dtype 배열)의 각 원소가 `wanted`(set) 에 있는지 → bool 마스크.
+
+    ⚠️ `np.isin` 을 쓰면 안 된다. object dtype 은 해시 경로를 못 타서 정렬·비교로
+       떨어진다 — 실측(2026-08-20, 199,972 × 2,477): **np.isin 3.73s vs set 0.01s (373배)**.
+       렌더마다 도는 자리라 뷰 필터를 넣자마자 패널이 "Still loading" 으로 굳었다.
+    """
+    import numpy as np
+    w = wanted if isinstance(wanted, (set, frozenset)) else set(wanted)
+    return np.fromiter((x in w for x in ids), dtype=bool, count=len(ids))
+
+
+SELECTED_TEXT_CAP = 30   # 문장 블록에 실제로 찍는 줄 수. 나머지는 개수로만 알린다
+
+
+def selected_sentences_md(bundle, selected_ids, total=None):
+    """선택된 점들의 **DB 정본 문장** 마크다운. 문장 번들이 아니거나 선택이 없으면 None.
+
+    호버 예산(HOVER_BUDGET)을 넘겨 툴팁을 끈 자리의 **상세 단계**다 — 형제
+    user-prompt-compare 가 `_rows_to_markdown` 으로 하는 것과 같은 역할.
+
+    ⚠️ 결과를 `ctx.panel.state` 에 싣지 말 것. 서버가 요청 바디 **1MB 당 ~2.5초**를 태우므로
+       state 에 넣으면 이후 모든 훅 요청이 문장을 왕복시킨다 (_FIGDATA 주석과 같은 사정).
+       `panel.md(...)` 는 렌더 출력이라 그 왕복이 없다.
+    """
+    import numpy as np
+    b = bundle
+    if not b.get("_sentence") or not selected_ids:
+        return None
+    rows = np.nonzero(_id_mask(b["id"], set(selected_ids)))[0].tolist()
+    if not rows:
+        return None
+    hov, _meta = _sentence_texts(b, rows[:SELECTED_TEXT_CAP])
+    cat = b.get("category")
+    # 3단 표기: 라쏘가 집은 수 → 상한 안에서 유지한 수 → 실제 찍는 줄 수. `total` 이 없거나
+    # 유지분과 같으면 중간 단계를 생략한다 (클릭 1점 같은 경우 군더더기가 된다).
+    shown = min(len(rows), SELECTED_TEXT_CAP)
+    head = f"**선택 {(total or len(rows)):,}개 문장**"
+    if total and total > len(rows):
+        head += f" — 상한 {SHOW_SAMPLES_CAP:,}개만 유지"
+    if len(rows) > shown:
+        head += f" · 앞 {shown}개만 표시"
+    lines = [head]
+    for r in rows[:SELECTED_TEXT_CAP]:
+        txt = (hov or {}).get(r, SENTENCE_UNRESOLVED)
+        tag = f"`{cat[r]}` " if cat is not None else ""
+        lines.append(f"- {tag}{txt}")
+    return "\n".join(lines)
+
+
 def build_figure(bundle, color_by, selected_ids=None, cross_note="",
-                 banner_text=BANNER_CROSS):
+                 banner_text=BANNER_CROSS, view_ids=None):
     """이미지 산점도. trace = 색칠 그룹별 1개 + 마지막 하이라이트.
 
     그룹별 trace 로 쪼개는 이유: Plotly 범례는 trace 단위라, 단일 trace + per-point 색
@@ -862,26 +1072,44 @@ def build_figure(bundle, color_by, selected_ids=None, cross_note="",
     """
     import numpy as np
     b = bundle
-    n = len(b["xy"])
-    idx = np.arange(n)
+    n_all = len(b["xy"])
+    idx = np.arange(n_all)
     groups = b.get(color_by)
     if groups is None:
-        groups = np.asarray(["전체"] * n, dtype=object)
+        groups = np.asarray(["전체"] * n_all, dtype=object)
     sel = set(selected_ids or ())
+    # ── 현재 뷰로 좁히기 (뷰 바 matchtags·사이드바 필터 등) ──
+    #    `view_ids is None` = 필터 없음(전량). **빈 집합과 다르다** — 빈 집합은
+    #    "뷰가 0건" 이라 정말로 아무것도 안 그리는 게 맞다.
+    view_note = ""
+    if view_ids is not None:
+        idx = idx[_id_mask(b["id"], view_ids)]
+        sel &= set(view_ids)        # 뷰 밖 선택은 되살리지 않는다 (아래 keep_sel 과 짝)
+        view_note = f" · 뷰 {len(idx):,}/{n_all:,}장"
+    n = len(idx)                    # 배너 분모 = **뷰 모집단** (전체가 아니다)
     if n > MAX_POINTS:
-        idx = np.asarray(stratified_subsample(groups, MAX_POINTS), dtype=np.int64)
+        base = idx
+        sub = np.asarray(stratified_subsample(groups[base], MAX_POINTS), dtype=np.int64)
+        idx = base[sub]             # 층화가 돌려준 위치를 원본 인덱스로 되돌린다
         # 선택된 점은 서브샘플에서 탈락해도 **반드시 남긴다** (코드리뷰 지적, 2026-08-14):
         # 층화는 현재 색칠축 기준이라 축을 바꾸면 살아남는 표본이 달라져, 방금 고른 점이
         # 하이라이트만이 아니라 산점도에서 통째로 사라진다 — 조용해서 더 나쁘다.
         # (현 데이터 7,498·13,144 는 MAX_POINTS 아래라 아직 미도달 경로.)
         if sel:
-            keep_sel = np.nonzero(np.isin(b["id"], np.asarray(sorted(sel), dtype=object)))[0]
+            # 선택 복원도 **뷰 안에서만** — 뷰 밖 점을 되살리면 필터가 거짓말이 된다.
+            keep_sel = base[_id_mask(b["id"][base], sel)]
             idx = np.union1d(idx, keep_sel)
     g_sub = groups[idx]
     # 문장 패널은 호버에 **DB 정본 문장**을 싣는다 (2026-08-19). 예전에는 이 자리에
     # `filepath` 파일명이 떴는데, 문장 샘플의 filepath 는 "가장 가까운 이미지"라 문장을
     # 식별하지 못했다. 그려지는 점만(≤MAX_POINTS) 배치 조회한다 — 전량 로드 금지.
     hov, text_meta = _sentence_texts(b, idx)
+    # 호버는 **예산 안에서만 payload 에 싣는다** (형제 user-prompt-compare 와 같은 계약).
+    # 실측: 200,000점 figJSON 23.50MB 중 호버 문장이 49.43MB→54.8%(전량 603k 기준)로 최대
+    # 항목이고, 좌표는 이미 3자리 반올림이라 더 깎을 데가 없다. 상세는 선택이 담당한다.
+    # ⚠️ `_sentence_texts` 호출은 **끊지 않는다** — 배너의 문장 출처 회계(`pdb_note`)가
+    #    거기서 나온다. 끊으면 자리표시자 섞인 화면을 정본으로 오독하게 된다.
+    hover_on = len(idx) <= HOVER_BUDGET
     data = []
     # ⚠️ 그리기 순서 = z-order (plotly 는 뒤 trace 를 위에 그린다). 구현이 CLASS_COLORS
     #    **dict 순서**를 따라서, 희소 클래스가 먼저(아래) 깔리고 다수 클래스가 그 위를 덮었다
@@ -911,12 +1139,18 @@ def build_figure(bundle, color_by, selected_ids=None, cross_note="",
             "x": np.round(b["xy"][ii, 0].astype("float64"), 3).tolist(),
             "y": np.round(b["xy"][ii, 1].astype("float64"), 3).tolist(),
             "ids": [str(b["id"][k]) for k in ii],
-            "text": [f"{_point_label(b, k, hov)}<br>{color_by}={hov_label}" for k in ii],
-            "hoverinfo": "text",
             "marker": {"color": _color_for(grp, i), "size": 6, "opacity": 0.9,
                        "symbol": _symbol_for(grp, i),
                        "line": {"width": 0.5, "color": "#FFFFFF"}},
         }
+        if hover_on:
+            trace["text"] = [f"{_point_label(b, k, hov)}<br>{color_by}={hov_label}"
+                             for k in ii]
+            trace["hoverinfo"] = "text"
+        else:
+            # "skip" = 호버 이벤트 자체를 끈다. `text` 만 빼고 hoverinfo 를 "text" 로 두면
+            # 빈 툴팁이 떠서 더 고장처럼 보인다.
+            trace["hoverinfo"] = "skip"
         if grp == "none":
             # 지배 카테고리(예: normalized_class 의 '검출 없음' 59.9%)를 범례에서 기본
             # 흐리게/치워 둔다 — Plotly 는 legendonly trace 도 범례 클릭 한 번으로 다시
@@ -925,7 +1159,7 @@ def build_figure(bundle, color_by, selected_ids=None, cross_note="",
             # (banner의 "표시 X/Y장")는 그대로 유지 — 안 보이는 건 렌더 상태일 뿐이다.
             trace["visible"] = "legendonly"
         data.append(trace)
-    hi = idx[np.isin(b["id"][idx], np.asarray(sorted(sel), dtype=object))] if sel else idx[:0]
+    hi = idx[_id_mask(b["id"][idx], sel)] if sel else idx[:0]
     data.append({
         "type": "scattergl", "mode": "markers", "name": "선택",
         "x": np.round(b["xy"][hi, 0].astype("float64"), 3).tolist(),
@@ -945,7 +1179,14 @@ def build_figure(bundle, color_by, selected_ids=None, cross_note="",
     # 색칠 정보를 **맨 앞**에 둔다 — 사용자가 축 차이를 먼저 봐야 한다는 요구(2026-08-14).
     note = axis_note(b, color_by)
     banner = f"**색칠: {lab}**" + (f" — {note}" if note else "")
-    banner += f" · 표시 {shown:,}/{n:,}장 · {banner_text}"
+    banner += f" · 표시 {shown:,}/{n:,}장{view_note} · {banner_text}"
+    if not hover_on:
+        # 호버가 꺼진 사실을 **반드시** 밝힌다 — 말없이 툴팁이 안 뜨면 고장으로 읽힌다
+        # (형제 user-prompt-compare 와 같은 처치). 상세 단계가 어디인지도 같이 알려준다:
+        # 문장 패널은 아래 문장 블록, 이미지 패널은 `show_samples` 로 그리드에 뜬다.
+        detail = "**드래그로 선택하면 아래에 문장**" if b.get("_sentence") \
+            else "**드래그로 선택하면 그리드에 이미지**"
+        banner += f" · 호버 off ({shown:,} > {HOVER_BUDGET:,}) — {detail}"
     if cross_note:
         banner += f" · {cross_note}"
     if text_meta is not None:
@@ -1005,6 +1246,39 @@ class ImageEmbeddingsPanel(foo.Panel):
     def target_dataset(self, session):
         """그릴 좌표의 출처 데이터셋. 이미지 패널은 프레임 데이터셋(크로스 가능)."""
         return frames_dataset_name(session)
+
+    def view_ids(self, ctx):
+        """현재 뷰가 **이 패널이 그리는 데이터셋**을 좁히고 있으면 그 id 집합, 아니면 None.
+
+        `None` = 필터 없음(전량 그린다). 빈 집합과 구분해야 한다 — 빈 집합은 "뷰가 0건"
+        이므로 정말로 아무것도 안 그리는 게 맞다.
+
+        ⚠️ **크로스 데이터셋에서는 절대 걸면 안 된다.** `-prompts` 세션에서 이 패널은
+           `frames` 좌표를 그리는데, 그 세션의 뷰 id 로 거르면 교집합이 0 이라 화면이
+           통째로 빈다 (크래시가 아니라 조용한 빈 화면).
+        """
+        view = getattr(ctx, "view", None)
+        session = getattr(getattr(ctx, "dataset", None), "name", None)
+        if view is None or session is None or self.target_dataset(session) != session:
+            return None
+        # 스테이지가 없으면 전량이다 — 199,972건 `values("id")` 왕복(실측 0.97s)을 피한다.
+        # (필터된 뷰는 2,477건 0.18s 로 싸다.)
+        if not getattr(view, "_stages", None):
+            return None
+        try:
+            return {str(i) for i in view.values("id")}
+        except Exception:       # noqa: BLE001 — 뷰 조회 실패가 패널을 죽이면 안 된다
+            return None
+
+    def on_change_view(self, ctx):
+        """뷰 바 스테이지(matchtags 등)·사이드바 필터 변경 → 다시 그린다.
+
+        이 훅이 없으면 패널은 전체 데이터셋만 읽고 뷰 변화에 **아무 반응이 없다**
+        (2026-08-20 사용자 지적: matchtags 에 source-e 을 넣어도 무반응).
+        FiftyOne 은 패널이 이 이름의 메서드를 정의한 경우에만 이벤트를 보낸다
+        (`fiftyone/operators/panel.py` 의 ctx_change_events).
+        """
+        self._refresh(ctx)
 
     @property
     def config(self):
@@ -1080,7 +1354,7 @@ class ImageEmbeddingsPanel(foo.Panel):
             note = f"출처: `{frames_name}` (세션은 `{session}`)" if cross else ""
             fig = build_figure(b, color_by,
                                selected_ids=ctx.panel.state.selected_ids, cross_note=note,
-                               banner_text=self.BANNER)
+                               banner_text=self.BANNER, view_ids=self.view_ids(ctx))
             ctx.panel.state.banner = fig["banner"]
             ctx.panel.state.layout = fig["layout"]
             _put_fig(ctx, fig["data"])
@@ -1098,6 +1372,11 @@ class ImageEmbeddingsPanel(foo.Panel):
     #   최대 22,578개 달려 있어 show_samples 로 넘기면 요청이 MB 단위로 부풀고(서버 2.5s/MB)
     #   그리드도 의미를 잃는다. 같은 데이터셋일 때만 그리드를 좁힌다.
     def _apply_selection(self, ctx, ids):
+        # ⚠️ 절단 **전** 개수를 남긴다. `SHOW_SAMPLES_CAP` 절단값을 그대로 "선택 N개" 로
+        #    쓰면 라쏘 17,102점이 화면에 "선택 500개" 로 뜬다 (2026-08-20 브라우저 실측:
+        #    60×60px 라쏘가 200,000점 플롯에서 17,102점을 집었다). 절단값을 실제 선택
+        #    수인 척 보여주는 건 이 repo 가 금지하는 표기다 — 표시/모집단을 함께 밝힌다.
+        ctx.panel.state.selected_total = len(ids)
         ctx.panel.state.selected_ids = list(ids)[:SHOW_SAMPLES_CAP]
         session = ctx.dataset.name if ctx.dataset is not None else None
         if session and frames_dataset_name(session) == session and ids:
@@ -1126,6 +1405,7 @@ class ImageEmbeddingsPanel(foo.Panel):
 
     def on_clear_selection(self, ctx):
         ctx.panel.state.selected_ids = []
+        ctx.panel.state.selected_total = 0
         session = ctx.dataset.name if ctx.dataset is not None else None
         if session and frames_dataset_name(session) == session:
             ctx.ops.clear_view()
@@ -1178,7 +1458,7 @@ class ImageEmbeddingsPanel(foo.Panel):
                 fig = build_figure(
                     b, ctx.panel.state.color_by or default_color_by(frames_name, b["_fields"]),
                     selected_ids=ctx.panel.state.selected_ids,
-                    banner_text=self.BANNER)
+                    banner_text=self.BANNER, view_ids=self.view_ids(ctx))
                 fig_data = fig["data"]
                 _put_fig(ctx, fig_data)
             except Exception:
@@ -1189,6 +1469,20 @@ class ImageEmbeddingsPanel(foo.Panel):
                    config={"responsive": True, "displayModeBar": True},
                    on_click=self.on_plot_click,
                    on_selected=self.on_plot_selected)
+        # 호버 예산을 넘긴 문장 패널의 상세 단계 — 선택한 점의 문장을 플롯 아래에 찍는다.
+        # 이미지 패널은 `_apply_selection` 의 `show_samples` 가 그리드에 원본을 띄우므로
+        # 여기서 할 일이 없다 (selected_sentences_md 가 None 을 돌려준다).
+        if ctx.panel.state.selected_ids:
+            try:
+                session = ctx.dataset.name if ctx.dataset is not None else None
+                md = selected_sentences_md(
+                    load_image_bundle(self.target_dataset(session)),
+                    ctx.panel.state.selected_ids,
+                    total=ctx.panel.state.selected_total)
+            except Exception:  # noqa: BLE001 — 문장 조회 실패가 패널을 죽이면 안 된다
+                md = None
+            if md:
+                panel.md(md, name="selected_md")
         return types.Property(panel, view=types.GridView())
 
 
@@ -1501,6 +1795,43 @@ def selftest():
     assert sp.config.name == "sentence_embeddings"
     # ⚠️ 높이 예산은 **놓인 칸 크기**를 따라야 한다: 우측(전체 높이)은 100vh 기준, 좌하(절반)는
     #    50vh 기준. 문장 패널이 100vh 예산을 쓰면 산점도 아래가 칸 밖으로 잘린다 (실측).
+    # ── 뷰 필터: 크로스 데이터셋에서는 절대 걸면 안 된다 ──
+    #    -prompts 세션에서 이 패널은 frames 좌표를 그린다. 그 세션 뷰 id 로 거르면
+    #    교집합 0 → 화면이 통째로 빈다(크래시 없는 조용한 실패). None 이어야 한다.
+    class _ViewStub:
+        _stages = [{"_cls": "match_tags"}]
+
+        @staticmethod
+        def values(_f):
+            return ["deadbeef"]
+
+    def _vctx(ds_name, has_view=True):
+        return type("C", (), {
+            "dataset": type("D", (), {"name": ds_name})(),
+            "view": _ViewStub() if has_view else None})()
+    _vp = ImageEmbeddingsPanel.__new__(ImageEmbeddingsPanel)
+    assert _vp.view_ids(_vctx("frames")) == {"deadbeef"}          # 자기 데이터셋 → 건다
+    assert _vp.view_ids(_vctx("frames-prompts")) is None          # 크로스 → 절대 안 건다
+    assert _vp.view_ids(_vctx("frames", has_view=False)) is None  # 뷰 없음
+    _sp_v = SentenceEmbeddingsPanel.__new__(SentenceEmbeddingsPanel)
+    assert _sp_v.view_ids(_vctx("frames-prompts")) == {"deadbeef"}  # 문장 패널은 자기 것
+
+    class _NoStage:
+        _stages = []
+    assert _vp.view_ids(type("C", (), {
+        "dataset": type("D", (), {"name": "frames"})(), "view": _NoStage()})()) is None, \
+        "스테이지 없는 뷰까지 values() 를 돌면 전량 199,972건 왕복(0.97s)을 매 렌더마다 낸다"
+
+    # None(필터 없음) 과 set()(뷰 0건) 은 의미가 다르다 — 뭉개면 빈 뷰가 전량으로 보인다
+    import numpy as _np
+    _b = {"xy": _np.zeros((3, 2), dtype="float32"),
+          "id": _np.asarray(["a", "b", "c"], dtype=object),
+          "filepath": _np.asarray(["/x/a.jpg", "/x/b.jpg", "/x/c.jpg"], dtype=object)}
+    assert sum(len(t.get("x", [])) for t in build_figure(_b, None)["data"]) == 3
+    assert sum(len(t.get("x", [])) for t in build_figure(_b, None, view_ids=set())["data"]) == 0
+    assert sum(len(t.get("x", [])) for t in
+               build_figure(_b, None, view_ids={"b"})["data"]) == 1
+
     assert "100vh" in ImageEmbeddingsPanel.PLOT_HEIGHT
     # 절반 칸 예산은 전체 칸보다 **작아야** 한다 (안 그러면 잘림이 그대로 남는다)
     assert ImageEmbeddingsPanel.HALF_PANE_PLOT_HEIGHT != ImageEmbeddingsPanel.PLOT_HEIGHT
@@ -1547,11 +1878,36 @@ def selftest():
         assert "출처" in sfig["banner"], sfig["banner"]
         hov, hmeta = _sentence_texts(sb, list(range(min(200, len(sb["xy"])))))
         assert hov is not None and hmeta is not None
+        # 호버 예산 (2026-08-20): 60만 번들은 200,000점을 그리므로 payload 에 호버가 **없어야**
+        # 하고, 배너가 그 사실과 상세 단계를 알려야 한다.
+        assert drawn > HOVER_BUDGET, drawn
+        assert "text" not in sfig["data"][0], "회귀: 예산을 넘겼는데 호버를 실었다"
+        assert sfig["data"][0]["hoverinfo"] == "skip"
+        assert "호버 off" in sfig["banner"] and "선택하면 아래에 문장" in sfig["banner"], \
+            sfig["banner"]
+        # 예산 아래(뷰로 좁힌 경우)에는 호버가 그대로 살아 있어야 한다 — 소규모 뷰에서
+        # 툴팁을 잃는 건 공짜 퇴행이다. `view_ids` 로 100점만 남겨 확인한다.
+        small = set(sb["id"][: min(100, len(sb["id"]))].tolist())
+        sfig_s = build_figure(sb, "adopted", banner_text=BANNER_SENTENCE, view_ids=small)
+        assert sfig_s["data"][0]["hoverinfo"] == "text"
+        assert "호버 off" not in sfig_s["banner"], sfig_s["banner"]
         if hmeta["db_rows"]:
             assert PDB_SRC_DB in sfig["banner"], sfig["banner"]
-            hover0 = sfig["data"][0]["text"][0]
+            hover0 = sfig_s["data"][0]["text"][0]
             assert not hover0.startswith("(DB"), hover0
             assert ".jpg" not in hover0.split("<br>")[0], hover0   # 파일명 회귀 금지
+        # 상세 단계 = 선택 → 문장 블록 (호버를 끈 자리를 메우는 쪽)
+        picked = [str(x) for x in sb["id"][:3].tolist()]
+        md = selected_sentences_md(sb, picked)
+        assert md and md.count("\n- ") == 3, md
+        assert "선택 3개 문장" in md and "상한" not in md, md
+        # ⚠️ 절단 표기: 라쏘 총수를 받으면 **그 수**를 말하고 상한 유지분을 밝혀야 한다.
+        #    (실측 회귀: 17,102점 라쏘가 "선택 500개" 로 뜨던 문제)
+        md_trunc = selected_sentences_md(sb, picked, total=17102)
+        assert "선택 17,102개 문장" in md_trunc, md_trunc
+        assert f"상한 {SHOW_SAMPLES_CAP:,}개만 유지" in md_trunc, md_trunc
+        assert selected_sentences_md(b, [str(b["id"][0])]) is None, \
+            "회귀: 이미지 번들에 문장 블록이 붙었다 (그리드가 담당한다)"
         # 이미지 패널(비-문장 번들)은 예전 그대로 파일명 호버 + DB 표기 없음
         assert _sentence_texts(b, [0]) == (None, None)
         assert "출처: **DB" not in build_figure(b, "ground_truth")["banner"]
@@ -1563,11 +1919,55 @@ def selftest():
         assert _get_fig(cs), "회귀: 문장 패널이 빈 산점도 — 손으로 고를 단계가 다시 생긴다"
         assert "문장 임베딩" in cs.panel.state.banner, cs.panel.state.banner
         assert sp.render(cs).type.properties["img_scatter"].view.data
+        # 선택 상태의 render 도 통과해야 한다 — `panel.md(name="selected_md")` 가 이름
+        # 충돌/무효 프로퍼티면 산점도까지 통째로 사라진다 (빈 패널이 이 파일의 단골 실패다).
+        cs.panel.state.selected_ids = [str(x) for x in sb["id"][:3].tolist()]
+        sch_sel = sp.render(cs)
+        assert sch_sel.type.properties["img_scatter"].view.data, "회귀: 선택 시 산점도 소실"
+        assert "selected_md" in sch_sel.type.properties, "회귀: 선택 문장 블록이 안 붙었다"
+        cs.panel.state.selected_ids = []
         # 두 패널이 같은 세션에서 서로의 fig 를 덮지 않아야 한다 (캐시 키에 데이터셋+축)
         ci = _Ctx(pname)
         panel.on_load(ci)                      # 같은 -prompts 세션의 이미지 패널
         assert "이미지 임베딩" in ci.panel.state.banner
         assert "문장 임베딩" in cs.panel.state.banner, "회귀: 이미지 패널이 문장 배너를 덮었다"
+
+        # ── 캐시 예산제 LRU (2026-08-20) ──
+        # 이 모듈은 패널 2개가 **서로 다른 데이터셋**을 로드한다. 옛 1엔트리 정책은 여기서
+        # 무조건 축출해, compare 워크스페이스에서 뷰를 건드릴 때마다 한쪽이 10~29초 콜드였다.
+        _CACHE.clear()
+        load_image_bundle(pname)                      # 60만 문장 번들
+        k_sent = next(iter(_CACHE))
+        load_image_bundle(ds_name)                    # 형제 패널이 보는 이미지 번들
+        assert sum(_bundle_nbytes(v) for v in _CACHE.values()) <= CACHE_CAP_BYTES, \
+            "회귀: LRU 축출이 캐시 예산을 지키지 않음"
+        assert k_sent in _CACHE, \
+            "회귀: 형제 패널의 로드가 문장 번들을 축출했다 (thrash 재발)"
+
+        # ── 영속 캐시(npz) 왕복: 전 키 dtype·값 동일 ──
+        # 좌표/라벨이 어긋나는 조용한 오답이 이 캐시의 유일한 심각한 실패 모드라 전수 대조한다.
+        key = (pname, BRAIN_KEY, str(fo.load_dataset(pname).last_modified_at))
+        _bundle_write(key, sb)
+        sb2 = _bundle_read(key)
+        assert sb2 is not None, "영속 캐시 왕복 실패 — 기록 직후 읽기가 None"
+        assert set(sb) - {"_ver_counts"} == set(sb2) - {"_ver_counts"}, \
+            f"키 집합 불일치: {set(sb) ^ set(sb2)}"
+        for k in set(sb2):
+            v, w = sb[k], sb2[k]
+            if isinstance(v, np.ndarray):
+                assert isinstance(w, np.ndarray) and v.dtype == w.dtype, \
+                    f"{k}: dtype {v.dtype} != {w.dtype}"
+                assert v.shape == w.shape and bool((v == w).all()), f"{k}: 값 불일치"
+            else:
+                assert v == w, f"{k}: {v!r} != {w!r}"
+        # stale 토큰은 파일을 무시해야 한다 (리빌드 후 옛 좌표를 그리면 조용한 오답이다)
+        assert _bundle_read((pname, BRAIN_KEY, "stale-token")) is None, \
+            "회귀: stale 토큰인데 영속 캐시가 히트했다"
+        # 플러그인 네임스페이스가 **파일명과 토큰 양쪽**에 있어야 한다 — 형제 플러그인과
+        # 같은 `(dataset, brain_key)` 를 캐시하는데 번들 모양이 달라, 이게 빠지면 남의
+        # 번들을 자기 것으로 읽는다 (실제로 `KeyError: 'gidx'` 로 터졌던 경로).
+        assert BUNDLE_NS in os.path.basename(_bundle_path(key)), _bundle_path(key)
+        assert _bundle_token(key).startswith(BUNDLE_NS + "|"), _bundle_token(key)
 
     print("selftest OK")
 
