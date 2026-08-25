@@ -284,6 +284,17 @@ scripts/recover_*_[0-9]*.py
 !tests/unit/test_prompt_bank_publish.py
 # LS tasks 키 파일 테스트 — Notion 창1 선반영, 파일은 후속 커밋 예정.
 !tests/unit/test_ls_tasks_keys_file.py
+# 라벨 클래스 정본(label_ontology.json) parity 회귀 테스트 — env_utils/ls_tasks/promote.html
+# 드리프트를 CI 에서 막는다. stdlib 만 사용.
+!tests/unit/test_label_ontology.py
+
+# generation_prompts write 경로(migration 018) — SQL 계약 + 계보 기록 fail-soft.
+# 018 미적용 환경에서 라벨링이 멈추지 않는지가 핵심.
+!tests/unit/test_generation_prompt_provenance.py
+
+# 미상 카테고리 관측 원장(migration 023) — 정본 해석기 canonical-first 규칙 +
+# 기록 헬퍼의 원문 보존·fail-soft. 이게 없으면 신규 카테고리를 DB 로 관측할 수 없다.
+!tests/unit/test_observed_categories.py
 
 # MinIO vlm-raw/source-h 로컬 사본 (7.9GiB, git 추적 금지)
 /source-h/

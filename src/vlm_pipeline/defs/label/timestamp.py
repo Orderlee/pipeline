@@ -21,6 +21,7 @@ from vlm_pipeline.lib.env_utils import (
 )
 from vlm_pipeline.lib.gemini import extract_clean_json_text
 from vlm_pipeline.defs.spec.config_resolver import resolve_and_persist_spec_config
+from vlm_pipeline.lib.env_utils import resolve_to_canonical
 from vlm_pipeline.lib.gemini_prompts import VIDEO_EVENT_PROMPT, build_video_event_prompt
 from vlm_pipeline.lib.vertex_chunking import filter_events_over_duration
 from vlm_pipeline.lib.spec_config import (
@@ -202,6 +203,80 @@ def _process_routed_candidate(
             cleanup_temp_path(path)
 
 
+# ── generation_prompts 계보 기록 (migration 018 Phase 1) ──
+#
+# Gemini 에 실제로 보낸 최종 프롬프트 문자열은 이 배선 전까지 DB/MinIO 어디에도 남지 않았다
+# (018 파일 주석의 사전 실측). 두 헬퍼 모두 fail-soft 다 — 018 이 아직 적용되지 않은 환경에서는
+# 테이블이 없어 반드시 실패 경로를 타는데, 계보 기록이 라벨링을 멈추게 해선 안 된다.
+#
+# ⚠️ fail-soft 의 범위를 과장하지 말 것. 이 두 헬퍼는 "테이블/컬럼이 없거나 write 가 실패하는"
+# 경우만 흡수한다. 그보다 먼저 호출되는 db.ensure_runtime_schema() 는 fail-soft 가 아니므로,
+# 018 이 '미적용'이 아니라 '적용 시도 후 실패'한 환경에서는 op 이 여기 도달하기 전에 죽는다
+# (스키마가 깨진 채로 라벨링을 계속하는 편이 더 위험하므로 의도된 동작이다).
+#
+# ⚠️ 재-timestamp 시 포인터 write 만 실패하면 이전 프롬프트를 가리키는 stale 포인터가 남는다
+# (018 이 포인터를 덮어쓰기로 설계했기 때문). 최초 실행에서는 NULL 이라 정직하다.
+
+
+def _record_generation_prompt(
+    context,
+    db: PostgresResource,
+    *,
+    rendered_prompt: str,
+    analyzer,
+    categories: list[str] | None = None,
+    descriptions: dict[str, str] | None = None,
+) -> str | None:
+    """rendered_prompt 를 dedup 저장하고 prompt_id 를 돌려준다. 실패 시 None."""
+    try:
+        return db.upsert_generation_prompt(
+            prompt_type="video_event_timestamp",
+            template_name="VIDEO_EVENT_PROMPT",
+            rendered_prompt=rendered_prompt,
+            model_name=getattr(analyzer, "model_name", "gemini-2.5-flash"),
+            categories=categories or None,
+            category_descriptions=descriptions or None,
+            dagster_run_id=getattr(context, "run_id", None),
+        )
+    except Exception as exc:  # noqa: BLE001
+        context.log.warning("generation_prompts 기록 실패 — 계보 없이 계속 진행합니다: %s", exc)
+        return None
+
+
+def _link_generation_prompt(context, db: PostgresResource, asset_id: str, prompt_id: str | None) -> None:
+    """asset → 프롬프트 포인터를 남긴다 (video_metadata, labels 아님 — 018 설계).
+
+    MVP 경로는 상태를 auto_label_* 에 쓰지만 프롬프트 계열은 동일한 video_event_timestamp 이고
+    포인터는 asset 당 1개이므로 같은 컬럼을 공유한다 (한 run 에서 asset 은 두 경로 중 하나만 탄다).
+    """
+    if not prompt_id:
+        return
+    try:
+        db.set_timestamp_generation_prompt(asset_id, prompt_id)
+    except Exception as exc:  # noqa: BLE001
+        context.log.warning("프롬프트 포인터 기록 실패 asset_id=%s: %s", asset_id, exc)
+
+
+def _record_unknown_dispatch_categories(
+    context, db: PostgresResource, categories: list[str], folder: str | None
+) -> None:
+    """dispatch tag 로 들어온 카테고리 중 정본이 모르는 값을 관측 원장에 남긴다.
+
+    실측: 지금까지 요청된 10종 중 5종이 정본 밖이었다 (etc, safety_equipment, 한글 3종).
+    미상 값은 derive_classes_from_categories 의 fallback 을 타 그대로 SAM3 프롬프트가 되는데
+    (`etc` 를 자연어 프롬프트로 보내면 무의미한 박스가 나온다), 그 사실이 어디에도 남지 않았다.
+    lib/ 은 L1-2 라 DB 를 못 쓰므로 fallback 지점이 아니라 이 defs 계층에서 기록한다.
+    """
+    unknown = sorted({c.strip() for c in categories if c.strip() and resolve_to_canonical(c) is None})
+    if not unknown:
+        return
+    try:
+        db.record_observed_categories("dispatch_request", unknown, source_unit=folder)
+        context.log.info("observed_categories: 미상 dispatch 카테고리 %d종 기록 — %s", len(unknown), unknown)
+    except Exception as exc:  # noqa: BLE001
+        context.log.warning("observed_categories 기록 실패 (dispatch_request): %s", exc)
+
+
 def clip_timestamp_mvp(
     context,
     db: PostgresResource,
@@ -222,6 +297,7 @@ def clip_timestamp_mvp(
 
     analyzer = init_gemini_analyzer(context)
     video_prompt = VIDEO_EVENT_PROMPT
+    prompt_id = _record_generation_prompt(context, db, rendered_prompt=video_prompt, analyzer=analyzer)
     total_candidates = len(candidates)
     max_workers = min(total_candidates, int_env("GEMINI_MAX_WORKERS", 5, minimum=1))
     step_start = time.monotonic()
@@ -263,6 +339,7 @@ def clip_timestamp_mvp(
                     label_key=label_key,
                     labeled_at=datetime.now(),
                 )
+                _link_generation_prompt(context, db, asset_id, prompt_id)
                 processed += 1
                 if isinstance(preview_meta, dict):
                     context.log.info(
@@ -398,6 +475,17 @@ def clip_timestamp_routed_impl(
         return {"processed": 0, "failed": 0}
 
     analyzer = init_gemini_analyzer(context)
+    prompt_id = _record_generation_prompt(
+        context,
+        db,
+        rendered_prompt=video_prompt,
+        analyzer=analyzer,
+        categories=_categories or None,
+        descriptions=_descriptions or None,
+    )
+    _record_unknown_dispatch_categories(
+        context, db, list(_descriptions) or _categories, dispatch_raw_key_prefix_folder(tags)
+    )
     processed = 0
     failed = 0
     total_candidates = len(candidates)
@@ -437,6 +525,7 @@ def clip_timestamp_routed_impl(
                     label_key=label_key,
                     completed_at=datetime.now(),
                 )
+                _link_generation_prompt(context, db, asset_id, prompt_id)
                 processed += 1
                 context.log.info(
                     "clip_timestamp 진행: [%d/%d] asset_id=%s label_key=%s (%.1fs)",

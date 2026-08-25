@@ -51,7 +51,7 @@ for st in analyze gap flips prune atlas viz guide slim report; do
 done
 
 echo
-echo "완료 — FiftyOne: http://10.0.0.10:5153/datasets/source-h  — 열리면 헤더 데이터셋 선택기로 전환할 것 (URL 만으로는 안 붙는다: App 이 서버 세션에 동기화)"
+echo "완료 — FiftyOne: http://10.0.0.10:5153/datasets/source-h"
 echo "  · 뷰 30_fixed(오탐→정탐)/31_broken, 05~07_gap_*"
 echo "  · 워크스페이스 flips / margin / prompt / gap / explore"
 echo "  · 프롬프트 차이는 워크스페이스 'prompt' → Color by winner_purity_* / winner_loo_* /"

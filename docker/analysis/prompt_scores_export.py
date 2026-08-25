@@ -87,40 +87,6 @@ def resolve(schema, template: str, bank: str) -> str | None:
     return None
 
 
-
-GIDX_OFFSET = 100_000        # prompt_geometry.GIDX_OFFSET 와 같은 값이어야 한다
-
-
-def gidx_shift(ds, winner_field, prompts, bank) -> int:
-    """프레임 `winner_gidx_*` → `-prompts` gidx 공간 보정값 (0 = 세대 일치).
-
-    ⚠️ **사본 동기화** — `plugins/user-prompt-compare/__init__.py:gidx_shift` /
-       `fiftyone_app_setup.py:gidx_shift` 와 같은 계약 (GIDX_OFFSET 복제와 같은 관례).
-
-    없으면 `check()` 의 **조인 폐쇄 검사가 전건 고아로 오판**한다. gidx 오프셋은
-    `prompt_geometry` 가 `BANKS.index(version) * GIDX_OFFSET` 로 붙이는데 `BANKS` 가
-    런타임 env 에서 오므로 같은 데이터셋도 실행마다 다른 블록을 쓴다 — 실측(2026-08-20):
-    `frames.winner_gidx_v1080` 블록 0 vs `frames-prompts` v1.0.8.0 블록 18.
-    """
-    if ds is None or prompts is None or not winner_field:
-        return 0
-    try:
-        import fiftyone as fo
-        flo, fhi = ds.bounds(winner_field)
-        pv = prompts.match(fo.ViewField("bank_version.label") == bank) \
-            if "bank_version" in prompts.get_field_schema() else prompts
-        plo, phi = pv.bounds("gidx")
-    except Exception:      # noqa: BLE001 — 진단 실패가 익스포트를 죽이면 안 된다
-        return 0
-    if None in (flo, fhi, plo, phi):
-        return 0
-    fb0, fb1 = int(flo) // GIDX_OFFSET, int(fhi) // GIDX_OFFSET
-    pb0, pb1 = int(plo) // GIDX_OFFSET, int(phi) // GIDX_OFFSET
-    if fb0 != fb1 or pb0 != pb1:
-        return 0           # 여러 블록에 걸침 = 이미 오염 (단일 delta 로 못 고친다)
-    return (pb0 - fb0) * GIDX_OFFSET
-
-
 def label_of(v):
     """Classification → label, 그 외는 그대로. 값을 발명하지 않는다."""
     return getattr(v, "label", v)
@@ -156,11 +122,6 @@ def cmd_export(args) -> int:
         f_margin = resolve(schema, margin_t, args.bank)
         f_winner = resolve(schema, winner_t, args.bank)
         rid = run_id_for(args.dataset, args.bank, rule, code_version)
-        # 프레임 gidx 를 문장 키공간으로 올린다 (gidx_shift 주석) — 안 하면 조인 폐쇄 검사가
-        # 전건 고아로 오판하고, 3층 export 의 문장 귀속층이 통째로 못 붙는다.
-        gshift = gidx_shift(ds, f_winner, prompts, args.bank)
-        if gshift:
-            print(f"   ↳ gidx 세대 보정 {gshift:+,} (프레임 블록 ≠ {args.bank} 문장 블록)")
 
         need = [key_field, f_pred] + [f for f in (f_margin, f_winner, "ground_truth") if f]
         n, hit = 0, Counter()
@@ -176,8 +137,7 @@ def cmd_export(args) -> int:
                 "frame_key": str(s.get_field(key_field)),
                 "pred_class": pred,
                 "margin": s.get_field(f_margin) if f_margin else None,
-                "winner_gidx": (int(s.get_field(f_winner)) + gshift)
-                               if f_winner and s.get_field(f_winner) is not None else None,
+                "winner_gidx": s.get_field(f_winner) if f_winner else None,
                 "gt_class": label_of(s.get_field("ground_truth"))
                             if "ground_truth" in schema else None,
             })

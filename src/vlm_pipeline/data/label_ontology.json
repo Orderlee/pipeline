@@ -1,0 +1,112 @@
+{
+  "schema_version": 1,
+  "_comment": [
+    "라벨 클래스 정본(ontology). 이 파일이 유일한 SoT 이며 아래 4곳은 전부 여기서 파생된다:",
+    "  1) lib/env_utils.py         CATEGORY_TO_CLASSES        (dispatch categories -> SAM3 prompt)",
+    "  2) src/gemini/ls_tasks.py   CATEGORY_SYNONYMS          (LS prediction normalizer)",
+    "  3) docker/genai/templates/promote.html  PRESETS        (GenAI Studio UI, CI parity test 로 강제)",
+    "  4) sql/migrations/postgres/022_label_ontology.sql       (분석 조인용 DB 투영)",
+    "필드: description=사람이 읽는 의미(필수, 비워두지 말 것) / dispatch_category=categories 인자로",
+    "받을 수 있는가 / detect_phrases=SAM3 text prompt(자연어 명사구만) / aliases=LS normalizer 동의어",
+    "/ ui_preset=GenAI Studio preset 버튼(없으면 null)."
+  ],
+  "classes": {
+    "fire": {
+      "description": "화염·불꽃이 보이는 활성 화재.",
+      "dispatch_category": true,
+      "detect_phrases": ["fire", "flame", "open flame"],
+      "aliases": ["explosion", "fire", "flame", "open flame"],
+      "ui_preset": {"label": "Fire", "gemini_desc": "visible flames, burning objects, or active fire"}
+    },
+    "smoke": {
+      "description": "연기·연무. 화염 없이 연기만 있는 경우를 포함한다.",
+      "dispatch_category": true,
+      "detect_phrases": ["smoke", "smoke cloud"],
+      "aliases": ["cigarette", "smoke", "smoke cloud", "smoking"],
+      "ui_preset": {"label": "Smoke", "gemini_desc": "visible smoke, smoke clouds, or burning fumes"}
+    },
+    "smoking": {
+      "description": "사람의 흡연 행위. Gemini 이벤트 전용 — SAM3 text prompt 대상이 아니다. ⚠️ 미해결 충돌: ls_tasks 에서는 'smoking' 이 smoke 의 동의어이지만 dispatch 에서는 독립 카테고리다.",
+      "dispatch_category": true,
+      "detect_phrases": ["cigarette", "smoking"],
+      "aliases": [],
+      "ui_preset": null
+    },
+    "falldown": {
+      "description": "사람이 쓰러지거나 바닥에 누워 움직이지 않는 상태(낙상).",
+      "dispatch_category": true,
+      "detect_phrases": ["fallen person", "person lying down", "person on the ground"],
+      "aliases": [
+        "deliberate_fall_from_wheelchair", "deliberate_lie_down", "deliberate_recovery",
+        "fall", "fall_assistance", "fall_recovery", "fall_recovery_drill", "fall_risk",
+        "fall_simulation", "falldown", "fallen person", "intentional_fall_simulation",
+        "person lying down", "person on the ground", "person_lying_on_ground",
+        "recovery_from_fall_simulation", "simulated_fall"
+      ],
+      "ui_preset": {"label": "Falldown", "gemini_desc": "a person falling down, collapsing, or lying motionless on the ground"}
+    },
+    "weapon": {
+      "description": "총기·도검·둔기 등 무기의 소지 또는 사용.",
+      "dispatch_category": true,
+      "detect_phrases": ["gun", "knife", "baseball bat", "sword", "bat", "dagger"],
+      "aliases": ["bat", "baseball bat", "dagger", "gun", "knife", "sword", "weapon"],
+      "ui_preset": {"label": "Weapon", "gemini_desc": "a person carrying or wielding a weapon such as gun, knife, or bat"}
+    },
+    "violence": {
+      "description": "사람 간 물리적 폭력·싸움·타격.",
+      "dispatch_category": true,
+      "detect_phrases": ["fighting people", "punching person", "person hitting person"],
+      "aliases": ["fight", "fighting people", "person hitting person", "punching person", "violence"],
+      "ui_preset": {"label": "Violence", "gemini_desc": "physical violence, fighting, punching, or aggressive contact between people"}
+    },
+    "person": {
+      "description": "사람 일반. 이벤트가 아니라 객체 클래스.",
+      "dispatch_category": true,
+      "detect_phrases": ["person"],
+      "aliases": ["person"],
+      "ui_preset": null
+    },
+    "climbing up": {
+      "description": "구조물·울타리를 기어오르는 행위. LS normalizer 에만 존재하며 dispatch 카테고리로 쓰인 적 없다.",
+      "dispatch_category": false,
+      "detect_phrases": [],
+      "aliases": ["climbing up", "climbing_up", "unsafe_climbing_activity"],
+      "ui_preset": null
+    },
+    "patient": {
+      "description": "VHC(요양·의료) 데이터의 환자. image_label_annotations 에 1,219 boxes 로 실재한다. ⚠️ 미해결: person 의 하위인지 별개 클래스인지 정해진 바 없다.",
+      "dispatch_category": false,
+      "detect_phrases": [],
+      "aliases": ["patient"],
+      "ui_preset": null
+    },
+    "normal": {
+      "description": "이벤트 없음. 프롬프트 뱅크의 negative 클래스로만 쓰인다.",
+      "dispatch_category": false,
+      "detect_phrases": [],
+      "aliases": [],
+      "ui_preset": null
+    },
+    "class_5": {
+      "description": "UNKNOWN — userwatch 공급 뱅크(v4/v5 계열)의 미상 클래스. 72 문장. 공급자 확인 필요.",
+      "dispatch_category": false,
+      "detect_phrases": [],
+      "aliases": [],
+      "ui_preset": null
+    },
+    "class_6": {
+      "description": "UNKNOWN — userwatch 공급 뱅크의 미상 클래스. 91 문장. 공급자 확인 필요.",
+      "dispatch_category": false,
+      "detect_phrases": [],
+      "aliases": [],
+      "ui_preset": null
+    },
+    "class_7": {
+      "description": "UNKNOWN — userwatch 공급 뱅크(v5.0.5.0+)의 미상 클래스. 80 문장. 공급자 확인 필요.",
+      "dispatch_category": false,
+      "detect_phrases": [],
+      "aliases": [],
+      "ui_preset": null
+    }
+  }
+}

@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
+import functools
+import json
+import logging
 import os
 import re
 from collections.abc import Iterable, Mapping
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 
 from vlm_pipeline.lib.sanitizer import sanitize_path_component
+
+logger = logging.getLogger(__name__)
 
 
 def as_int(value: object, default: int) -> int:
@@ -190,22 +195,78 @@ _OUTPUT_DEPENDENCIES: dict[str, list[str]] = {
     "captioning_image": ["timestamp_video", "captioning_video"],
 }
 
+# 라벨 클래스 정본(ontology) — lib/ 기준 ../data/label_ontology.json
+_LABEL_ONTOLOGY_PATH = Path(__file__).resolve().parent.parent / "data" / "label_ontology.json"
+
+
+@functools.lru_cache(maxsize=1)
+def load_label_ontology() -> dict[str, dict]:
+    """라벨 클래스 정본(ontology)의 ``classes`` dict 반환.
+
+    ``src/vlm_pipeline/data/label_ontology.json`` 을 ``__file__`` 기준 상대경로로 읽는다
+    (컨테이너도 src/ 트리 구조가 보존된다). 파일 IO 는 lru_cache 로 1회만.
+
+    ``schema_version`` / ``_comment`` 등 메타 키는 제외하고 클래스 맵만 돌려준다.
+    """
+    with _LABEL_ONTOLOGY_PATH.open(encoding="utf-8") as fp:
+        payload = json.load(fp)
+    return payload["classes"]
+
+
+def _derive_category_to_classes() -> dict[str, list[str]]:
+    """ontology → dispatch categories → SAM3 text prompt 매핑."""
+    derived: dict[str, list[str]] = {}
+    for name, spec in load_label_ontology().items():
+        if not spec.get("dispatch_category"):
+            continue
+        phrases = list(spec.get("detect_phrases") or [])
+        if not phrases:
+            continue
+        derived[name] = phrases
+    return derived
+
+
 # categories → classes 파생 (auto_labeling_unified_spec, staging spec flow)
-CATEGORY_TO_CLASSES: dict[str, list[str]] = {
-    # 2026-06-05: agent / spec 등 외부 dispatch 가 categories 만 보낼 때 SAM3 자연어 prompt
-    # 로 expansion. SAM3.1 은 text-prompted segmentation 이라 합성어 / 추상어
-    # (예: "person_fallen", "violence") 매칭 못함 → 자연어 명사구 필수.
-    # 동기화 (3곳):
-    #   1) yolo_thresholds.YOLO_CLASS_CONFIDENCE_THRESHOLDS — phrase 별 score threshold
-    #   2) docker/genai/templates/promote.html JS PRESETS — Studio UI preset
-    #   3) src/gemini/ls_tasks.py CATEGORY_SYNONYMS — LS normalizer canonical 매핑
-    "smoke": ["smoke", "smoke cloud"],
-    "smoking": ["cigarette", "smoking"],  # Gemini event 용 — SAM3 prompt 비대상
-    "fire": ["fire", "flame", "open flame"],
-    "falldown": ["fallen person", "person lying down", "person on the ground"],
-    "weapon": ["gun", "knife", "baseball bat", "sword", "bat", "dagger"],
-    "violence": ["fighting people", "punching person", "person hitting person"],
-}
+#
+# 2026-06-05: agent / spec 등 외부 dispatch 가 categories 만 보낼 때 SAM3 자연어 prompt 로
+# expansion. SAM3.1 은 text-prompted segmentation 이라 합성어 / 추상어
+# (예: "person_fallen", "violence") 매칭 못함 → 자연어 명사구 필수.
+#
+# ⚠ 이 맵을 손으로 고치지 말 것. 정본은 src/vlm_pipeline/data/label_ontology.json 단 하나이고
+# 이 변수는 거기서 파생된다 (dispatch_category=true 이면서 detect_phrases 가 비지 않은 클래스).
+# 다른 소비처(ls_tasks.CATEGORY_SYNONYMS, genai promote.html PRESETS,
+# sql/migrations/postgres/022_label_ontology.sql)와의 일치는 CI parity test 가 강제한다.
+CATEGORY_TO_CLASSES: dict[str, list[str]] = _derive_category_to_classes()
+
+
+@functools.lru_cache(maxsize=1)
+def _alias_to_canonical() -> dict[str, str]:
+    """alias(lowercase) → canonical 역인덱스.
+
+    ⚠️ canonical 이름 자신도 alias 로 등록된 클래스가 있고(정본 8개), 반대로 canonical 이
+    다른 클래스의 alias 인 경우도 있다 — `smoking` 은 독립 canonical 이면서 `smoke` 의 alias 다
+    (정본에 미해결 충돌로 기록됨). 그래서 이 맵은 alias 만 담고, 해석은 canonical 을 먼저 본다
+    (resolve_to_canonical 참고). 020 계보 뷰 주석의 "canonical-first" 규칙과 동일하다.
+    """
+    index: dict[str, str] = {}
+    for canonical, spec in load_label_ontology().items():
+        for alias in spec.get("aliases") or []:
+            index.setdefault(str(alias).strip().lower(), canonical)
+    return index
+
+
+def resolve_to_canonical(value: object) -> str | None:
+    """임의의 라벨 문자열을 정본 canonical 로 해석한다. 모르면 None.
+
+    None 이 곧 "정본이 모르는 값" 의 정의이고, observed_categories 원장에 기록할 대상이다.
+    입력은 소문자·trim 만 하고 그 외 정규화는 하지 않는다 — 원문 보존은 호출부 책임이다.
+    """
+    rendered = str(value or "").strip().lower()
+    if not rendered:
+        return None
+    if rendered in load_label_ontology():
+        return rendered
+    return _alias_to_canonical().get(rendered)
 
 
 def derive_classes_from_categories(categories: list[str] | None) -> list[str]:
@@ -218,7 +279,17 @@ def derive_classes_from_categories(categories: list[str] | None) -> list[str]:
         cat = (cat or "").strip().lower()
         if not cat or cat in seen:
             continue
-        for c in CATEGORY_TO_CLASSES.get(cat, [cat]):
+        classes = CATEGORY_TO_CLASSES.get(cat)
+        if classes is None:
+            # ontology 에 없는 카테고리는 그대로 SAM3 prompt 으로 나간다(라이브 dispatch 경로라
+            # 예외를 던지지 않는다). 한글 카테고리 등이 조용히 통과한 이력이 있어 가시화만 한다.
+            logger.warning(
+                "derive_classes_from_categories: unknown category %r — label_ontology.json 에 없어 "
+                "expansion 없이 그대로 사용함",
+                cat,
+            )
+            classes = [cat]
+        for c in classes:
             if c not in seen:
                 seen.add(c)
                 out.append(c)

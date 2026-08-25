@@ -10,11 +10,53 @@ Detection 도메인 (image_labels CRUD + detection 대상 조회) 은
 
 from __future__ import annotations
 
+import json
+
 from datetime import datetime
 from typing import Any
 from uuid import uuid4
 
+from ..lib.checksum import sha256_bytes
 from .postgres_detection import PostgresDetectionMixin
+
+
+# ── generation_prompts (migration 018) ──
+#
+# dedup 키가 (prompt_type, model_name, content_hash) 인 이유: 한 run 의 N개 영상이 동일한
+# rendered_prompt 를 공유하므로 dedup 없으면 행이 영상 수만큼 폭증한다 (018 파일 주석).
+#
+# ⚠️ spec_id 는 의도적으로 넣지 않는다. 018 의 spec_id 는 labeling_specs(spec_id) 를 참조하는데
+#    그 테이블은 현재 0행이다 (실측) — dispatch tag 의 spec_id 를 그대로 넣으면 FK 위반으로
+#    INSERT 가 실패한다. labeling_specs 에 생산자가 배선되면 그때 함께 채운다.
+_GENERATION_PROMPT_UPSERT_SQL = """
+    INSERT INTO generation_prompts (
+        prompt_id, prompt_type, template_name, template_version, model_name,
+        categories, category_descriptions, rendered_prompt, content_hash, dagster_run_id
+    ) VALUES (
+        %(prompt_id)s, %(prompt_type)s, %(template_name)s, %(template_version)s, %(model_name)s,
+        %(categories)s::jsonb, %(category_descriptions)s::jsonb, %(rendered_prompt)s,
+        %(content_hash)s, %(dagster_run_id)s
+    )
+    ON CONFLICT (prompt_type, model_name, content_hash) DO NOTHING
+    RETURNING prompt_id
+"""
+
+_GENERATION_PROMPT_SELECT_SQL = """
+    SELECT prompt_id FROM generation_prompts
+    WHERE prompt_type = %(prompt_type)s
+      AND model_name = %(model_name)s
+      AND content_hash = %(content_hash)s
+"""
+
+_TIMESTAMP_PROMPT_POINTER_SQL = """
+    UPDATE video_metadata SET timestamp_generation_prompt_id = %(prompt_id)s
+    WHERE asset_id = %(asset_id)s
+"""
+
+
+def generation_prompt_content_hash(rendered_prompt: str) -> str:
+    """dedup 키로 쓰는 sha256(rendered_prompt) hex."""
+    return sha256_bytes(rendered_prompt.encode("utf-8"))
 
 
 class PostgresLabelingMixin(PostgresDetectionMixin):
@@ -131,6 +173,63 @@ class PostgresLabelingMixin(PostgresDetectionMixin):
         self._update_video_metadata_stage_status(
             asset_id, stage="timestamp", status=status, error=error, label_key=label_key, completed_at=completed_at
         )
+
+    # ── generation_prompts write 경로 (migration 018 Phase 1) ──
+
+    def upsert_generation_prompt(
+        self,
+        *,
+        prompt_type: str,
+        template_name: str,
+        rendered_prompt: str,
+        model_name: str,
+        template_version: str | None = None,
+        categories: list[str] | None = None,
+        category_descriptions: dict[str, str] | None = None,
+        dagster_run_id: str | None = None,
+    ) -> str:
+        """rendered_prompt 를 dedup 저장하고 prompt_id 를 반환한다.
+
+        같은 (prompt_type, model_name, content_hash) 가 이미 있으면 기존 prompt_id 를 재사용한다.
+        예외는 삼키지 않는다 — 호출부(asset)가 라벨링 중단 여부를 결정한다.
+        """
+        params = {
+            "prompt_id": str(uuid4()),
+            "prompt_type": prompt_type,
+            "template_name": template_name,
+            "template_version": template_version,
+            "model_name": model_name,
+            "categories": json.dumps(categories, ensure_ascii=False) if categories else None,
+            "category_descriptions": (
+                json.dumps(category_descriptions, ensure_ascii=False) if category_descriptions else None
+            ),
+            "rendered_prompt": rendered_prompt,
+            "content_hash": generation_prompt_content_hash(rendered_prompt),
+            "dagster_run_id": dagster_run_id,
+        }
+        with self.connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(_GENERATION_PROMPT_UPSERT_SQL, params)
+                row = cur.fetchone()
+                if row is not None:
+                    return str(row[0])
+                # DO NOTHING → 이미 존재. 기존 행의 prompt_id 를 읽어 재사용한다.
+                cur.execute(_GENERATION_PROMPT_SELECT_SQL, params)
+                existing = cur.fetchone()
+                if existing is None:  # pragma: no cover - dedup 키가 있는데 조회 실패는 불가
+                    raise RuntimeError("generation_prompts upsert 후 dedup 행을 찾지 못했습니다")
+                return str(existing[0])
+
+    def set_timestamp_generation_prompt(self, asset_id: str, prompt_id: str) -> None:
+        """video_metadata 에 '이 asset 의 라벨을 만든 프롬프트' 포인터를 남긴다.
+
+        labels 가 아니라 video_metadata 에 두는 이유(018 설계): labels 는 재생성/LS 검수 시
+        labels_key 기준으로 전량 DELETE 후 재INSERT 되므로, labels 에 링크를 두면 사람이
+        수정할 때마다 계보가 함께 지워진다.
+        """
+        with self.connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(_TIMESTAMP_PROMPT_POINTER_SQL, {"prompt_id": prompt_id, "asset_id": asset_id})
 
     def update_caption_status(
         self,

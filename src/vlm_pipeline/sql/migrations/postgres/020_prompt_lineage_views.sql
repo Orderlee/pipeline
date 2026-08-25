@@ -85,6 +85,16 @@ CREATE OR REPLACE VIEW v_prompt_lineage AS
         l.created_at                                  AS label_created_at
     FROM generation_prompts gp
     JOIN video_metadata vm ON vm.timestamp_generation_prompt_id = gp.prompt_id
-    JOIN labels l ON l.asset_id = vm.asset_id;
+    -- ⚠️ asset_id 로 조인하면 안 된다. labels 는 timestamp 이벤트 전용 테이블이 아니라
+    -- video/image classification artifact import 도 같은 asset_id 로 행을 넣는다
+    -- (defs/label/import_support.py 의 insert_label, label_format='video_classification_json').
+    -- asset_id 조인은 그 분류 라벨까지 timestamp 프롬프트가 만든 것처럼 귀속시킨다.
+    -- 스테이지가 실제로 기록한 labels_key 로 조인해 grain 을 정확히 맞춘다:
+    --   * routed 경로 → video_metadata.timestamp_label_key
+    --   * MVP 경로    → video_metadata.auto_label_key (상태 컬럼이 다르다)
+    -- 사람이 LS 에서 수정하면 같은 labels_key 로 DELETE+재INSERT 되므로(018 헤더 근거)
+    -- manual_review 행도 이 조인에 그대로 남는다 — human_edited 플래그가 계속 동작한다.
+    -- labels_key_event_idx_unique UNIQUE(labels_key, event_index) 라 fan-out 위험도 없다.
+    JOIN labels l ON l.labels_key = COALESCE(vm.timestamp_label_key, vm.auto_label_key);
 
 COMMIT;

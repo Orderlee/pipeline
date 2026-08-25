@@ -2051,50 +2051,6 @@ def stage_prune() -> None:
 
 
 # ────────────────────── attach ──────────────────────
-def gidx_offset_for(ds, version):
-    """이 버전의 gidx 블록 오프셋. `<ds>-prompts` 가 있으면 **그쪽 실측이 정본**이다.
-
-    ⚠️ `BANKS.index()` 만 쓰면 안 된다 — `BANKS` 는 런타임 env(`BANK_LIST`/`BANK_A`/
-    `BANK_B`)에서 오므로 **같은 데이터셋도 실행마다 다른 블록**을 쓴다. 실측(2026-08-20):
-    frames attach 를 2버전 리스트로 돌려 `v1.0.8.0` 이 블록 0 으로 구워졌는데
-    `frames-prompts` 는 29버전으로 만들어져 블록 18 이었다 → 프레임↔문장 등식 조인이
-    **v1.0.1.0 문장**에 조용히 붙었다(개수는 맞고 정체가 틀림). `sourcei` 는 두 실행의
-    BANK_LIST 가 같아 우연히 무증상이었다.
-
-    옛 코드는 `version not in BANKS` 일 때 **조용히 0** 을 썼다 — 그게 위 사고의 다른 절반이다.
-    이제 근거가 없으면 실패한다. 소비자 쪽 보정은 `user-prompt-compare.gidx_shift` 등에
-    있지만, 생산자가 애초에 문장 쪽과 같은 블록을 쓰는 게 정공법이다.
-    """
-    import fiftyone as fo
-
-    pname = f"{ds.name}-prompts"
-    live = None
-    if fo.dataset_exists(pname):
-        p = fo.load_dataset(pname)
-        sch = p.get_field_schema()
-        if "gidx" in sch and "bank_version" in sch:
-            try:
-                lo, hi = p.match(fo.ViewField("bank_version.label") == version).bounds("gidx")
-                if lo is not None and hi is not None \
-                        and int(lo) // GIDX_OFFSET == int(hi) // GIDX_OFFSET:
-                    live = int(lo) // GIDX_OFFSET
-            except Exception:      # noqa: BLE001 — 진단 실패가 attach 를 죽이면 안 된다
-                live = None
-    idx = BANKS.index(version) if version in BANKS else None
-    if live is not None:
-        if idx is not None and idx != live:
-            log(f"attach: ⚠️ gidx 블록 불일치 — BANKS.index({version})={idx} 인데 "
-                f"{pname} 은 블록 {live} 다. **문장 쪽을 정본으로** {live} 를 쓴다 "
-                f"(BANK_LIST 순서가 프롬프트맵 실행과 다르다는 뜻)")
-        return live * GIDX_OFFSET
-    if idx is None:
-        raise SystemExit(
-            f"attach: {version} 이 BANKS({list(BANKS)}) 에 없고 {pname} 에도 그 버전 문장이 "
-            f"없다 — gidx 오프셋을 정할 근거가 없다. 옛 코드는 조용히 0 을 써서 남의 버전 "
-            f"문장에 붙었다(2026-08-20 실측). BANK_LIST 를 프롬프트맵 실행과 같게 맞출 것")
-    return idx * GIDX_OFFSET
-
-
 def stage_attach() -> None:
     """뱅크 **1벌**을 프레임에 붙인다 — 이미지마다 "가장 맞는 문장"과 그 예측 클래스.
 
@@ -2234,7 +2190,7 @@ def stage_attach() -> None:
     # IntField 는 min/max 정확값 필터라 충돌이 없고, 값이 prune CSV 의 `gidx` 와 같은 키다.
     # gidx 전역 오프셋 (GIDX_OFFSET 주석): -prompts 데이터셋의 gidx 와 등식 조인이 되도록
     # 버전 순번 오프셋을 더한다. BANK_A(=BANKS[0])는 0 이라 기존 v080 값과 동일.
-    goff = gidx_offset_for(ds, version)      # 문장 쪽 블록이 정본 (gidx_offset_for 주석)
+    goff = (BANKS.index(version) if version in BANKS else 0) * GIDX_OFFSET
     set_values_batched(ds, f"winner_gidx_{tag}", pairs, lambda i: int(win_g[i]) + goff)
     set_values_batched(ds, f"pred_margin_{tag}", pairs, lambda i: float(pred_margin[i]))
 
