@@ -167,7 +167,7 @@
  * - 제출 시 gemini_descriptions_json hidden field 가 dispatch 백엔드로 전달.
  */
 (function () {
-  // Source of truth — 새 카테고리 추가는 이 dict 만 수정.
+  // 정본: src/vlm_pipeline/data/label_ontology.json — 이 dict 는 파생본이며 CI parity test(tests/unit/test_label_ontology.py)가 일치를 강제한다. 값만 고치지 말고 정본을 먼저 고칠 것.
   const PRESETS = {
     fire: {
       label: 'Fire',
@@ -178,7 +178,7 @@
     smoke: {
       label: 'Smoke',
       categories: ['smoke'],
-      classes: ['smoke', 'flame', 'smoke cloud'],
+      classes: ['smoke', 'smoke cloud'],
       gemini_desc: 'visible smoke, smoke clouds, or burning fumes',
     },
     falldown: {
@@ -190,7 +190,7 @@
     weapon: {
       label: 'Weapon',
       categories: ['weapon'],
-      classes: ['gun', 'knife', 'baseball bat', 'sword'],
+      classes: ['gun', 'knife', 'baseball bat', 'sword', 'bat', 'dagger'],
       gemini_desc: 'a person carrying or wielding a weapon such as gun, knife, or bat',
     },
     violence: {

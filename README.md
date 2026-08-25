@@ -282,7 +282,7 @@ FiftyOne Embeddings 패널의 OSS 제한(대용량 시각화·색상 조합·좌
 
 ## Database Schema
 
-주요 테이블/뷰는 `src/vlm_pipeline/sql/schema_postgres.sql`에 정의되고, 증분 변경은 `src/vlm_pipeline/sql/migrations/postgres/`(`001`~`021`)로 관리됩니다.
+주요 테이블/뷰는 `src/vlm_pipeline/sql/schema_postgres.sql`에 정의되고, 증분 변경은 `src/vlm_pipeline/sql/migrations/postgres/`(`001`~`022`)로 관리됩니다.
 
 ### 운영 핵심 테이블/뷰
 
@@ -325,10 +325,11 @@ FiftyOne Embeddings 패널의 OSS 제한(대용량 시각화·색상 조합·좌
 
 | 테이블/뷰 | 설명 |
 |--------|------|
-| `generation_prompts` | 생성 모델에 실제로 보낸 프롬프트 원문의 정본(스키마). `UNIQUE(prompt_type, model_name, content_hash)` 로 dedup. `video_metadata.timestamp_generation_prompt_id` 가 참조 → 어떤 프롬프트로 라벨링됐는지 역추적. ⚠️ 현재는 테이블 정의만 신설 — write 경로는 아직 미배선 |
+| `generation_prompts` | 생성 모델에 실제로 보낸 프롬프트 원문의 정본(스키마). `UNIQUE(prompt_type, model_name, content_hash)` 로 dedup. `video_metadata.timestamp_generation_prompt_id` 가 참조 → 어떤 프롬프트로 라벨링됐는지 역추적. write 경로는 2026-08-21 timestamp 스테이지에 배선됨(upsert + `video_metadata` 역참조 UPDATE, 기록 실패는 경고만). ⚠️ 기록 헬퍼는 fail-soft(WARN 후 계속)라 **018 미적용 DB 에서는 행이 0개로 남는다** — prod 는 2026-08-25 실측 018·022 미적용(다음 재빌드 배포 부팅 시 자동 적용)이므로 계보는 그 이후 run 부터 쌓이고 이전 라벨은 소급 불가. |
 | `prompt_banks` | 제로샷 분류용 프롬프트 뱅크 버전 원장. `UNIQUE(source, version_tag)`. `parent_bank_id` self-FK 로 델타 뱅크 lineage 추적 |
 | `bank_sentences` | 뱅크 소속 문장 (bank_id CASCADE). `UNIQUE(bank_id, gidx)` — 같은 뱅크 안에 동일 문장이 반복 등장할 수 있어(뱅크는 집합이 아니라 순서열) content_hash 유니크가 아니다. 행 identity 는 gidx |
-| `v_prompt_catalog` / `v_prompt_lineage` | 카탈로그 뷰 = `generation_prompts` ∪ `prompt_banks` UNION ALL 인벤토리. 계보 뷰 = `generation_prompts` ⋈ `video_metadata` ⋈ `labels` 로 human_edited 추적. 두 뷰 모두 문장·임베딩 테이블은 조인하지 않는다 (migration 020) |
+| `v_prompt_catalog` / `v_prompt_lineage` | 카탈로그 뷰 = `generation_prompts` ∪ `prompt_banks` UNION ALL 인벤토리. 계보 뷰 = `generation_prompts` ⋈ `video_metadata` ⋈ `labels` 로 human_edited 추적 — labels 조인은 `labels_key` 기준으로 grain 을 맞춘다(asset_id 조인은 classification 라벨을 오귀속시켰음). 두 뷰 모두 문장·임베딩 테이블은 조인하지 않는다 (migration 020) |
+| `label_classes` / `label_class_aliases` | **라벨 클래스 정본의 read-side 투영** (migration 022). 코드 경로의 SoT 는 `src/vlm_pipeline/data/label_ontology.json` 이고, 이 두 테이블은 `image_label_annotations.category`·뱅크 `class_label` 을 canonical 클래스에 조인하기 위한 파생 카탈로그 — 라벨 의미를 결정하는 원장이 아니다. `label_class_aliases.canonical` → `label_classes.canonical` FK(ON UPDATE CASCADE). ⚠️ `smoking` 은 JSON 그대로 `smoke` 의 alias 이면서 별도 canonical — 소비자는 canonical 일치를 alias 보다 먼저 적용할 것 |
 | (인덱스) `image_embeddings_hnsw_prompt` | 뱅크 문장 벡터용 partial HNSW — 문장 임베딩은 별도 테이블이 아니라 `image_embeddings(entity_type='prompt', entity_id=content_hash)` 에 흡수 (021, `CONCURRENTLY` 빌드) |
 
 ### 테이블 관계도 (ERD)
@@ -358,6 +359,9 @@ erDiagram
     dataset_catalog ||--o{ dataset_catalog_aliases : "dataset_catalog_id"
 
     labeling_specs ||--o{ generation_prompts : "spec_id (예약, 현재 NULL)"
+    label_classes ||--o{ label_class_aliases : "canonical (ON UPDATE CASCADE)"
+    label_classes |o..o{ image_label_annotations : "category (암묵, 022 투영)"
+    label_classes |o..o{ bank_sentences : "class_label (암묵, 022 투영)"
     generation_prompts ||--o{ video_metadata : "timestamp_generation_prompt_id"
     prompt_banks ||--o{ bank_sentences : "bank_id (CASCADE)"
     prompt_banks ||--o{ prompt_banks : "parent_bank_id (델타 lineage)"
@@ -457,6 +461,14 @@ erDiagram
         TEXT task "PK 복합(task, alias)"
         TEXT alias
         UUID dataset_catalog_id FK
+    }
+    label_classes {
+        TEXT canonical PK
+        TEXT description "CHECK nonblank"
+    }
+    label_class_aliases {
+        TEXT alias PK
+        TEXT canonical FK "ON UPDATE CASCADE"
     }
 ```
 

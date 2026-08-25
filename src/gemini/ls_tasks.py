@@ -61,79 +61,41 @@ _CLIP_PATTERN = re.compile(r"^(.+)_(\d{8})_(\d{8})$")
 
 
 # ---------------------------------------------------------------------------
-# Category synonyms (canonical source; re-used by ls_tasks_label_config.py)
+# Category synonyms (derived from the label ontology; re-used by ls_tasks_label_config.py)
 # ---------------------------------------------------------------------------
 
 # dispatch canonical category → 동의어 집합 (lowercase). Gemini/SAM3 의 raw prediction 을
 # dispatch 가 요구한 라벨로 정규화한다. 매핑 안 되는 카테고리는 prediction 에서 drop
 # (리뷰어에게 노이즈 라벨이 섞이지 않도록).
-# 운영 중 새 Gemini/SAM3 동의어가 나오면 여기에 추가.
-CATEGORY_SYNONYMS: dict[str, set[str]] = {
-    "falldown": {
-        "falldown",
-        "fall",
-        "simulated_fall",
-        "fall_simulation",
-        "intentional_fall_simulation",
-        "fall_recovery_drill",
-        "recovery_from_fall_simulation",
-        "deliberate_fall_from_wheelchair",
-        "fall_recovery",
-        "fall_risk",
-        "fall_assistance",
-        # VHC 의료진이 의도적으로 연출한 낙상 시나리오 — falldown 데이터로 유효.
-        "deliberate_lie_down",
-        "deliberate_recovery",
-        # smart-city 에서 바닥에 쓰러진 사람 묘사 — 낙상 의미.
-        "person_lying_on_ground",
-        # 2026-06-04: promote 폼 hybrid preset SAM3 자연어 phrase.
-        # promote.html JS 의 PRESETS["falldown"].classes 와 sync 필요.
-        # 사용자 e00879ff-b04 batch 에서 SAM3 가 40 boxes 잡았는데 LS prediction
-        # 으로 import 안 되던 issue 의 원인 — normalizer drop.
-        "fallen person",
-        "person lying down",
-        "person on the ground",
-    },
-    "person": {"person"},
-    "fire": {
-        "fire",
-        "flame",
-        "explosion",
-        # 2026-06-04 hybrid preset SAM3 phrase — PRESETS["fire"].classes sync.
-        "open flame",
-    },
-    "smoke": {
-        "smoke",
-        "smoking",
-        "cigarette",
-        # 2026-06-04 hybrid preset SAM3 phrase — PRESETS["smoke"].classes sync.
-        "smoke cloud",
-        # NOTE: 'flame' 은 fire 의 synonym 으로만 유지 (test_ls_category_synonyms
-        # 의 test_existing_fire_smoke_person_mappings_intact 호환). 영상에 fire+smoke
-        # 공출현 시 사용자가 두 preset 모두 선택해야 함 (의도된 정책).
-    },
-    # 2026-05-29: sourcej_v2 dispatch 카테고리 매핑 추가.
-    # 운영 진단으로 normalizer drop 폭주 발견 (515 events 중 18건만 매핑됨).
-    # 보수적으로 의미 직접 일치 케이스만 등록. 추가 동의어는 운영자 검토 후 별도 PR.
-    "violence": {
-        "violence",
-        "fight",
-        # 2026-06-04 hybrid preset SAM3 phrase — PRESETS["violence"].classes sync.
-        "fighting people",
-        "punching person",
-        "person hitting person",
-    },
-    "weapon": {
-        # 2026-06-04 hybrid preset 신규 canonical. PRESETS["weapon"].classes sync.
-        "weapon",
-        "gun",
-        "knife",
-        "baseball bat",
-        "bat",
-        "sword",
-    },
-    "climbing up": {"climbing up", "climbing_up", "unsafe_climbing_activity"},
-}
+#
+# 정본(SoT)은 src/vlm_pipeline/data/label_ontology.json 의 `aliases` 필드다 — 과거의
+# "PRESETS[...] 와 sync 필요" 하드코딩 4중 복사는 폐기됐다. 새 동의어는 JSON 에만 추가한다.
+# `aliases` 가 빈 클래스(smoking/normal/class_*)는 여기 canonical 로 등장하지 않는다.
+#
+# 등록 이력 요약 (왜 이 동의어들이 있는가 — JSON 이 아닌 코드 쪽 운영 메모):
+#  - falldown: VHC 의료진이 연출한 낙상 시나리오(deliberate_lie_down/deliberate_recovery 등)도
+#    falldown 데이터로 유효. person_lying_on_ground 는 smart-city 의 쓰러진 사람 묘사.
+#    2026-06-04 hybrid preset 의 SAM3 자연어 phrase(fallen person 등)를 추가 — 이게 빠져
+#    normalizer drop 으로 e00879ff-b04 batch 의 SAM3 40 boxes 가 LS prediction 으로
+#    import 안 되던 issue 가 있었다.
+#  - smoke: 'flame' 은 fire 의 synonym 으로만 유지. 영상에 fire+smoke 공출현 시 사용자가
+#    두 preset 모두 선택해야 함 (의도된 정책).
+#  - violence: 2026-05-29 sourcej_v2 dispatch 매핑. 운영 진단으로 normalizer
+#    drop 폭주(515 events 중 18건만 매핑) 발견 → 의미 직접 일치 케이스만 보수적으로 등록.
+#  - weapon: 2026-06-04 hybrid preset 신규 canonical. 'dagger' 는 정본 통합(2026-08) 때
+#    env_utils 쪽에만 있던 것을 ontology 에 맞춰 흡수한 것.
+#
+# 이 모듈은 vlm_pipeline 패키지를 import 하지 않는 standalone 이므로 JSON 을 경로로 직접 읽는다.
+_ONTOLOGY_PATH = Path(__file__).resolve().parent.parent / "vlm_pipeline" / "data" / "label_ontology.json"
+
+
+def _load_category_synonyms() -> dict[str, set[str]]:
+    with _ONTOLOGY_PATH.open(encoding="utf-8") as f:
+        classes = json.load(f)["classes"]
+    return {canonical: set(spec["aliases"]) for canonical, spec in classes.items() if spec.get("aliases")}
+
+
+CATEGORY_SYNONYMS: dict[str, set[str]] = _load_category_synonyms()
 
 
 def build_label_normalizer(target_cats: list[str]) -> dict[str, str]:

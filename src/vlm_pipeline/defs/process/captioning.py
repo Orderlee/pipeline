@@ -19,6 +19,7 @@ from vlm_pipeline.lib.spec_config import (
     is_standard_spec_run,
     parse_requested_outputs,
 )
+from vlm_pipeline.lib.env_utils import resolve_to_canonical
 from vlm_pipeline.lib.vertex_chunking import normalize_gemini_events
 from vlm_pipeline.resources.postgres import PostgresResource
 from vlm_pipeline.resources.minio import MinIOResource
@@ -28,6 +29,41 @@ from .helpers import (
     _filter_valid_events,
     _stable_gemini_label_id,
 )
+
+
+# ── 미상 카테고리 관측 (observed_categories, migration 023) ──
+#
+# Gemini 이벤트 스키마는 category 를 required 로 받지만 labels 테이블에는 category 컬럼이 없다
+# (실측: 11,978행 어디에도 없고 MinIO 이벤트 JSON 에만 존재). 즉 "새 카테고리가 나왔다" 는 사실을
+# DB 로 알 방법이 지금까지 없었다. 여기가 코드가 category 를 손에 쥐는 지점이라 여기서 남긴다.
+#
+# 정본이 해석할 수 있는 값은 기록하지 않는다 — 원장의 목적은 "모르는 값" 이지 빈도 통계가 아니다.
+# fail-soft: 관측 실패가 캡션 적재를 막아선 안 된다.
+
+
+def _record_unknown_event_categories(
+    context,
+    db,
+    events: list,
+    *,
+    source_unit: str | None,
+) -> None:
+    unknown = sorted(
+        {
+            str(event.get("category")).strip()
+            for event in events
+            if isinstance(event, dict)
+            and str(event.get("category") or "").strip()
+            and resolve_to_canonical(event.get("category")) is None
+        }
+    )
+    if not unknown:
+        return
+    try:
+        db.record_observed_categories("gemini_event", unknown, source_unit=source_unit)
+        context.log.info("observed_categories: 미상 Gemini 카테고리 %d종 기록 — %s", len(unknown), unknown)
+    except Exception as exc:  # noqa: BLE001
+        context.log.warning("observed_categories 기록 실패 (gemini_event): %s", exc)
 
 
 def clip_captioning_mvp(
@@ -78,6 +114,7 @@ def clip_captioning_mvp(
 
             valid_events = _filter_valid_events(events)
             event_count = len(valid_events)
+            _record_unknown_event_categories(context, db, valid_events, source_unit=folder_name)
             label_rows: list[dict[str, Any]] = []
 
             for event_index, event in enumerate(valid_events):
@@ -216,6 +253,7 @@ def clip_captioning_routed_impl(
         try:
             json_bytes = minio.download("vlm-labels", label_key)
             events = normalize_gemini_events(load_clean_json(json_bytes.decode("utf-8", errors="replace")))
+            _record_unknown_event_categories(context, db, events, source_unit=folder_name)
             label_rows = _build_gemini_label_rows(asset_id, label_key, events)
             inserted = db.replace_gemini_labels(asset_id, label_key, label_rows)
             labels_inserted += inserted

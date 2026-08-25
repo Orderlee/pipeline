@@ -43,6 +43,6 @@ for st in score gap viz gtsync report; do
 done
 
 echo
-echo "완료 — http://10.0.0.10:5153/datasets/frames  — 열리면 헤더 데이터셋 선택기로 전환할 것 (URL 만으로는 안 붙는다: App 이 서버 세션에 동기화)"
+echo "완료 — http://10.0.0.10:5153/datasets/frames"
 echo "  · 워크스페이스 bank-eval / 뷰 'bank: <도메인> …' / 사이드바 ⑥ 프롬프트뱅크"
 echo "  · 리포트: docker exec $C cat /data/fiftyone/frames_bank/report/bank_eval_report.md"

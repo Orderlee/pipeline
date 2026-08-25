@@ -41,7 +41,7 @@ FiftyOne 이 처음 띄우는 데이터셋은 `FO_DATASET`(기본 `sourcei`) —
 | 바꾼 것 | 반영 방법 |
 |---|---|
 | `*.py` (스크립트) | 없음 — 다음 `docker exec ... python` 실행이 새 코드를 읽는다 |
-| 플러그인 `__init__.py` | 없음 — `FIFTYONE_PLUGINS_CACHE_ENABLED=true` 라도 `dir_state` 로 자동 무효화. 단, 재임포트는 모듈 전역을 초기화한다 — 패널의 서버측 기억(`_APPLIED`)과 인메모리 번들 캐시가 날아가 편집 직후 첫 조작에서 컨트롤이 기본값으로 돌아가고 번들 1회 콜드(파일 캐시 히트 0.1초대/미스 10~29초)가 붙는다 |
+| 플러그인 `__init__.py` | 없음 — `FIFTYONE_PLUGINS_CACHE_ENABLED=true` 라도 `dir_state` 로 자동 무효화 |
 | `embedding_dashboard.py` | 없음 — Streamlit 자동 리로드 |
 | FiftyOne App 이 import 하는 모듈 | `docker restart docker-analysis-fiftyone-1` |
 | `requirements.txt` / `Dockerfile` | `COMPOSE_PROFILES=analysis ./scripts/compose-prod.sh build analysis` 후 세 서비스 recreate |
@@ -87,10 +87,6 @@ fp.search_by_image(rows[0]["image_id"], k=20)          # 이미지 유사 검색
 - **자격증명**: `MINIO_ACCESS_KEY`/`SECRET` 는 MinIO root 자격 재사용. read-only 키 분리는 후속 과제.
 - **cron 주의**: 호스트 crontab 의 `refresh_frames_labels` 주기 작업은 반드시 `flock` 으로 감쌀 것.
   (2026-07-06 오버랩 3중 중첩 → 스왑 쓰래싱으로 호스트 마비 사건.)
-- **패널 번들 영속 캐시** = 컨테이너 `/data/fiftyone/panel_cache/*.npz` (호스트
-  `docker/data/fiftyone/panel_cache`, gitignore — 데이터셋×플러그인당 1파일, 상한·TTL 없음,
-  실측 5파일 223MB). 지워도 안전 — 다음 로드가 재생성(콜드 10~29초). 위치는 `APP_PANEL_CACHE_DIR`.
-  ⚠️ 이 디스크는 PG 와 같은 루트 볼륨(과거 ENOSPC 위험 기록) — 커지면 정리 대상 1순위.
 
 ## FiftyOne 플러그인 — Embeddings 패널 Enterprise 게이팅 우회
 
@@ -159,14 +155,10 @@ DB 에서 읽는다:
 - **fail-closed 게이트 3종**(DB 보유 / 행수 일치 / 클래스 일치) — 하나라도 어긋나면 그 버전
   전체가 폴백되고 출처·사유가 배너에 실린다 (조용한 폴백 금지)
 - kill-switch: `PROMPT_DB=off` (DB 장애 시 데이터셋 필드로 폴백)
-- DSN env 후보: `BANK_DB_DSN` → `DATAOPS_POSTGRES_DSN`(compose 가 주입) → `POSTGRES_DSN` → `DATABASE_URL`
-
-`-prompts` compare 워크스페이스는
+- DSN env 후보: `BANK_DB_DSN` → `DATAOPS_POSTGRES_DSN`(compose 가 주입) → `POSTGRES_DSN` → `DATABASE_URL` `-prompts` compare 워크스페이스는
 좌하=문장, 우=이미지다. 좌하를 네이티브 Embeddings 로 두면 brain key 를 매번 손으로 골라야
-하거나(비워둘 때) 60만 점 렌더로 Chrome 이 죽는데(지정할 때), 자체 패널은 렌더 상한
-`MAX_POINTS`(image-embeddings 200,000 / prompt-compare 700,000)까지 층화 서브샘플로 그리고,
-`HOVER_BUDGET`(20,000) 을 넘으면 **호버(툴팁)를 끄고 배너로 알린다** — 상세는 드래그 선택 →
-문장 블록/그리드가 담당한다. (구 서술의 '20,000 점 렌더·610,816→27,497' 은 2026-08-14 시절 값.)
+하거나(비워둘 때) 60만 점 렌더로 Chrome 이 죽는데(지정할 때), 자체 패널은 층화 서브샘플
+20,000 점을 **6.4초에 자동으로** 그린다. 화면 총 렌더 점: 610,816 → 27,497.
 
 
 `<X>-prompts` 의 `emb_viz` 는 **문장 좌표**다 (실측: gidx 603,318 개가 전부 고유, 같은
@@ -242,8 +234,6 @@ Color by 그라디언트로 쓸 수 있다 (`emb_viz_x`/`emb_viz_y` 는 미리 �
 - **새 brain key·새 필드는 F5 후에 드롭다운에 나타난다.** 완료 후 `reload_dataset` 을
   트리거하지 않기 때문. 자동화를 시도했으나 (`ctx.ops.reload_dataset()`) App 이
   stale ref 로 크래시해서 (`TypeError: reading 'id'`) 뺐다.
-  이 크래시 클래스는 `patch_fiftyone_bundle.py` 의 번들 가드(2026-08-20)가 막을 **가능성**이
-  있다 — 같은 지점인지 미확인·효과 미실측이라, 가드 적용 상태에서 자동화를 재시도해 볼 여지만 기록.
 - **delegated 실행 금지**: 원본 brain 프롬프트의 Execute 드롭다운에서 "Schedule" 을 고르면
   `fiftyone delegated launch` 워커가 없어 영원히 큐에 남는다. 기본값(즉시 실행) 유지.
 - Color by 조합 필드는 **데이터셋 전체**에 쓴다 (필터된 뷰에만 쓰면 나머지가 `none` 이 됨).
@@ -575,11 +565,7 @@ README 본문은 여러 데이터셋을 전제로 설명하는데, 그것들을 
 ```bash
 # (bind mount 라 복사 불필요 — repo 파일이 곧 /workspace/prompt_geometry.py)
 docker exec docker-analysis-1 nice -n 10 python /workspace/prompt_geometry.py promptmap
-# → http://10.0.0.10:5153/datasets/<ds>-prompts  (워크스페이스 `prompts` 선택 — 예시의
-#    source-h-prompts 는 2026-08-18 삭제됨, 현존 쌍은 sourcei-prompts / frames-prompts)
-# ⚠️ 데이터셋은 **헤더 선택기**로 바꿔야 한다 — App 은 접속 시 서버 세션의 현재
-#    데이터셋에 스스로 동기화하므로 URL 만으로는 안 붙는다 (2026-08-20 실측).
-#    전환 직후 stale 플롯을 의심하려면 배너의 **모집단 숫자**로 게이트할 것.
+# → http://10.0.0.10:5153/datasets/source-h-prompts  (워크스페이스 `prompts` 선택)
 ```
 
 - 좌표(UMAP `emb_viz`)는 **문장끼리의 기하만** 뜻한다. 문장+이미지를 한 UMAP 에 올리는 건
@@ -611,10 +597,6 @@ docker exec docker-analysis-1 nice -n 10 python /workspace/prompt_geometry.py pr
 | **argmax (K=1)** | `atlas` · `promptmap` | 클래스별 best 의 전역 argmax. 옛 단일 체계 | 없음 (하드코딩) | `wins`·`purity`·`adopted` |
 | **top-K 다수결** | `vote` | 상위 K개 문장의 클래스 다수결 = 제품 APO 규칙 | `VOTE_K`(기본 10) · `VOTE_KS`(1,3,5,10,20,50) | `vote_<k>`·`vote_margin_*`·`rule_flip_*` |
 | **분포 IoU (wave)** | `wave` | 제품 `pe_inference/01_TuningFree_v2.py`. 클래스별 cos 히스토그램 vs normal 히스토그램의 면적 IoU < `WAVE_THR` → 발화 | `WAVE_BINS`(80) · `WAVE_THR`(0.15) | `wave_gain`·`wave_role` |
-
-또 하나: Prompt Compare 패널의 채택 **표시**는 뷰 필터가 있으면 **뷰 기준으로 재판정**된다
-(배너에 표기, 2026-08-20~) — `adopted` **필드** 집계와 크게 다를 수 있고(실측 전역 17,230 vs
-뷰 86) 필드 자체는 불변이다. 화면 숫자와 필드 집계의 차이를 데이터 오류로 오인하지 말 것.
 
 - `rule_flip_*` 는 **K=1 판정과 K=K 판정이 갈린 프레임**에 `"argmax→vote"` 형태로 붙는다 —
   두 규칙의 불일치를 눈으로 찾는 용도.
@@ -739,13 +721,11 @@ BANK_A=v1.0.8.0 BANK_B=v1.0.8.0 ... prompt_geometry.py attach --profile sourcei
 
 ## source-i 실내 데이터셋 (`sourcei` / `sourcei-prompts`)
 
-`sourcei`(프레임 7,498) ↔ `sourcei-prompts`(문장)는 `sourcei.winner_gidx_v1080` ↔
-`sourcei-prompts.gidx` 조인으로 연결된다 (⚠️ 구 3자리 태그 `winner_gidx_v080`/`_v084` 필드는
-리빌드가 **삭제**했다 — `rebuild_banks_all.py` 의 `OLD_FIELDS`. 그리고 등식 조인은 양쪽 gidx
-블록 세대가 같을 때만 성립 — 세대가 다르면 shift 보정 또는 `% GIDX_OFFSET`) (`sum(sourcei-prompts.wins) = 7,498 = sourcei.count()`).
+`sourcei`(프레임 7,498) ↔ `sourcei-prompts`(문장 12,480)는 `sourcei.winner_gidx_v080` ↔
+`sourcei-prompts.gidx` 조인으로 연결된다 (`sum(sourcei-prompts.wins) = 7,498 = sourcei.count()`).
 
 - 프레임 필드 `wave_gain`/`wave_role`은 승자 문장 값의 **복사본**이다(실측 15/15 표본 바이트 일치,
-  `winner_gidx_v1080`↔`gidx` 조인) — 원 산출은 컨테이너 라이브 `/workspace/prompt_geometry.py:2523-2524`
+  `winner_gidx_v080`↔`gidx` 조인) — 원 산출은 컨테이너 라이브 `/workspace/prompt_geometry.py:2523-2524`
   (`stage_promptmap`, 문장 단위 LOO gain), 프레임 복사는 git 미추적 1회성 스크립트
   `/tmp/symmetric.py:85`가 수행. 분석/Panel 은 `wave_gain`/`wave_role` 에 대해서는 `<DS>-prompts`
   쪽 필드를 정본으로 읽을 것. ⚠️ **문장 텍스트는 예외** — 2026-08-19부터 패널은 Postgres
@@ -800,7 +780,7 @@ docker exec docker-analysis-1 python /workspace/fiftyone_app_setup.py workspace-
 - 워크스페이스 `compare`(sourcei): Samples | Embeddings | Prompt Compare 3-패널(H1 확정안).
   모드 A=프레임↔문장(argmax_k1 조인, dist_iou 모드는 클릭 무효), 모드 B=같은
   데이터셋 그룹 overlay(`frames` 에서 project 비교).
-- selftest(조인 불변식 + 뷰 채택 재판정 불변식 — 개수는 늘어나므로 박지 않는다): `docker exec docker-analysis-1 python /data/fiftyone/datasets/__plugins__/user-prompt-compare/__init__.py`
+- selftest(조인 불변식 3개): `docker exec docker-analysis-1 python /data/fiftyone/datasets/__plugins__/user-prompt-compare/__init__.py`
   — FiftyOne 업그레이드 전 필수 게이트. 실패 시 producer drift 의심.
 - 색상/워크스페이스 재설정: `python /workspace/fiftyone_app_setup.py colors|workspace|workspace-compare|workspace-fix`
   (`workspace-fix` = 전 데이터셋 워크스페이스 일괄 정규화 — Space>Panel 래핑/active_child=None 레거시가 빈 화면을 만든다. 멱등)
@@ -816,8 +796,7 @@ docker exec docker-analysis-1 python /workspace/fiftyone_app_setup.py workspace-
   정의는 매번 정상이었음 (`fo.load_dataset("sourcei").list_workspaces()` 로 확인 가능) — 이
   현상이 나오면 재시도만 하면 되고 재작업 불필요.
 - **RSS 실측**(App 서버 프로세스 `main.py --port 5151`, Task 5 와 동일 측정법):
-  기존 세션에서 이미 Prompt Compare 패널을 열어 `load_prompt_bundle()` 캐시(`_CACHE` 인메모리 64MB
-  — 2026-08-20 부터는 `/data/fiftyone/panel_cache` **파일 캐시**가 그 아래층에 추가됨, §운영 주의
+  기존 세션에서 이미 Prompt Compare 패널을 열어 `load_prompt_bundle()` 캐시(`_CACHE`, 64MB
   상한)가 데워진 상태에서 `compare` 워크스페이스를 새 브라우저 세션으로 재오픈 →
   2,764,116 KB → 2,766,256 KB (**+2.1MB**, 예산 100MB 이내, 재오픈 후 3초 대기해도 추가 증가
   없음 = 누수 없음). `workspace-compare` 는 기존 3개 패널 타입(Samples/네이티브

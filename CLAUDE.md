@@ -574,12 +574,18 @@ git -C /home/user/work_p/Datapipeline-Data-data_pipeline_test status       # dev
 - 인덱스는 **entity_type 별 partial HNSW** (통합 인덱스는 제거됨)
 - 서빙 모델 포인터 = `embedding_active_model` 테이블 단일 행. 파인튠 승격은 재임베딩 후
   이 포인터를 원자 전환하는 방식 (`scripts/promote_pe_core.py`)
-- **프롬프트 DB (migrations 018~021) 적용 상태 주의**: `prompt_banks`/`bank_sentences`(019)와
+- **프롬프트/온톨로지 DB (migrations 018~022) 적용 상태 주의**: `prompt_banks`/`bank_sentences`(019)와
   prompt partial HNSW(021)는 prod 에 **러너 밖에서 수동 선적용**됐다(`_pg_migrations` 에 기록).
   `generation_prompts`+`v_prompt_*` 뷰(018/020)는 **파일만 main 에 있고 prod DB 미적용** —
   018 은 `video_metadata` 를 ALTER 하므로 라벨링 중 psql 수동 적용 금지. 러너에 지연 게이트가
   없어서 **다음 이미지 재빌드 배포의 부팅 시 자동 적용된다.** `generation_prompts` write 경로는
-  아직 미배선(테이블 정의만 존재).
+  2026-08-21 `clip_timestamp` 에 배선됨(`postgres_labeling.py`, fail-soft — **018 미적용인 현 prod 에서는
+  매 run WARN 만 남기고 행 0개**, 계보는 018 부팅 적용 이후부터). **022(`label_classes`/`label_class_aliases`)도
+  파일만 main, prod 미적용**(2026-08-25 실측) — CREATE+INSERT ON CONFLICT 만이라 018 과 달리 라벨링 중
+  psql 선적용해도 안전. 정본은 `src/vlm_pipeline/data/label_ontology.json`(13 클래스) — `env_utils.CATEGORY_TO_CLASSES`·
+  `ls_tasks.CATEGORY_SYNONYMS`·GenAI `promote.html` PRESETS·022 는 파생본이고 `tests/unit/test_label_ontology.py`
+  parity 가 강제한다. **매핑 수정은 JSON 만.** `smoking` 은 canonical 이면서 `smoke` alias 이기도 함(미해결) —
+  소비자는 canonical 일치를 alias 보다 먼저(`env_utils.resolve_to_canonical`).
 
 ---
 
