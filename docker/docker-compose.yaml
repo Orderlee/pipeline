@@ -95,6 +95,8 @@ x-runtime-dagster-env: &runtime-dagster-env
   # GenAI polling sensor (Phase 3.5+) — HTTP 경유로 docker/genai 컨테이너의 internal API 호출
   GENAI_INTERNAL_BASE: ${GENAI_INTERNAL_BASE:-http://genai:8088}
   GENAI_INTERNAL_TOKEN: ${GENAI_INTERNAL_TOKEN:-}
+  # FiftyOne 증분 동기화 API (analysis-sync 컨테이너, 내부 전용 포트 8010) — fiftyone_sync_sensor/스케줄이 호출.
+  FIFTYONE_SYNC_API_URL: ${FIFTYONE_SYNC_API_URL:-http://analysis-sync:8010}
   GENAI_POLL_INTERVAL_SECONDS: ${GENAI_POLL_INTERVAL_SECONDS:-30}
   GENAI_POLL_BATCH: ${GENAI_POLL_BATCH:-20}
   # GPU 할당 정책 (2026-05-22 업데이트, NVENC dual-GPU):
@@ -707,6 +709,17 @@ services:
       interval: 60s
       timeout: 10s
       start_period: 60s
+      retries: 3
+
+  analysis-sync:
+    # FiftyOne 증분 동기화 API — Dagster fiftyone_sync_sensor/스케줄이 호출. 내부 전용(호스트 포트 없음).
+    <<: *analysis-base
+    command: ["sh", "-c", "exec uvicorn sync_api:app --host 0.0.0.0 --port 8010 --app-dir /workspace"]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8010/health >/dev/null || exit 1"]
+      interval: 60s
+      timeout: 10s
+      start_period: 30s
       retries: 3
 
   fiftyone-mongo:

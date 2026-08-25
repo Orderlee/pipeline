@@ -262,13 +262,15 @@ if embedding_active; then
     fi
 fi
 
-# 2026-08-18: analysis 스택 (profiles:["analysis"]) — JupyterLab / FiftyOne / Streamlit.
+# 2026-08-18: analysis 스택 (profiles:["analysis"]) — JupyterLab / FiftyOne / Streamlit / Sync API.
 # dagster 와 무관하고, 코드는 bind mount 라 배포가 코드를 나르지 않는다(git reset 이 나른다).
 # 그래서 **force-recreate 를 쓰지 않는다** — 무관한 변경으로 BUILD_REQUIRED 가 서도
 # 분석 중인 FiftyOne 세션을 끊지 않기 위해서다. compose 는 서비스 정의나 이미지가
 # 실제로 바뀐 경우에만 알아서 recreate 하므로, 이 호출은 "죽어 있으면 살린다"에 가깝다.
+# analysis-sync 를 이 목록에서 빼면 profiles 가 있어도 새 서비스가 영원히 기동되지 않는다
+# (compose 는 명시 나열된 서비스만 up 한다).
 if analysis_active; then
-    compose up -d --no-deps analysis analysis-fiftyone analysis-streamlit
+    compose up -d --no-deps analysis analysis-fiftyone analysis-streamlit analysis-sync
     echo "analysis stack ensured running"
 fi
 

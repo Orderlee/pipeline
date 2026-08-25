@@ -55,7 +55,6 @@ for _v in (
 import gc
 import random
 import time
-from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
@@ -260,77 +259,13 @@ except MemoryFloor as exc:
 
 
 # ── 4. 라벨: id 배치별 조회 + MinIO JSON 병렬 읽기 + 배치 set_values ───────────
-def attach_labels_batched():
-    all_ids = ds.values("id")
-    log(f"labels: {len(all_ids)} samples, 배치 {CHUNK}")
-    done = 0
-    det_frames = 0
-    for id_batch in batches(all_ids, CHUNK):
-        wait_for_memory()
-        view = ds.select(id_batch, ordered=True)
-        sids, image_ids, asset_ids, filepaths = view.values(
-            ["id", "image_id", "asset_id", "filepath"]
-        )
-        iids = [str(i) if i else "" for i in image_ids]
-
-        frame_assets = fp._fetch_frame_asset_ids([i for i in iids if i])
-        aids = [
-            str(a) if a else str(frame_assets.get(i, "") or "")
-            for a, i in zip(asset_ids, iids)
-        ]
-        caps = fp._fetch_asset_captions([a for a in aids if a])
-        envs = fp._fetch_video_env([a for a in aids if a])
-        refs = fp._fetch_sam3_label_refs([i for i in iids if i])
-
-        def read_dets(args):
-            iid, fpth = args
-            dets = []
-            for bucket, key in refs.get(iid, []):
-                try:
-                    payload = fp._read_minio_json(bucket, key, mc=mc)
-                    if isinstance(payload, dict):
-                        dets.extend(fp._detections_from_coco(payload, fpth))
-                except Exception:  # noqa: BLE001 — per-file fail-forward
-                    continue
-            return dets
-
-        # IO-bound — 낮은 병렬도로 NAS 부담을 줄이면서 순차보다 빠르게
-        with ThreadPoolExecutor(max_workers=WORKERS) as ex:
-            det_lists = list(ex.map(read_dets, zip(iids, filepaths)))
-
-        cap_d, dn_d, env_d, dc_d, nm_d, det_d = {}, {}, {}, {}, {}, {}
-        for sid, aid, dets in zip(sids, aids, det_lists):
-            cap_d[sid] = caps.get(aid, "") if aid else ""
-            dn, env = envs.get(aid, (None, None)) if aid else (None, None)
-            dn_d[sid] = dn or "none"
-            env_d[sid] = env or "none"
-            if dets:
-                det_d[sid] = fo.Detections(detections=dets)
-                dc = Counter(d.label for d in dets).most_common(1)[0][0]
-                det_frames += 1
-            else:
-                dc = "none"
-            dc_d[sid] = dc
-            nm_d[sid] = fp.normalize_class(dc)
-
-        ds.set_values("caption", cap_d, key_field="id")
-        ds.set_values("daynight", dn_d, key_field="id")
-        ds.set_values("environment", env_d, key_field="id")
-        ds.set_values("detection_class", dc_d, key_field="id")
-        ds.set_values("normalized_class", nm_d, key_field="id")
-        if det_d:
-            ds.set_values("detections", det_d, key_field="id")
-
-        done += len(id_batch)
-        del view, det_lists, cap_d, dn_d, env_d, dc_d, nm_d, det_d, refs, caps, envs
-        gc.collect()
-        if done % (CHUNK * 10) < CHUNK:
-            log(f"  labels {done}/{len(all_ids)} (det={det_frames}) avail={mem_avail_mb()}MB")
-    log(f"labels 완료 (detections on {det_frames} frames)")
-
-
+# 구현은 fiftyone_pgvector.attach_labels_batched() 로 승격됨(2026-08-21, refresh_frames_labels.py
+# docstring 이 명시한 다음 단계) — 이 파일은 자신의 메모리 가드(wait_for_memory/MemoryFloor)와
+# CHUNK/WORKERS 를 그대로 넘겨 동작을 그대로 유지한다.
 try:
-    attach_labels_batched()
+    fp.attach_labels_batched(
+        ds, mc, chunk=CHUNK, workers=WORKERS, wait_for_memory=wait_for_memory, log=log
+    )
 except MemoryFloor as exc:
     log(f"⚠️ {exc} — labels 단계에서 중단")
     raise SystemExit(2) from exc

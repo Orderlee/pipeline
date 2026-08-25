@@ -29,6 +29,7 @@ from vlm_pipeline.defs.ls.sensor import ls_presign_renew_job, ls_presign_renew_s
 from vlm_pipeline.defs.process.assets import clip_captioning
 from vlm_pipeline.defs.sam.assets import sam3_shadow_compare
 from vlm_pipeline.defs.sam.detection_assets import sam3_image_detection
+from vlm_pipeline.defs.viz import fiftyone_label_refresh_schedule, fiftyone_sync_job
 from vlm_pipeline.lib.env_utils import bool_env
 
 _enable_manual_label_import = bool_env("ENABLE_MANUAL_LABEL_IMPORT", False)
@@ -155,6 +156,7 @@ if _enable_embedding:
 _jobs.append(ls_presign_renew_job)
 _jobs.append(video_env_backfill_job)
 _jobs.append(video_scene_backfill_job)
+_jobs.append(fiftyone_sync_job)
 
 defs = Definitions(
     assets=build_production_assets(
@@ -171,6 +173,7 @@ defs = Definitions(
         ls_presign_renew_schedule,
         build_video_env_backfill_schedule(video_env_backfill_job),
         build_video_scene_backfill_schedule(video_scene_backfill_job),
+        fiftyone_label_refresh_schedule,
     ],
     sensors=build_production_sensors(
         dispatch_target_jobs=[_dispatch_stage_job, _ingest_job],
