@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import gc
 import json
 import os
 import shutil
@@ -460,6 +461,107 @@ def attach_labels(ds):
         except Exception as exc:  # noqa: BLE001 — per-sample fail-forward
             print(f"attach_labels: skipped sample image_id={_sample_value(sample, 'image_id')}: {exc}")
     return ds
+
+
+def _batches(seq, size):
+    for i in range(0, len(seq), size):
+        yield seq[i : i + size]
+
+
+def attach_labels_batched(
+    ds,
+    mc=None,
+    *,
+    chunk: int = 2000,
+    workers: int = 6,
+    wait_for_memory=None,
+    log=print,
+) -> None:
+    """id 배치별 SAM3 라벨/캡션/환경 조회 + MinIO JSON 병렬 읽기 + 배치 set_values.
+
+    승격 이력(2026-08-21): `fiftyone_full_build.py:attach_labels_batched()` 를 이 모듈로
+    이동 — 동작은 불변이고, 그 파일 top-level 전역(`ds`/`mc`/`CHUNK`/`WORKERS`/
+    `wait_for_memory`)에 묶여 다른 스크립트가 import 할 수 없던 것을 매개변수로 풀었다.
+    `attach_labels()`(전건 `list(ds)` 로드, 샘플당 `save()`)와 달리 id 배치 + 벌크
+    `set_values()` 라 200K 규모에서도 메모리/속도가 견딘다.
+
+    `wait_for_memory` 를 넘기지 않으면 메모리 가드 없이 진행한다 — 호출자가 이미 배치
+    루프 바깥에서 가드를 쥐고 있는 경우(예: 이 함수를 짧은 id 부분집합에만 쓰는 증분
+    동기화) 이중 가드가 필요 없기 때문. 원 호출자(`fiftyone_full_build.py`)는 자신의
+    `MemoryFloor`/`wait_for_memory` 를 그대로 넘겨 이전과 동일하게 동작한다.
+    """
+    import fiftyone as fo
+    from concurrent.futures import ThreadPoolExecutor
+
+    mc = mc or _minio_client()
+    _wait = wait_for_memory or (lambda: None)
+
+    all_ids = ds.values("id")
+    log(f"labels: {len(all_ids)} samples, 배치 {chunk}")
+    done = 0
+    det_frames = 0
+    for id_batch in _batches(all_ids, chunk):
+        _wait()
+        view = ds.select(id_batch, ordered=True)
+        sids, image_ids, asset_ids, filepaths = view.values(
+            ["id", "image_id", "asset_id", "filepath"]
+        )
+        iids = [str(i) if i else "" for i in image_ids]
+
+        frame_assets = _fetch_frame_asset_ids([i for i in iids if i])
+        aids = [
+            str(a) if a else str(frame_assets.get(i, "") or "")
+            for a, i in zip(asset_ids, iids)
+        ]
+        caps = _fetch_asset_captions([a for a in aids if a])
+        envs = _fetch_video_env([a for a in aids if a])
+        refs = _fetch_sam3_label_refs([i for i in iids if i])
+
+        def read_dets(args):
+            iid, fpth = args
+            dets = []
+            for bucket, key in refs.get(iid, []):
+                try:
+                    payload = _read_minio_json(bucket, key, mc=mc)
+                    if isinstance(payload, dict):
+                        dets.extend(_detections_from_coco(payload, fpth))
+                except Exception:  # noqa: BLE001 — per-file fail-forward
+                    continue
+            return dets
+
+        # IO-bound — 낮은 병렬도로 NAS 부담을 줄이면서 순차보다 빠르게
+        with ThreadPoolExecutor(max_workers=workers) as ex:
+            det_lists = list(ex.map(read_dets, zip(iids, filepaths)))
+
+        cap_d, dn_d, env_d, dc_d, nm_d, det_d = {}, {}, {}, {}, {}, {}
+        for sid, aid, dets in zip(sids, aids, det_lists):
+            cap_d[sid] = caps.get(aid, "") if aid else ""
+            dn, env = envs.get(aid, (None, None)) if aid else (None, None)
+            dn_d[sid] = dn or "none"
+            env_d[sid] = env or "none"
+            if dets:
+                det_d[sid] = fo.Detections(detections=dets)
+                dc = Counter(d.label for d in dets).most_common(1)[0][0]
+                det_frames += 1
+            else:
+                dc = "none"
+            dc_d[sid] = dc
+            nm_d[sid] = normalize_class(dc)
+
+        ds.set_values("caption", cap_d, key_field="id")
+        ds.set_values("daynight", dn_d, key_field="id")
+        ds.set_values("environment", env_d, key_field="id")
+        ds.set_values("detection_class", dc_d, key_field="id")
+        ds.set_values("normalized_class", nm_d, key_field="id")
+        if det_d:
+            ds.set_values("detections", det_d, key_field="id")
+
+        done += len(id_batch)
+        del view, det_lists, cap_d, dn_d, env_d, dc_d, nm_d, det_d, refs, caps, envs
+        gc.collect()
+        if done % (chunk * 10) < chunk:
+            log(f"  labels {done}/{len(all_ids)} (det={det_frames})")
+    log(f"labels 완료 (detections on {det_frames} frames)")
 
 
 def _fetch_video_env(asset_ids):

@@ -296,6 +296,10 @@ scripts/recover_*_[0-9]*.py
 # 기록 헬퍼의 원문 보존·fail-soft. 이게 없으면 신규 카테고리를 DB 로 관측할 수 없다.
 !tests/unit/test_observed_categories.py
 
+# fiftyone_sync_sensor(defs/viz) — decide_targets/cursor 순수 함수 + analysis-sync HTTP 트리거
+# 배선. requests 세션 fake + build_sensor_context 만 의존, DB 접속 없음.
+!tests/unit/test_fiftyone_sync_sensor.py
+
 # MinIO vlm-raw/source-h 로컬 사본 (7.9GiB, git 추적 금지)
 /source-h/
 

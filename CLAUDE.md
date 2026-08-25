@@ -328,11 +328,18 @@ git -C /home/user/work_p/Datapipeline-Data-data_pipeline_test status       # dev
 - **호스트 포트 ≠ 컨테이너 포트인 서비스** (`.env` 로 매핑되므로 착각하기 쉬움):
   `embedding-service` 8003→**8004**, `genai` 8088→**8089**, `mlflow` 5000→**5500**,
   `analysis-fiftyone` 5151→**5153** / `analysis-streamlit` 8501→**8503**, `postgres` 5432→**15433**
-- **analysis 스택 = 서비스 3개** (2026-08-18 P0 편입): `analysis`(JupyterLab, `docker-analysis-1`) /
-  `analysis-fiftyone`(:5153) / `analysis-streamlit`(:8503). 셋 다 `restart: unless-stopped` 라
-  **죽으면 자동 재기동**된다 — `docker exec -d` 손기동 절차는 폐기됐다.
-  `deploy-stack.sh` 의 `analysis_active()` 분기가 배포 때 세 서비스를 `up -d` 한다
+- **analysis 스택 = 서비스 4개** (2026-08-18 P0 편입, 2026-08-21 sync 추가): `analysis`(JupyterLab,
+  `docker-analysis-1`) / `analysis-fiftyone`(:5153) / `analysis-streamlit`(:8503) /
+  `analysis-sync`(내부 :8010, 호스트 포트 없음 — FiftyOne 증분 동기화 API). 넷 다
+  `restart: unless-stopped` 라 **죽으면 자동 재기동**된다 — `docker exec -d` 손기동 절차는 폐기됐다.
+  `deploy-stack.sh` 의 `analysis_active()` 분기가 배포 때 네 서비스를 `up -d` 한다
   (force-recreate 아님 — 무관한 변경으로 FiftyOne 세션을 끊지 않기 위해).
+- **FiftyOne 자동 동기화** (2026-08-21): Dagster `fiftyone_sync_sensor`(5분 tick, PG 카운트
+  스냅샷 diff) 가 `fiftyone_sync_job` 을 발화 → `analysis-sync` HTTP 로 `frames` 증분 add /
+  `frames-prompts` promptmap 재빌드. 라벨 재적재는 `fiftyone_label_refresh_schedule`(03:00 KST)
+  이 전담 — 옛 2h cron(`refresh_frames_labels.py`, 실제로는 crontab 미설치 상태였음)의 대체.
+  수동 실행: `docker exec docker-analysis-1 python3 /workspace/sync_incremental.py <target> [--dry-run]`.
+  신규 add 표본은 `emb_viz`(UMAP) 좌표가 없다 — 스캐터 반영은 `recompute_viz.py` 별도 실행.
 - **`/workspace` 는 `docker/analysis/` 의 bind mount** 이므로 "단일 진리 원칙"이 이 컨테이너에도
   적용된다. 이 repo 가 곧 `DEPLOY_REPO_ROOT` 라 **여기서 커밋하면 그대로 실행 코드**이고,
   `docker cp` 는 필요 없다. 플러그인 5종(`user-*`)도 `__plugins__/` 로 각각 마운트된다.

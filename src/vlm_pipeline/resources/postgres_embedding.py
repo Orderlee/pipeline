@@ -8,11 +8,14 @@ postgres_detection.py 패턴 미러. self.connect() 컨텍스트(자동 commit/r
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any
 
 from vlm_pipeline.lib.active_model import DEFAULT_SCOPE, resolve_active_model_name
 from vlm_pipeline.lib.pgvector_index import build_partial_hnsw_sql
 from vlm_pipeline.resources.postgres_base import PostgresBaseMixin
+
+logger = logging.getLogger(__name__)
 
 _EMBEDDING_INSERT_SQL = """
 INSERT INTO image_embeddings
@@ -193,6 +196,19 @@ AND NOT EXISTS (
 )
 ORDER BY labels.label_id
 LIMIT %(limit)s
+"""
+
+# fiftyone_sync_sensor 커서 스냅샷 (실측 확정 커서 A) — 인덱스 추가 없이 5개 COUNT/MAX.
+# prompt_banks 는 019 미적용 DB(일부 staging) 에서 부재할 수 있어 별도 쿼리로 분리한다.
+_SYNC_SNAPSHOT_EMBEDDINGS_SQL = """
+SELECT
+    (SELECT count(*) FROM image_embeddings WHERE entity_type='frame')   AS frame_n,
+    (SELECT count(*) FROM image_embeddings WHERE entity_type='caption') AS caption_n,
+    (SELECT count(*) FROM image_embeddings WHERE entity_type='prompt')  AS prompt_n
+"""
+
+_SYNC_SNAPSHOT_BANKS_SQL = """
+SELECT count(*) AS bank_n, max(created_at) AS bank_latest FROM prompt_banks
 """
 
 
@@ -426,3 +442,35 @@ class PostgresEmbeddingMixin:
             with conn.cursor() as cur:
                 cur.execute(sql, params)
                 return PostgresBaseMixin._cursor_to_dicts(cur)
+
+    def fiftyone_sync_snapshot(self) -> dict[str, Any]:
+        """fiftyone_sync_sensor 커서 스냅샷 — image_embeddings 3종 카운트 + prompt_banks 상태.
+
+        prompt_banks 부재(스테이징 등 019 미적용 DB) 시 예외를 잡아 bank_n=0/bank_latest=None
+        으로 폴백하고 warning 로그만 남긴다 — 크래시 금지(매 sensor tick 호출됨).
+        """
+        with self.connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(_SYNC_SNAPSHOT_EMBEDDINGS_SQL)
+                frame_n, caption_n, prompt_n = cur.fetchone()
+
+            bank_n = 0
+            bank_latest = None
+            try:
+                with conn.cursor() as cur:
+                    cur.execute(_SYNC_SNAPSHOT_BANKS_SQL)
+                    row = cur.fetchone()
+                if row is not None:
+                    bank_n = int(row[0] or 0)
+                    bank_latest = row[1]
+            except Exception as exc:  # noqa: BLE001 — prompt_banks 미적용 DB 폴백, 크래시 금지
+                conn.rollback()
+                logger.warning("prompt_banks 조회 실패(019 미적용 DB로 추정) — bank_n=0 폴백: %s", exc)
+
+        return {
+            "frame_n": int(frame_n or 0),
+            "caption_n": int(caption_n or 0),
+            "prompt_n": int(prompt_n or 0),
+            "bank_n": bank_n,
+            "bank_latest": bank_latest.isoformat() if bank_latest is not None else None,
+        }

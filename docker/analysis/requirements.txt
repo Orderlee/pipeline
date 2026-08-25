@@ -21,3 +21,6 @@ threadpoolctl
 Pillow
 pymongo
 voxel51-eta
+# analysis-sync 서비스 (sync_api.py) — 내부 전용 동기화 API 서버
+fastapi
+uvicorn
