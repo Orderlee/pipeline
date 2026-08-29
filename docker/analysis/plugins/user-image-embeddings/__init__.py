@@ -246,8 +246,13 @@ def pdb_banks(refresh=False):
         rows = _pdb_query(
             "SELECT b.bank_id, b.version_tag, b.sentence_storage, count(s.sentence_id) "
             "  FROM prompt_banks b LEFT JOIN bank_sentences s USING (bank_id) "
-            " WHERE b.source = 'userwatch' "          # gidx 규약(userwatch:<tag>)을 쓰는 원장만
-            " GROUP BY 1, 2, 3", ())
+            # ⚠️ 2026-08-29: 걸러야 하는 것은 **출처가 아니라 gidx 규약**이다. `source='userwatch'`
+            #    로 좁히면 같은 규약을 지키는 사내 뱅크(hybrid·internal)가 통째로 빠져
+            #    조용히 `external_only` 폴백으로 떨어진다. `user-prompt-compare` 는 2026-08-28 에
+            #    이미 고쳤는데 이 두 플러그인이 사본으로 남아 드리프트했다(3중 사본 패턴).
+            #    규약 = `bank_sentences.gidx` 가 0 부터 시작하는 뱅크-로컬 행 번호.
+            " GROUP BY 1, 2, 3 "
+            "HAVING min(s.gidx) = 0 OR count(s.sentence_id) = 0", ())
     except Exception as e:      # noqa: BLE001 — DSN 부재·DB 다운 전부 폴백 대상
         _PDB_BANKS, _PDB_BANKS_ERR = {}, f"{type(e).__name__}: {e}"
         return _PDB_BANKS

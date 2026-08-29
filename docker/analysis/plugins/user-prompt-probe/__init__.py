@@ -33,6 +33,7 @@
 """
 
 import contextlib
+import json
 import io
 import os
 import re
@@ -110,8 +111,15 @@ def _bank_versions(dataset):
 
 
 def _bank_label(tag, bank, k):
-    """드롭다운 표시명. `probecache BANK_ATTACH=all` 로 만든 합집합 캐시는 「전체」로 읽힌다."""
-    return f"전체 ({bank}) k={k}" if tag == "all" else f"{bank} (k={k})"
+    """드롭다운 표시명. `probecache BANK_ATTACH=all` 로 만든 합집합 캐시는 「전체」로 읽힌다.
+
+    ⚠️ 합집합 라벨에 버전을 다 이어 붙이면 안 된다 — 2뱅크 시절엔 짧았지만 31뱅크가 되니
+       문자열이 300자를 넘어 드롭다운이 패널 폭을 밀어냈다(2026-08-28 실측). 개수만 쓴다.
+    """
+    if tag != "all":
+        return f"{bank} (k={k})"
+    n = bank.count("+") + 1 if bank and bank != "?" else 0
+    return f"전체 ({n}뱅크 합집합) k={k}" if n > 2 else f"전체 ({bank}) k={k}"
 
 
 def _meta(dataset, tag):
@@ -838,7 +846,32 @@ def _gen_instruction(mode, decl_cls, target_cls, scenes, state_sent, examples, s
         head += ["", f"Scene conditions of these frames: {attrs}"]
     if examples:
         head += ["", "Style examples (correct grammar):"] + [f"  - {e}" for e in examples[:3]]
+    head += _standard_constraints(decl_cls if mode == "FP" else target_cls)
     return "\n".join(head)
+
+
+def _standard_constraints(cls):
+    """측정된 규칙을 지시문 끝에 붙인다. **정본은 `/workspace/prompt_standard.py`** 이고
+    여기서 문구를 새로 만들지 않는다 — 규칙이 두 곳에 있으면 반드시 드리프트한다.
+    모듈을 못 읽으면 조용히 건너뛴다(플러그인이 죽는 것보다 낫다)."""
+    try:
+        import prompt_standard as ps
+    except Exception:
+        return []
+    if cls not in ps.CLASSES:
+        return []
+    win = ps.WINNING_FORM[cls]
+    sel = " ; ".join(f"{ps.FORMS[f]} = {v:.3f}" for f, v in sorted(ps.SELECTIVITY[cls].items(), key=lambda kv: -kv[1]))
+    out = ["", "MEASURED CONSTRAINTS (sourcei GT, prompt_standard.py — follow exactly):",
+           f"- Template selectivity for '{cls}': {sel}",
+           f"- At least {int(ps.FORM_QUOTA * 100)}% of sentences must use: {ps.FORMS[win]}",
+           f"- Content: {ps.MUST_DESCRIBE[cls]}",
+           f"- Length {ps.LEN_MIN}-{ps.LEN_MAX} words, present tense, no numbers, no proper nouns.",
+           "- Frame clusters carry PLACE 4x more than EVENT (NMI 0.586 vs 0.149) — at most one place phrase."]
+    if cls == "normal":
+        out.append("- CRITICAL: no posture/collapse/lying/fire/smoke vocabulary at all, not even negated. "
+                   "A normal sentence containing posture words steals frames from falldown (measured: 52).")
+    return out
 
 
 def _llm_generate(backend, model, instruction, images):
@@ -1071,10 +1104,25 @@ class GeneratePrompts(foo.Operator):
         if not texts:
             raise ValueError(f"생성 문장을 파싱하지 못했습니다 — 원문 앞부분: {(raw or '')[:200]}")
 
+        # 표준 검증 — 금칙어·길이·숫자를 프로브 **전에** 거른다. 특히 normal 에 섞인 자세 어휘는
+        # 그대로 두면 falldown 을 강탈하는 자석이 된다(§10 실측). 전량 기각되면 원본을 살려
+        # 사람이 보고 판단하게 한다(조용히 빈 결과를 내지 않는다).
+        gen_report, dropped = None, []
+        try:
+            import prompt_standard as ps
+            kept, rej, gen_report = ps.validate(texts, decl, ps.ENVS.get("sourcei"))
+            dropped = [f"{w} | {t}" for t, w in rej]
+            if kept:
+                texts = kept
+        except Exception as e:
+            gen_report = {"error": str(e)[:200]}
+
         out = _score_texts(view, tag, classes, classes.index(decl), texts)
         out.update(bank=bank, k=k, cls=decl, mode=GEN_MODES[mode][0],
                    n_cohort=int(len(idx)), n_images=len(images),
-                   stealing=steal_rank, copy_block="\n".join(texts))
+                   stealing=steal_rank, copy_block="\n".join(texts),
+                   rule_report=json.dumps(gen_report, ensure_ascii=False) if gen_report else "",
+                   rule_dropped="\n".join(dropped))
         return out
 
     def resolve_output(self, ctx):
@@ -1082,6 +1130,9 @@ class GeneratePrompts(foo.Operator):
         outputs.str("mode", label="처방")
         outputs.int("n_cohort", label="대상 프레임")
         outputs.int("n_images", label="모델에 보낸 이미지")
+        outputs.str("rule_report", label="표준 규칙 검증 (prompt_standard)")
+        outputs.str("rule_dropped", label="규칙 위반으로 버린 문장",
+                    view=types.TextFieldView(read_only=True))
 
         # 삭제 후보를 생성 결과보다 **위에** 둔다. 실측상 개선의 98.5%가 "나쁜 자석 제거"
         # 기여였고, 한 문장이 코호트를 독식하면 문장 추가보다 그 문장 삭제가 정답이다.

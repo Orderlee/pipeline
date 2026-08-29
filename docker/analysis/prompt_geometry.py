@@ -2051,6 +2051,50 @@ def stage_prune() -> None:
 
 
 # ────────────────────── attach ──────────────────────
+def gidx_offset_for(ds, version):
+    """이 버전의 gidx 블록 오프셋. `<ds>-prompts` 가 있으면 **그쪽 실측이 정본**이다.
+
+    ⚠️ `BANKS.index()` 만 쓰면 안 된다 — `BANKS` 는 런타임 env(`BANK_LIST`/`BANK_A`/
+    `BANK_B`)에서 오므로 **같은 데이터셋도 실행마다 다른 블록**을 쓴다. 실측(2026-08-20):
+    frames attach 를 2버전 리스트로 돌려 `v1.0.8.0` 이 블록 0 으로 구워졌는데
+    `frames-prompts` 는 29버전으로 만들어져 블록 18 이었다 → 프레임↔문장 등식 조인이
+    **v1.0.1.0 문장**에 조용히 붙었다(개수는 맞고 정체가 틀림). `sourcei` 는 두 실행의
+    BANK_LIST 가 같아 우연히 무증상이었다.
+
+    옛 코드는 `version not in BANKS` 일 때 **조용히 0** 을 썼다 — 그게 위 사고의 다른 절반이다.
+    이제 근거가 없으면 실패한다. 소비자 쪽 보정은 `user-prompt-compare.gidx_shift` 등에
+    있지만, 생산자가 애초에 문장 쪽과 같은 블록을 쓰는 게 정공법이다.
+    """
+    import fiftyone as fo
+
+    pname = f"{ds.name}-prompts"
+    live = None
+    if fo.dataset_exists(pname):
+        p = fo.load_dataset(pname)
+        sch = p.get_field_schema()
+        if "gidx" in sch and "bank_version" in sch:
+            try:
+                lo, hi = p.match(fo.ViewField("bank_version.label") == version).bounds("gidx")
+                if lo is not None and hi is not None \
+                        and int(lo) // GIDX_OFFSET == int(hi) // GIDX_OFFSET:
+                    live = int(lo) // GIDX_OFFSET
+            except Exception:      # noqa: BLE001 — 진단 실패가 attach 를 죽이면 안 된다
+                live = None
+    idx = BANKS.index(version) if version in BANKS else None
+    if live is not None:
+        if idx is not None and idx != live:
+            log(f"attach: ⚠️ gidx 블록 불일치 — BANKS.index({version})={idx} 인데 "
+                f"{pname} 은 블록 {live} 다. **문장 쪽을 정본으로** {live} 를 쓴다 "
+                f"(BANK_LIST 순서가 프롬프트맵 실행과 다르다는 뜻)")
+        return live * GIDX_OFFSET
+    if idx is None:
+        raise SystemExit(
+            f"attach: {version} 이 BANKS({list(BANKS)}) 에 없고 {pname} 에도 그 버전 문장이 "
+            f"없다 — gidx 오프셋을 정할 근거가 없다. 옛 코드는 조용히 0 을 써서 남의 버전 "
+            f"문장에 붙었다(2026-08-20 실측). BANK_LIST 를 프롬프트맵 실행과 같게 맞출 것")
+    return idx * GIDX_OFFSET
+
+
 def stage_attach() -> None:
     """뱅크 **1벌**을 프레임에 붙인다 — 이미지마다 "가장 맞는 문장"과 그 예측 클래스.
 
@@ -2190,7 +2234,7 @@ def stage_attach() -> None:
     # IntField 는 min/max 정확값 필터라 충돌이 없고, 값이 prune CSV 의 `gidx` 와 같은 키다.
     # gidx 전역 오프셋 (GIDX_OFFSET 주석): -prompts 데이터셋의 gidx 와 등식 조인이 되도록
     # 버전 순번 오프셋을 더한다. BANK_A(=BANKS[0])는 0 이라 기존 v080 값과 동일.
-    goff = (BANKS.index(version) if version in BANKS else 0) * GIDX_OFFSET
+    goff = gidx_offset_for(ds, version)      # 문장 쪽 블록이 정본 (gidx_offset_for 주석)
     set_values_batched(ds, f"winner_gidx_{tag}", pairs, lambda i: int(win_g[i]) + goff)
     set_values_batched(ds, f"pred_margin_{tag}", pairs, lambda i: float(pred_margin[i]))
 
@@ -2968,7 +3012,10 @@ def stage_probecache() -> None:
     import fiftyone as fo
 
     version = os.environ.get("BANK_ATTACH", VERSIONS[0])
-    keys, X, gt, src, banks = load_all()
+    # 입구는 `load_matched()` — frames 원장은 sample-id 키에 embed.npz 부재 폴백이 있고,
+    # `load_all()` 은 VERSIONS 뱅크를 **전부** 올린다(BANK_LIST 면 52벌). 여기서 쓰는 뱅크는
+    # 1벌(또는 합집합)뿐이라 필요한 것만 읽는다 — stage_attach 와 같은 3지점 프로필화.
+    keys, X, gt, src = load_matched()
     if version.lower() in ("all", "__all__", "전체"):
         # 「전체」 = 뱅크 **합집합** 위의 top-K. App 드롭다운에서 prompt-compare 의 '전체' 와
         # 같은 모수를 프로브·문장생성에도 주기 위한 것이다 (뱅크가 2벌인데 프로브는 1벌만
@@ -2976,19 +3023,23 @@ def stage_probecache() -> None:
         # ⚠️ 합집합은 **별개 뱅크**다. 순진 병합이 단일 뱅크보다 나빴던 실측이 있으므로
         #    후보 문장을 넓은 모수에서 보려는 용도로만 쓰고, 제품 성능으로 인용하지 말 것.
         tag = "all"
+        parts = [load_bank(v) for v in BANKS]
         version = "+".join(BANKS)
-        bank = {"vec": np.concatenate([banks[v]["vec"] for v in BANKS], axis=0),
-                "cls": np.concatenate([banks[v]["cls"] for v in BANKS], axis=0),
-                "prompt": [p for v in BANKS for p in banks[v]["prompt"]]}
+        bank = {"vec": np.concatenate([b["vec"] for b in parts], axis=0),
+                "cls": np.concatenate([b["cls"] for b in parts], axis=0),
+                "prompt": [p for b in parts for p in b["prompt"]]}
         log(f"probecache: 합집합 뱅크 {version} → 문장 {len(bank['cls']):,}")
     else:
         tag = vtag(version)
-        bank = banks[version]
+        bank = load_bank(version)
     vals, idxs = bank_topk_stream(X, bank)
     cs = sorted(vals)
     pred, votes, sel = vote_topk(vals, idxs)
-    log(f"probecache {version}: 규칙 {RULE}(k={RULE_K}) / 정답 "
-        f"{int((pred == gt).sum()):,}/{len(gt):,} ({(pred == gt).mean():.2%})")
+    has = gt >= 0                               # frames 는 GT 없는 프레임이 대부분(-1)
+    n_gt = int(has.sum())
+    acc = f"{int((pred[has] == gt[has]).sum()):,}/{n_gt:,} ({(pred[has] == gt[has]).mean():.2%})" \
+        if n_gt else "GT 없음 (probecache 는 GT 를 쓰지 않는다)"
+    log(f"probecache {version}: 규칙 {RULE}(k={RULE_K}) / 정답 {acc} / tier={gt_tier(gt)}")
 
     # sel 은 코사인 내림차순 → 마지막 칸이 진입 기준선이자 밀려날 자리
     kk = sel.shape[1]
@@ -3011,19 +3062,19 @@ def stage_probecache() -> None:
     tlist = [[float(v) for v in row] for row in topc]
 
     ds = fo.load_dataset(PROFILES[PROFILE]["dataset"])
-    key_to_id = {}
-    for smp in ds.select_fields(["id", "filepath"]):
-        key_to_id[f"{os.path.basename(os.path.dirname(smp.filepath))}/"
-                  f"{os.path.basename(smp.filepath)}"] = smp.id
-    ids = [key_to_id.get(k) for k in keys]
+    ids = key_to_ids(ds, keys)
     ok = [i for i, x in enumerate(ids) if x]
     log(f"probecache: FiftyOne 매칭 {len(ok):,}/{len(keys):,}")
+    if not ok:
+        raise SystemExit(f"probecache: 원장 key 가 데이터셋과 하나도 안 붙는다 "
+                         f"(key_join={PROFILES[PROFILE]['key_join']}) — 조인 방식 확인")
 
-    for fld, arr in ((f"probe_bar_{tag}", [float(bar[i]) for i in ok]),
-                     (f"probe_out_{tag}", [int(out_c[i]) for i in ok]),
-                     (f"probe_votes_{tag}", [vlist[i] for i in ok]),
-                     (f"probe_topc_{tag}", [tlist[i] for i in ok])):
-        ds.set_values(fld, dict(zip([ids[i] for i in ok], arr)), key_field="id")
+    pairs = [(ids[i], i) for i in ok]
+    for fld, make in ((f"probe_bar_{tag}", lambda i: float(bar[i])),
+                      (f"probe_out_{tag}", lambda i: int(out_c[i])),
+                      (f"probe_votes_{tag}", lambda i: vlist[i]),
+                      (f"probe_topc_{tag}", lambda i: tlist[i])):
+        set_values_batched(ds, fld, pairs, make)
     # 클래스 순서를 App 이 알아야 한다 — 데이터셋 info 에 남긴다
     ds.info = {**(ds.info or {}),
                f"probe_classes_{tag}": [CLASS_NAMES[c] for c in cs],
@@ -5957,10 +6008,13 @@ def main() -> None:
         #    프로필 3지점(입구/조인/GT 의존 산출)만 갈아 끼우면 그대로 돈다.
         #    나머지(팩토리얼=동일도메인 뱅크 2벌, guide/flips/prune=GT 분모)는 여전히 sourceh 전용.
         sourceh_only = {"analyze", "ablate", "flips", "guide", "slim", "prune", "atlas", "vote"}
+        # probecache 는 GT 를 쓰지 않는다(정확도 로그만) → frames 에서도 성립한다.
+        # App 프로브 패널이 "probecache 를 먼저 실행하세요" 라고 안내하는 대상이 이 경로다.
         table = {"score": stage_score, "gap": stage_gap_frames, "viz": stage_viz_frames,
                  "gtsync": stage_gtsync, "report": stage_report_frames,
                  "wave": stage_wave, "promptmap": stage_promptmap, "attach": stage_attach,
-                 "site": stage_site, "attrs": stage_attrs, "selftest": stage_selftest}
+                 "site": stage_site, "attrs": stage_attrs, "selftest": stage_selftest,
+                 "probecache": stage_probecache}
         stages = ["score", "gap", "viz", "gtsync", "report"] if args.stage == "all" else [args.stage]
         for st in stages:
             log(f"───── stage: {st} (profile=frames) ─────")
@@ -5972,6 +6026,8 @@ def main() -> None:
                     raise SystemExit("bank 스테이지는 --csv 와 --version 이 필요하다")
                 stage_bank(args.csv, args.version)
                 continue
+            if st not in table:                  # 미등록 스테이지는 raw KeyError 로 죽지 않는다
+                raise SystemExit(f"{st} 는 frames 프로필에 배선돼 있지 않다 — 허용: {sorted(table)}")
             table[st]()
         log("완료")
         return

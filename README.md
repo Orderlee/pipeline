@@ -282,7 +282,7 @@ FiftyOne Embeddings 패널의 OSS 제한(대용량 시각화·색상 조합·좌
 
 ## Database Schema
 
-주요 테이블/뷰는 `src/vlm_pipeline/sql/schema_postgres.sql`에 정의되고, 증분 변경은 `src/vlm_pipeline/sql/migrations/postgres/`(`001`~`022`)로 관리됩니다.
+주요 테이블/뷰는 `src/vlm_pipeline/sql/schema_postgres.sql`에 정의되고, 증분 변경은 `src/vlm_pipeline/sql/migrations/postgres/`(`001`~`023`)로 관리됩니다.
 
 ### 운영 핵심 테이블/뷰
 
@@ -319,23 +319,29 @@ FiftyOne Embeddings 패널의 OSS 제한(대용량 시각화·색상 조합·좌
 | `requester_config_map` | requester/team → config 매핑 (personal → team → fallback 우선순위) |
 | `genai_batches` / `genai_jobs` | GenAI Studio 비디오 생성 batch/job lifecycle |
 
-### 프롬프트 DB (migrations 018~021, 2026-08 신설)
+### 프롬프트 / 온톨로지 DB (migrations 018~023, 2026-08 신설)
 
 라벨링 프롬프트와 제로샷 분류용 프롬프트 뱅크를 DB 로 정본화한 계층입니다.
 
 | 테이블/뷰 | 설명 |
 |--------|------|
-| `generation_prompts` | 생성 모델에 실제로 보낸 프롬프트 원문의 정본(스키마). `UNIQUE(prompt_type, model_name, content_hash)` 로 dedup. `video_metadata.timestamp_generation_prompt_id` 가 참조 → 어떤 프롬프트로 라벨링됐는지 역추적. write 경로는 2026-08-21 timestamp 스테이지에 배선됨(upsert + `video_metadata` 역참조 UPDATE, 기록 실패는 경고만). ⚠️ 기록 헬퍼는 fail-soft(WARN 후 계속)라 **018 미적용 DB 에서는 행이 0개로 남는다** — prod 는 2026-08-25 실측 018·022 미적용(다음 재빌드 배포 부팅 시 자동 적용)이므로 계보는 그 이후 run 부터 쌓이고 이전 라벨은 소급 불가. |
+| `generation_prompts` | 생성 모델에 실제로 보낸 프롬프트 원문의 정본(스키마). `UNIQUE(prompt_type, model_name, content_hash)` 로 dedup. `video_metadata.timestamp_generation_prompt_id` 가 참조 → 어떤 프롬프트로 라벨링됐는지 역추적. write 경로는 2026-08-21 timestamp 스테이지에 배선됨(upsert + `video_metadata` 역참조 UPDATE, 기록 실패는 경고만). ⚠️ 기록 헬퍼는 fail-soft(WARN 후 계속)라 **018 미적용 DB 에서는 행이 0개로 남는다** — prod 는 2026-08-29 실측 **018·020·022·023 미적용**(`_pg_migrations` 에 001-017·019·021·024 만 존재 — 다음 재빌드 배포 부팅 시 자동 적용)이므로 계보는 그 이후 run 부터 쌓이고 이전 라벨은 소급 불가. |
 | `prompt_banks` | 제로샷 분류용 프롬프트 뱅크 버전 원장. `UNIQUE(source, version_tag)`. `parent_bank_id` self-FK 로 델타 뱅크 lineage 추적 |
 | `bank_sentences` | 뱅크 소속 문장 (bank_id CASCADE). `UNIQUE(bank_id, gidx)` — 같은 뱅크 안에 동일 문장이 반복 등장할 수 있어(뱅크는 집합이 아니라 순서열) content_hash 유니크가 아니다. 행 identity 는 gidx |
 | `v_prompt_catalog` / `v_prompt_lineage` | 카탈로그 뷰 = `generation_prompts` ∪ `prompt_banks` UNION ALL 인벤토리. 계보 뷰 = `generation_prompts` ⋈ `video_metadata` ⋈ `labels` 로 human_edited 추적 — labels 조인은 `labels_key` 기준으로 grain 을 맞춘다(asset_id 조인은 classification 라벨을 오귀속시켰음). 두 뷰 모두 문장·임베딩 테이블은 조인하지 않는다 (migration 020) |
 | `label_classes` / `label_class_aliases` | **라벨 클래스 정본의 read-side 투영** (migration 022). 코드 경로의 SoT 는 `src/vlm_pipeline/data/label_ontology.json` 이고, 이 두 테이블은 `image_label_annotations.category`·뱅크 `class_label` 을 canonical 클래스에 조인하기 위한 파생 카탈로그 — 라벨 의미를 결정하는 원장이 아니다. `label_class_aliases.canonical` → `label_classes.canonical` FK(ON UPDATE CASCADE). ⚠️ `smoking` 은 JSON 그대로 `smoke` 의 alias 이면서 별도 canonical — 소비자는 canonical 일치를 alias 보다 먼저 적용할 것 |
+| `observed_categories` | **정본 밖 카테고리의 판단 유예 원장** (migration 023). 기계가 낸 값을 canonical 에 자동 편입하지 않고 원문 그대로(바깥 공백만 제거) 모아 사람이 승격·매핑·거절을 정한다. PK `(source, raw_value)`, `mapped_to` → `label_classes.canonical` FK(ON UPDATE CASCADE) — **022 없이는 성립하지 않는다**(러너가 파일명 정렬이라 022→023 순서는 보장됨). ⚠️ `observation_count` 는 원문 등장 횟수가 아니라 **관측 batch 수** — `gemini_event` 는 비디오 1건당, `dispatch_request` 는 run 1건당 1 증가한다. ⚠️ `source` CHECK 는 4종을 허용하지만 배선된 writer 는 `gemini_event`·`dispatch_request` **2종뿐** — `sam3_label`/`prompt_bank` 의 0행은 미배선이지 관측 부재가 아니다. ⚠️ 200자 초과·공백만인 값은 truncate 하지 않고 **WARN 후 제외**되므로 0행이 곧 '미상 값 없음'은 아니다 |
 | (인덱스) `image_embeddings_hnsw_prompt` | 뱅크 문장 벡터용 partial HNSW — 문장 임베딩은 별도 테이블이 아니라 `image_embeddings(entity_type='prompt', entity_id=content_hash)` 에 흡수 (021, `CONCURRENTLY` 빌드) |
 
 ### 테이블 관계도 (ERD)
 
 핵심 테이블만 표시합니다. 실선 = 명시 FK, 점선 = 코드 관례로만 조인되는 암묵 관계
 (`image_embeddings` 는 polymorphic 이라 `entity_type`+`entity_id` 로 소프트 조인).
+
+- ⚠️ `_pg_migrations` 는 **파일명만으로 중복을 판정합니다** (`checksum` 컬럼은 있으나 전 행 NULL).
+  손으로 선적용한 뒤 파일 내용을 고쳐 커밋하면 러너는 이름이 같다는 이유로 영영 skip 하면서
+  `@ASSERT_AFTER` 만 돌립니다. 마이그레이션 상태는 파일 목록이 아니라 `_pg_migrations` +
+  `pg_catalog` 로 확인하세요 (실제로 러너 밖에서 손적용된 뒤 파일이 저장소에 없는 사례가 있습니다).
 
 ```mermaid
 erDiagram
@@ -362,6 +368,7 @@ erDiagram
     label_classes ||--o{ label_class_aliases : "canonical (ON UPDATE CASCADE)"
     label_classes |o..o{ image_label_annotations : "category (암묵, 022 투영)"
     label_classes |o..o{ bank_sentences : "class_label (암묵, 022 투영)"
+    label_classes ||--o{ observed_categories : "mapped_to (ON UPDATE CASCADE, NULL 허용)"
     generation_prompts ||--o{ video_metadata : "timestamp_generation_prompt_id"
     prompt_banks ||--o{ bank_sentences : "bank_id (CASCADE)"
     prompt_banks ||--o{ prompt_banks : "parent_bank_id (델타 lineage)"
@@ -470,6 +477,14 @@ erDiagram
         TEXT alias PK
         TEXT canonical FK "ON UPDATE CASCADE"
     }
+    observed_categories {
+        TEXT source PK "PK 복합(source, raw_value), CHECK 4종 중 2종만 배선"
+        TEXT raw_value "바깥 공백만 제거, 1~200자"
+        BIGINT observation_count "관측 batch 수 (원문 등장 횟수 아님)"
+        TEXT source_units "TEXT[] — distinct sample 최대 32, 이후 count 만 증가"
+        TEXT status "observed|candidate|promoted|rejected"
+        TEXT mapped_to FK "label_classes.canonical, NULL 허용"
+    }
 ```
 
 현재 스키마에서 중요한 점:
@@ -500,10 +515,11 @@ erDiagram
 │       │   ├── genai/                  # GenAI Studio async job poll sensor
 │       │   ├── ls/                     # Label Studio task 생성 sensor + presign 갱신 schedule
 │       │   ├── spec/                   # spec config resolver (DB 의존)
+│       │   ├── viz/                    # FiftyOne 동기화 센서·job·03:00 스케줄
 │       │   └── shared/                 # 공용 helper
 │       ├── lib/                        # prompts, frame planning, sam3/yolo/embedding client, key_builders, env helpers
 │       ├── resources/                  # postgres_* (base/migration/ingest/labeling/process/detection/embedding/genai/train/maintenance) + minio + config + runtime_settings
-│       └── sql/                        # schema_postgres.sql, migrations/postgres/ (001-017)
+│       └── sql/                        # schema_postgres.sql, migrations/postgres/ (001-023)
 ├── docker/
 │   ├── docker-compose.yaml
 │   ├── docker-compose.dev.yaml         # 로컬 dev overlay
@@ -711,6 +727,7 @@ pytest tests/integration -q
 | `yolo_standard_detection_job` | `ENABLE_YOLO_DETECTION` |
 | `sam3_standard_detection_job` | `ENABLE_SAM3_DETECTION` |
 | `frame_embedding_job` / `caption_embedding_job` / `video_embedding_job` | `ENABLE_EMBEDDING` |
+| `fiftyone_sync_job` | `FIFTYONE_SYNC_API_URL` (analysis-sync HTTP 증분 동기화) |
 
 ### Sensors / Schedules
 
@@ -730,11 +747,13 @@ pytest tests/integration -q
 | `ls_task_create_sensor` | RUNNING | dispatch 완료 후 LS task 생성 |
 | `build_dataset_on_finalize_sensor` | STOPPED | LS 확정 후 dataset build |
 | `genai_poll_sensor` | RUNNING | 비동기 GenAI(Kling/Veo/Higgsfield) job polling |
+| `fiftyone_sync_sensor` | RUNNING | 5분 tick, PG 카운트 스냅샷 diff → `fiftyone_sync_job` |
 | `frame_embedding_backlog_sensor` / `caption_embedding_backlog_sensor` | STOPPED (`ENABLE_EMBEDDING`) | 미임베딩 backlog → embedding job |
 | `gcs_download_schedule` | - | 매일 04:00 KST GCS 수집 |
 | `sourcea_download_schedule` | RUNNING | 매일 06:00 KST source-a 사이트 일일 수집 |
 | `ls_presign_renew_schedule` | STOPPED | 매일 05:00 KST LS presigned URL 갱신 (renew 중복재생성 버그픽스 배포 전까지 OFF 유지) |
 | `video_env_backfill_schedule` | STOPPED | 평일 19:00 KST 환경 분류 백필. 백로그 소진 후 다시 OFF 권장 |
+| `fiftyone_label_refresh_schedule` | RUNNING | 매일 03:00 KST FiftyOne 라벨 재적재(캐치업) |
 | `video_scene_backfill_schedule` | STOPPED | 평일 20:00 KST 씬 6축 백필 (env와 GPU 0 경합 회피용 1h 스태거). `camera_angle` 육안 GT 검증 게이트 통과 전까지 OFF 유지 |
 
 ## Query Examples
