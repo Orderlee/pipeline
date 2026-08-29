@@ -8,6 +8,7 @@ from __future__ import annotations
 from vlm_pipeline.defs.label import timestamp as ts
 from vlm_pipeline.defs.process import captioning as cap
 from vlm_pipeline.lib.env_utils import resolve_to_canonical
+from vlm_pipeline.resources import postgres_labeling as pl
 
 
 class _FakeLog:
@@ -160,3 +161,64 @@ def test_dispatch_recorder_is_fail_soft():
     ctx = _Ctx()
     ts._record_unknown_dispatch_categories(ctx, _RaisingDB(), ["etc"], None)
     assert len(ctx.log.warnings) == 1
+
+
+# ── 저장 전 검증 (sanitize) + UPSERT 계약 ──
+
+
+def test_sanitize_trims_outer_whitespace_only():
+    assert pl.sanitize_observed_value("  Weird_Cat  ") == "Weird_Cat"
+    assert pl.sanitize_observed_value("Odd  Cat_MIXED") == "Odd  Cat_MIXED"
+    assert pl.sanitize_observed_value("화재  발생") == "화재  발생"
+
+
+def test_sanitize_rejects_blank():
+    for value in ("", "   ", "\t\n", None):
+        assert pl.sanitize_observed_value(value) is None
+
+
+def test_sanitize_rejects_oversized_without_truncating():
+    """truncate 하면 서로 다른 malformed 출력이 같은 prefix 로 접힌다 — 원장의 목적과 정반대."""
+    assert pl.sanitize_observed_value("x" * 200) == "x" * 200
+    assert pl.sanitize_observed_value("x" * 201) is None
+
+
+def test_upsert_never_touches_human_managed_columns():
+    """자동 관측이 사람의 승격·거절 결정을 덮으면 판단 유예 원장의 의미가 없어진다."""
+    sql = pl._OBSERVED_CATEGORY_UPSERT_SQL
+    update_clause = sql[sql.index("DO UPDATE") :]
+    for column in ("status", "mapped_to", "notes", "first_seen"):
+        assert column not in update_clause, f"UPSERT 가 {column} 을 갱신한다"
+
+
+def test_upsert_conflict_target_is_source_and_raw_value():
+    assert "ON CONFLICT (source, raw_value) DO UPDATE" in pl._OBSERVED_CATEGORY_UPSERT_SQL
+
+
+def test_upsert_caps_source_units_but_keeps_counting():
+    """source_units 는 승격 게이트 분모라 상한이 필요하지만, 카운트는 멈춰선 안 된다."""
+    sql = pl._OBSERVED_CATEGORY_UPSERT_SQL
+    assert "cardinality(oc.source_units) >= 32" in sql
+    count_line = next(ln for ln in sql.splitlines() if "observation_count =" in ln)
+    assert "oc.observation_count + 1" in count_line
+    assert "cardinality" not in count_line, "카운트 증가가 상한 CASE 안에 들어가면 상한 후 멈춘다"
+
+
+def test_migration_023_length_cap_matches_application_guard():
+    """DB CHECK 와 애플리케이션 상한이 어긋나면 한쪽이 조용히 무의미해진다."""
+    from pathlib import Path
+
+    sql = (
+        Path(__file__).resolve().parents[2] / "src/vlm_pipeline/sql/migrations/postgres/023_observed_categories.sql"
+    ).read_text(encoding="utf-8")
+    assert f"length(raw_value) BETWEEN 1 AND {pl._OBSERVED_CATEGORY_MAX_LENGTH}" in sql
+
+
+def test_migration_023_status_values_match_documented_lifecycle():
+    from pathlib import Path
+
+    sql = (
+        Path(__file__).resolve().parents[2] / "src/vlm_pipeline/sql/migrations/postgres/023_observed_categories.sql"
+    ).read_text(encoding="utf-8")
+    for state in ("'observed'", "'candidate'", "'promoted'", "'rejected'"):
+        assert state in sql

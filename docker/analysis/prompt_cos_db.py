@@ -278,7 +278,16 @@ def load_banks(cur, only: list[str] | None) -> list[dict]:
 
 
 def load_sentence_vectors(cur) -> tuple[dict[str, int], np.ndarray]:
-    """고유 문장 벡터를 한 번만 올린다. 반환: content_hash→열, L2정규화 행렬."""
+    """고유 문장 벡터를 한 번만 올린다. 반환: content_hash→열, L2정규화 행렬.
+
+    ⚠️ **행 순서는 보장되지 않는다** (`ORDER BY` 없음 → Postgres 실행계획 의존).
+       2026-08-28 에 문장 2,500개를 등록하자 순서가 바뀌어, 행 인덱스로 저장돼 있던
+       `m_s_bg90k.npy`·`Ak_kmeans64.npy` 가 조용히 무효가 됐다(근사 m_s 와 피어슨 0.33).
+       → **행 인덱스로 캐시를 저장하지 말고 `content_hash` 로 키를 잡아라.**
+          정렬본이 필요하면 `sent_stats_byhash.npz`(rebuild_sent_stats.py) 를 쓴다.
+       여기에 ORDER BY 를 넣는 것은 다른 인덱스 기반 캐시(`percls_*.npy`,
+       `cluster_specificity_z.npy`)를 한꺼번에 흔들므로 별건으로 판단한다.
+    """
     cur.execute("""
       SELECT entity_id, embedding::text FROM image_embeddings
       WHERE entity_type='prompt'

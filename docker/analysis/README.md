@@ -85,8 +85,11 @@ fp.search_by_image(rows[0]["image_id"], k=20)          # 이미지 유사 검색
   캐시 미스 시 수 분 걸린다 (캐시 키 = 임베딩 행 수 → 데이터 증가 시 자동 재계산).
   데모 전에는 미리 한 번 워밍업해 둘 것.
 - **자격증명**: `MINIO_ACCESS_KEY`/`SECRET` 는 MinIO root 자격 재사용. read-only 키 분리는 후속 과제.
-- **cron 주의**: 호스트 crontab 의 `refresh_frames_labels` 주기 작업은 반드시 `flock` 으로 감쌀 것.
-  (2026-07-06 오버랩 3중 중첩 → 스왑 쓰래싱으로 호스트 마비 사건.)
+- **cron 주의**: 호스트 crontab 의 주기 작업은 반드시 `flock` 으로 감쌀 것
+  (2026-07-06 `refresh_frames_labels` 오버랩 3중 중첩 → 스왑 쓰래싱으로 호스트 마비 사건).
+  현재 등록된 것은 `prompt_cos_cron.sh`(02:40 일일)와 `prompt_cos_batch.sh`(15분 간격) 둘이며,
+  각자 별도 lock + 시간 가드(batch 가 02~04시에 비켜줌) + 루트 디스크 가드를 갖고 있다.
+  **디스크나 PG 이상을 조사할 때 이 둘을 먼저 의심할 것** — 문서에 없으면 원인에서 빠진다.
 
 ## FiftyOne 플러그인 — Embeddings 패널 Enterprise 게이팅 우회
 
@@ -494,7 +497,7 @@ docker exec docker-analysis-1 python /workspace/prompt_geometry.py \
 ## 스크립트 지도 — 어느 데이터셋이 어디서 나오는가
 
 README 본문은 여러 데이터셋을 전제로 설명하는데, 그것들을 **만드는** 스크립트가 정리돼 있지
-않으면 재현이 불가능하다. 진입점은 다음 8개다.
+않으면 재현이 불가능하다. 진입점은 다음 9개다.
 
 | 스크립트 | 만드는 것 | 스테이지 | 비고 |
 |---|---|---|---|
@@ -505,6 +508,7 @@ README 본문은 여러 데이터셋을 전제로 설명하는데, 그것들을 
 | `frames_bank_eval.sh` | 21도메인 뱅크 채점 사이클 | `ledger`→`gtsync`→`score`→`report` | 상세는 아래 「frames 프롬프트 뱅크 평가」 절 |
 | `caption_prompt_link.py` | 캡션 11,978 ↔ 뱅크 문장 양방향 연동 | `link`(최근접 top1~3 + `cap_prompt_gidx_r1`) `enrich-prompts`(`-prompts` 에 캡션 편입 + `emb_viz_cap`) | 기본 dry-run, `--apply`. 벡터 정본 = 데이터셋 `caption_embedding`(영어) — pgvector `entity_type='caption'` 은 한국어 붕괴본이라 폴백 시 경고+기록 |
 | `prompt_bank_load.py` | 뱅크 원장 → Postgres 019 적재 + 문장 벡터 흡수 | `load` `embed` `verify` | **패널 문장 정본의 적재·검증 경로**(88a3c5c~). `verify` = 적재 정합 4종 + 벡터 귀속 감사(문장 지문↔벡터 해시 1:1), 위반은 fail-soft(리포트만) |
+| `prompt_cos_db.py` | 뱅크 버전 코사인 채점·규칙 비교 (`analysis.*` PG 원장) | `plan` `score` `wave` `topk` `affinity` `cluster` `phrase` `ridge` `cooc` `batch-*` `report` `notion` `selftest` | ⚠️ **일회성 아님** — 다른 분석 스크립트 36개가 이 파일을 import 한다. 래퍼 2종이 호스트 crontab 에 상시 등록돼 있다: `prompt_cos_cron.sh`(매일 02:40, 컨테이너에서 score→report→notion), `prompt_cos_batch.sh`(15분 간격, 호스트 anaconda — 벡터전용 뱅크 원본이 컨테이너에 미마운트). **둘 다 `flock` + 루트 디스크 가드**(`MIN_FREE_GB` 기본 8, 미달이면 스스로 중단 — 이 디스크에 PG 데이터가 있어 ENOSPC 가 프로덕션을 멎게 한다) |
 | `prompts_ws_setup.py` | `<X>-prompts` 에 `compare` 워크스페이스를 살아있는 원본에서 미러 | – | `workspace-compare`(코드 재생성)와 목적이 다름 — 이쪽은 원본 복제. 멱등 |
 
 - `bank_eval.sh` 사용례: `./docker/analysis/bank_eval.sh <기준버전> <신버전> [신버전 CSV경로]`
@@ -566,6 +570,9 @@ README 본문은 여러 데이터셋을 전제로 설명하는데, 그것들을 
 # (bind mount 라 복사 불필요 — repo 파일이 곧 /workspace/prompt_geometry.py)
 docker exec docker-analysis-1 nice -n 10 python /workspace/prompt_geometry.py promptmap
 # → http://10.0.0.10:5153/datasets/source-h-prompts  (워크스페이스 `prompts` 선택)
+# ⚠️ 데이터셋은 **헤더 선택기**로 바꿔야 한다 — App 은 접속 시 서버 세션의 현재
+#    데이터셋에 스스로 동기화하므로 URL 만으로는 안 붙는다 (2026-08-20 실측).
+#    전환 직후 stale 플롯을 의심하려면 배너의 **모집단 숫자**로 게이트할 것.
 ```
 
 - 좌표(UMAP `emb_viz`)는 **문장끼리의 기하만** 뜻한다. 문장+이미지를 한 UMAP 에 올리는 건
@@ -780,8 +787,11 @@ docker exec docker-analysis-1 python /workspace/fiftyone_app_setup.py workspace-
 - 워크스페이스 `compare`(sourcei): Samples | Embeddings | Prompt Compare 3-패널(H1 확정안).
   모드 A=프레임↔문장(argmax_k1 조인, dist_iou 모드는 클릭 무효), 모드 B=같은
   데이터셋 그룹 overlay(`frames` 에서 project 비교).
-- selftest(조인 불변식 3개): `docker exec docker-analysis-1 python /data/fiftyone/datasets/__plugins__/user-prompt-compare/__init__.py`
-  — FiftyOne 업그레이드 전 필수 게이트. 실패 시 producer drift 의심.
+- selftest(조인 불변식 + 패널 상태-머신 회귀 3종 — 개수는 늘어나므로 박지 않는다): `docker exec docker-analysis-1 python /data/fiftyone/datasets/__plugins__/user-prompt-compare/__init__.py`
+  — FiftyOne 업그레이드 전 필수 게이트. 2026-08-27 부터 ① 표시 드롭다운 왕복(컨트롤 미러 에코 루프)
+  ② 데이터셋 전환 후 stale 산점도(`_fig_key` 에 데이터셋 누락) ③ gidx 오프셋 세대 불일치 회귀가 함께 돈다.
+  **실패 시 producer drift 뿐 아니라 패널 상태-머신 회귀도 의심할 것** — 원인이 다르면 고칠 파일도 다르다
+  (전자는 `prompt_geometry.py`/DB 쪽, 후자는 플러그인 `_reconcile`/`_fig_key`/`gidx_shift`).
 - 색상/워크스페이스 재설정: `python /workspace/fiftyone_app_setup.py colors|workspace|workspace-compare|workspace-fix`
   (`workspace-fix` = 전 데이터셋 워크스페이스 일괄 정규화 — Space>Panel 래핑/active_child=None 레거시가 빈 화면을 만든다. 멱등)
 - **브라우저 검증**(2026-08-07, playwright): 워크스페이스 선택기의 기본 목록은 최근 항목만

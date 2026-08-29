@@ -11,13 +11,17 @@ Detection 도메인 (image_labels CRUD + detection 대상 조회) 은
 from __future__ import annotations
 
 import json
+import logging
 
 from datetime import datetime
+from collections.abc import Iterable
 from typing import Any
 from uuid import uuid4
 
 from ..lib.checksum import sha256_bytes
 from .postgres_detection import PostgresDetectionMixin
+
+logger = logging.getLogger(__name__)
 
 
 # ── generation_prompts (migration 018) ──
@@ -57,6 +61,59 @@ _TIMESTAMP_PROMPT_POINTER_SQL = """
 def generation_prompt_content_hash(rendered_prompt: str) -> str:
     """dedup 키로 쓰는 sha256(rendered_prompt) hex."""
     return sha256_bytes(rendered_prompt.encode("utf-8"))
+
+
+# ── observed_categories (migration 023) ──
+#
+# 정본 밖 카테고리의 판단 유예 원장. UPSERT 는 023 파일 주석의 형태를 그대로 쓴다 —
+# **사람이 관리하는 status / mapped_to / notes 는 절대 갱신하지 않는다.** 자동 관측이 사람의
+# 승격·거절 결정을 덮으면 원장의 의미가 없어진다.
+#
+# source_units 는 승격 게이트("서로 다른 unit 2곳 이상")의 분모다. 32개 상한에 닿아도
+# observation_count 는 계속 증가한다.
+_OBSERVED_CATEGORY_MAX_LENGTH = 200
+
+_OBSERVED_CATEGORY_UPSERT_SQL = """
+    INSERT INTO observed_categories AS oc (
+        source, raw_value, observation_count, source_units, first_seen, last_seen
+    ) VALUES (
+        %(source)s,
+        %(raw_value)s,
+        1,
+        CASE
+            WHEN %(source_unit)s::TEXT ~ '[^[:space:]]'
+            THEN ARRAY[%(source_unit)s]::TEXT[]
+            ELSE '{}'::TEXT[]
+        END,
+        statement_timestamp(),
+        statement_timestamp()
+    )
+    ON CONFLICT (source, raw_value) DO UPDATE
+    SET observation_count = oc.observation_count + 1,
+        source_units = CASE
+            WHEN cardinality(EXCLUDED.source_units) = 0
+              OR array_position(oc.source_units, (EXCLUDED.source_units)[1]) IS NOT NULL
+              OR cardinality(oc.source_units) >= 32
+            THEN oc.source_units
+            ELSE array_append(oc.source_units, (EXCLUDED.source_units)[1])
+        END,
+        last_seen = GREATEST(oc.last_seen, EXCLUDED.last_seen)
+    RETURNING oc.source, oc.raw_value
+"""
+
+
+def sanitize_observed_value(value: object) -> str | None:
+    """관측 원장에 넣을 수 있는 형태로 검증한다. 부적격이면 None.
+
+    저장 계약: **바깥 공백만 제거하고 그 외는 원문 그대로.** 대소문자·내부 공백·유니코드를
+    건드리지 않는다 — 무엇이 들어왔는지가 이 원장의 존재 이유다.
+    200자 초과는 truncate 하지 않고 제외한다. truncate 는 서로 다른 malformed 출력을 같은
+    prefix 로 접어버려 원장의 목적을 정면으로 깨뜨린다 (카테고리 라벨 실측 최장 31바이트).
+    """
+    rendered = str(value or "").strip()
+    if not rendered or len(rendered) > _OBSERVED_CATEGORY_MAX_LENGTH:
+        return None
+    return rendered
 
 
 class PostgresLabelingMixin(PostgresDetectionMixin):
@@ -219,6 +276,42 @@ class PostgresLabelingMixin(PostgresDetectionMixin):
                 if existing is None:  # pragma: no cover - dedup 키가 있는데 조회 실패는 불가
                     raise RuntimeError("generation_prompts upsert 후 dedup 행을 찾지 못했습니다")
                 return str(existing[0])
+
+    def record_observed_categories(
+        self,
+        source: str,
+        values: Iterable[object],
+        source_unit: str | None = None,
+    ) -> int:
+        """정본 밖 카테고리를 관측 원장에 upsert 한다. 기록된 값의 개수를 반환.
+
+        부적격 값(공백만 / 200자 초과)은 WARNING 후 skip 한다 — 관측은 부수 경로이므로 한 값이
+        이상해도 나머지는 남겨야 한다. 예외는 삼키지 않는다(호출부가 fail-soft 를 결정).
+        """
+        recorded = 0
+        pending: list[str] = []
+        for value in values:
+            sanitized = sanitize_observed_value(value)
+            if sanitized is None:
+                logger.warning(
+                    "observed_categories skip: source=%s length=%d preview=%r",
+                    source,
+                    len(str(value or "").strip()),
+                    str(value or "")[:60],
+                )
+                continue
+            pending.append(sanitized)
+        if not pending:
+            return 0
+        with self.connect() as conn:
+            with conn.cursor() as cur:
+                for raw_value in pending:
+                    cur.execute(
+                        _OBSERVED_CATEGORY_UPSERT_SQL,
+                        {"source": source, "raw_value": raw_value, "source_unit": source_unit},
+                    )
+                    recorded += 1
+        return recorded
 
     def set_timestamp_generation_prompt(self, asset_id: str, prompt_id: str) -> None:
         """video_metadata 에 '이 asset 의 라벨을 만든 프롬프트' 포인터를 남긴다.

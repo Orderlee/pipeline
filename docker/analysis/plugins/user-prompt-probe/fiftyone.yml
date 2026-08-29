@@ -1,6 +1,6 @@
 name: "@user/prompt-probe"
-description: 프롬프트 후보 즉시 채점 + LLM 문장 생성(오탐/미검출 보완) + 선택 문장 → 뱅크 버전 CSV
-version: 1.1.0
+description: 프롬프트 후보 즉시 채점 + LLM 문장 생성(오탐/미검출 보완, prompt_standard 규칙 강제) + 선택 문장 → 뱅크 버전 CSV
+version: 1.2.0
 fiftyone:
   version: ">=1.4"
 operators:

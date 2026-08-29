@@ -62,17 +62,26 @@ PG_DSN = os.environ.get("DATAOPS_POSTGRES_DSN",
 CLASS_NAMES = {0: "normal", 1: "falldown", 2: "fire", 3: "smoke"}
 # SAM3.1 개념 프롬프트 — COCO 카테고리 통합(2026-06-29) 이후의 정본 이름을 쓴다
 SAM3_PROMPTS = ["person", "fallen person", "fire", "smoke"]
-# GT 규칙 우선순위: 폴더(v2 는 클래스 폴더가 있다) → 캡션 → 없음.
+# GT 규칙 우선순위: 폴더(v2 는 클래스 폴더가 있다) → 파일명 → 캡션 → 없음.
 # `뻔` 을 falldown 보다 **먼저** 본다 — "넘어질 뻔함" 이 `넘어지` 에 먼저 걸리면 안 된다.
+#
+# ⚠️ 2026-08-29 수정 — 이 표에 버그가 두 개 있었다 (오탐 감사에서 실측):
+#   ① **부정문을 사건으로 읽었다.** `넘어지` 는 "넘어지지 **않았습니다**" 에도 걸린다.
+#      94 프레임(이벤트 분모의 2.96%)이 이렇게 falldown 으로 잘못 들어갔다.
+#      → `no_fall` 규칙을 falldown **앞에** 둔다 (`뻔` 과 같은 이유).
+#   ② **한글 활용형을 놓쳤다.** 한글은 음절 블록이라 `넘어지` 가 `넘어짐`·`넘어진` 과
+#      **매치되지 않는다**(지 ≠ 짐/진). 25 프레임이 normal 로 떨어졌다.
 CAPTION_RULES = (
     ("near_miss", re.compile(r"뻔")),
-    ("falldown", re.compile(r"넘어지|쓰러|주저앉|눕")),
+    # 부정: "넘어지지 않-", "쓰러지지 않-" 등. falldown 보다 먼저 본다.
+    ("no_fall", re.compile(r"(?:넘어지|쓰러지|주저앉)지\s*않")),
+    ("falldown", re.compile(r"넘어지|넘어짐|넘어진|넘어졌|넘어져|쓰러|주저앉|눕")),
     ("fire", re.compile(r"화재|화염|불꽃")),
     ("smoke", re.compile(r"연기")),
     ("drop", re.compile(r"떨어|낙하|유실")),
     ("violence", re.compile(r"발로|폭행|싸움|밀치")),
 )
-# event_kind → 4클래스 GT. near_miss/drop/violence/other/unknown 은 normal 이다
+# event_kind → 4클래스 GT. near_miss/no_fall/drop/violence/other/unknown 은 normal 이다
 # (뱅크에 해당 클래스가 없다 → 뱅크가 이벤트를 부르면 오탐).
 KIND_TO_CLASS = {"falldown": 1, "fire": 2, "smoke": 3}
 
@@ -133,6 +142,24 @@ def kind_of(raw_key: str, caption: str | None) -> tuple[str, str]:
     if m:
         k = m.group(1)
         return ("falldown" if k == "esfalldown" else k), "filename"
+    # ⚠️ 2026-08-29 추가 — 위 어휘는 **영문 전용**이라 로마자 한국어 파일명을 통째로 놓쳤다.
+    #    `sseureojim_jeongtam_1.mp4`(쓰러짐 정탐) 152 프레임이 근거 없음(none)으로 떨어져
+    #    normal 분모에 들어갔고, 그 159 장이 오탐 질량의 55~62% 를 차지했다(실측).
+    #    `정탐`(true positive)/`오탐`(false positive) 표기도 같이 읽는다 — 오탐이면 사건이 아니다.
+    base = os.path.basename(raw_key).lower()
+    #   실측 파일명 9편: sseureojim_{1,4,isanghae_1,isanghae_3,jeongtam_1,jeongtam_2,otam_3}
+    #                   hwajae_jeongtam_1 · yeongi_otam_1
+    #   `정탐`=jeongtam(진짜 사건) · `오탐`=**otam**(사건 아님) · `이상해`=isanghae(판단 보류)
+    #   ⚠️ 오탐 표기는 `ojeontam` 이 아니라 `otam` 이다 — 첫 수정에서 틀려 `sseureojim_otam_3`
+    #      가 falldown 으로 갈 뻔했다(2026-08-29 실측으로 잡음).
+    if re.search(r"(?:^|_)otam(?=[_.]|$)", base):
+        return "other", "filename"          # 사람이 '오탐' 이라 적었다 → 사건 아님(근거 있음)
+    if re.search(r"(?:^|_)isanghae(?=[_.]|$)", base):
+        return "unknown", "none"            # '이상해' 는 판정이 아니다 — 단정하지 않는다
+    for tok, kind in (("sseureojim", "falldown"), ("neomeojim", "falldown"),
+                      ("hwajae", "fire"), ("yeongi", "smoke")):
+        if re.search(rf"(?:^|[_/]){tok}(?=[_.]|$)", base):
+            return kind, "filename"
     if not caption:
         return "unknown", "none"
     for kind, rx in CAPTION_RULES:

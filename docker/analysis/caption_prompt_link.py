@@ -407,6 +407,43 @@ def load_caption_vectors(ds, cap_ids: list, source: str) -> tuple[list, np.ndarr
 
 
 # ────────────────────── stage: link ──────────────────────
+def gidx_offset_for(ds, version):
+    """이 버전의 gidx 블록 오프셋. `<ds>-prompts` 실측이 정본.
+
+    ⚠️ **사본 동기화** — `prompt_geometry.gidx_offset_for` 와 같은 계약
+       (GIDX_OFFSET 복제와 같은 관례. 이 파일은 348KB 모듈을 안 끌어온다).
+    옛 코드는 `BANKS.index()` 만 보고, 없으면 조용히 0 을 썼다 — `BANKS` 가 런타임 env 라
+    같은 데이터셋도 실행마다 다른 블록이 나온다. 실측(2026-08-20): frames 블록 0 vs
+    frames-prompts v1.0.8.0 블록 18 → 등식 조인이 v1.0.1.0 문장에 붙었다.
+    """
+    import fiftyone as fo
+
+    pname = f"{ds.name}-prompts"
+    live = None
+    if fo.dataset_exists(pname):
+        p = fo.load_dataset(pname)
+        sch = p.get_field_schema()
+        if "gidx" in sch and "bank_version" in sch:
+            try:
+                lo, hi = p.match(fo.ViewField("bank_version.label") == version).bounds("gidx")
+                if lo is not None and hi is not None \
+                        and int(lo) // GIDX_OFFSET == int(hi) // GIDX_OFFSET:
+                    live = int(lo) // GIDX_OFFSET
+            except Exception:      # noqa: BLE001
+                live = None
+    idx = BANKS.index(version) if version in BANKS else None
+    if live is not None:
+        if idx is not None and idx != live:
+            log(f"⚠️ gidx 블록 불일치 — BANKS.index({version})={idx} vs {pname} 블록 {live}. "
+                f"문장 쪽을 정본으로 {live} 를 쓴다 (BANK_LIST 가 프롬프트맵과 다르다)")
+        return live * GIDX_OFFSET
+    if idx is None:
+        raise SystemExit(
+            f"link: {version} 이 BANKS({list(BANKS)}) 에 없고 {pname} 에도 그 버전 문장이 "
+            f"없다 — gidx 오프셋 근거가 없다 (옛 코드는 조용히 0). BANK_LIST 를 맞출 것")
+    return idx * GIDX_OFFSET
+
+
 def stage_link(args) -> None:
     """캡션마다 최근접 뱅크 문장 top1~3 → `frames` 의 **캡션 문서에만** 기록.
 
@@ -454,10 +491,7 @@ def stage_link(args) -> None:
         # 문장 원문 없이 코사인만 쓰는 건 이 기능의 목적(캡션 옆에 문장을 보여주기)을 잃는다.
         raise SystemExit(f"{version}: 문장 {len(bank['prompt']):,} ≠ 벡터 {len(P):,} — "
                          "`repair_bank_prompts.py --audit` 로 문장 소스를 먼저 확인하라")
-    goff = (BANKS.index(version) if version in BANKS else 0) * GIDX_OFFSET
-    if version not in BANKS:
-        log(f"⚠️ {version} 이 BANKS{list(BANKS)} 에 없다 — gidx 오프셋 0 을 쓴다. "
-            "`-prompts` 와 조인하려면 BANK_A/BANK_B/BANK_LIST 를 그때와 같게 두고 재실행하라")
+    goff = gidx_offset_for(ds, version)      # 문장 쪽 블록이 정본 (gidx_offset_for 주석)
 
     kept_ids, C, vmeta = load_caption_vectors(ds, cap_ids, args.vector_source)
     if C.shape[1] != P.shape[1]:
