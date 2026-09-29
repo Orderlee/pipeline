@@ -3,10 +3,27 @@
 임베딩 파이프라인이 `image_embeddings`(pgvector)에 적재한 1024-d 벡터를 **FiftyOne** 과
 **Streamlit 대시보드**로 시각화/클러스터/유사검색하는 분석 surface.
 
-FiftyOne 메타데이터 store 는 **`fiftyone-mongo` 사이드카**(`mongo:7`)를 사용한다.
+FiftyOne 메타데이터 store 는 **`fiftyone-mongo` 사이드카**를 사용한다. compose 선언은 `mongo:8.0`(마이너까지 고정)이지만,
+지금 돌고 있는 컨테이너는 그 핀 이전에 만든 `mongo:8`(mongod 8.2.12)이다 — 아래 ⚠️ 두 번째 항목.
 (번들 mongod 는 slim 베이스에서 미동작 → 2026-06-15 staging 검증 후 사이드카로 전환.
 Dockerfile 상단 주석과 `ENV FIFTYONE_DATABASE_DIR` 는 그 시절 잔재이며, compose 가
 `FIFTYONE_DATABASE_URI=mongodb://fiftyone-mongo:27017` 로 덮어쓴다.)
+
+> ⚠️ **메이저 태그로 띄워 두면 죽는다.** compose 가 `mongo:8` 을 쓰던 동안 setFCV 를 아무도
+> 실행하지 않아 FCV(featureCompatibilityVersion)가 7.0 에 머물렀고, 그 사이 태그가 8.0 → 8.2.12 로
+> 흘렀다. 8.2 는 FCV 8.0 미만을 거부한다 → 2026-09-03 08:28 KST 컨테이너가 새로 만들어지자마자
+> `exit 62` 크래시루프(재시작 11회)로 FiftyOne 전체가 죽었다. App 화면엔
+> `AutoReconnect: Connection reset by peer` 로만 보여 원인이 가려졌다. 그래서 compose 를
+> `mongo:8.0` 으로 박았다(`docker/docker-compose.yaml` `fiftyone-mongo` 서비스 주석 참고).
+>
+> ⚠️ **그 핀은 아직 한 번도 적용되지 않았다.** 복구는 데이터의 FCV 를 8.0 으로 올린 뒤 같은
+> `mongo:8` 컨테이너를 다시 켠 것이라, 지금 `docker-fiftyone-mongo-1` 은 mongod **8.2.12** · FCV 8.0 으로 돈다.
+> `deploy-stack.sh` 는 analysis 서비스를 `up -d --no-deps` 로만 올리고 이 사이드카는 부르지 않아
+> 배포로는 recreate 되지 않는다 — 손으로 recreate 하는 순간 바이너리가 8.2.12 → 8.0 계열로 바뀐다.
+> 그래서 recreate·태그 변경 전에는 FCV 가 새 바이너리가 받는 값인지 먼저 확인하고
+> (`db.adminCommand({getParameter:1, featureCompatibilityVersion:1})`) 파일 백업부터 뜰 것.
+> FCV 가 이미 8.0 이라 태그를 `mongo:7` 로 내려 되돌리는 길은 막혀 있고, 파일 백업이 유일한
+> 되돌림 수단이다(백업 경로·루트 컨테이너 경유 필요성은 compose 주석).
 
 ## 기동
 
@@ -18,15 +35,44 @@ COMPOSE_PROFILES=analysis ./scripts/compose-prod.sh up -d analysis analysis-fift
 | surface | 서비스 / 컨테이너 | 컨테이너 포트 | prod 호스트 포트 | 자동 기동 |
 |---|---|---|---|---|
 | JupyterLab | `analysis` / `docker-analysis-1` | 8888 | `8888` | ✅ |
-| FiftyOne App | `analysis-fiftyone` / `docker-analysis-fiftyone-1` | 5151 | `5153` (`FIFTYONE_PORT`) | ✅ |
+| FiftyOne App 좌석 1 (직결, 메모리 상한 없음) | `analysis-fiftyone` / `docker-analysis-fiftyone-1` | 5151 | `5158` (`FIFTYONE_PORT_1`) | ✅ |
+| **FiftyOne 좌석 라우터 (nginx) — 다들 여기로 붙는다** | `analysis-fiftyone-proxy` / `docker-analysis-fiftyone-proxy-1` | 5151 / 5443 | `5153` (`FIFTYONE_PORT`) / `5443` (`FIFTYONE_TLS_PORT` — TLS 를 켜기 전엔 연결 거부) | ⚠️ 재시작만 |
+| FiftyOne App 좌석 2~5 (상한 `FIFTYONE_SEAT_MEM`) | `analysis-fiftyone-N` / `docker-analysis-fiftyone-N-1` | 5151 | `5154`~`5157` (`FIFTYONE_PORT_{2..5}`) — prod 에는 좌석 2·3 만 있다 | ⚠️ 재시작만 |
+| FiftyOne 동기화·좌석 배정·업로드 API (`/sync/*`·`/seat/*`·`/upload/*`) | `analysis-sync` / `docker-analysis-sync-1` | 8010 | 없음 — 브라우저는 라우터의 `/__seat_assign`·`/__upload/` 로만 닿는다 | ✅ |
 | Streamlit 대시보드 | `analysis-streamlit` / `docker-analysis-streamlit-1` | 8501 | `8503` (`STREAMLIT_PORT`) | ✅ |
+| FiftyOne 메타데이터 | `fiftyone-mongo` / `docker-fiftyone-mongo-1` | 27017 | 없음 | ⚠️ 재시작만 |
+
+> ⚠️ **`:5153` 은 `analysis-fiftyone` 컨테이너가 아니라 좌석 라우터(nginx)의 포트다.** FiftyOne OSS 는
+> 서버 상태가 프로세스 전역이라 한 프로세스를 여럿이 보면 A 의 데이터셋 전환이 B 화면을 끌어간다 —
+> 그래서 1인 1프로세스(좌석)로 쪼갰고, 라우터가 `?seat=N`·IP 표·쿠키로 사람마다 다른 좌석에 보낸다.
+> 좌석 1 의 `:5158` 은 라우터가 죽었을 때의 우회로 겸 디버깅용 직결 경로다. 좌석이 정해지지 않은 화면
+> 접속은 `analysis-sync` 의 `/seat/assign` 이 빈 좌석을 골라 주므로, sync 가 죽으면 자동 배정 대신 정적
+> 좌석 선택 페이지가 뜬다. 라우팅 규칙은 `nginx-seats.conf`·`seat-tls/routing.inc` 주석, 프로세스 격리·
+> 메모리 상한의 이유는 compose 의 `x-fiftyone-seat` 앵커 위 주석이 정본이다.
+>
+> ⚠️ **"재시작만" = `restart: unless-stopped` 는 걸려 있지만 배포가 만들어 주지는 않는다.**
+> `deploy-stack.sh` 는 `analysis`·`analysis-fiftyone`·`analysis-streamlit`·`analysis-sync` 넷만
+> `up -d --no-deps` 하고, compose 는 명시 나열된 서비스만 올린다(위 기동 명령도 라우터를 올리지 않는다).
+> 라우터·좌석 2~5·mongo 는 배포 밖에서 누군가 `up` 해 둔 덕에 있을 뿐이라, 지워지면 배포를 몇 번 돌려도
+> 돌아오지 않는다 — 라우터가 없으면 `:5153` 전체가 죽는다. 복구:
+> `COMPOSE_PROFILES=analysis ./scripts/compose-prod.sh up -d --no-deps analysis-fiftyone-proxy`.
+> 좌석 4·5 는 compose·nginx·배정기에 정의돼 있지만 prod 에 컨테이너가 없다(2026-09-29 `docker ps -a`).
+> 좌석도 `fiftyone_relaunch.py` 로 뜨므로 아래 「남은 천장」(App 자식만 죽으면 컨테이너는 살아서
+> `unhealthy` 로만 남는다)이 좌석마다 따로 적용된다 — 좌석이 살아 있는지는 `docker ps` 의 health 로 볼 것.
 
 JupyterLab token = `JUPYTER_TOKEN`, 미설정 시 토큰 없음 — 내부망 전용.
 FiftyOne 이 처음 띄우는 데이터셋은 `FO_DATASET`(기본 `sourcei`) — App 안에서 언제든 전환 가능.
 
-> ✅ **2026-08-18 P0 편입 완료.** 세 프로세스가 각각 독립 서비스이고 `restart: unless-stopped`
+> ✅ **2026-08-18 P0 편입 완료.** 위 표의 세 프로세스가 각각 독립 서비스이고 `restart: unless-stopped`
 > 라 죽으면 자동으로 다시 뜬다. **`docker exec -d` 로 손기동하던 절차는 폐기됐다.**
-> `deploy-stack.sh` 도 `analysis_active()` 분기로 세 서비스를 `up -d` 해 둔다.
+> 배포가 기동을 보증하는 건 `deploy-stack.sh` 의 `analysis_active()` 분기 한 줄뿐이다 —
+> `up -d --no-deps analysis analysis-fiftyone analysis-streamlit analysis-sync`. 표에 없는
+> `analysis-sync`(FiftyOne 증분 동기화 API, 내부 :8010)가 뒤에 추가돼 **4개**다.
+> 좌석 1 은 `analysis-fiftyone` 이라 목록 안이지만, 좌석 2~5(`analysis-fiftyone-2`~`-5`)·
+> 좌석 라우터(`analysis-fiftyone-proxy`)·`fiftyone-mongo` 는 목록 밖이라 **배포가 만들지도
+> recreate 하지도 않는다** — 손으로 `up -d` 해야 생기고, 그 뒤로는 `restart: unless-stopped` 에만
+> 기댄다. 그래서 `datapipeline-analysis:latest` 를 재빌드해도 이미 떠 있는 좌석은 옛 이미지로 남는다.
+> 네 서비스가 `depends_on: fiftyone-mongo` 를 걸고 있어도 `--no-deps` 라 mongo 는 함께 올라오지 않는다.
 >
 > ⚠️ 남은 천장: `fiftyone_relaunch.py` 는 App 을 자식 프로세스로 띄우고 자신은 sleep 한다.
 > **자식만 죽으면 컨테이너는 살아 있어** healthcheck 만 `unhealthy` 로 바뀌고 compose 는
@@ -58,6 +104,69 @@ FiftyOne 이 처음 띄우는 데이터셋은 `FO_DATASET`(기본 `sourcei`) —
 > 무엇이든 그 브랜치가 리셋된다.** 미push 커밋이 있는 상태에서 다른 사람이 `main` 에 push 하면
 > 소실된다. 작업 브랜치는 push 해 둘 것.
 
+## FiftyOne 좌석 라우팅 (다중 사용자)
+
+FiftyOne OSS 서버 상태는 **프로세스 전역 싱글턴**이다(`server/events/state.py` 의 `_state`) —
+`set_dataset` 같은 mutation 이 발신자를 뺀 전 접속자에게 팬아웃된다(`server/mutation.py:118`,
+설치본 1.19.0 기준 — 줄 번호는 버전 따라 움직인다). 접속자별 상태 분리가 없어 격리 단위는
+프로세스뿐이라, "1인 1프로세스" 를 nginx 좌석 라우터 하나 뒤에 감춘다. 좌석(프로세스 분리)은
+2026-08-31, 빈 좌석 자동 배정은 2026-09-03 에 붙었다.
+
+| 구성요소 | 역할 |
+|---|---|
+| `analysis-fiftyone-proxy`(nginx) | 단일 접속점. `FIFTYONE_PORT`(prod `.env` 5153) + `FIFTYONE_TLS_PORT`(5443, TLS 켜기 전엔 연결 거부). 라우팅 본문 = `docker/analysis/nginx-seats.conf`(map) + `seat-tls/routing.inc`(location) |
+| `analysis-fiftyone`(좌석1) · `-2`~`-5` | 좌석당 FiftyOne 프로세스 1개. 좌석1 만 메모리 상한 없음(무거운 프롬프트 분석 전용). 좌석1 직결 포트는 `FIFTYONE_PORT_1`(compose 기본 5158) — 프록시가 죽었을 때의 우회로 |
+| `analysis-sync` `GET /seat/occupancy`, `GET /seat/assign` | 요청마다 좌석별 점유 카운터(각 좌석 `fiftyone_relaunch.py` 가 `:5160` 에 연다 — `:5151` 에 붙은 비루프백 연결 수)를 병렬 조회 + 빈 좌석 자동 배정(302). 호스트 포트가 없어 진단은 `docker exec docker-analysis-sync-1 curl -s localhost:8010/seat/occupancy` |
+
+**배정 우선순위**: `?seat=N`(1년 쿠키를 박는다) > 관리자 지정 IP 표(`nginx-seats.conf` 의
+`map $remote_addr $ip_seat`) > 쿠키 > 자동 배정기(`/seat/assign`) > 배정기 무응답 시 정적 선택 페이지.
+IP 표가 쿠키보다 우선인 이유: 무거운 분석을 하던 사람이 자동배정으로 3g 상한 좌석에 앉아 OOM 으로
+죽는 사고가 실제로 났었다(코드 주석, 2026-09-03). 그래서 표에 있는 사람은 쿠키가 무시된다 —
+`?seat=N` 도 "그 방문만" 이다. ⚠️ `nginx-seats.conf` **머리 주석**(8줄)은 아직 "쿠키 > IP 표" 순서로
+적혀 있다 — IP 우선으로 바꾼 c6e0af3 이 e7425df 의 머리 주석을 안 고쳤다. 정본은 map 체인이다.
+
+자동 배정기는 **빈 좌석만** 준다 — 순서 `SEAT_AUTO_ORDER`(기본 `2,3,4,5,1`: 상한 있는 좌석부터,
+무제한 좌석 1 은 마지막). 빈 좌석이 없으면 점유 현황 선택 페이지(200)로 떨어진다. 좌석 미정·죽은
+좌석이어도 배정기로 보내는 건 **navigation 만**이고 API/SSE 는 JSON 오류(409/503)로 끊는다 — API 를
+302 로 보내면 앱이 HTML 을 JSON 으로 파싱하다 죽는다(코드 주석, 2026-09-03 실측). nginx 정적 폴백
+페이지는 좌석 1~3 만 나열한다.
+
+⚠️ **컨테이너 Up ≠ 빈 좌석.** 카운터는 App(:5151)이 연결을 안 받으면 503 을 돌려주고 배정기는 그
+좌석을 '상태 불명'으로 건너뛴다. `fiftyone_relaunch.py` 는 App 을 자식으로 띄우고 sleep 하므로 자식만
+죽으면 컨테이너는 Up·`unhealthy` 로 남고 compose 는 재시작하지 않는다 — 좌석이 에러 없이 후보에서
+빠진 채 방치된다. 2026-09-29 실측: 좌석 2·3 이 `Subprocess [... main.py ...] exited with error -9` 뒤
+이 상태라 배정기 후보가 좌석 1 뿐이었다. 복구는 그 좌석 컨테이너 `docker restart`.
+
+⚠️ **배포는 프록시·좌석 2~5 를 올리지 않는다.** `deploy-stack.sh` 는 `analysis analysis-fiftyone
+analysis-streamlit analysis-sync` 만 `up -d` 한다(compose 는 명시한 서비스만 올린다). compose 가 5석을
+정의해도 몇 석이 떠 있는지는 배포가 보증하지 않으니 `docker ps` 로 먼저 확인할 것.
+
+좌석 2~5 메모리 상한은 `FIFTYONE_SEAT_MEM` — compose 기본 3g 는 sourcei 프롬프트 패널에서 OOM 이 나서
+prod `.env` 가 6g 로 올려 뒀다(`.env` 주석). `.env` 는 git 미추적이라 이 키가 없는 환경은 3g 로 돈다.
+
+⚠️ **`nginx-seats.conf` 는 단일 파일 bind mount** — 파일이 새 inode 로 교체되면 컨테이너는 옛
+inode 를 계속 보고, `nginx -s reload` 가 성공해도 반영되지 않는다(코드 주석: 2026-09-03 에 reload
+3회가 전부 무효였다고 기록됨). 반영 확인은 호스트/컨테이너 `stat -c %i` 비교, 확실한 반영은
+`docker restart docker-analysis-fiftyone-proxy-1`. `seat-tls/routing.inc` 는 디렉토리 마운트라 이
+함정이 없다(reload 로 반영).
+
+HTTPS 는 기본 꺼짐 — `seat-tls/` 에 `tls.conf` 가 없으면 `include /etc/nginx/seat-tls/*.conf` 가
+아무것도 못 잡는다. 꺼 둔 이유: 접속이 전부 사내 LAN raw IP 라(DNS·사내 CA 없음) 자체서명 인증서를
+켜면 전원이 매번 브라우저 경고를 보는데, 인증이 붙는 게 아니라 얻는 보안이 없다. FiftyOne Enterprise
+가 HTTPS 종단을 요구하므로 준비만 해 뒀다(`gen-seat-cert.sh` 주석).
+
+⚠️ **`gen-seat-cert.sh` 가 쓴 `tls.conf` 를 그대로 켜지 말 것.** 스크립트(기본 호스트명
+`fiftyone.user.local`)는 인증서와 함께 `routing.inc` include 가 **없는** proxy_pass 전용 server 블록을
+`tls.conf` 로 덮어쓴다 — `nginx-seats.conf` 주석이 "예전 초안" 이라 부르는 바로 그 블록이다(M4 수정
+543f150 은 당시 미추적이던 이 스크립트를 못 고쳤고, ded4011 에서 그 모양 그대로 편입됐다). 이 블록은
+쿠키·IP 표에 안 걸리는 HTTPS 접속자를 전원 좌석 1(default)로 조용히 몰고, 자동 배정·죽은 좌석
+폴백·`/__upload/` 도 없다. 켜는 순서: 스크립트(인증서 생성) → `tls.conf` 를 `seat-tls/tls.conf.example`
+로 덮어쓰기 → `nginx -s reload` → 떠 있는 좌석 쿠키로 `X-Seat` 헤더 확인(옛 블록엔 `X-Seat` 자체가
+없다). 라우팅을 TLS 블록에 복제하지도 말 것 — 한쪽만 고쳐져 조용히 갈라진다(`tls.conf.example` 주석).
+
+브라우저 업로드 경로(`/__upload/*` → `analysis-sync` `/upload/*`, 바디 상한 20g·버퍼링 없음)는 좌석
+라우팅 **밖**이다 — prefix `location` 이 `/` 보다 먼저 잡혀 좌석 FiftyOne 을 거치지 않는다(`routing.inc`).
+
 ## 사용 (노트북)
 
 ```python
@@ -87,9 +196,27 @@ fp.search_by_image(rows[0]["image_id"], k=20)          # 이미지 유사 검색
 - **자격증명**: `MINIO_ACCESS_KEY`/`SECRET` 는 MinIO root 자격 재사용. read-only 키 분리는 후속 과제.
 - **cron 주의**: 호스트 crontab 의 주기 작업은 반드시 `flock` 으로 감쌀 것
   (2026-07-06 `refresh_frames_labels` 오버랩 3중 중첩 → 스왑 쓰래싱으로 호스트 마비 사건).
-  현재 등록된 것은 `prompt_cos_cron.sh`(02:40 일일)와 `prompt_cos_batch.sh`(15분 간격) 둘이며,
-  각자 별도 lock + 시간 가드(batch 가 02~04시에 비켜줌) + 루트 디스크 가드를 갖고 있다.
-  **디스크나 PG 이상을 조사할 때 이 둘을 먼저 의심할 것** — 문서에 없으면 원인에서 빠진다.
+  현재 등록된 `docker/analysis/` 작업은 `prompt_cos_cron.sh`(02:40 일일), `prompt_cos_batch.sh`(15분 간격),
+  `bank_health.sh`(07:17 일일, 뱅크 태그 계약 점검, 2026-08-18 승인) **셋이다**(`crontab -l` 이 정본 —
+  analysis 밖의 호스트 작업도 거기 같이 있다). `prompt_cos_*` 둘은 각자 별도 lock + 시간 가드(batch 가
+  02~04시에 비켜줌) + 루트 디스크 가드를 갖고 있고, `bank_health.sh` 는 flock + `timeout`(기본 600s) +
+  컨테이너 미기동 skip 뿐 시간·디스크 가드는 없다.
+  **디스크나 PG 이상을 조사할 때 `prompt_cos_*` 둘을 먼저 의심할 것** — 문서에 없으면 원인에서 빠진다.
+  `bank_health.sh` 는 PG 가 아니라 FiftyOne 데이터셋(mongo)을 읽는 점검이라 그 축에선 후순위지만,
+  이 목록 자체가 최근까지 그것을 빠뜨리고 있었다.
+- **requirements 전량 핀** (`da1f0a4`, 2026-09-03): 그전엔 `fiftyone` 만 핀돼 있어 재빌드가 곧 전체
+  드리프트라 손 rebuild 를 못 했고, 그사이 이미지(07-28 빌드)와 requirements(08-21 fastapi 추가)가
+  벌어졌다 — 손 `pip install` 로만 살아 있던 fastapi 를 09-02 23:28 recreate 로 잃고 `analysis-sync` 가
+  크래시루프에 빠졌다(`RestartCount 16`). 핀이 계약인 이유는 **재빌드 시점을 analysis 쪽이 고르지 못해서**다.
+  `docker/analysis/**` 만 바꾼 push 는 paths-ignore 라 배포가 아예 안 돌아 requirements 를 고쳐도
+  이미지가 그대로이고(위 표의 손 rebuild 전까지), 반대로 무관한 변경으로 도는 배포도 `BUILD_REQUIRED` 면
+  `deploy-stack.sh` 가 analysis 이미지를 함께 빌드하고(analysis profile 이 켜진 prod) `up -d` 가 이미지가
+  바뀐 서비스를 recreate 한다 — 2026-09-14 마이그레이션 수정 배포(`34a8914`)가 analysis 4서비스를 이렇게
+  재생성했다. Dockerfile 이 `fiftyone_pgvector.py`·`embedding_dashboard.py` 를 COPY 하므로 이 둘만
+  바뀌어도 이미지는 바뀐다. 그러니 `requirements.txt` 상단 주석의 "CI 가 이 재빌드를 절대 돌리지
+  않는다" 는 analysis 단독 push 에만 맞는 말이다. 지금은 전부 핀 고정 — 올릴 때는 한 번에 하나씩,
+  패널(:5153) 로드까지 확인하고 올릴 것(matplotlib 3.11 이 boxplot 의 옛 인자 `labels` 를 제거해 —
+  3.9 부터 `tick_labels` 로 개명돼 있었다 — 그림 스크립트가 죽은 전례가 있다).
 
 ## FiftyOne 플러그인 — Embeddings 패널 Enterprise 게이팅 우회
 
@@ -358,15 +485,48 @@ pairwise cos 0.951. **절대 cosine 수준이 아니라 격차를 봐야 한다.
 docker exec docker-analysis-1 nice -n 10 python /workspace/prompt_geometry.py probecache
 ```
 
-### 오퍼레이터 3개 — 어느 데이터셋에서 어떤 버튼이 뜨나
+### 오퍼레이터 5개 — 어느 데이터셋에서 어떤 버튼이 뜨나
 
-같은 플러그인에 3개가 들어 있고 **뜨는 데이터셋이 다르다**(`resolve_placement` 가 스키마로 게이트).
+같은 플러그인에 5개가 들어 있다. 번호(①~⑤)는 버튼 라벨에 박힌 번호다 — 아래 결과 화면의
+「① 삭제 후보」 같은 번호와는 별개다.
+
+⚠️ **스키마로 버튼을 거르는 건 ③·④ 뿐이다.** `resolve_placement` 가 `text` 필드 유무로
+문장/프레임 데이터셋을 가른다. ①②⑤ 는 무게이트라 **어느 데이터셋 그리드에나 뜨고**, 전제(probe
+캐시·`wave_iou_*` 필드)는 폼(`resolve_input`)이 열린 뒤에 검사해 사유를 보여준다 — 버튼이 떴다고
+그 데이터셋에서 돈다는 뜻이 아니다. 왜 무게이트인가: ①에 게이트를 두면 캐시 없는 데이터셋에서
+버튼 자체가 안 떠 안내문에 닿을 길이 없었고, ⑤ 의 `wave_iou_*` 확인은 `resolve_placement` 에서
+하기엔 무겁고 위험하다 — 거기서 예외가 나면 배치 응답이 통째로 실패해 **모든 플러그인 버튼이
+함께 사라진다**.
 
 | 오퍼레이터 | 버튼 | 뜨는 곳 | 하는 일 |
 |---|---|---|---|
-| `probe_prompt` | 프롬프트 프로브 | 프레임 데이터셋 (`probe_*` 캐시 필요) | 손으로 쓴 문장 즉시 채점 |
-| `generate_prompts` | 문장 생성 | 〃 | 오탐/미검출 코호트 → LLM 후보 문장 → **같은 채점부로 즉시 채점** |
-| `export_bank_version` | 뱅크 버전 만들기 | 문장 데이터셋 (`<ds>-prompts`) | 선택/뷰/태그 → `authored_<ver>.csv` + provenance + 019 원장 |
+| `generate_prompts` | ① 문장 생성 — 오탐/미검출 진단 + 초안 | 어디서나 (폼이 `probe_*` 캐시 요구 — 없으면 `probecache` 명령 안내) | 오탐/미검출 코호트 → LLM 후보 문장 → **같은 채점부로 즉시 채점** |
+| `probe_prompt` | ② 프롬프트 프로브 — 내가 쓴 문장 채점 | 〃 | 손으로 쓴 문장 즉시 채점 |
+| `export_bank_version` | ③ 뱅크 버전 만들기 — 선택한 문장 → CSV 내보내기 | 문장 데이터셋 (`<ds>-prompts`) | 선택/뷰/태그 → `authored_<ver>.csv` + provenance + 019 원장 |
+| `explain_frames` | ④ 이 프레임에 뭐가 찍혔나 — PLM 서술 | 프레임 데이터셋 | 선택 프레임 또는 현재 뷰 앞에서부터(기본 최대 10장)를 PLM 에 보여 `plm_saw` 문자열 필드에 서술을 **써 넣는다**. 기본은 빈 것만 채운다(이어서 돌리기) |
+| `explain_rule` | ⑤ 판정규칙 실시간 조절 — thr·디바운스 | 어디서나 | top-k(k, 기본 10) / 분포 IoU(thr 기본 0.15 · 디바운스 5중3) 파라미터를 폼에서 바꾸면 TP/FP/FN·정밀도·재현율·**N×N 혼동행렬**이 즉시 다시 계산된다 |
+
+- **④ 는 GPU 를 쓴다.** PLM 은 embedding-service 의 `/caption`(호스트 GPU1)이고 장당 ≈3초 —
+  20장이면 1분 동안 오퍼레이터가 응답하지 않는다. GPU1 은 SAM3 서빙 우선이라 여유가 없으면
+  503 에서 멈추고 **그때까지 받은 것만 저장**한다. ⚠️ PLM 비활성(`PLM_ENABLED`)·GPU 정비 중도
+  같은 503 이라 화면 문구는 전부 「GPU 양보」다 — 다시 돌려도 안 풀리면 그쪽을 의심할 것.
+- **⑤ 의 두 규칙은 계산 경로가 다르다.** `dist_iou` 는 `wave_iou_*` 필드가 있고 현재 데이터와
+  맞으면 그 필드, 없거나 어긋나면 온디맨드로 계산한다. `top-k` 는 순위표가 필요해 **항상**
+  온디맨드(sourcei 기준 첫 계산 14~19초, 캐시 히트면 즉시)이고 디바운스가 없다. 표시순서·기본
+  선택 = top-k(2026-09-22 지시, `e13e5a3`/`8c8f408`)라 캐시 미스면 모달을 열 때마다 이 비용이 든다.
+- ⑤ 를 문장 데이터셋(`<ds>-prompts`)에서 열면 분포 IoU 는 베이스 프레임 데이터셋(`wave_iou_*`
+  보유 시) **전량**으로 채점한다 — 사이드바 필터는 반영되지 않는다(화면에 고지).
+- **미채점(gt<0) 프레임은 TP/FN/GT 열에서 빠지지만, 이벤트로 예측되면 FP 로는 잡힌다** — 어디로
+  예측됐는지는 혼동행렬의 `(미채점)` 행이 보여준다.
+
+> ⚠️ **`explain_rule` 은 아래 「판정규칙 3벌」 절의 배치 스테이지(`vote`/`wave`)와 다른 layer 다.**
+> 배치는 결과를 프레임 필드(`vote_*`·`wave_iou_*` 등)와 npz/json 산출물로 남기는 오프라인 채점이고,
+> 이 오퍼레이터는 같은 두 규칙을 화면에서 즉석 재계산할 뿐 그 필드를 고쳐 쓰지 않는다. 단
+> **「결과를 뷰로 저장」(기본 꺼짐)을 켜면 데이터셋에 쓴다** — 판정≠GT 프레임을 저장 뷰(기본값이면
+> `thr015_w5m3_<태그>` / `topk_k10_<뱅크>`)로 남기고, 같은 이름이 있으면 지우고 새로 만든다(좌석
+> 공유 주의). 화면의 "제품 판정규칙"·"다수결" 수식어는 2026-09-22 사용자 지시로 뺐지만
+> (`8ca05e2`/`e13e5a3`) 사실은 유효하다 — 제품 판정규칙은 분포 IoU 이고, top-k 숫자를 제품 성능으로
+> 인용하지 말 것(아래 `generate_prompts` 경고의 −0.07 과 같은 이유).
 
 `generate_prompts` 는 **처방이 반대인 두 모드를 분리**한다. 섞으면 "오탐 고치려고 이벤트 문장을
 추가"하는 정반대 동작이 나오므로 선언 클래스를 모드가 고정한다.
@@ -383,23 +543,33 @@ docker exec docker-analysis-1 nice -n 10 python /workspace/prompt_geometry.py pr
 > **+3.53pp** 인데 제품 규칙에서는 **+0.046pp** 였다. 그래서 이 오퍼레이터는 **아무것도 저장하지
 > 않는다** — 채택은 문장을 뱅크 CSV 로 넣고 `wave` 로 재채점한 뒤에 판단한다.
 
-LLM 백엔드는 2종이다. 새 설정 파일·compose 변경 없음.
+LLM 백엔드는 3종이다(`GEN_BACKENDS = ("vertex", "openai_compat", "plm")`). 새 설정 파일·compose
+변경 없음.
 
 | 백엔드 | 필요한 것 | 비고 |
 |---|---|---|
 | `vertex` (기본) | 없음 — `google-genai` 는 이미지에 baked, creds 는 `/app/credentials` ro 바인드, `GEMINI_PROJECT`/`GEMINI_LOCATION` env 상주 | 실측 이미지 6~8장 ≈ 3s (`thinking_budget=0` 강제) |
 | `openai_compat` | env `PROMPT_GEN_BASE_URL` (+선택 `PROMPT_GEN_API_KEY`) | 로컬 vLLM/Ollama·외부 OpenAI 호환 API 공통. ⚠️ 이 호스트 가용 RAM 이 낮아 로컬 모델 상주는 비권장 — 코드 경로만 열려 있다 |
+| `plm` | 없음 — embedding-service 의 `/caption`(로컬 PLM, PE-Lang 비전타워+Llama, GPU1) | 이미지 없이는 호출 불가. 모델은 서비스 `PLM_MODEL_ID` 가 정하므로 여기 모델명 인자는 무시된다. GPU1 은 SAM3 서빙이 우선이라 여유가 없으면 이 백엔드가 양보한다 — ④ `explain_frames` 와 GPU 를 공유 |
 
 모델명은 오퍼레이터 드롭다운(`PROMPT_GEN_MODEL`, 기본 `gemini-2.5-flash`)에서 바꾼다.
 
-### ③ 뱅크 버전 만들기 — 대상 고르는 4가지 방법
+### ③ 뱅크 버전 만들기 — 대상 고르는 5가지 방법
 
 | 대상 | 쓰는 때 |
 |---|---|
-| **프로젝트 성능 상위 N개** (기본) | "이 현장에서 잘 잡히는 문장만 모아 뱅크를 만들고 싶다" — 아래 참고 |
+| **프로젝트 성능 상위 N개** (선택이 없을 때 기본) | "이 현장에서 잘 잡히는 문장만 모아 뱅크를 만들고 싶다" — 아래 참고 |
 | 선택한 문장 | 그리드 체크박스·라쏘로 직접 고른 것 |
+| 선택한 문장을 **뺀** 나머지 (`DROP`, 삭제본) | 원본 뱅크 버전 하나를 고르고 그 안에서 선택 문장만 뺀 사본을 만든다. 위 `generate_prompts` 결과의 「① 삭제 후보」가 가리킨 나쁜 자석을 **문장 데이터셋에서** 골라 지우는 실행 경로다 — 지울 문장(수백 개 규모)은 선택 상한 안에 들어오지만, 남길 문장을 고르는 쪽으로 뒤집으면 뱅크 대부분을 골라야 해서 상한 안에 표현이 안 되기 때문에 따로 둔 모드다. 지워지는 문장이 0개(선택이 다른 버전의 행)거나 전부 지워지면 거부한다. ⚠️ top-k 규칙에서는 클래스별 문장 수가 곧 사전확률이라, 한 클래스만 몰아 지우면 그 클래스를 통째로 못 잡게 될 수 있다 — 결과의 클래스별 개수(원본→삭제 후)를 확인하라 |
 | 현재 뷰 전체 | 사이드바 필터로 좁힌 것 전부 |
 | 이미 붙여둔 태그 | `bank:*` 태그를 미리 달아둔 경우 |
+
+> ⚠️ `선택한 문장`·`삭제본` 은 **선택이 있을 때만** 뜨고, 선택이 있으면 기본값이 `선택한 문장` 으로
+> 바뀐다 — 지울 문장을 라쏘한 뒤 대상을 `삭제본` 으로 바꾸지 않으면 **지우려던 문장만 담긴 뱅크**가
+> 발행된다. 선택이 500개(`SELECTION_CAP`) 이상이면 두 모드 모두 거부된다: 패널이 라쏘를 그 상한에서
+> 잘라 보내므로, 잘린 선택이 조용히 작은 뱅크·부분 삭제본이 되는 것을 막는 가드다(정확히 500개를 고른
+> 정당한 선택도 막힌다). 그때는 라쏘를 나누거나, 사이드바 필터로 남길 집합을 만들어 「현재 뷰 전체」로
+> 발행한다.
 
 **프로젝트 성능 상위 N개**는 프레임 데이터셋의 `winner_gidx_<tag>`(프레임마다 이긴 문장) + `ground_truth`
 를 **선택한 카메라로 자른 뒤에만** 집계해 순위를 만든다.
@@ -494,6 +664,50 @@ docker exec docker-analysis-1 python /workspace/prompt_geometry.py \
 >   -H "Content-Type: application/json" -d "{\"dataset_name\":\"sourcei\"}"' | head -c 400
 > ```
 
+## 프로젝트 업로드 킷 (`project_upload/`, 2026-09)
+
+외부 작업자가 이미지 + 이미지/프롬프트 임베딩(+선택 GT)을 표준 번들(디렉토리, 또는 그것을 묶은
+zip)로 올리면 sourcei 와 같은 FiftyOne 뷰(이미지 스캐터+문장 스캐터+버전선택+성능필드)를 프로젝트
+단위로 만들어 주는 킷. 번들 구조 스펙 정본은 `docker/analysis/project_upload/UPLOAD_SPEC.md` — 이 절은 요약만.
+
+| 반입 경로 | 어디서 | 상한 |
+|---|---|---|
+| ⓪ FiftyOne 앱 안 (그리드 툴바 `프로젝트 번들 임포트` 창) | 좌석 프로세스를 통과(base64, 파일 크기의 ≈3.7배 순간 점유) | `APP_MODAL_UPLOAD_MAX_MB` 기본 512MB |
+| ① 브라우저 업로드 페이지 `/__upload/ui` (예 `http://<host>:5153/__upload/ui`) | 좌석 라우팅 **밖**, raw 스트리밍 | `UPLOAD_MAX_BYTES` 기본 20GiB |
+| ② 네트워크 드라이브 / `docker cp` | Samba `[user]` 공유(user 계정, `\\<host>\user\work_p\Datapipeline-Data-data_pipeline\docker\data\fiftyone\uploads\<이름>`) 또는 `docker cp <dir> docker-analysis-1:/data/fiftyone/uploads/<이름>` | 전송 상한 없음(초대형용) |
+| ③ URL 가져오기 `POST /upload/fetch` | 서버가 직접 다운로드, 좌석 안 거침 | 20GiB, SSRF 방어(사내 CIDR·포트 allowlist만 통과, 리다이렉트 홉마다 재검증) |
+
+- ⚠️ **⓪ 상한의 정본은 플러그인 상수**(`plugins/user-embeddings/__init__.py` 의 `_MODAL_UPLOAD_MAX_MB`)다.
+  `UPLOAD_SPEC.md` §1 과 `sync_api.py` 주석에 남은 "256MB / ≈3.4배" 는 614c26c(256→512) 이전 값이다.
+  올리려면 nginx 좌석 경로 바디 상한(`seat-tls/routing.inc` 의 `client_max_body_size 1g`)이 이 값 ×1.34
+  이상이어야 하고(nginx 만 올려서는 모달 상한이 안 오른다), 614c26c 는 1GB 를 좌석 OOM 으로 판단해
+  올리지 않았다 — 그보다 큰 번들은 ①로.
+
+엔드포인트는 전부 `analysis-sync`(`sync_api.py`) 담당: `/upload/validate` `/upload/ingest`
+`/upload/bundles` `/upload/delete` `PUT /upload/archive` `/upload/fetch` `/upload/job` `/upload/ui`.
+analysis-sync 자체는 호스트 포트가 없지만 nginx 가 `/__upload/*` 를 `/upload/*` 로 통째로 넘기므로
+**이 8개는 전부 :5153 에서 열려 있고, 현재 전부 무인증이다.** `FIFTYONE_SYNC_TOKEN`(X-Internal-Token)은
+validate/ingest/bundles/delete 에만 걸리는 옵션인데 compose 의 analysis 환경(`x-analysis-env`)에 키가 없어
+꺼져 있고, archive/fetch/job/ui 는 코드상 토큰 검사 자체가 없다 — 그래서 `/upload/fetch` 는 주소 정책만으로
+SSRF 를 막는다. ⚠️ 토큰을 켜도 archive/fetch 는 열린 채이고, `upload_ui.html` 은 토큰을 보내지 않아
+브라우저 페이지의 목록·임포트·삭제만 401 로 깨진다.
+
+- **삭제는 번들+데이터셋을 한 쌍으로** — 이미지를 제자리 참조하므로 번들만 지우면 썸네일이 전부 깨진
+  데이터셋이 남는다. `/__upload/ui` 목록 체크박스 → `선택 삭제`, 또는
+  `docker exec docker-analysis-1 python3 /workspace/project_upload/delete_bundle.py <이름>... --apply`
+  (기본 dry-run). 대상은 이름이 아니라 marker(`ds.info["upload_kit"]["bundle"]`)로 골라 sourcei/frames
+  같은 동명 데이터셋은 안 건드린다. **Postgres 에 등록한 프롬프트 뱅크(`register_bank_db.py`)는
+  전역 레지스트리라 삭제되지 않고 남는다.**
+- **`register_bank_db.py`**(`/workspace` 루트 — `project_upload/` 안이 아니다): 킷은 문장 벡터를 FiftyOne
+  `sentence_embedding` 에만 넣으므로, 인제스트만으로는 compare 패널의 `cos` 열이 전부 `-`(PG 미등록) 다.
+  이 스크립트로 Postgres 019 스키마(`prompt_banks`/`bank_sentences`, 없는 문장 벡터는
+  `image_embeddings(entity_type='prompt')`)에 수동 등록해야 채워진다. 등록하면 그 뱅크가 모든 데이터셋의
+  top-k 표에 한 줄로 늘어나는 전역 결정이라 킷이 자동으로 부르지 않는다(기본 dry-run, `--apply`).
+- `sync_api.py` 는 `uvicorn --reload` 없이 뜬다 — `/upload/*` 핸들러를 고치면
+  `docker restart docker-analysis-sync-1` 이 필요하다(`upload_ui.html` 은 요청마다 새로 읽어
+  반영됨).
+- `/nas/data/incoming` 에는 **절대 넣지 않는다** — auto-bootstrap 이 CCTV 원본으로 오인 수집한다.
+
 ## 스크립트 지도 — 어느 데이터셋이 어디서 나오는가
 
 README 본문은 여러 데이터셋을 전제로 설명하는데, 그것들을 **만드는** 스크립트가 정리돼 있지
@@ -514,6 +728,52 @@ README 본문은 여러 데이터셋을 전제로 설명하는데, 그것들을 
 - `bank_eval.sh` 사용례: `./docker/analysis/bank_eval.sh <기준버전> <신버전> [신버전 CSV경로]`
 - `bank_eval.sh` 의 `flips`/`prune` 단계가 만드는 뷰(`30_fixed`/`31_broken`)와 산출물
   `prompt_authoring_guide.md` 는 개별 스테이지만 돌리면 생기지 않는다 — 버전 비교는 래퍼로 돌릴 것.
+
+### 분석 표준화 계층 — `cohort.py` / `analysis_standard.py` / `prompt_standard.py`
+
+위 9개는 데이터셋을 **만드는** 진입점이다. 이 셋은 만들어진 데이터셋을 **같은 정의·같은 경고로** 분석하고,
+프롬프트를 같은 규칙으로 생성하게 하는 계층이다. README 에 없으면 새 현장 편입 절차가 코드 docstring 과 설계
+문서(`docs/superpowers/specs/2026-09-16-analysis-standardization-design.md` ·
+`docs/superpowers/plans/2026-09-16-analysis-standardization.md`)에만 남는다. `cohort.py` 는 그 사이클에서 새로 만든
+모듈이고, `analysis_standard.py`·`prompt_standard.py` 는 설계서 §2 가 "이미 있는 표준화 씨앗"으로 꼽은 것이다.
+
+| 모듈 | 역할 | 비고 |
+|---|---|---|
+| `cohort.py` | 코호트 레지스트리. 표준 러너 기준으로는 새 현장 편입이 `COHORTS` 한 줄로 끝난다 — `prompts`/`gt_field`/`group`/`negative_class`/`target_classes` 는 **전부 명시**한다(빠진 값을 추론하지 않는다) | CLI 없음. `analysis_standard.py` 가 `load_cohort()` 로 라이브 FiftyOne 에서 읽는다. 그 밖의 소비자: `prompt_geometry.py`(클래스 순서 대조) · `user-prompt-probe`(음성 클래스 이름) |
+| `analysis_standard.py` | 표준 러너. S0~S5 고정 순서 스테이지(앞 단계의 경고가 뒤 단계의 해석을 바꾼다) + G1~G8 가드레일 | `docker exec docker-analysis-1 python3 /workspace/analysis_standard.py run --dataset sourcei` · `guardrails` 는 표만 출력. 산출 `/data/fiftyone/frames_bank/report/<코호트>/standard_report.json`(정본) · `standard_card.md` |
+| `prompt_standard.py` | 프롬프트 생성·검증 규칙의 정본 — sourcei GT 에서 측정한 템플릿 형태 선택도·금칙 어휘·장소 어휘 억제·라벨-free 컷·검증 규칙. 손으로 쓴 Gemini 지시문 · `user-prompt-probe` 생성 오퍼레이터 · 뱅크 빌더 사전 컷, 이렇게 세 곳에 흩어져 있던 규칙을 한 곳에 고정했다(흩어지면 드리프트한다) | import 하는 쪽(main): `apo_loop.py` · `gen_full_bank.py` · `gen_intrusion_bank.py` · `prompt_rule_fields.py` · `plugins/user-prompt-probe`. CLI `rules` `generate` `validate` `probe` `selftest` |
+
+- **군집키(`group`)는 자동 유도하지 않는다.** `sitej_subway` 는 `camera` 가 58대라 자동 유도하면 `camera` 를 고른다.
+  그런데 이 코퍼스는 연출 동시녹화라 카메라 홀드아웃에 누수가 있고, 올바른 키는 `session` 이다. 군집키를 잘못 잡으면
+  신뢰구간이 좁아져 거짓 유의가 나온다. 그래서 미등록 코호트는 `camera` 로 폴백하지 않고 `CohortRefused` 로 **거부**한다.
+  거부도 `display_allowed=false` 아티팩트로 발행해 이전 성공본을 덮는다(발행을 생략하면 소비자가 낡은 표를 계속 그린다).
+  `frames` 는 GT 부족·군집 필드 부재로 `REFUSED` 에 명시돼 있다.
+- ⚠️ **"한 줄"은 표준 러너 기준이다.** `target_classes` 는 GT 라벨과 **글자 단위로** 같아야 한다. `sitej_subway` 의
+  `intrustion` 은 오타지만 데이터의 정본 철자라, 고치면 조인이 깨진다. 또 `[negative_class] + target_classes` 순서가
+  곧 정수 GT 다. 등록돼 있어도 군집 필드나 GT 필드가 없거나, 레지스트리 밖 GT 클래스나 빈 군집값이 있으면 `load_cohort()`
+  가 거부한다(다른 필드로 대체하지 않는다). 프로브·`prompt_geometry.py`·`apo_loop.py` 는 `prompt_geometry.PROFILES`
+  를 따로 읽는다(프로브 docstring 은 이 둘을 "두 정본"이라 부른다). 그래서 같은 현장을 거기에도 등록해야 한다. `gt_field`
+  를 선언한 프로필은 `_assert_cohort_class_order` 가 두 곳의 클래스 순서를 대조하고, 다르면 `SystemExit` 로 멈춘다.
+- ⚠️ **가드레일은 경고일 뿐 차단하지 않는다**(모듈 docstring: "판정은 사람이 하지만, 경고는 자동"). 발동해도 `fired`
+  플래그만 남는다 — G3 가 발동해도 S3 뱅크별 채점표(`standard_card.md` · `S3_scoring.csv`)는 그대로 기록된다.
+  G5 는 `macro_present` 가 구조적으로 적용하고, G8 은 정의만 있을 뿐 판정 코드가 없다. `evidence` 는 7,498장
+  구코호트 기준의 **정적 문자열**이다. 라이브 판정은 `fired`/`detail` 만 볼 것
+  (`docs/superpowers/specs/2026-09-16-icc-estimator-audit.md`).
+- ⚠️ 라이브 경로(`load_cohort`)는 `gt`/`group` 만 싣고 점수 행렬은 싣지 않는다. 그래서 `--stages` 기본값이 `S0` 이다.
+  S1~S5 는 점수 행렬이 필요해 아직 라이브에서 돌지 않고, 지금 라이브에서 판정되는 가드레일은 S0 의 G2 뿐이다.
+  `--legacy-sourcei-npz` 는 7,498장 `preds.npz` 를 읽어 라이브와 어긋나므로 사실상 죽은 경로다.
+- **아티팩트 발행 계약**: `publish_atomic` 은 `allow_nan=False` → `fsync` → `os.replace` 순서로 쓴다. 그래서 반쯤 쓰인 JSON
+  이 노출되지 않고, 쓰다가 실패하면 임시 파일을 지우고 이전 버전을 그대로 둔다(NaN 은 파이썬은 읽지만 패널의 `JSON.parse` 는
+  터진다). `finalize_status` 는 스테이지가 하나라도 `error` 면 `display_allowed=False` 를 붙인다. 요청하지 않은 스테이지는
+  `skipped` 로 남겨 "안 돌린 것"과 "돌리다 죽은 것"을 구별한다. 이전에는 스테이지 예외를 기록만 하고 정상 report 로
+  계속 진행해서, 죽은 스테이지가 든 결과를 정상으로 읽을 수 있었다. ⚠️ main 에는 아직 `display_allowed` 를 읽는 소비자가
+  없다 — `standard_report.json` 을 읽는 쪽이 이 플래그를 직접 확인해야 한다.
+- ⚠️ `prompt_standard` 로 새 현장 규칙을 만들 때: 현장 고유 금칙어는 전역 `BANNED` 가 아니라 `EnvProfile.banned` 에
+  둔다(전역에 넣으면 새 현장이 남의 현장 규칙을 물려받는다). CLI 에서 현장 프로필 JSON 경로를 받는 것은
+  `generate --env <경로>`(`load_env`) 뿐이다. `validate` 서브커맨드는 `ENVS[a.env]` 로 조회해 등록명만 받는다.
+- ⚠️ `validate()` 는 `(kept, rejected, report)` **3개**를 돌려준다. 모듈 docstring 사용례처럼 2개로 언패킹하면
+  `ValueError` 가 난다. `apo_loop.py` 의 `generate` 경로가 바로 그렇게 언패킹하고 이 오류를 `except Exception: pass` 로 삼킨다.
+  그 결과 규칙 검사가 조용히 무력화돼 모든 문장이 통과(`rule_ok=True`)로 처리된다.
 
 ## frames 프롬프트 뱅크 평가 (frames_bank_eval.sh)
 
@@ -786,7 +1046,20 @@ docker exec docker-analysis-1 python /workspace/fiftyone_app_setup.py workspace-
   (bind mount 라 복사 불필요 — 디렉토리 touch 만으로 캐시가 무효화된다)
 - 워크스페이스 `compare`(sourcei): Samples | Embeddings | Prompt Compare 3-패널(H1 확정안).
   모드 A=프레임↔문장(argmax_k1 조인, dist_iou 모드는 클릭 무효), 모드 B=같은
-  데이터셋 그룹 overlay(`frames` 에서 project 비교).
+  데이터셋 그룹 overlay(`frames` 에서 project 비교), **모드 C=문장 군집**(좌표는 emb_viz(UMAP)
+  그대로 두고 색만 MiniBatchKMeans 군집 id 로 칠한다, 기본 k=12).
+  군집 공간은 조건부다 — 그려지는 점(버전 필터·NaN 좌표 제외 후)이 20,000 이하이고 DB 에서
+  벡터를 90% 이상 끌어오면 **1024-d 임베딩 공간**, 아니면 **UMAP 좌표 공간**에서 군집한다.
+  둘은 다른 질문("의미가 비슷한 문장끼리" vs "그림에서 뭉쳐 보이는 것")이라 어느 쪽을 썼는지
+  배너가 밝힌다 — 버전 필터로 점 수가 20,000 을 넘나들면 군집 공간 자체가 바뀐다.
+  ⚠️ **모드 C 는 품질 판정용이 아니다.** 과거 측정에서 군집 특이도는 이벤트 클래스가 아니라
+  **장소 어휘**가 지배했다(같은 발견: `docs/analysis/prompt-embedding-analysis-design.md` §2) —
+  군집이 잘 갈려 보여도 장소별로 갈린 것일 수 있으니 뱅크 우열의 근거로 쓰지 말 것. 자리는
+  탐색·중복 발견용이다(2026-08-31 사용자와 합의한 위치).
+  200,000점 상한: 전량 렌더 시 figure 13.85MB(ids 5.03MB 포함)가 플롯 이벤트마다 되돌아와
+  왕복 ~69초였고 Chrome 을 죽인 적이 있다. ids 도 싣지 않는다 — 모드 C 는 클릭 조인을 하지
+  않는다(점 클릭·lasso 로 프레임을 고르는 건 모드 A 뿐). 단 선택된 문장의 강조는 서브샘플에서
+  탈락한 점까지 그린다(안 그러면 "선택이 안 먹었다"로 읽힌다).
 - selftest(조인 불변식 + 패널 상태-머신 회귀 3종 — 개수는 늘어나므로 박지 않는다): `docker exec docker-analysis-1 python /data/fiftyone/datasets/__plugins__/user-prompt-compare/__init__.py`
   — FiftyOne 업그레이드 전 필수 게이트. 2026-08-27 부터 ① 표시 드롭다운 왕복(컨트롤 미러 에코 루프)
   ② 데이터셋 전환 후 stale 산점도(`_fig_key` 에 데이터셋 누락) ③ gidx 오프셋 세대 불일치 회귀가 함께 돈다.

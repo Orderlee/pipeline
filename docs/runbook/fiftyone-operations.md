@@ -141,7 +141,7 @@ print('detection_class', dict(ds.count_values('detection_class')))"
 
 ---
 
-## 5. 임베딩 패널 사용법 ⭐ (FiftyOne 1.17 — 라이브 검증)
+## 5. 임베딩 패널 사용법 ⭐ (FiftyOne 1.19.0 — 라이브 검증)
 
 ### 5.1 핵심 원리: 패널은 *사이드바 필터* 가 아니라 *뷰(View)* 에만 subset 반응
 - 서버 라우트 `/embeddings/plot`(`fiftyone/server/routes/embeddings.py`)은 `view = get_view(stages=data["view"], filters=data["filters"])` → `results.use_view(view)` → **뷰에 속한 포인트만(`_curr_points`)** 반환.

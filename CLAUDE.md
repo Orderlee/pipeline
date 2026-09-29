@@ -124,7 +124,7 @@ docker exec docker-postgres-1 psql -U airflow -d vlm_pipeline -c "SELECT COUNT(*
 4. env 파일 복원 + `REQUIRED_ENV_KEYS` 검증 (누락 시 hard fail), MinIO 키 자동 파생
 5. `postgres` healthy 대기 → dagster 3종 stop/rm → code-server → daemon → dagster 순차 기동 →
    profile 별 조건부 build/recreate(`sam3`/`pg-backup`/`genai`/`embedding-service`/`trainer`/`analysis`) →
-   analysis 3서비스는 `up -d` 로만 보증(force-recreate 아님 — FiftyOne 세션 보호) →
+   analysis 4서비스(analysis/analysis-fiftyone/analysis-streamlit/analysis-sync — `analysis-fiftyone-2~5`(좌석)·`analysis-fiftyone-proxy`·`fiftyone-mongo` 는 목록에 없어 배포가 살리지 않는다)는 `up -d` 로만 보증(force-recreate 아님 — FiftyOne 세션 보호) →
    HEALTHCHECK_URL 응답 검증 (prod `:3030/server_info`, staging `:3031/server_info`)
 6. AI deploy 분석 (Claude CLI, best-effort, 실패해도 배포는 성공)
 
@@ -216,8 +216,7 @@ git -C /home/user/work_p/Datapipeline-Data-data_pipeline_test status       # dev
     `git ls-files tests/` 로만 확인 (2026-09-15 기준 CI 899 passed / 31 skipped).
     ⚠️ 이 함정은 실제 부채로 굳었던 이력이 있다 — 2026-09-15 실측에서 디스크 149 vs 추적 124,
     즉 **25파일이 CI 에서 한 번도 안 돌아간 상태**였고 돌려보니 51 failed 였다(삭제된
-    `duckdb_resource` fixture·바뀐 시그니처를 검증 중). 그중 10파일을 수정 후 편입했고
-    나머지 15파일은 여전히 미편입이다.
+    `duckdb_resource` fixture·바뀐 시그니처를 검증 중). 그중 10파일을 수정 후 편입했고, 나머지 15파일도 그 뒤 편입(또는 삭제)된 것으로 보인다 — 2026-09-29 재확인: `git ls-files tests/unit`(145)·`tests/integration`(15) 개수가 디스크 파일 수와 정확히 일치해 tracked/untracked 갭이 0이다. 단 개별 15파일이 '고쳐서 편입'됐는지 '삭제'됐는지는 구분되지 않으므로, 갭이 닫혔다는 사실만 확인하고 구체 경위는 미확인으로 남긴다.
 
 ---
 
@@ -326,21 +325,63 @@ git -C /home/user/work_p/Datapipeline-Data-data_pipeline_test status       # dev
       2 로 완화 후 3 으로 재상향한 값이다. 올릴 때 이 히스토리 확인.
     - ⚠️ 정비 플래그(`/maintenance/enter`)는 **프로세스 메모리 기반**이라 uvicorn worker 3개에
       공유되지 않는다 — 한 worker 에 enter 를 걸어도 나머지 2개는 계속 요청을 받는다 (drain 미완).
-  - **embedding-service**: 호스트 GPU **0** (`CUDA_VISIBLE_DEVICES=0`) — dagster torch/NVENC 와 GPU0 공유
+  - **embedding-service**: 호스트 GPU **0+1** 둘 다 노출 (`CUDA_VISIBLE_DEVICES=0,1`, compose 리터럴). 슬롯이 둘이다 —
+    PE-Core 임베딩(`EMBEDDING_DEVICE=cuda:0`)은 종전대로 GPU0 에서 dagster torch/NVENC 와 공유하고,
+    PLM 캡션 생성 슬롯(`/caption`, PE-Lang+Llama = Perception-LM-3B, `PLM_DEVICE=cuda:1`)은 **GPU1 CUDA cores** 를 쓴다.
+    즉 이 컨테이너 하나가 GPU0·GPU1 양쪽에 걸쳐 있다.
+    - PLM 은 compose 기본 **OFF**(`PLM_ENABLED` 기본 false)이고 prod `.env` 현재값이 `true` 다. 코드는 이미지에
+      이미 실려 있어 켜고 끄는 데 배포가 필요 없다(`.env` 수정 + recreate).
+    - **온디맨드**: 기동 시엔 PE-Core 만 로드하고 PLM 은 첫 `/caption`(또는 `/warmup?target=plm`)에서 lazy load,
+      무요청 `PLM_IDLE_UNLOAD_SECONDS`(현재 120)초 뒤 idle watcher 가 VRAM 을 반납한다
+      (`docker/embedding/app.py`, `gpu_guard.py`).
+    - ⚠️ **cuda:1 은 SAM3 소유** — PLM 은 단방향으로 양보한다. GPU1 여유 VRAM 이 `PLM_MIN_FREE_GB`(현재 9)GB
+      미만이면 기다리지 않고 **503 으로 거절**하고 호출자가 재시도한다. 아래 '경합 분석' 의 "별개 hardware unit
+      이라 동시 사용 OK" 논리는 NVENC↔SAM3 얘기지 PLM 에는 적용되지 않는다 — PLM 과 SAM3 는 같은 GPU1 CUDA
+      cores/VRAM 을 나눈다.
+    - `PLM_MODEL_ID` 는 prod `.env` 가 사내 미러(`USER-LAB/Perception-LM-3B`)로 덮는다 — compose 기본
+      `facebook/Perception-LM-3B` 는 HF gated 라 `HF_TOKEN` 없이는 401.
   - **trainer**: 호스트 GPU 1 — SAM3 와 같은 GPU 라 학습 전 정비 drain 필요
   - **YOLO (별도 컨테이너)**: 호스트 GPU 1 — 현재 `ENABLE_YOLO_DETECTION=false` 정책으로 비활성 (컨테이너도 정지 상태)
-  - **경합 분석**: dagster NVENC (GPU 0/1 의 NVENC unit) ↔ SAM3 (GPU 1 의 CUDA cores) — 별개 hardware unit 이라 같은 GPU 1 안에서도 동시 사용 OK
+  - **ComfyUI (별도 컨테이너, `docker-comfyui-1`)**: 호스트 GPU **0** 만 노출(`CUDA_VISIBLE_DEVICES=0`) — `embedding-service` 메인 모델·`angle-dav2-1`(camera-angle 분류, 상시 가동)과 같은 GPU0 CUDA cores 공유. `.env` `COMPOSE_PROFILES` 에도 `comfyui` 가 들어 있다(아래 MLOps env 표). ⚠️ SAM3 항목의 'eng-b ComfyUI'(workers=4 파편화 이력, GPU1)와는 별개의, 이 프로젝트 소유 컨테이너다 — GenAI Studio 섹션에 상세
+  - **경합 분석**: dagster NVENC (GPU 0/1 의 NVENC unit) ↔ SAM3 (GPU 1 의 CUDA cores) — 별개 hardware unit 이라 같은 GPU 1 안에서도 동시 사용 OK.
+    ⚠️ 위 한 줄은 NVENC↔SAM3 얘기일 뿐이다. cb57301(2026-09-03) 부터는 `embedding-service` 의 PLM(PE-Lang+Llama,
+    이미지→문장 `/caption`) 슬롯이 `PLM_DEVICE=cuda:1` 로 **호스트 GPU1 의 CUDA cores** 를 쓰는 세 번째 소비자다
+    (SAM3(prod 서빙)·trainer(학습 중)와 동종 자원, NVENC 아님 — 진짜 경합 후보).
+    prod `.env` 는 `PLM_ENABLED=true` (compose 기본값 false). 계약은 **VRAM 단방향 양보**다(`docker/embedding/gpu_guard.py`):
+    로드 직전 GPU1 free VRAM < `PLM_MIN_FREE_GB`(기본 9) 면 로드하지 않고 `/caption` 이 503 — 위 SAM3 workers=3(≈11.1 GB)
+    가 상주해 있으면 PLM 은 애초에 못 뜬다. 역방향 게이트는 없다: PLM 이 먼저 올라가 있는 동안 SAM3 가 lazy reload 하면
+    그 VRAM 을 두고 부딪치고(코드 주석: "어기면 SAM3 가 죽는다"), 검사~할당 사이 레이스도 남는다. 완충은
+    `PLM_IDLE_UNLOAD_SECONDS`(기본 120) idle 반납과 `/unload?target=plm` 뿐이다. `/caption` 은 embedding-service 의
+    정비 게이트(`/maintenance/enter` → 503)도 타므로 정비창을 SAM3 에만 걸고 embedding-service 를 빼먹으면 학습 중
+    캡션이 GPU1 로 들어올 수 있다. 이건 능력이지 관측된 상시 경합은 아니다 — 겹치는지는 운영 시 `/health` 의
+    `slots.plm.loaded` 로 확인.
 - Places365 모델 캐시: `/data/models/places365` (auto_download=false, 고정 캐시만 사용)
 - `PYTHONPATH` (컨테이너): `/:/src/python:/src/vlm`
 - **호스트 포트 ≠ 컨테이너 포트인 서비스** (`.env` 로 매핑되므로 착각하기 쉬움):
   `embedding-service` 8003→**8004**, `genai` 8088→**8089**, `mlflow` 5000→**5500**,
-  `analysis-fiftyone` 5151→**5153** / `analysis-streamlit` 8501→**8503**, `postgres` 5432→**15433**
-- **analysis 스택 = 서비스 4개** (2026-08-18 P0 편입, 2026-08-21 sync 추가): `analysis`(JupyterLab,
-  `docker-analysis-1`) / `analysis-fiftyone`(:5153) / `analysis-streamlit`(:8503) /
-  `analysis-sync`(내부 :8010, 호스트 포트 없음 — FiftyOne 증분 동기화 API). 넷 다
-  `restart: unless-stopped` 라 **죽으면 자동 재기동**된다 — `docker exec -d` 손기동 절차는 폐기됐다.
-  `deploy-stack.sh` 의 `analysis_active()` 분기가 배포 때 네 서비스를 `up -d` 한다
-  (force-recreate 아님 — 무관한 변경으로 FiftyOne 세션을 끊지 않기 위해).
+  `analysis-fiftyone` 5151→**5158**(compose 기본값 `FIFTYONE_PORT_1` — `.env` 에 이 키는 없다; 프록시가 죽었을 때의 우회·디버깅용 직결 경로) / `analysis-fiftyone-proxy` 5151→**5153**(`.env` `FIFTYONE_PORT` — nginx 좌석 라우터, 사람마다 다른 FiftyOne 프로세스로 보낸다; 규칙은 `docker/analysis/nginx-seats.conf` 주석) / `analysis-streamlit` 8501→**8503**, `postgres` 5432→**15433**
+- **analysis 스택 = 서비스 4개**(2026-08-18 P0 편입, 2026-08-21 sync 추가 — `deploy-stack.sh` 의
+  `analysis_active()` 가 배포 때 `up -d --no-deps` 로 보증하는 범위만): `analysis`(JupyterLab,
+  `docker-analysis-1`, :8888) / `analysis-fiftyone`(좌석 1, 호스트 `:5158` 직결 — 프록시가 죽었을 때의
+  우회로 겸 디버깅 경로) / `analysis-streamlit`(:8503) / `analysis-sync`(내부 :8010, 호스트 포트 없음 —
+  FiftyOne 증분 동기화 API). ⚠️ **compose 의 analysis profile 은 이 넷이 다가 아니다**:
+  `analysis-fiftyone-2`~`-5`(좌석 2~5, 호스트 `:5154`~`:5157`, `x-fiftyone-seat` 앵커 —
+  `mem_limit: ${FIFTYONE_SEAT_MEM}` 상한, 좌석 1 은 상한 없음) + `analysis-fiftyone-proxy`(`nginx:alpine`,
+  **`:5153`/`:5443` 의 실제 소유자** — compose 기본값은 `${FIFTYONE_PORT:-5151}` 이고 5153 은 prod `.env`
+  의 `FIFTYONE_PORT` 가 만든 값. 쿠키/`?seat=N`/IP 표로 좌석별 백엔드에 갈라주는 라우터, 규칙은
+  `docker/analysis/nginx-seats.conf`) + `fiftyone-mongo`(백엔드 DB, 호스트 포트 없음) 까지 **총 10개**.
+  열 개 전부 `restart: unless-stopped` 다 — 8개는 `x-analysis-base`/`x-fiftyone-seat` 앵커로 물려받고
+  proxy·mongo 는 앵커 없이 각자 명시. 즉 "넷 다"가 아니라 전체가 자동 재기동 대상이다. 단 restart 정책은
+  **컨테이너 종료**에만 반응하고 `unhealthy` 에는 아무것도 안 한다(App 자식만 죽고 부모 python 이 남으면
+  컨테이너는 산 채로 unhealthy 만 뜬다 — compose 의 `analysis-fiftyone` 블록 주석이 예고한 모양).
+  **`analysis_active()` 의 `up -d` 는 위 4개 이름만 지정**하고(`--no-deps`, 좌석 2~5·proxy·mongo 는
+  목록 밖 — 스크립트 어디에도 서비스명 없는 `up -d` 는 없다) 그래서 이 6개는 최초 수동 기동 이후 자기
+  restart 정책에만 기댄다 — 배포가 만들어 주지도, 이미지가 바뀌었다고 recreate 해 주지도 않는다.
+  실측(2026-09-29): 좌석 4·5 는 컨테이너 자체가 없고, 좌석 2·3 은 `Up` 이지만 `unhealthy`(안에서 `:5151`
+  연결 거부, 로그는 `Could not connect session` 반복, RestartCount 0) 인 채로 **태그가 벗겨진 구 빌드
+  이미지**(ID `fae0309bc83c` — `datapipeline-analysis:latest` 태그는 이후 재빌드 `4e7e303feafe` 로 옮겨가
+  `docker ps` 에 ID 로만 보인다)로 떠 있다. 배포가 명시한 4개는 그 재빌드 때 recreate 됐지만 좌석 2·3 은
+  목록 밖이라 그대로 남은 드리프트다 — "analysis 4개 재기동"으로는 절대 안 잡힌다.
 - **FiftyOne 자동 동기화** (2026-08-21): Dagster `fiftyone_sync_sensor`(5분 tick, PG 카운트
   스냅샷 diff) 가 `fiftyone_sync_job` 을 발화 → `analysis-sync` HTTP 로 `frames` 증분 add /
   `frames-prompts` promptmap 재빌드. 라벨 재적재는 `fiftyone_label_refresh_schedule`(03:00 KST)
@@ -443,6 +484,7 @@ git -C /home/user/work_p/Datapipeline-Data-data_pipeline_test status       # dev
 - **레지스트리가 진실**: 서빙 중인 가중치 = `model_registry` 의 `status='promoted'` 행. **심볼릭링크 아님** (CI `rsync --delete`+`git reset --hard` 가 untracked 링크를 날림).
 - **학습셋은 동결 스냅샷**: `train_dataset_versions` 행 = `vlm-dataset/_trainsets/<id>/` 의 immutable 스냅샷. 라이브 라벨 흐름과 무간섭.
 - **자기학습 금지**: 모델 파생 라벨(`auto_generated`, Gemini 캡션, `vlm-classification`)로 학습/eval 금지. GT = LS `finalized` 또는 AL-선별-후-사람-어노테이트만.
+  ⚠️ **2026-09-21 부터 이 불변식이 스키마로도 강제된다** (커밋 edab724/e7be257): (1) `label_source` 게이트 — `LABEL_SOURCES`(기본 human,derived)로 GT 소비 경로 4곳을 필터링한다. 027 이 만든 컬럼이 실제로는 아무 데도 안 쓰여서 `GT_COHORTS` 에 sourcei 를 넣으면 Gemini 캡션파생 normal/unknown 행이 조용히 GT 로 섞이는 오염이 있었다(크래시 아님 — 수치만 조용히 틀어짐). 미라벨 선별 풀(`label_source='unlabeled'`)에는 안 건다(걸면 0건). (2) `al_frames.eval_holdout` 생성 컬럼(migration 031) — AL 이 다시는 못 고르도록 `group_key` 단위로 홀드아웃을 봉인한다(프레임 단위면 같은 영상 인접 프레임이 train/test 양쪽에 들어가 누수 — `group_key` 는 이제 `NOT NULL` 제약, e7be257). ⚠️ **그룹 수가 적은 코호트는 봉인이 사실상 무력하다**(예: source-b_bbox_gt 그룹 1개 = 봉인율 0%) — "이 코호트엔 평가 홀드아웃이 있다"고 넘겨짚지 말 것. (2026-09-29 재확인: `al_frames` 에 `label_source`/`eval_holdout`/`group_key` 컬럼 실재 — 031 은 이제 prod 적용됨, 커밋 시점 '미적용' 서술은 갱신)
 - **CI 는 학습 안 함**: GPU 학습은 `ENABLE_TRAINING` + 수동 게이트. CI(GPU 없음)는 마이그레이션·스냅샷빌더·eval로직·승격 dry-run·defs 로드만 검증.
 
 ### 학습 트리거 (온디맨드 수동, prod 박스)
@@ -536,7 +578,7 @@ git -C /home/user/work_p/Datapipeline-Data-data_pipeline_test status       # dev
 | `EMBEDDING_CHECKPOINT_PATH` | (미설정=stock) | PE-Core 서빙 가중치 경로. 미설정 시 HF Hub stock. compose 에서 정상 치환됨 |
 | `EMBEDDING_MODEL_VERSION` | (미설정) | PE-Core 서빙 model_name 버전 태그(`@ft-...`). 승격이 갱신 |
 | `MLFLOW_TRACKING_URI` | `http://mlflow:5000` | trainer 학습 추적 서버(compose 의 trainer 블록 기본값). unreachable 시 fail-soft(레지스트리=SoT) |
-| `COMPOSE_PROFILES` | (prod 실제값) `sam3,backup,genai,embedding,analysis` | **`trainer`·`mlflow` 는 들어 있지 않다.** 이 변수는 `up -d`/전체 `build` 만 게이트하고, 서비스명을 명시한 `run --rm trainer` 는 게이트하지 않는다 |
+| `COMPOSE_PROFILES` | (prod 실제값, 2026-09-29 확인) `sam3,backup,genai,embedding,analysis,comfyui` | **`trainer`·`mlflow` 는 들어 있지 않다.** 이 변수는 `up -d`/전체 `build` 만 게이트하고, 서비스명을 명시한 `run --rm trainer` 는 게이트하지 않는다 |
 
 > ⚠️ **MLflow 는 profile 밖에서 수동 기동된 상태**다 (`docker-mlflow-1` 가 떠 있지만
 > `COMPOSE_PROFILES` 에 없음). 호스트 재부팅이나 profile 기반 전체 재기동 후에는 **자동으로
@@ -584,26 +626,44 @@ git -C /home/user/work_p/Datapipeline-Data-data_pipeline_test status       # dev
 
 - `embedding-service` 컨테이너, 호스트 포트 **`8004`** → 컨테이너 8003, 호스트 GPU 0
 - 모델 PE-Core-L14-336 (`open_clip`, `hf-hub:timm/PE-Core-L-14-336`), 1024-d
-- 벡터 → `image_embeddings` (pgvector). `entity_type` = `frame`/`caption`/`video`/`detection`/**`prompt`**
+- 벡터 → `image_embeddings` (pgvector). `entity_type` = `frame`/`caption`/`video`/`detection`/**`al_frame`**(027·029, AL 후보 프레임 — `entity_id` = `cohort/frame_key`, partial HNSW 는 pgvector 없는 이미지에서 skip)/**`prompt`**
   (뱅크 문장 텍스트 벡터, `entity_id` = 문장 `content_hash` — migration 021. 벡터는 텍스트만의
   함수라 뱅크 간 공유 문장은 벡터 1개면 충분하고, 클래스 멤버십은 `bank_sentences` 쪽 속성),
   `UNIQUE(entity_type, entity_id, model_name)`
 - 인덱스는 **entity_type 별 partial HNSW** (통합 인덱스는 제거됨)
 - 서빙 모델 포인터 = `embedding_active_model` 테이블 단일 행. 파인튠 승격은 재임베딩 후
   이 포인터를 원자 전환하는 방식 (`scripts/promote_pe_core.py`)
-- **프롬프트/온톨로지 DB (migrations 018~022) 적용 상태 주의**: `prompt_banks`/`bank_sentences`(019)와
+- **프롬프트/온톨로지 DB (migrations 018~023·026) 적용 상태 주의**: `prompt_banks`/`bank_sentences`(019)와
   prompt partial HNSW(021)는 prod 에 **러너 밖에서 수동 선적용**됐다(`_pg_migrations` 에 기록).
   ✅ **018/020/022/023 은 이미 prod 에 적용됐다** (2026-09-21 실측 정정 — 이전 서술은
   "파일만 main, prod 미적용" 이었다). `_pg_migrations` 기준 018·020 = 2026-09-09 02:35,
   022·023 = 2026-09-09 04:11. `label_classes` 는 실재하며 **canonical 15개**(022 의 13 +
   026 의 `intrusion`/`no_harness`). 즉 예고됐던 "부팅 시 자동 적용"은 그때 일어났다.
-  `generation_prompts` 테이블도 실재한다 — 다만 **행은 0개**다. write 경로는 2026-08-21
-  `clip_timestamp` 에 배선돼 있으므로(`postgres_labeling.py`, fail-soft), 행이 0이라는 건
-  018 미적용 때문이 아니라 **그 이후 계보를 남길 라벨링 run 이 없었다는 뜻**이다 — 원인을
-  혼동하지 말 것. 정본은 `src/vlm_pipeline/data/label_ontology.json` — `env_utils.CATEGORY_TO_CLASSES`·
+  `generation_prompts` 테이블도 실재하고 계보가 쌓이기 시작했다 — 2026-09-29 실측 1행(`video_event_timestamp`, `gemini-2.5-flash`, 2026-09-23 생성)이고 `video_metadata.timestamp_generation_prompt_id` 가 그 행을 가리키는 비디오가 16,815건이다. 행 수가 작은 것은 018 미적용 때문이 아니라 프롬프트 원문이 `UNIQUE(prompt_type, model_name, content_hash)` 로 dedup 되어 **같은 프롬프트면 몇 번을 돌려도 1행**이기 때문이다 — 행 수를 run 수로 읽지 말 것. write 경로는 2026-08-21 `clip_timestamp` 에 배선돼 있다(`postgres_labeling.py`, fail-soft — 018 이 없던 DB 에서는 WARN 만 남기고 조용히 0행이었다). 정본은 `src/vlm_pipeline/data/label_ontology.json` — `env_utils.CATEGORY_TO_CLASSES`·
   `ls_tasks.CATEGORY_SYNONYMS`·GenAI `promote.html` PRESETS·022 는 파생본이고 `tests/unit/test_label_ontology.py`
   parity 가 강제한다. **매핑 수정은 JSON 만.** `smoking` 은 canonical 이면서 `smoke` alias 이기도 함(미해결) —
   소비자는 canonical 일치를 alias 보다 먼저(`env_utils.resolve_to_canonical`).
+- **migrations 024~033 (prod 는 033 까지 적용 — `_pg_migrations` 032·033 = 2026-09-25)**: 024 조회경로 인덱스
+  (CONCURRENTLY) · 025 `labels.caption_text_en`(ko 로 폴백하지 않음, 구 행은 원문 백필 불가) · 026 온톨로지 승격
+  (`intrusion`/`no_harness`) — JSON 정본은 아직 13 이라 **DB 투영이 정본보다 앞서 있고**, parity 테스트는 022 만
+  읽어 이 drift 를 못 잡는다 · 027~031(030_comfy_local 제외) AL 루프 — `al_frames` PK `(cohort, frame_key)`,
+  `label_source` 가 자기학습 금지 게이트의 판정 근거(CHECK 없는 자유 텍스트), `group_key` 가 홀드아웃 단위
+  (코호트마다 다름), 031 `eval_holdout` 생성 컬럼 봉인 — **per-class eval 분모로 쓰지 말 것** · 030_comfy_local
+  (`genai_job_provenance`·`generation_gpu_leases`, **`_REQUIRED_MIGRATIONS` 포함** — 미적용이면
+  `ensure_runtime_schema()` 가 raise) · 032/033 합성 coverage 사실·제어평면 — 전 테이블 0행으로 배포되고 사실
+  테이블을 채우는 **투영 job 은 없다**. planner job/schedule·dispatch sensor 는 있으나 **기본 STOPPED**, 승인 없는
+  campaign 진행은 CHECK 가 막는다.
+  ⚠️ **024·026·030_al_frames_unit 은 미커밋 상태로 prod 에 먼저 적용된 뒤 git 에 복원·재구성된 파일이다** —
+  미커밋 마이그레이션은 배포 `rsync --delete` 로 사라지고 fresh DB 는 그 스키마를 영영 못 얻는다. 적용 전에 커밋할 것.
+  ⚠️ **030 이 두 파일**(`030_al_frames_unit`·`030_comfy_local`) — 러너 키는 파일명 전체, 순서는 `sorted(glob)`,
+  재번호 금지(개명하면 prod 에서 재실행된다).
+  ⚠️ 러너에는 파일별 try/except 가 없어 **적용이든 단언이든 한 파일이 실패하면 그 뒤 번호 전부 정지**한다. 이미
+  적용된 파일의 `@ASSERT_AFTER` 도 매 실행 재검증하므로 단언이 보는 객체를 지우는 것만으로도 멈춘다(prod: 드롭된
+  HNSW 때문에 009 단언이 실패해 018 이후가 시도조차 안 됐다 — 2026-09-09 해소 / CI 2026-09-14: 027 의 pgvector 의존
+  인덱스가 적용 실패 → 029 로 분리). 인덱스 드롭 전 `grep -r ASSERT_AFTER` 필수, 단언은 존재·불변식만(행 수 상수 금지).
+  CONCURRENTLY 가 (주석 포함) 들어간 파일은 러너가 문장 단위로 쪼갠다(da8b66e; 스스로 `BEGIN;` 을 열면 일부러 안
+  쪼갠다). 적용 시점은 배포 부팅이 아니라 **첫 asset/센서 실행**(`ensure_runtime_schema()`) — 배포 직후
+  `_pg_migrations` 가 그대로여도 정상이다. 상세는 각 파일 헤더 주석(README §Database Schema 는 아직 001~023 만 다룬다).
 
 ---
 
@@ -621,9 +681,12 @@ git -C /home/user/work_p/Datapipeline-Data-data_pipeline_test status       # dev
 ## GenAI Studio
 
 - 컨테이너 `docker-genai-1`, 호스트 포트 **`8089`** → 컨테이너 8088. Basic Auth
-- Kling / Veo 기반 생성형 증강 (`GENAI_ENGINES_ENABLED=kling,veo`;
+- Kling / Veo / ComfyUI 로컬 생성(`comfy_local`, 상세는 아래 별도 항목) 기반 생성형 증강 (`GENAI_ENGINES_ENABLED=kling,veo,comfy_local`;
   higgsfield·nanobanana·gpt_image 어댑터도 코드에는 있으나 prod 미활성)
 - `genai_poll_sensor` 가 HTTP 로 내부 API 를 폴링 (Dagster 가 어댑터 코드를 직접 import 하지 않음)
 - 생성물은 `/nas/data/genai_studio` 로 격리 — 일반 incoming 에 넣으면 auto-bootstrap 이
   카메라 영상으로 오인해 수집한다. `promote-to-labeling` 이 dispatch JSON 을 만들어 정식 편입
 - 코드가 이미지에 COPY-baked 라 변경 시 재빌드 필요 (CI 는 `docker/genai/` 변경을 감지해 자동 재빌드)
+- **ComfyUI 로컬 생성 (`comfy_local` 엔진, 커밋 1a84270/33cc673, 2026-09-21)**: 승인된 워크플로 2개만 실행(`COMFYUI_ALLOWED_WORKFLOWS=flux2-klein-4b-edit-v1,sdxl-inpaint-cctv-v1`) — 그래프는 항상 repo 템플릿이고 사용자 입력은 승인된 scalar 만 재바인딩(임의 그래프 실행 금지). 결과물도 기존 GenAI 격리 NAS → Promote → dispatch 경로를 그대로 타고 `label_policy='required'` 로 사람 검수 없이는 학습셋에 못 들어간다(자기학습 금지 불변식과 동일 계약).
+  ⚠️ **이 코드는 2026-09-18 부터 prod 에서 이미 돌고 있었는데 2026-09-21 까지 git 에 한 줄도 없었다** — 그사이 배포가 왔다면 `rsync --delete`+`git reset --hard` 가 조용히 지웠을 상태였다(커밋 메시지 자백, '단일 진리 원칙' 위반 실사례). GPU0 VRAM 입장 게이트 `COMFYUI_MIN_FREE_VRAM_GB`(2026-09-29 확인: `.env`·실행 중 `docker-genai-1` 모두 **14.5**) — 13→14.5 로 올린 이유는 게이트가 PE-Core 를 unload 한 *뒤* free 를 재므로 embedding 이 아니라 GPU0 의 다른 상시 입주자 `angle-dav2-1`(`CUDA_VISIBLE_DEVICES=0`)을 막는 장치인데, warm FLUX 실측 소요가 14.25GB 라 구 임계 13 은 job 을 통과시킨 뒤 OOM 을 냈기 때문. `COMFY_LOCAL_MAX_CONCURRENT=1`(동시 1 job), `poll()` 은 wall-clock deadline(`COMFYUI_JOB_TIMEOUT_SECONDS`, 기본 900s)으로 lease 를 끊는다 — 이전엔 ComfyUI 재시작으로 죽은 job 이 영구 'running' 처리돼 embedding-service 가 3일간 503 났던 이력. 프록시는 `queue`/`interrupt`/`free`/`jobs/*/cancel` 원본 경로를 ComfyUI 로 직통시키지 않고 차단한다(`docker/genai/app.py` `_COMFY_BLOCKED_PATHS`) — job 제어는 genai 자체 게이트 경유만.
+- **Coverage 제어평면 (커밋 3a7e1c2/367846d, migration 032/033, 2026-09-21)**: 합성 생성이 얼마나/언제 필요한지 스키마가 판정하는 계층 — "승인 안 한 campaign 은 ComfyUI 요청 0건"을 코드 약속이 아니라 `policy_mode_at_plan`(plan_only/disabled) CHECK 제약으로 건다. `planned=0` 이 사실 없음/context 미검증/진짜 0 중 어느 쪽인지 구분하는 카운터 3개가 NOT NULL 이고 blocked 사유 어휘도 폐쇄형이라 "사유 없는 defer"를 스키마가 거부한다. reference 확정 주체는 planner 가 아니라 센서(367846d — `reference_id=NULL` 자리표를 계획 시점에 못박으면 유효기간 만료/holdout 재지정 문제가 생겨서). ⚠️ **기본 꺼짐으로 배포됐다** — 2026-09-29 확인: `coverage_unit_facts`/`generation_reference_pool` 은 실재해도 투영 job 이 없어 0행(정책 미가동)이고, `generation_gpu_leases`(030, comfy_local 이 씀)만 1행이라 생성 인프라 자체는 이미 쓰인 적이 있다.

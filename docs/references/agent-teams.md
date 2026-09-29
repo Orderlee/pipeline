@@ -58,11 +58,11 @@ The roster is organized by **plane**. Each persona maps to one model tier (multi
 |---|---|---|
 | [`codex`](../../.claude/agents/codex.md) | read-only | Different-family validator. Reviews implementer output (esp. security/auth, schema/migration, concurrency/locks, hard algorithms), or solves independently in Pattern B arbitration. **Never the first writer.** Effort matrix multi-agent.md §3.3 |
 
-In addition, **skills** in [`.agent/skill/`](../../.agent/skill/) are workflow macros that compose the above personas — `codex_collab`, `codex_arbitration`, `codex_refactor`, `codex_db_migration`, `mlops-finetune`, `dagster_lineage_fixer`, `staging_reset`, `duckdb_staging_wiper`, `daily_worklog`.
+In addition, **skills** in [`.agent/skill/`](../../.agent/skill/) are workflow macros that compose the above personas — `codex_collab`, `codex_arbitration`, `codex_refactor`, `codex_db_migration`, `mlops-finetune`, `staging_reset`, `duckdb_staging_wiper`, `daily_worklog`. Note: `dagster_lineage_fixer.md` 는 skill template이 아니라 단일 reference 문서임.
 
 ### 1.1 Model allocation
 
-Persona count ≠ model usage. Nineteen personas collapse onto four model tiers:
+Persona count ≠ model usage. Twenty-four personas collapse onto four model tiers:
 
 | Model | Personas | Assigned work (what/why · how · is-it-alive · is-it-correct) | Target call frequency |
 |---|---|---|---|
