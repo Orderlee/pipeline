@@ -19,8 +19,8 @@ INSERT INTO labels (
     label_id, asset_id, labels_bucket, labels_key,
     label_format, label_tool, label_source, review_status,
     event_index, event_count, timestamp_start_sec, timestamp_end_sec,
-    caption_text, object_count, label_status, created_at
-) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+    caption_text, caption_text_en, object_count, label_status, created_at
+) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
 ON CONFLICT (label_id) DO UPDATE SET
     asset_id = EXCLUDED.asset_id,
     labels_bucket = EXCLUDED.labels_bucket,
@@ -34,6 +34,7 @@ ON CONFLICT (label_id) DO UPDATE SET
     timestamp_start_sec = EXCLUDED.timestamp_start_sec,
     timestamp_end_sec = EXCLUDED.timestamp_end_sec,
     caption_text = EXCLUDED.caption_text,
+    caption_text_en = EXCLUDED.caption_text_en,
     object_count = EXCLUDED.object_count,
     label_status = EXCLUDED.label_status,
     created_at = EXCLUDED.created_at
@@ -62,6 +63,7 @@ class PostgresProcessMixin:
                         label.get("timestamp_start_sec"),
                         label.get("timestamp_end_sec"),
                         label.get("caption_text"),
+                        label.get("caption_text_en"),
                         label.get("object_count", 0),
                         label.get("label_status", "completed"),
                         label.get("created_at", datetime.now()),

@@ -38,6 +38,15 @@ def test_no_dead_default_endpoints():
     assert "EMBEDDING_API_URL:-http://localhost:8004" in text
 
 
+def test_exit_is_forced():
+    """서빙이 owner 불일치 exit 를 409 로 거부하므로, 운영자 강제 해제는 force 를 실어야 한다.
+
+    force 없이 부르면 owner 를 모르는 복구 상황에서 거부당해 "해제했다"는 착각이 생긴다.
+    """
+    text = _SCRIPT.read_text()
+    assert "force=true" in text, "강제 해제인데 force 플래그가 없다"
+
+
 def test_serving_failure_is_not_silently_successful():
     """서빙 호출 실패 시 non-zero 로 끝나야 한다 — 조용한 no-op 방지."""
     text = _SCRIPT.read_text()

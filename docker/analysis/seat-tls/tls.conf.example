@@ -1,0 +1,22 @@
+# HTTPS 좌석 라우터 본 — 쓰려면 이 파일을 `tls.conf` 로 복사하고 cert/key 를 같은 디렉토리에 둔다
+# (`../gen-seat-cert.sh` 가 자체 서명 인증서를 만든다). `tls.conf` 는 .gitignore 대상이고 이 예시는 추적된다.
+#
+# 핵심: 라우팅을 여기 복제하지 않는다. `routing.inc` 한 줄이 HTTP 블록과 **같은** 좌석 배정·쿠키·
+# 업로드 경로·죽은 좌석 폴백을 전부 가져온다. 복제본을 두면 한쪽만 고쳐져 조용히 갈라진다.
+#
+# 켠 뒤 확인: `curl -k -sI https://<host>:5443/ -H 'Cookie: foseat=3' | grep -i x-seat` → `X-Seat: 3`.
+# 쿠키 없이 열면 `Location: /?seat=N` (자동 배정) 이 나와야 한다.
+
+server {
+    listen 5443 ssl;
+    listen [::]:5443 ssl;   # compose healthcheck 의 busybox wget 이 localhost 를 [::1] 로 푼다
+    http2 on;
+    server_name _;
+
+    ssl_certificate     /etc/nginx/seat-tls/cert.pem;
+    ssl_certificate_key /etc/nginx/seat-tls/key.pem;
+    ssl_protocols       TLSv1.2 TLSv1.3;
+    ssl_session_cache   shared:SEAT_TLS:4m;
+
+    include /etc/nginx/seat-tls/routing.inc;
+}

@@ -98,13 +98,23 @@ def list_event_json_keys(client, bucket: str, prefix: str) -> dict[str, str]:
 
 
 def list_sam3_json_keys(client, bucket: str, prefix: str) -> dict[str, str]:
-    """{image_stem → key} for */sam3_segmentations/*.json (COCO per-image)."""
+    """{image_stem → key} for */sam3_segmentations/*.json (COCO per-image).
+
+    `*.pseudo.json` 은 검수 **전** 모델 출력의 write-once 스냅샷이라 태스크 소스가 아니다.
+    `Path(key).stem` 이 `<stem>.pseudo` 라는 별개 stem 을 만들어 같은 이미지가 두 번
+    열거되고 있었다(2026-09-21 실측: 프로젝트 823 에 동일 이미지 task 2건, vlm-labels 의
+    SAM3 JSON 39,056건 중 19,528건이 pseudo). 중복 검수도 문제지만 더 나쁜 건 되쓰기다 —
+    pseudo 태스크에 단 주석은 ls_sync 가 `<stem>.pseudo.json` 으로 되돌려 써서 스냅샷이
+    사람 수정본으로 덮이고, pseudo vs GT 비교라는 이 파일의 존재 이유가 사라진다.
+    """
     paginator = client.get_paginator("list_objects_v2")
     index: dict[str, str] = {}
     for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
         for obj in page.get("Contents", []):
             key = obj["Key"]
             parts = key.split("/")
+            if key.endswith(".pseudo.json"):
+                continue
             if key.endswith(".json") and len(parts) >= 2 and parts[-2] == "sam3_segmentations":
                 index[Path(key).stem] = key
     return index

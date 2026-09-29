@@ -123,7 +123,7 @@ ON CONFLICT (entity_type, entity_id, model_name) DO UPDATE SET
 """
 
 _PENDING_CAPTIONS_SQL = """
-SELECT labels.label_id, labels.asset_id, labels.caption_text
+SELECT labels.label_id, labels.asset_id, labels.caption_text, labels.caption_text_en
 FROM labels
 WHERE labels.caption_text IS NOT NULL AND labels.caption_text <> ''
 AND NOT EXISTS (
@@ -145,7 +145,7 @@ AND NOT EXISTS (
 """
 
 _ALL_CAPTIONS_SQL = """
-SELECT labels.label_id, labels.asset_id, labels.caption_text
+SELECT labels.label_id, labels.asset_id, labels.caption_text, labels.caption_text_en
 FROM labels
 WHERE labels.caption_text IS NOT NULL AND labels.caption_text <> ''
 ORDER BY labels.label_id
@@ -185,7 +185,7 @@ LIMIT %(limit)s
 """
 
 _REEMBED_CAPTION_TARGETS_SQL = """
-SELECT labels.label_id, labels.asset_id, labels.caption_text
+SELECT labels.label_id, labels.asset_id, labels.caption_text, labels.caption_text_en
 FROM image_embeddings inc
 JOIN labels ON labels.label_id = inc.entity_id
 WHERE inc.entity_type = 'caption' AND inc.model_name = %(incumbent)s

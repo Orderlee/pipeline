@@ -42,6 +42,16 @@ import numpy as np
 #                 filepath_tail = `<부모폴더>/<파일명>` (frames_eval·sourcei_build 원장)
 #                 sample_id     = key 자체가 FiftyOne sample id (frames_bank_ledger 원장)
 #   embed_field   sample_id 프로필에서 임베딩을 스트리밍할 필드 (embed.npz 부재 시 폴백)
+#
+# ── 원장 없는 현장용 키 3종 (2026-09-21) ────────────────────────────────────
+# 위 3프로필은 각자 빌더가 만든 `work/{ledger.jsonl,embed.npz}` 를 정본으로 읽는다.
+# 업로드 킷으로 들어온 현장은 그 원장이 **없고** GT 가 FiftyOne 필드에만 있다. 아래 키를
+# 선언하면 `load_all()` 이 `_load_live_matrix()` 경로를 타서 FiftyOne 에서 직접 적재한다.
+# **이 키가 없는 프로필의 동작은 한 줄도 바뀌지 않는다** (기존 3벌은 선언하지 않는다).
+#   gt_field      GT Classification 필드명. 선언 자체가 "원장 없음" 스위치다
+#   src_field     `src`(구 src_video) 로 쓸 샘플 필드. 없으면 전부 "unknown"
+#   stages        이 프로필에서 **성립한다고 판정한** 스테이지 목록. 선언하면 main() 이
+#                 sourcei/frames/sourceh 하드코딩 분기 대신 이 목록만 돈다 (허용 밖은 거부).
 PROFILES = {
     "sourceh": {
         "root": "/data/fiftyone/sourceh_v2",
@@ -92,6 +102,38 @@ PROFILES = {
         "expected_gt_source": frozenset({"folder", "filename", "caption", "none"}),
         "group_field": "camera", "group_plural": "cams", "group_unit": "대",
         "key_join": "filepath_tail", "embed_field": None,
+    },
+    # sitej 지하철 certbody 코퍼스 — 업로드 킷으로 들어온 현장. **원장(work/) 이 없다**:
+    # `/data/fiftyone/` 아래 sitej 디렉토리 자체가 없고 GT 는 FiftyOne `ground_truth`
+    # 필드에만 있다(2026-09-21 실측 2,728장 / GT 결손 0 / `embedding` 1024-d 결손 0).
+    # 그래서 `gt_field` 를 선언해 `_load_live_matrix()` 경로로 편입한다.
+    "sitej": {
+        "root": "/data/fiftyone/sitej",          # 산출물(work/geometry/wave_*.npz) 전용 — main() 이 생성
+        "dataset": "sitej_subway",
+        "prompt_dir": "/data/fiftyone/sourceh/prompts",   # 뱅크 npz 공유 (버전 전역 자원)
+        # ⚠️ `intrustion` 은 데이터의 실제 철자다(오타이지만 정본). 고치면 기존
+        #    `cos_best_intrustion` 등과의 연결이 끊긴다 — `sitej_subway_extend.py` §SPELL 참조.
+        # ⚠️ 클래스 4 가 frames 프로필에서는 `smoking` 이다. 정수는 **뱅크가 정하고**
+        #    이름만 프로필이 붙이므로, 5클래스(smoking) 뱅크를 이 프로필로 돌리면
+        #    `wave_iou_intrustion_*` 에 smoking IoU 가 들어간다. 5클래스 뱅크를 쓰려면
+        #    그 뱅크의 클래스 4 가 무엇인지 먼저 확인할 것.
+        "class_names": {0: "normal", 1: "falldown", 2: "fire", 3: "smoke", 4: "intrustion"},
+        "map_yaml": None,
+        # 읽을 원장이 없어 `assert_gt_source_pure` 가 **돌지 않는다**. 빈 집합 = 혹시 원장이
+        # 생겨 그 경로를 타게 되면 fail-closed. 같은 자리를 지키는 게이트는
+        # `_load_live_matrix()` 의 라벨 도메인 검사다.
+        "expected_gt_source": frozenset(),
+        "gt_field": "ground_truth",
+        # ⚠️ `video_stem` 이 아니다 — 373행이 비어 있고, 이 코퍼스는 연출 동시녹화라
+        #    영상 단위는 홀드아웃 누수 축이다(`cohort.py` 모듈 주석). session 은 결손 0·30종.
+        "src_field": "session",
+        # 군집키도 session (camera 58대 아님 — cohort.py 와 동일 근거). 다만 `load_groups()`
+        # 는 원장을 읽으므로 이 축을 쓰는 site/screens 는 아직 성립하지 않는다 → stages 제외.
+        "group_field": "session", "group_plural": "sessions", "group_unit": "세션",
+        "key_join": "sample_id", "embed_field": "embedding", "frame_key_field": "id",
+        # wave 만 검증했다. 넓힐 때는 그 스테이지의 선행물(원장·뱅크 2벌·GT 분모·
+        # `-prompts` 재빌드 파괴성)을 확인하고 이 한 줄에 추가한다.
+        "stages": ("wave", "selftest"),
     },
 }
 PROFILE = "sourceh"
@@ -257,18 +299,103 @@ def assert_gt_source_pure(rows, context: str) -> None:
         )
 
 
+def _assert_cohort_class_order(dataset: str, classes: list[str]) -> None:
+    """`cohort.py` 에 등록된 코호트면 **클래스 순서가 같아야** 한다 — 순서가 곧 정수 GT 다.
+
+    같은 목록이 두 곳(`PROFILES[...]['class_names']` / `cohort.COHORTS`)에 살면 한쪽만
+    고쳤을 때 GT 정수가 통째로 밀리는데 **숫자는 멀쩡히 나온다**(조용한 오답). 미등록
+    코호트는 통과시킨다 — 레지스트리는 이 파일의 선행조건이 아니다.
+    """
+    try:
+        import cohort                              # 같은 디렉토리 형제 모듈
+    except ImportError:                            # 레지스트리 없이도 이 파일은 돌아야 한다
+        return
+    cfg = cohort.COHORTS.get(dataset)
+    if not cfg:
+        return
+    want = [cfg["negative_class"], *cfg["target_classes"]]
+    if want != classes:
+        raise SystemExit(
+            f"클래스 순서 불일치 — PROFILES['{PROFILE}']['class_names']={classes} vs "
+            f"cohort.COHORTS['{dataset}']={want}. 순서가 정수 GT 라 한 칸만 밀려도 전 지표가 "
+            "조용히 틀린다. 두 곳을 같게 맞출 것")
+
+
+def _load_live_matrix() -> tuple[list[str], np.ndarray, np.ndarray, np.ndarray]:
+    """원장이 없는 프로필의 (keys, X, gt, src) — **FiftyOne 이 GT·임베딩의 정본**.
+
+    sourceh/frames/sourcei 는 각자 빌더가 만든 `work/ledger.jsonl` + `work/embed.npz` 를 읽는다.
+    업로드 킷으로 들어온 현장(sitej_subway)은 그 원장이 없고 GT 가 FiftyOne 필드에만 있다.
+    원장 생성 배관을 새로 만드는 대신, 프로필이 `gt_field` 를 선언하면 이 경로를 탄다 —
+    새 현장 편입이 `PROFILES` 한 항목으로 끝난다.
+
+    ⚠️ `assert_gt_source_pure` 는 여기서 돌지 않는다(읽을 원장이 없다). 같은 자리를 지키는
+       게이트는 **라벨 도메인 검사**다: GT 문자열이 `class_names` 밖이면 시작 자체를
+       거부한다 (`cohort.load_cohort` 의 `G0_UNKNOWN_GT_CLASS` 와 같은 계약).
+    ⚠️ 임베딩 스트리밍은 `_stream_frames_embeddings()` 를 그대로 쓴다 — 이름만 frames 일
+       뿐 프로필의 `embed_field`/`dataset` 만 보는 범용 함수다(ListField 를 통째로 읽으면
+       수 GB 가 뜨는 함정을 청크로 막는 쪽이 본체).
+    """
+    import fiftyone as fo
+
+    p = PROFILES[PROFILE]
+    ds = fo.load_dataset(p["dataset"])
+    cn = p["class_names"]
+    if sorted(cn) != list(range(len(cn))):
+        raise SystemExit(f"class_names 키가 0..{len(cn) - 1} 연속이 아니다: {sorted(cn)} — "
+                         "정수 GT 가 이 인덱스다")
+    classes = [cn[i] for i in range(len(cn))]
+    _assert_cohort_class_order(p["dataset"], classes)
+
+    ids = ds.values("id")
+    labs = ds.values(f"{p['gt_field']}.label")
+    srcs = ds.values(p["src_field"]) if p.get("src_field") else [None] * len(ids)
+    unknown = sorted({x for x in labs if x is not None and x not in classes})
+    if unknown:
+        raise SystemExit(
+            f"{p['dataset']}.{p['gt_field']}: class_names 에 없는 GT 라벨 {unknown} "
+            f"(허용 {classes}). 철자를 임의로 고치면 조인이 깨진다 — 데이터의 오타도 정본이다")
+    lab_of, src_of = dict(zip(ids, labs)), dict(zip(ids, srcs))
+
+    keys, X = _stream_frames_embeddings(ids)
+    nrm = np.linalg.norm(X, axis=1, keepdims=True)
+    bad = (nrm[:, 0] <= 0)
+    if bad.any():                                  # 0벡터를 나누면 NaN 이 조용히 전 지표에 번진다
+        log(f"{PROFILE}: ⚠️ 0-노름 임베딩 {int(bad.sum()):,}건 제외")
+        keep = ~bad
+        X, nrm = X[keep], nrm[keep]
+        keys = [k for k, x in zip(keys, keep) if x]
+    X = X / nrm
+    # GT 결손은 -1 (`_load_frames_matrix` 와 같은 관례). 기여도 누적에서만 빠지고 IoU 자체는
+    # GT 와 무관하므로 그 프레임에도 `wave_iou_*` 는 정상적으로 붙는다.
+    gt = np.array([classes.index(lab_of[k]) if lab_of.get(k) is not None else -1
+                   for k in keys], dtype=np.int64)
+    nogt = int((gt < 0).sum())
+    if nogt:
+        log(f"{PROFILE}: ⚠️ GT 없는 프레임 {nogt:,}건 — gt=-1 (기여도 누적 제외)")
+    src = np.array([src_of.get(k) or "unknown" for k in keys])
+    log(f"{PROFILE}: FiftyOne 직접 적재 {len(keys):,}장 (GT 보유 {len(keys) - nogt:,}) — "
+        f"원장 없음, gt_field={p['gt_field']} / embed_field={p['embed_field']} / "
+        f"src_field={p.get('src_field')}")
+    return keys, X, gt, src
+
+
 def load_all():
-    led = jsonl_load(f"{WORK}/ledger.jsonl")
-    # GT 깔때기 — 이 파일의 모든 스테이지가 여기서 gt 를 받는다. 조립 **전에** 순도를 막는다.
-    assert_gt_source_pure(led.values(), context=f"load_all[{PROFILE}]")
-    d = np.load(f"{WORK}/embed.npz", allow_pickle=True)
-    keys = [str(k) for k in d["key"]]
-    mask = [k in led for k in keys]
-    keys = [k for k, m in zip(keys, mask) if m]
-    X = d["vec"][np.array(mask)].astype(np.float32)
-    X /= np.linalg.norm(X, axis=1, keepdims=True)
-    gt = np.array([led[k]["gt_class"] for k in keys], dtype=np.int64)
-    src = np.array([led[k]["src_video"] for k in keys])
+    if PROFILES[PROFILE].get("gt_field"):
+        # 원장 없는 프로필 — GT·임베딩을 FiftyOne 에서 직접 읽는다 (`_load_live_matrix` 주석).
+        keys, X, gt, src = _load_live_matrix()
+    else:
+        led = jsonl_load(f"{WORK}/ledger.jsonl")
+        # GT 깔때기 — 이 파일의 모든 스테이지가 여기서 gt 를 받는다. 조립 **전에** 순도를 막는다.
+        assert_gt_source_pure(led.values(), context=f"load_all[{PROFILE}]")
+        d = np.load(f"{WORK}/embed.npz", allow_pickle=True)
+        keys = [str(k) for k in d["key"]]
+        mask = [k in led for k in keys]
+        keys = [k for k, m in zip(keys, mask) if m]
+        X = d["vec"][np.array(mask)].astype(np.float32)
+        X /= np.linalg.norm(X, axis=1, keepdims=True)
+        gt = np.array([led[k]["gt_class"] for k in keys], dtype=np.int64)
+        src = np.array([led[k]["src_video"] for k in keys])
     banks = {v: load_bank(v) for v in VERSIONS}
     for v, b in banks.items():
         # gidx 블록 = 뱅크당 GIDX_OFFSET. 넘치면 크래시가 아니라 **다른 버전 문장으로의
@@ -945,8 +1072,13 @@ def _bank_rows(texts: list, labels: list, cls_map: dict) -> tuple[list[tuple[int
     return rows, dropped
 
 
-def stage_bankfrom(tag: str, version: str, notes: str | None = None) -> None:
+def stage_bankfrom(tag: str, version: str, notes: str | None = None, view=None) -> None:
     """App 에서 **태그한 문장** → 뱅크 CSV + provenance + 원장 1행 (큐레이션 버전 확정).
+
+    `view` 를 주면(App 오퍼레이터 — 인프로세스 호출이라 DatasetView 전달 가능) 태그 대신 그 뷰를
+    읽는다. 태그는 데이터셋 전역의 **가변 마커**라 다른 실행이 untag/tag 할 수 있고, 같은 파라미터의
+    재클릭만으로도 읽기 사이에 끼어 클래스가 어긋난 CSV 가 조용히 나왔다(적대 검증 재현, 2026-09-08).
+    CLI 는 view=None 이라 종전대로 태그로 모은다.
 
     ## 왜 태그인가 (플러그인 operator 를 만들지 않은 이유)
 
@@ -988,17 +1120,27 @@ def stage_bankfrom(tag: str, version: str, notes: str | None = None) -> None:
 
     import fiftyone as fo
 
+    # 버전명은 파일명(authored_<버전>.csv)·원장 version_tag 가 된다 — App 오퍼레이터와 같은 계약을
+    # CLI 경로에도 건다 (`/` 등이 들어오면 파일 생성 단계에서야 죽는다).
+    if not re.fullmatch(r"[A-Za-z0-9._-]+", version or ""):
+        raise SystemExit(f"bankfrom: 버전명 {version!r} — 영숫자·점·하이픈·밑줄만 허용")
     name = f"{PROFILES[PROFILE]['dataset']}-prompts"
     if name not in fo.list_datasets():
         raise SystemExit(f"bankfrom: 데이터셋 {name} 없음 — `promptmap` 스테이지를 먼저 돌려라")
     ds = fo.load_dataset(name)
-    view = ds.match_tags(tag)
+    view = view if view is not None else ds.match_tags(tag)
     if not view.count():
         raise SystemExit(f"bankfrom: 태그 {tag!r} 인 문장이 0개 "
                          f"(현재 태그: {ds.count_sample_tags()})")
 
-    rows, dropped = _bank_rows(view.values("text"), view.values("category.label"), CLASS_NAMES)
-    parents = collections.Counter(x for x in view.values("bank_version.label") if x)
+    # 세 필드를 **한 aggregation** 으로 읽는다 — 따로 읽으면 호출 사이에 다른 실행의 태그 변경이
+    # 끼어 texts 와 labels 가 다른 스냅샷이 되고 zip 이 어긋난다(클래스 뒤바뀐 CSV).
+    texts, labels, parents_raw = view.values(["text", "category.label", "bank_version.label"])
+    if not (len(texts) == len(labels) == len(parents_raw)):   # zip 은 짧은 쪽으로 조용히 절단한다
+        raise SystemExit(f"bankfrom: 필드 길이 불일치 text={len(texts)} label={len(labels)} "
+                         f"version={len(parents_raw)} — 읽기 중 데이터셋이 바뀌었다")
+    rows, dropped = _bank_rows(texts, labels, CLASS_NAMES)
+    parents = collections.Counter(x for x in parents_raw if x)
     counts = collections.Counter(CLASS_NAMES[c] for c, _ in rows)
 
     out = f"{PROMPT_DIR}/authored_{version}.csv"
@@ -1086,6 +1228,13 @@ def _bankfrom_ledger(version: str, rows: list, prov: dict) -> None:
                 (bank_id, version, f"{PROMPT_DIR}/authored_{version}.csv",
                  prov["model_name"], len(rows), json.dumps(prov["class_counts"]), parent_id,
                  "prompt_geometry.bankfrom", json.dumps(prov, ensure_ascii=False)))
+            # bank_id 가 결정적(uuid5)이라 같은 버전명 재발행은 여기서 no-op 이 된다. 그대로
+            # "원장 등록" 을 찍으면 CSV/JSON 은 새 내용, 원장은 첫 발행 내용인데 App 은 '등록됨'
+            # 을 보인다(rm 안내를 따른 재발행에서 결정론적으로 발생). rowcount 로 가른다.
+            if cur.rowcount == 0:
+                log(f"bankfrom {version}: ⚠️ 원장에 같은 버전(또는 bank_id={bank_id}) 이 이미 있어 "
+                    "**갱신하지 않음** — 원장 내용은 첫 발행분이라 이 CSV 와 다를 수 있다. 문장 INSERT 도 건너뜀")
+                return
             execute_values(
                 cur,
                 "INSERT INTO bank_sentences (sentence_id, bank_id, content_hash, text, "
@@ -5982,6 +6131,26 @@ def main() -> None:
 
     assert_mem_budget(args.mem_budget_gb)
     os.makedirs(GEO, exist_ok=True)
+
+    # 프로필이 허용 스테이지를 **선언하면** 그 목록만 돈다. 새 현장을 PROFILES 한 항목으로
+    # 편입하기 위한 갈래로, 아래 sourcei/frames/sourceh 하드코딩 분기를 더 늘리지 않는다.
+    # 기존 3프로필에는 `stages` 키가 없으므로 이 분기를 **타지 않는다**(동작 불변).
+    declared = PROFILES[PROFILE].get("stages")
+    if declared:
+        table = {"wave": stage_wave, "selftest": stage_selftest}
+        stages = list(declared) if args.stage == "all" else [args.stage]
+        for st in stages:
+            log(f"───── stage: {st} (profile={PROFILE}) ─────")
+            if st not in declared:
+                raise SystemExit(
+                    f"{st} 는 프로필 '{PROFILE}' 에서 성립한다고 판정된 적이 없다 — 허용: "
+                    f"{sorted(declared)}. 넓히려면 선행물을 확인하고 "
+                    f"PROFILES['{PROFILE}']['stages'] 에 추가할 것")
+            if st not in table:                    # 선언은 됐는데 배선이 없다 = 이 파일의 버그
+                raise SystemExit(f"{st} 가 stages 에 선언됐지만 이 분기의 table 에 없다")
+            table[st]()
+        log("완료")
+        return
 
     if PROFILE == "sourcei":
         # 허용 스테이지만 — 팩토리얼/절제/플립은 **동일도메인 뱅크 2벌**이 있어야 성립하고

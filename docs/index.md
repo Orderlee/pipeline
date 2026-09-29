@@ -40,6 +40,7 @@
   - [운영 트러블슈팅 런북](runbook.md) — 및 주제별 런북 모음 [`runbook/`](runbook/)
   - [Label Studio 운영 가이드](references/label-studio-ops-guide.md)
   - [FiftyOne 운영](runbook/fiftyone-operations.md), [HNSW 튜닝](runbook/hnsw-tuning.md)
+  - [GPU0 ComfyUI · GenAI Studio 운영](runbook/comfyui-local-genai.md)
   - [PG 복구 드릴](runbook/pg-restore-drill.md), [임베딩 백업/복구](runbook/embedding-backup-restore.md)
   - [NAS 10.0.0.36 → 10.0.0.51 마이그레이션](references/minio-host-endpoint-migration.md)
   - [Production source-a/source-b 라벨·전처리 정리 Runbook](references/production-label-preprocess-cleanup-runbook.md)

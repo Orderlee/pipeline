@@ -3,3 +3,10 @@ uvicorn[standard]
 open_clip_torch>=2.24
 pillow
 python-multipart
+# PLM(PE-Lang+Llama) 생성 백엔드용. torch 는 베이스 이미지에 이미 있다.
+# ⚠️ <5 상한이 있는 이유: transformers 5.x 는 torch>=2.5 를 요구하는데 이 이미지의 베이스는
+#    pytorch 2.4.0-cu124 다. 5.x 를 깔면 torch 백엔드가 통째로 비활성(is_torch_available=False)
+#     → 모델이 안 뜨는데 import 는 성공해서 조용히 실패한다 (2026-09-03 실측).
+#    상한을 풀려면 베이스 이미지 torch 부터 올릴 것 — PE-Core 서빙에 영향 가는 변경이다.
+transformers>=4.52,<5
+accelerate

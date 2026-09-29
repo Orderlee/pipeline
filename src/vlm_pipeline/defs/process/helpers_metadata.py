@@ -59,6 +59,8 @@ def _build_gemini_label_rows(
 
         ko_caption = str(event.get("ko_caption") or "").strip()
         en_caption = str(event.get("en_caption") or "").strip()
+        # caption_text 는 표시용 폴백(ko 우선) — 기존 동작 유지. caption_text_en 은 영문만 담고
+        # 폴백하지 않는다(언어 혼재 방지). migration 025 참조.
         caption_text = ko_caption or en_caption or None
         rows.append(
             {
@@ -75,6 +77,7 @@ def _build_gemini_label_rows(
                 "timestamp_start_sec": start_sec,
                 "timestamp_end_sec": end_sec,
                 "caption_text": caption_text,
+                "caption_text_en": en_caption or None,
                 "object_count": 0,
                 "label_status": "completed",
             }

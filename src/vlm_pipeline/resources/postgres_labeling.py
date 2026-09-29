@@ -554,6 +554,7 @@ class PostgresLabelingMixin(PostgresDetectionMixin):
                     row.get("timestamp_start_sec"),
                     row.get("timestamp_end_sec"),
                     row.get("caption_text"),
+                    row.get("caption_text_en"),
                     row.get("object_count", 0),
                     row.get("label_status", "completed"),
                     row.get("created_at", datetime.now()),
@@ -579,8 +580,8 @@ class PostgresLabelingMixin(PostgresDetectionMixin):
                             label_id, asset_id, labels_bucket, labels_key,
                             label_format, label_tool, label_source, review_status,
                             event_index, event_count, timestamp_start_sec, timestamp_end_sec,
-                            caption_text, object_count, label_status, created_at
-                        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                            caption_text, caption_text_en, object_count, label_status, created_at
+                        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                         """,
                         payload_rows,
                     )

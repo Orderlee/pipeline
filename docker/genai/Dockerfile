@@ -6,10 +6,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-COPY requirements.txt .
+COPY genai/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY . /app/
+COPY genai/ /app/
+COPY comfyui/model_manifest.json /app/comfy_contract/model_manifest.json
+COPY comfyui/workflows/ /app/comfy_contract/workflows/
 
 # HTMX 가 static/ 에 없으면 CDN 폴백 — 실제 prod 에선 사전 다운로드 권장
 RUN test -f /app/static/htmx.min.js || \

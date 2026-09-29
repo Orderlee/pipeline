@@ -17,6 +17,7 @@ from pathlib import Path
 
 from dagster import DefaultSensorStatus, SkipReason, sensor
 
+from vlm_pipeline.lib.atomic_json import write_json_atomic
 from vlm_pipeline.lib.env_utils import int_env
 from vlm_pipeline.lib.network_probe import probe_path_reachable
 from vlm_pipeline.lib.runtime_profile import resolve_runtime_profile
@@ -324,10 +325,7 @@ def auto_bootstrap_manifest_sensor(context):
             }
 
             try:
-                (pending_dir / manifest_filename).write_text(
-                    json.dumps(manifest, ensure_ascii=False, indent=2),
-                    encoding="utf-8",
-                )
+                write_json_atomic(pending_dir / manifest_filename, manifest)
             except Exception as exc:  # noqa: BLE001
                 context.log.warning(f"manifest 저장 실패: {manifest_filename}: {exc}")
                 unit_manifest_failed = True

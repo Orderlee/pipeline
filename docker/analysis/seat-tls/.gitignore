@@ -1,0 +1,4 @@
+# 인증서와 키는 절대 커밋하지 않는다. gen-seat-cert.sh 가 호스트에서 생성한다.
+cert.pem
+key.pem
+tls.conf

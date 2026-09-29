@@ -10,6 +10,7 @@ Mixin 구조:
     PostgresDetectionMixin (image_labels CRUD + detection 대상 이미지 조회; inherited via Labeling — not listed explicitly to keep C3 MRO valid)
     PostgresSpecMixin
     PostgresGenAIMixin    (genai_batches / genai_jobs CRUD + status rollup)
+    PostgresCoverageMixin (033 synthetic coverage 제어평면 — policy/snapshot/campaign/task)
 
 Import:
     from vlm_pipeline.resources.postgres import PostgresResource
@@ -19,6 +20,7 @@ from dagster import ConfigurableResource
 
 from .postgres_base import PostgresBaseMixin
 from .postgres_build import PostgresBuildMixin
+from .postgres_coverage import PostgresCoverageMixin
 from .postgres_dedup import PostgresDedupMixin
 from .postgres_embedding import PostgresEmbeddingMixin
 from .postgres_genai import PostgresGenAIMixin
@@ -42,6 +44,7 @@ class PostgresResource(
     PostgresGenAIMixin,
     PostgresEmbeddingMixin,
     PostgresTrainMixin,
+    PostgresCoverageMixin,
     ConfigurableResource,
 ):
     """PostgreSQL 통합 리소스 — 섹션별 CRUD 메서드 mixin 합성.

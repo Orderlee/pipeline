@@ -41,6 +41,20 @@
     <p class="gs-hint">선택한 방법별로 step 이 dispatch_stage_job 에 추가됩니다.
       <code>archive_move</code> → <code>frame_extract</code> → <code>gemini_*</code> / <code>yolo_detect</code>
       순으로 실행.</p>
+    {# 2026-09-21: 엔진별(정확히는 batch.output_media 별) 기본값. comfy_local 등 이미지
+       엔진은 video 메서드가 의미 없고, 넣으면 dispatch 가 빈 video LS 프로젝트를 만든다
+       (batch b4fe9a6f-339 → 유령 project 821). video 전용 항목은 이미지 배치에서
+       disabled — disabled checkbox 는 submit 되지 않아 서버 400 을 미연에 막는다.
+       서버측 계약은 jobs/promote.py::validate_labeling_method_for_media. #}
+    {% set is_image_batch = batch.output_media != 'video' %}
+    {% set video_only = ['timestamp_video', 'captioning_video', 'classification_video'] %}
+    {% set default_methods = ['captioning_image', 'bbox'] if is_image_batch else ['timestamp_video'] %}
+    {% if is_image_batch %}
+    <p class="gs-hint" style="font-size:12px;color:#9ce29c">
+      이미지 배치(<code>{{ batch.engine }}</code> / <code>{{ batch.output_media }}</code>) —
+      기본값 <code>captioning_image + bbox</code>. video 전용 방법은 선택할 수 없습니다.
+    </p>
+    {% endif %}
     {% set methods = [
       ('timestamp_video', 'timestamp (video)', 'Gemini 가 비디오에서 이벤트 구간(시작/끝 sec)을 검출'),
       ('captioning_video', 'captioning (video)', 'timestamp 후 각 이벤트 구간 캡션 생성'),
@@ -52,14 +66,20 @@
     ] %}
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px 18px;margin-bottom:18px">
     {% for key, label, hint in methods %}
-      <label style="display:flex;align-items:flex-start;gap:8px;cursor:pointer;
+      {% set blocked = is_image_batch and key in video_only %}
+      <label style="display:flex;align-items:flex-start;gap:8px;
+                    cursor:{{ 'not-allowed' if blocked else 'pointer' }};
+                    opacity:{{ '0.45' if blocked else '1' }};
                     padding:8px 12px;border:1px solid #2a2a2e;border-radius:6px">
         <input type="checkbox" name="labeling_method" value="{{ key }}"
                style="margin-top:3px"
-               {% if key == 'timestamp_video' %}checked{% endif %}>
+               {% if blocked %}disabled{% endif %}
+               {% if key in default_methods %}checked{% endif %}>
         <div>
           <div style="font-weight:600">{{ label }}</div>
-          <div class="gs-hint" style="font-size:12px">{{ hint }}</div>
+          <div class="gs-hint" style="font-size:12px">
+            {{ hint }}{% if blocked %} <strong>(이미지 배치에서는 사용 불가)</strong>{% endif %}
+          </div>
         </div>
       </label>
     {% endfor %}

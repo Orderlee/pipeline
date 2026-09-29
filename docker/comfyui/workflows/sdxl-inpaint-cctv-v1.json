@@ -1,0 +1,27 @@
+{
+  "workflow_id": "sdxl-inpaint-cctv-v1",
+  "version": 1,
+  "output_node_id": "10",
+  "bindings": {
+    "source_image": ["1", "image"],
+    "mask_image": ["2", "image"],
+    "prompt": ["4", "text"],
+    "negative_prompt": ["5", "text"],
+    "seed": ["7", "seed"],
+    "steps": ["7", "steps"],
+    "cfg": ["7", "cfg"],
+    "denoise": ["7", "denoise"],
+    "filename_prefix": ["10", "filename_prefix"]
+  },
+  "prompt": {
+    "1": {"class_type": "LoadImage", "inputs": {"image": "source.png"}},
+    "2": {"class_type": "LoadImageMask", "inputs": {"image": "mask.png", "channel": "red"}},
+    "3": {"class_type": "CheckpointLoaderSimple", "inputs": {"ckpt_name": "sd_xl_base_1.0_0.9vae.safetensors"}},
+    "4": {"class_type": "CLIPTextEncode", "inputs": {"text": "Describe the requested CCTV edit", "clip": ["3", 1]}},
+    "5": {"class_type": "CLIPTextEncode", "inputs": {"text": "illustration, painting, text, watermark, distorted anatomy", "clip": ["3", 1]}},
+    "6": {"class_type": "VAEEncodeForInpaint", "inputs": {"pixels": ["1", 0], "vae": ["3", 2], "mask": ["2", 0], "grow_mask_by": 6}},
+    "7": {"class_type": "KSampler", "inputs": {"seed": 0, "steps": 30, "cfg": 6.0, "sampler_name": "dpmpp_2m", "scheduler": "karras", "positive": ["4", 0], "negative": ["5", 0], "model": ["3", 0], "latent_image": ["6", 0], "denoise": 0.85}},
+    "9": {"class_type": "VAEDecode", "inputs": {"samples": ["7", 0], "vae": ["3", 2]}},
+    "10": {"class_type": "SaveImage", "inputs": {"filename_prefix": "genai/sdxl-inpaint", "images": ["9", 0]}}
+  }
+}

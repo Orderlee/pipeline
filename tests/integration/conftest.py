@@ -37,6 +37,7 @@ for _mod in list(sys.modules):
 
 
 PostgresBaseMixin = importlib.import_module("vlm_pipeline.resources.postgres_base").PostgresBaseMixin
+PostgresCoverageMixin = importlib.import_module("vlm_pipeline.resources.postgres_coverage").PostgresCoverageMixin
 PostgresDedupMixin = importlib.import_module("vlm_pipeline.resources.postgres_dedup").PostgresDedupMixin
 PostgresIngestMixin = importlib.import_module("vlm_pipeline.resources.postgres_ingest").PostgresIngestMixin
 PostgresLabelingMixin = importlib.import_module("vlm_pipeline.resources.postgres_labeling").PostgresLabelingMixin
@@ -53,6 +54,7 @@ class _PgIntegrationResource(
     PostgresDedupMixin,
     PostgresLabelingMixin,
     PostgresSpecMixin,
+    PostgresCoverageMixin,
 ):
     def __init__(self, dsn: str, *, pool_min: int = 1, pool_max: int = 2) -> None:
         self.dsn = dsn

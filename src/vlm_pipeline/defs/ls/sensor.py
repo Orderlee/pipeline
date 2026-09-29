@@ -21,6 +21,7 @@ presigned URL 갱신:
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import sys
 import time
@@ -52,7 +53,11 @@ from vlm_pipeline.lib.sanitizer import sanitize_path_component
 
 # labeling_method 값 → ls_tasks.py create --mode 매핑
 _VIDEO_METHODS = {"timestamp_video", "timestamp", "video"}
-_IMAGE_METHODS = {"bbox", "segmentation", "image"}
+# captioning_image 는 2026-09-21 까지 빠져 있었다. 그때까지는 env_utils._OUTPUT_DEPENDENCIES 가
+# captioning_image 에 timestamp_video 를 항상 끌고 붙여서 video 경로로 새던 덕에 드러나지
+# 않았는데, 이미지 배치에서 그 의존성 확장을 끊고 나면 captioning_image 단독 dispatch 가
+# video/image 어느 프로젝트도 못 만들고 조용히 사라진다.
+_IMAGE_METHODS = {"bbox", "segmentation", "image", "captioning_image"}
 
 LS_TASKS_SCRIPT = Path(os.environ.get("LS_TASKS_SCRIPT", Path(__file__).parents[3] / "gemini" / "ls_tasks.py"))
 
@@ -74,7 +79,26 @@ def _fetch_pending_dispatch_requests() -> list[dict]:
             cur.execute(
                 """
                 SELECT request_id, folder_name, labeling_method, categories, classes,
-                       COALESCE(requested_at, completed_at, created_at) AS batch_ts
+                       COALESCE(requested_at, completed_at, created_at) AS batch_ts,
+                       -- dispatch_requests 에는 source_type 컬럼이 없어 합성 여부를 알 수 없다.
+                       -- 정본인 raw_files 로 folder 역조회한다 (dispatch 가 완료된 요청만
+                       -- 대상이므로 이 시점엔 raw_files 행이 이미 존재한다).
+                       EXISTS (
+                           SELECT 1 FROM raw_files rf
+                            WHERE rf.source_unit_name = dispatch_requests.folder_name
+                              AND rf.source_type = 'genai_output'
+                       ) AS is_synthetic,
+                       -- 검수자 화면의 출처 배지용. dispatch_requests 에는 genai_engine 도 없어
+                       -- 같은 정본에서 읽는다. genai_engine 이 NULL 이 아닌 행만 보므로
+                       -- idx_raw_files_genai_engine 으로 좁혀진다 (합성 코호트는 소수).
+                       (
+                           SELECT rf2.genai_engine
+                             FROM raw_files rf2
+                            WHERE rf2.source_unit_name = dispatch_requests.folder_name
+                              AND rf2.source_type = 'genai_output'
+                              AND rf2.genai_engine IS NOT NULL
+                            LIMIT 1
+                       ) AS genai_engine
                 FROM dispatch_requests
                 WHERE status = 'completed'
                   AND COALESCE(ls_task_status, 'pending') = 'pending'
@@ -92,12 +116,98 @@ def _fetch_pending_dispatch_requests() -> list[dict]:
                 # fallback. UI 사용자가 둘 중 어느 쪽에 넣어도 LS task 생성되게.
                 "classes": r[4],
                 "batch_ts": r[5],
+                "is_synthetic": bool(r[6]),
+                # 합성 배치의 생성 엔진 (comfy_local/kling/veo/...). 합성이 아니면 NULL.
+                "genai_engine": r[7] or "",
             }
             for r in rows
             if r[1]
         ]
     finally:
         conn.close()
+
+
+_RESULT_RE = re.compile(
+    r"\[RESULT\]\s+mode=(?P<mode>\w+)\s+created=(?P<created>\d+)\s+skipped=(?P<skipped>\d+)"
+    r"\s+error=(?P<error>\d+)\s+gated_out=(?P<gated_out>\d+)"
+)
+
+
+def _parse_create_result(stdout: str) -> dict | None:
+    """`ls_tasks.py create` 의 기계 판독 줄을 파싱. 없으면 None (구버전 호환)."""
+    match = None
+    for match in _RESULT_RE.finditer(stdout or ""):
+        pass
+    if match is None:
+        return None
+    return {k: int(v) for k, v in match.groupdict().items() if k != "mode"}
+
+
+def _resolve_ls_task_status(context, request_id: str, ran_modes: list, outcomes: list) -> str:
+    """기록할 터미널 상태를 정한다 — 'created' 또는 'skipped'. 부당한 0건이면 raise.
+
+    2026-09-21 실측: exit 0 + `ls_task_status='created'` + LS task 0건이 동시에 성립했다.
+    라벨러 게이트가 후보를 전부 걷어냈는데 호출부는 그 사실을 몰랐다.
+
+    "만들 게 없었다"와 "만들 게 있었는데 아무것도 안 갔다"를 섞으면 안 된다. 전자는 정상
+    종료(`skipped`)이고 후자는 조사 대상이다. 둘을 `failed` 하나로 뭉치면 운영자의 트리아지
+    신호가 죽고, 반대로 둘 다 `created` 로 두면 이번 사건이 그대로 재현된다.
+    """
+    if not ran_modes:
+        # labeling_method 가 video/image 어느 매핑에도 안 걸린 요청 (prod 에 'skip' 행 실재).
+        # 서브프로세스가 애초에 안 돌았으므로 [RESULT] 가 없는 것이 정상이다 — 구버전
+        # 스크립트로 오진하고 'created' 를 찍으면 안 된다.
+        context.log.warning(f"실행된 LS 생성 모드 없음 — 'skipped' 로 기록: request_id={request_id}")
+        return "skipped"
+
+    parsed = [(mode, r) for mode, r in outcomes if r is not None]
+    if not parsed:
+        # 모드는 돌았는데 [RESULT] 가 없다 = 구버전 스크립트. 판정 근거가 없으니 기존 동작 유지.
+        context.log.warning(f"[RESULT] 줄 없음 — 생성 건수 검증 skip: request_id={request_id}")
+        return "created"
+
+    produced = sum(r["created"] + r["skipped"] for _, r in parsed)
+    if produced > 0:
+        return "created"
+
+    detail = ", ".join(
+        f"{mode}(created={r['created']}, gated_out={r['gated_out']}, error={r['error']})" for mode, r in parsed
+    )
+    withheld = sum(r["gated_out"] + r["error"] for _, r in parsed)
+    if withheld == 0:
+        # 후보 자체가 0건 — 아직 SAM3 결과가 없거나 원래 만들 게 없는 배치다. 실패가 아니다.
+        context.log.warning(f"LS task 후보 0건 — 'skipped' 로 기록: request_id={request_id}, {detail}")
+        return "skipped"
+    raise RuntimeError(f"LS task 0건 — 검수자에게 아무것도 가지 않았다: {detail}")
+
+
+def _genai_batch_id(folder_name: str) -> str:
+    """`genai_<batch_id>` 폴더명에서 batch_id 를 떼어낸다. 규약과 다르면 빈 문자열.
+
+    이 규약의 정본은 `docker/genai/storage/manifest.py` 의 `source_unit_name = f"genai_{batch_id}"`
+    다 — dispatch·raw_files 양쪽에 같은 이름이 들어간다. raw_files 에는 batch_id 컬럼이 없고
+    `genai_jobs.output_asset_id` 도 comfy_local 경로에서는 채워지지 않아(2026-09-21 실측 전량
+    NULL) DB 조인으로는 복원할 수 없다.
+    """
+    name = (folder_name or "").strip()
+    prefix = "genai_"
+    if not name.startswith(prefix) or len(name) <= len(prefix):
+        return ""
+    return name[len(prefix) :]
+
+
+def _synthetic_argv(engine: str, batch_id: str) -> list[str]:
+    """합성 배치에 붙일 `ls_tasks.py create` 인자.
+
+    값이 비면 해당 플래그를 빼고 CLI 기본값(빈 문자열 → 화면에는 'unknown')에 맡긴다 —
+    빈 값을 넘겨 배지에 공백이 뜨는 것보다 'unknown' 이 낫다.
+    """
+    argv = ["--synthetic"]
+    if engine:
+        argv += ["--genai-engine", engine]
+    if batch_id:
+        argv += ["--genai-batch-id", batch_id]
+    return argv
 
 
 def _format_batch_suffix(ts) -> str:
@@ -181,6 +291,10 @@ def create_ls_tasks(context) -> None:
         image_label_set = categories if categories else classes_list
         image_label_csv = ",".join(image_label_set)
         batch_suffix = _format_batch_suffix(req.get("batch_ts"))
+        is_synthetic = bool(req.get("is_synthetic"))
+        # 검수자가 실사 CCTV 와 구분할 수 있도록 LS task 에 실어 보낼 출처 정보.
+        genai_engine = str(req.get("genai_engine") or "")
+        genai_batch_id = _genai_batch_id(raw_folder)
         run_video = bool(methods & _VIDEO_METHODS)
         run_image = bool(methods & _IMAGE_METHODS)
         # labeling_method 미지정 dispatch (legacy) → video 만 실행
@@ -192,7 +306,9 @@ def create_ls_tasks(context) -> None:
             f"prefix={raw_prefix}, methods={sorted(methods)}, "
             f"categories={categories}, classes={classes_list}, "
             f"image_label_set={image_label_set}, "
-            f"batch_suffix={batch_suffix or '(none)'}, video={run_video}, image={run_image}"
+            f"batch_suffix={batch_suffix or '(none)'}, video={run_video}, image={run_image}, "
+            f"synthetic={is_synthetic}, engine={genai_engine or '(none)'}, "
+            f"batch_id={genai_batch_id or '(none)'}"
         )
 
         try:
@@ -206,6 +322,7 @@ def create_ls_tasks(context) -> None:
                 context.log.info(f"staging→production 동기화: {n}건 복사")
 
             statuses: list[tuple[str, int, str]] = []  # (mode, returncode, tail)
+            outcomes: list[tuple[str, dict | None]] = []  # (mode, parsed [RESULT])
 
             def _run_create(mode: str) -> None:
                 # --api-key / --minio-endpoint는 ls_tasks.py top-level argparse 옵션이므로
@@ -230,6 +347,10 @@ def create_ls_tasks(context) -> None:
                     argv += ["--categories", effective_csv]
                 if batch_suffix:
                     argv += ["--project-suffix", batch_suffix]
+                if is_synthetic:
+                    # 합성본은 자동 검출 0건이어도 사람에게 보낸다 — ls_task_gate 참고.
+                    # 엔진/batch_id 는 검수 화면의 출처 배지로 간다 (ls_tasks_label_config).
+                    argv += _synthetic_argv(genai_engine, genai_batch_id)
                 # 2026-05-20 finding: part1 bbox 1249 → 12,532 image LS 등록 시 600s 부족 → 5번 retry 모두 timeout.
                 # image mode 일 때 timeout 충분히 크게 (default 1800s = 30분). env var 로 override 가능.
                 timeout_sec = int_env("LS_TASKS_CREATE_TIMEOUT_SEC", 1800)
@@ -246,6 +367,7 @@ def create_ls_tasks(context) -> None:
                 if result.returncode != 0:
                     context.log.error(f"[ls_tasks create --mode {mode}] stderr:\n{result.stderr}")
                 statuses.append((mode, result.returncode, "\n".join(tail)))
+                outcomes.append((mode, _parse_create_result(result.stdout)))
 
             if run_video:
                 _run_create("video")
@@ -268,8 +390,9 @@ def create_ls_tasks(context) -> None:
             if failed_modes:
                 raise RuntimeError(f"ls_tasks.py create 실패: modes={failed_modes}")
 
-            _update_ls_task_status(request_id, "created")
-            context.log.info(f"ls_task_status='created' 업데이트: request_id={request_id}")
+            ls_status = _resolve_ls_task_status(context, request_id, [m for m, _, _ in statuses], outcomes)
+            _update_ls_task_status(request_id, ls_status)
+            context.log.info(f"ls_task_status={ls_status!r} 업데이트: request_id={request_id}")
 
         except Exception as exc:
             context.log.error(f"ls task 생성 실패: request_id={request_id} — {exc}")

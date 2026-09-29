@@ -34,11 +34,12 @@
               else 'google · veo' if e == 'veo'
               else 'gemini · image' if e == 'nanobanana'
               else 'openai · image' if e == 'gpt_image'
+              else 'gpu0 · local' if e == 'comfy_local'
               else '—'
             ) %}
             <div class="gs-engine-item" data-engine-wrap="{{ e }}">
               <input type="radio" name="engine" id="bulk-eng-{{ e }}" value="{{ e }}"
-                     class="gs-engine-radio" {% if loop.first %}checked{% endif %}>
+                     class="gs-engine-radio" {% if e == selected_engine %}checked{% endif %}>
               <label class="gs-engine-card" for="bulk-eng-{{ e }}" data-engine="{{ e }}">
                 <div class="gs-engine-card__top">
                   <span style="text-transform:capitalize">{{ e }}</span>
@@ -164,6 +165,57 @@
             GPT Image (<span class="gs-mono">gpt-image-1</span>) — 동기 호출, 추가 옵션 없음.
           </p>
         </div>
+
+        {% set c = engine_options.get('comfy_local') %}
+        {% if c %}
+        <div class="gs-engine-opt" data-only-engine="comfy_local" style="display:none">
+          <div style="padding:8px 10px;margin-bottom:10px;border:1px solid #5b4b1f;border-radius:7px;background:#211d10">
+            <strong>GPU0 순차 실행 · human review required</strong><br>
+            <span class="gs-hint">N×M 작업은 최대 {{ max_bulk_jobs }}개까지 그룹으로 등록되며 GPU에서는 한 번에 1개씩 실행됩니다.</span>
+          </div>
+          <div class="gs-field">
+            <div class="gs-field__label gs-mono">workflow_id</div>
+            <div class="gs-select-shell">
+              <select name="workflow_id" id="bulk-comfy-workflow" disabled>
+                {% for w in c.workflows %}
+                <option value="{{ w.value }}" data-requires-mask="{{ 'true' if w.requires_mask else 'false' }}"
+                        {% if w.value == c.default_workflow %}selected{% endif %}>{{ w.label }}</option>
+                {% endfor %}
+              </select>
+              {{ icon('chevDown', size=13) }}
+            </div>
+          </div>
+          <div class="gs-row-2">
+            <div class="gs-field">
+              <div class="gs-field__label gs-mono">seed (0=random/job)</div>
+              <input type="number" name="seed" value="{{ c.default_seed }}" min="0" max="9223372036854775807"
+                     title="0이면 작업마다 무작위 seed를 사용하고, 양수이면 지정한 seed를 사용합니다." disabled>
+            </div>
+            <div class="gs-field">
+              <div class="gs-field__label gs-mono">steps</div>
+              <input type="number" name="steps" id="bulk-comfy-steps" value="{{ c.default_steps }}" min="1" max="60"
+                     title="노이즈를 제거하며 이미지를 다듬는 반복 횟수입니다. FLUX는 4 고정, SDXL은 기본 30입니다." disabled>
+            </div>
+          </div>
+          <p class="gs-hint" style="margin:-3px 0 10px">
+            seed: 0은 job마다 무작위 · 같은 양수는 결과 비교용 고정값 / steps: FLUX 4 고정 · SDXL 기본 30
+          </p>
+          <div class="gs-row-2" id="bulk-comfy-sdxl-tuning" style="display:none">
+            <div class="gs-field">
+              <div class="gs-field__label gs-mono">cfg</div>
+              <input type="number" name="cfg" value="{{ c.default_cfg }}" min="0" max="20" step="0.1" disabled>
+            </div>
+            <div class="gs-field">
+              <div class="gs-field__label gs-mono">denoise</div>
+              <input type="number" name="denoise" value="{{ c.default_denoise }}" min="0.01" max="1" step="0.01" disabled>
+            </div>
+          </div>
+          <div class="gs-field" id="bulk-comfy-negative-wrap" style="display:none">
+            <div class="gs-field__label gs-mono">negative_prompt</div>
+            <textarea name="negative_prompt" rows="3" disabled>{{ c.default_negative_prompt }}</textarea>
+          </div>
+        </div>
+        {% endif %}
       </section>
 
       <!-- Pair mode -->
@@ -173,11 +225,17 @@
           <span class="gs-section__hint gs-mono">매핑 규칙</span>
         </div>
         <div class="gs-segmented">
-          <input type="radio" name="pair_mode" id="bulk-mode-paired" value="paired" checked>
+          <input type="radio" name="pair_mode" id="bulk-mode-paired" value="paired"
+                 {% if selected_pair_mode == 'paired' %}checked{% endif %}>
           <label for="bulk-mode-paired">paired (1:1, N==M)</label>
-          <input type="radio" name="pair_mode" id="bulk-mode-cartesian" value="cartesian">
+          <input type="radio" name="pair_mode" id="bulk-mode-cartesian" value="cartesian"
+                 {% if selected_pair_mode == 'cartesian' %}checked{% endif %}>
           <label for="bulk-mode-cartesian">cartesian (N×M)</label>
         </div>
+        <p class="gs-hint" style="margin-top:7px">
+          <b>cartesian</b>: 이미지 1장×프롬프트 M개, 이미지 N장×프롬프트 1개, 또는 전체 N×M 조합.
+          Local ComfyUI에서는 이 모드가 기본이며, 프롬프트가 1개면 선택한 이미지 전체에 자동 적용됩니다.
+        </p>
       </section>
 
       <!-- 이미지 dropzone -->
@@ -199,6 +257,24 @@
           <input type="file" name="files" multiple accept=".png,.jpg,.jpeg,.webp"
                  class="gs-file-input" id="gs-bulk-files">
         </label>
+        {# 드래그&드롭은 accept= 를 무시한다 — 걸러낸 파일을 조용히 버리지 않고 여기 적는다.
+           서버는 확장자 1건만 어긋나도 제출 전체를 415 로 거부하므로, 여러 장 올릴 때
+           "왜 매번 실패하는지" 가 이 자리에서 보여야 한다. #}
+        <div id="gs-bulk-skipped" class="gs-bulk-warn gs-bulk-warn--soft" hidden></div>
+      </section>
+
+      <section class="gs-section" id="gs-bulk-mask-section" style="display:none">
+        <div class="gs-section__head">
+          <span class="gs-section__title">Inpaint masks</span>
+          <span class="gs-section__hint gs-mono"><span id="gs-bulk-mask-count">0</span> masks · SDXL 전용</span>
+        </div>
+        <input type="file" name="mask_files" id="gs-bulk-mask-files" multiple accept=".png" disabled>
+        <p class="gs-hint">
+          원본 이미지와 같은 순서로 정확히 한 장씩 선택하세요. 각 마스크는 대응 원본과 동일한 해상도의 0/255 이진 PNG여야 합니다.
+        </p>
+        {# 짝은 이름이 아니라 "선택 순서" 로 맺어진다. 눈에 안 보이면 엉뚱한 마스크가
+           조용히 적용되므로(해상도가 같으면 서버 검증도 통과한다) 제출 전에 표로 보여준다. #}
+        <div id="gs-bulk-pairs" class="gs-bulk-pairs" hidden></div>
       </section>
 
       <!-- Prompts -->
@@ -260,10 +336,11 @@
           <dt>engine</dt>      <dd class="gs-mono"><span id="pv-engine">—</span></dd>
           <dt>prompts</dt>     <dd class="gs-mono"><span id="pv-prompts">0</span></dd>
           <dt>images</dt>      <dd class="gs-mono"><span id="pv-images">0</span></dd>
+          <dt>masks</dt>       <dd class="gs-mono"><span id="pv-masks">—</span></dd>
           <dt>pair mode</dt>   <dd class="gs-mono"><span id="pv-mode">paired</span></dd>
           <dt>batches</dt>     <dd class="gs-mono"><span id="pv-batches">0</span></dd>
           <dt>jobs (total)</dt><dd class="gs-mono"><b id="pv-jobs">0</b></dd>
-          <dt>input bytes</dt> <dd class="gs-mono"><span id="pv-bytes">0</span></dd>
+          <dt>quota bytes</dt> <dd class="gs-mono"><span id="pv-bytes">0</span></dd>
         </dl>
         <p class="gs-hint" style="margin-top:10px;font-size:11px;line-height:1.55">
           서버 hard cap <span class="gs-mono">GENAI_MAX_BULK_JOBS={{ max_bulk_jobs }}</span>.
@@ -272,6 +349,10 @@
         <div id="pv-warn" class="gs-bulk-warn" hidden></div>
       </div>
     </div>
+
+    {# 제출 결과는 여기에 남는다. 예전에는 303 redirect 로 batches 목록에 던져버려
+       서버가 돌려준 failed[] 가 화면에 전혀 나타나지 않았다 (조용한 실패). #}
+    <div id="gs-bulk-result" class="gs-bulk-result" hidden></div>
 
     <p class="gs-hint" style="margin-top:14px">
       <b>Tip</b> — Cmd/Ctrl+Enter 로 빠르게 제출. <span class="gs-mono">window.confirm</span> 으로 한 번 더 확인.
@@ -285,11 +366,18 @@
 (() => {
   const MAX_BULK_JOBS = {{ max_bulk_jobs }};
   const MAX_FILES_PER_BATCH = {{ max_files_per_batch }};
+  // app.py `_ALLOWED_EXT` / `GENAI_MAX_BYTES_PER_FILE` 기본값의 거울. 서버가 한 건이라도
+  // 어긋나면 제출 전체를 415/413 으로 거부하므로 같은 규칙을 고르는 시점에 적용한다.
+  const ALLOWED_EXT = ['.png', '.jpg', '.jpeg', '.webp'];
+  const MAX_BYTES_PER_FILE = 50 * 1024 * 1024;
 
   // ----- elements -----
   const formEl    = document.getElementById('gs-bulk-form');
   const promptsEl = document.getElementById('gs-prompts');
   const filesEl   = document.getElementById('gs-bulk-files');
+  const maskFilesEl = document.getElementById('gs-bulk-mask-files');
+  const maskSection = document.getElementById('gs-bulk-mask-section');
+  const maskCountEl = document.getElementById('gs-bulk-mask-count');
   const dzLabel   = document.getElementById('gs-bulk-dz-label');
   const dzEmpty   = document.getElementById('gs-bulk-dz-empty');
   const dzThumbs  = document.getElementById('gs-bulk-dz-thumbs');
@@ -304,11 +392,15 @@
   const charsEl     = document.getElementById('gs-bulk-chars');
   const tabImages   = document.getElementById('gs-bulk-tab-images');
   const tabTextOnly = document.getElementById('gs-bulk-tab-textonly');
+  const skippedEl   = document.getElementById('gs-bulk-skipped');
+  const pairsEl     = document.getElementById('gs-bulk-pairs');
+  const resultEl    = document.getElementById('gs-bulk-result');
 
   // preview side
   const pvEngine  = document.getElementById('pv-engine');
   const pvPrompts = document.getElementById('pv-prompts');
   const pvImages  = document.getElementById('pv-images');
+  const pvMasks   = document.getElementById('pv-masks');
   const pvMode    = document.getElementById('pv-mode');
   const pvBatches = document.getElementById('pv-batches');
   const pvJobs    = document.getElementById('pv-jobs');
@@ -328,6 +420,10 @@
   // ----- engine 옵션 패널 토글 -----
   function syncEngineOpt() {
     const eng = document.querySelector('input[name=engine]:checked')?.value;
+    if (eng === 'comfy_local') {
+      const cartesian = document.getElementById('bulk-mode-cartesian');
+      if (cartesian) cartesian.checked = true;
+    }
     document.querySelectorAll('.gs-engine-opt').forEach(s => {
       const show = s.dataset.onlyEngine === eng;
       s.style.display = show ? '' : 'none';
@@ -341,12 +437,34 @@
         'higgsfield': 'Higgsfield 옵션 (fal.ai)',
         'nanobanana': 'Nanobanana 옵션 (Vertex Gemini)',
         'gpt_image': 'GPT Image 옵션 (OpenAI)',
+        'comfy_local': 'Local ComfyUI 옵션 (GPU0)',
       };
       titleEl.textContent = pretty[eng] || (eng + ' 옵션');
     }
+    syncComfyWorkflow();
     updatePreview();
   }
   document.querySelectorAll('input[name=engine]').forEach(r => r.addEventListener('change', syncEngineOpt));
+
+  function syncComfyWorkflow() {
+    const eng = document.querySelector('input[name=engine]:checked')?.value;
+    const workflow = document.getElementById('bulk-comfy-workflow');
+    const isSdxl = eng === 'comfy_local' && workflow?.selectedOptions[0]?.dataset.requiresMask === 'true';
+    maskSection.style.display = isSdxl ? '' : 'none';
+    maskFilesEl.disabled = !isSdxl;
+    const tuning = document.getElementById('bulk-comfy-sdxl-tuning');
+    const negative = document.getElementById('bulk-comfy-negative-wrap');
+    if (tuning) tuning.style.display = isSdxl ? '' : 'none';
+    if (negative) negative.style.display = isSdxl ? '' : 'none';
+    tuning?.querySelectorAll('input').forEach(i => { i.disabled = !isSdxl; });
+    negative?.querySelectorAll('textarea').forEach(i => { i.disabled = !isSdxl; });
+    const steps = document.getElementById('bulk-comfy-steps');
+    if (steps && eng === 'comfy_local') steps.value = isSdxl ? '30' : '4';
+  }
+  document.getElementById('bulk-comfy-workflow')?.addEventListener('change', () => {
+    syncComfyWorkflow();
+    updatePreview();
+  });
 
   // ----- 탭: Images×Prompts vs Text → Video -----
   function setTextOnly(on) {
@@ -363,6 +481,8 @@
       imgSection.style.display = 'none';
       pairSection.style.display = 'none';
       filesEl.disabled = true;
+      maskSection.style.display = 'none';
+      maskFilesEl.disabled = true;
     } else {
       document.querySelectorAll('.gs-engine-item').forEach(i => { i.style.display = ''; });
       imgSection.style.display = '';
@@ -374,8 +494,69 @@
   tabImages.addEventListener('click', (e) => { e.preventDefault(); setTextOnly(false); });
   tabTextOnly.addEventListener('click', (e) => { e.preventDefault(); setTextOnly(true); });
 
+  // ----- 파일 수용 규칙 (서버와 동일) -----
+  function extOf(name) {
+    const dot = (name || '').lastIndexOf('.');
+    return dot < 0 ? '' : name.slice(dot).toLowerCase();
+  }
+  function stemOf(name) {
+    const dot = (name || '').lastIndexOf('.');
+    return dot < 0 ? (name || '') : name.slice(0, dot);
+  }
+  /** 받을 수 없는 파일이면 사유 문자열, 받을 수 있으면 null. */
+  function rejectReason(file, allowedExt) {
+    const ext = extOf(file.name);
+    if (!allowedExt.includes(ext)) {
+      return `${ext || '확장자 없음'} 는 지원하지 않음 (${allowedExt.join(', ')})`;
+    }
+    if (file.size > MAX_BYTES_PER_FILE) {
+      return `${fmtBytes(file.size)} — 장당 상한 ${fmtBytes(MAX_BYTES_PER_FILE)} 초과`;
+    }
+    if (file.size === 0) return '0 byte';
+    return null;
+  }
+  /** 걸러낸 파일을 목록으로 보여준다. 빈 배열이면 숨긴다. */
+  function renderSkipped(skipped) {
+    skippedEl.textContent = '';
+    if (!skipped.length) { skippedEl.hidden = true; return; }
+    const head = document.createElement('div');
+    head.textContent = `${skipped.length}개 파일을 제외했습니다 (서버가 제출 전체를 거부하는 조건):`;
+    head.style.fontWeight = '600';
+    skippedEl.appendChild(head);
+    const list = document.createElement('ul');
+    list.style.margin = '4px 0 0';
+    list.style.paddingLeft = '16px';
+    skipped.forEach(({ name, reason }) => {
+      const li = document.createElement('li');
+      li.textContent = `${name} — ${reason}`;
+      list.appendChild(li);
+    });
+    skippedEl.appendChild(list);
+    skippedEl.hidden = false;
+  }
+
   // ----- dropzone -----
   let dt = new DataTransfer();
+  /** change/drop 양쪽이 쓰는 단일 경로. 거른 이유는 항상 화면에 남긴다. */
+  function addSourceFiles(incoming) {
+    const merged = [...dt.files];
+    const skipped = [];
+    [...incoming].forEach(f => {
+      const reason = rejectReason(f, ALLOWED_EXT);
+      if (reason) { skipped.push({ name: f.name, reason }); return; }
+      if (merged.some(x => x.name === f.name && x.size === f.size)) {
+        skipped.push({ name: f.name, reason: '이미 선택된 파일 (같은 이름·크기)' });
+        return;
+      }
+      merged.push(f);
+    });
+    dt = new DataTransfer();
+    merged.forEach(f => dt.items.add(f));
+    filesEl.files = dt.files;
+    renderSkipped(skipped);
+    renderThumbs();
+    updatePreview();
+  }
   function renderThumbs() {
     dzThumbs.innerHTML = '';
     const files = [...dt.files];
@@ -410,16 +591,19 @@
       dzThumbs.appendChild(t);
     });
   }
-  filesEl.addEventListener('change', () => {
-    const incoming = filesEl.files;
-    const merged = [...dt.files];
-    [...incoming].forEach(f => {
-      if (!merged.some(x => x.name === f.name && x.size === f.size)) merged.push(f);
+  filesEl.addEventListener('change', () => addSourceFiles(filesEl.files));
+  // 마스크는 누적이 아니라 "이번 선택으로 교체" (소스와 1:1 이라 누적이 오히려 짝을 깬다).
+  // 다만 걸러내기는 소스와 같은 규칙으로 하고, 거른 이유를 화면에 남긴다.
+  maskFilesEl.addEventListener('change', () => {
+    const accepted = new DataTransfer();
+    const skipped = [];
+    [...maskFilesEl.files].forEach(f => {
+      const reason = rejectReason(f, ['.png']);
+      if (reason) { skipped.push({ name: f.name, reason }); return; }
+      accepted.items.add(f);
     });
-    dt = new DataTransfer();
-    merged.forEach(f => dt.items.add(f));
-    filesEl.files = dt.files;
-    renderThumbs();
+    maskFilesEl.files = accepted.files;
+    renderSkipped(skipped);
     updatePreview();
   });
   ['dragenter','dragover'].forEach(ev => dzLabel.addEventListener(ev, e => {
@@ -430,12 +614,8 @@
   }));
   dzLabel.addEventListener('drop', e => {
     if (!e.dataTransfer?.files) return;
-    [...e.dataTransfer.files].forEach(f => {
-      if (![...dt.files].some(x => x.name === f.name && x.size === f.size)) dt.items.add(f);
-    });
-    filesEl.files = dt.files;
-    renderThumbs();
-    updatePreview();
+    // 드롭은 input 의 accept= 를 통과하지 않는다 — 같은 검사를 여기서 직접 한다.
+    addSourceFiles(e.dataTransfer.files);
   });
 
   // ----- preview -----
@@ -443,6 +623,38 @@
     return promptsEl.value.split('\n').map(l => l.trim()).filter(Boolean);
   }
   function chunks(n, k) { return Math.max(1, Math.ceil(n / k)); }
+
+  /** source[i] ↔ mask[i] 를 그대로 보여준다. 서버 짝짓기가 순서 기반이라 이 표가 곧 계약. */
+  function renderPairs(sources, masks) {
+    pairsEl.textContent = '';
+    if (!sources.length || !masks.length) { pairsEl.hidden = true; return; }
+    const rows = Math.max(sources.length, masks.length);
+    let stemMismatch = false;
+    for (let i = 0; i < rows; i++) {
+      const src = sources[i];
+      const msk = masks[i];
+      if (src && msk && stemOf(src.name) !== stemOf(msk.name)) stemMismatch = true;
+      const row = document.createElement('div');
+      row.className = 'gs-bulk-pairs__row';
+      if (!src || !msk) row.classList.add('is-bad');
+      const seq = document.createElement('span');
+      seq.className = 'gs-mono';
+      seq.textContent = String(i + 1).padStart(3, '0');
+      const names = document.createElement('span');
+      names.textContent = `${src ? src.name : '(원본 없음)'}  →  ${msk ? msk.name : '(마스크 없음)'}`;
+      row.appendChild(seq);
+      row.appendChild(names);
+      pairsEl.appendChild(row);
+    }
+    if (stemMismatch) {
+      const note = document.createElement('div');
+      note.className = 'gs-bulk-pairs__note';
+      note.textContent = '이름이 서로 다릅니다 — 짝은 이름이 아니라 위 순서대로 맺어집니다. '
+        + '순서가 틀렸다면 마스크를 다시 선택하세요 (해상도만 같으면 서버는 통과시킵니다).';
+      pairsEl.appendChild(note);
+    }
+    pairsEl.hidden = false;
+  }
 
   function fmtBytes(n) {
     if (n < 1024) return `${n} B`;
@@ -455,16 +667,23 @@
     promptCntEl.textContent = prompts.length;
     charsEl.textContent = `${promptsEl.value.length} chars`;
     const filesArr = [...dt.files];
+    const masksArr = maskFilesEl.disabled ? [] : [...maskFilesEl.files];
     const textOnly = textOnlyEl.value === 'true';
     const mode = document.querySelector('input[name=pair_mode]:checked')?.value || 'paired';
     const engine = document.querySelector('input[name=engine]:checked')?.value;
+    const comfyBroadcast = engine === 'comfy_local' && prompts.length === 1 && filesArr.length > 1;
+    const workflow = document.getElementById('bulk-comfy-workflow')?.value;
+    const needsMasks = engine === 'comfy_local' && workflow === 'sdxl-inpaint-cctv-v1';
     const durationEl = document.querySelector('input[name=duration]:not(:disabled):checked');
     const duration = durationEl ? durationEl.value : null;
 
     pvEngine.textContent = engine || '—';
     pvPrompts.textContent = prompts.length;
     pvImages.textContent = textOnly ? '— (text-only)' : filesArr.length;
-    pvMode.textContent = textOnly ? '— (text-only)' : mode;
+    pvMasks.textContent = needsMasks ? masksArr.length : '—';
+    maskCountEl.textContent = masksArr.length;
+    renderPairs(needsMasks ? filesArr : [], needsMasks ? masksArr : []);
+    pvMode.textContent = textOnly ? '— (text-only)' : (comfyBroadcast ? 'cartesian (M×1)' : mode);
 
     let batches = 0, jobs = 0, warning = '';
     if (prompts.length === 0) {
@@ -480,7 +699,9 @@
     } else {
       if (filesArr.length === 0) {
         warning = '이미지를 1장 이상 선택하세요 (text-only 탭이 아니면 필수).';
-      } else if (mode === 'paired') {
+      } else if (needsMasks && masksArr.length !== filesArr.length) {
+        warning = `SDXL은 이미지마다 마스크 1장이 필요합니다. images=${filesArr.length}, masks=${masksArr.length}. 선택 순서도 같아야 합니다.`;
+      } else if (mode === 'paired' && !comfyBroadcast) {
         if (filesArr.length !== prompts.length) {
           warning = `paired 모드는 N==M 필요. images=${filesArr.length}, prompts=${prompts.length}. cartesian 으로 변경 또는 개수 맞추기.`;
         }
@@ -492,7 +713,9 @@
     }
     pvBatches.textContent = batches;
     pvJobs.textContent = jobs;
-    pvBytes.textContent = fmtBytes(filesArr.reduce((s, f) => s + f.size, 0));
+    const uniqueBytes = [...filesArr, ...masksArr].reduce((s, f) => s + f.size, 0);
+    const quotaBytes = textOnly ? 0 : ((mode === 'cartesian' || comfyBroadcast) ? uniqueBytes * prompts.length : uniqueBytes);
+    pvBytes.textContent = fmtBytes(quotaBytes);
 
     let disabled = false;
     if (warning) {
@@ -515,8 +738,68 @@
   syncEngineOpt();
   updatePreview();
 
-  // submit confirm + disable
-  formEl.addEventListener('submit', (e) => {
+  // ----- 제출 결과 표시 -----
+  function resultLine(text, cls) {
+    const line = document.createElement('div');
+    line.className = cls ? `gs-bulk-result__line ${cls}` : 'gs-bulk-result__line';
+    line.textContent = text;
+    return line;
+  }
+  function openResult(cls, heading) {
+    resultEl.textContent = '';
+    resultEl.className = `gs-bulk-result ${cls}`;
+    const head = document.createElement('div');
+    head.className = 'gs-bulk-result__head';
+    head.textContent = heading;
+    resultEl.appendChild(head);
+    resultEl.hidden = false;
+    resultEl.scrollIntoView({ block: 'nearest' });
+    return resultEl;
+  }
+  function showError(heading, detail) {
+    const box = openResult('is-error', heading);
+    box.appendChild(resultLine(detail));
+    box.appendChild(resultLine('선택한 이미지와 프롬프트는 그대로 남아 있습니다 — 고친 뒤 다시 제출하세요.', 'is-muted'));
+  }
+  function showSubmitted(payload) {
+    const submitted = payload.submitted || [];
+    const failed = payload.failed || [];
+    const cls = failed.length ? (submitted.length ? 'is-partial' : 'is-error') : 'is-ok';
+    const box = openResult(cls, failed.length
+      ? `제출 ${submitted.length}건 / 실패 ${failed.length}건`
+      : `제출 완료 — batch ${submitted.length}건 · job ${payload.total_jobs}개`);
+    box.appendChild(resultLine(`group: ${payload.bulk_group_id}`, 'is-mono'));
+    submitted.forEach(s => {
+      box.appendChild(resultLine(`✓ #${s.i} ${s.batch_id} — 이미지 ${s.n_images}장`, 'is-mono'));
+    });
+    failed.forEach(f => {
+      box.appendChild(resultLine(`✗ #${f.i} ${f.type}: ${f.error}`, 'is-bad'));
+    });
+    if (submitted.length && payload.total_jobs > submitted.length) {
+      // deferred 는 실패가 아니다. 이 문장이 없어서 2026-09-18 에 대기 중인 job 을
+      // 전부 취소하고 재제출하는 일이 반복됐다.
+      box.appendChild(resultLine(
+        `동시 실행 한도 때문에 나머지 job 은 pending(대기) 으로 남고 순서대로 자동 처리됩니다. `
+        + `상세 화면의 error 칸에 "[deferred] … 한도 대기" 가 보이는 건 실패가 아니라 대기 중이라는 뜻이니 취소하지 마세요.`,
+        'is-muted'));
+    }
+    const link = document.createElement('a');
+    link.className = 'gs-pill';
+    link.style.marginTop = '8px';
+    link.href = `/genai/batches?bulk_group_id=${encodeURIComponent(payload.bulk_group_id)}`;
+    link.textContent = '이 group 의 batch 목록 열기 →';
+    box.appendChild(link);
+  }
+
+  // ----- submit: fetch + 결과 인라인 표시 -----
+  // 예전엔 평범한 form POST 였다. 그 경로에선 (a) 서버가 돌려준 failed[] 가 303 redirect 에
+  // 묻혀 사라지고, (b) 400/413/415 면 페이지가 raw JSON 으로 바뀌면서 고른 파일이 전부
+  // 날아가고, (c) 뒤로가기로 돌아오면 같은 idempotency_token 이 되살아나 다음 제출이
+  // "duplicate" 로 조용히 무시됐다.
+  let inFlight = false;
+  formEl.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    if (inFlight) return;
     const jobs = parseInt(pvJobs.textContent, 10) || 0;
     const gid = document.getElementById('gs-bulk-gid').value || '<auto bgi-...>';
     if (!window.confirm(
@@ -525,11 +808,56 @@
       `group: ${gid}\n\n` +
       `(확인 후 취소 불가)`
     )) {
-      e.preventDefault();
       return;
     }
+    inFlight = true;
     submitBtn.disabled = true;
     submitMeta.textContent = '제출 중…';
+    resultEl.hidden = true;
+    try {
+      const response = await fetch(formEl.action, {
+        method: 'POST',
+        body: new FormData(formEl),
+        headers: { 'Accept': 'application/json' },
+        credentials: 'same-origin',
+      });
+      if (response.status === 401 || response.status === 403) {
+        // 브라우저가 Basic 자격을 다시 물어볼 수 있게 네이티브 제출로 넘긴다.
+        // 이 요청은 서버에 닿지 않았으므로 같은 token 재사용이 맞다.
+        formEl.submit();
+        return;
+      }
+      const ctype = (response.headers.get('content-type') || '').toLowerCase();
+      if (!ctype.includes('application/json')) {
+        if (response.ok) { window.location.href = response.url; return; }
+        showError(`제출 실패 (HTTP ${response.status})`, response.statusText || '서버가 JSON 이 아닌 응답을 반환했습니다.');
+        return;
+      }
+      const data = await response.json();
+      if (!response.ok) {
+        const detail = typeof data.detail === 'string' ? data.detail : JSON.stringify(data.detail ?? data);
+        showError(`제출 거부됨 (HTTP ${response.status})`, detail);
+        return;
+      }
+      // 토큰은 서버가 결과를 캐시했으므로 소모됐다. 새 token 없이 다시 누르면
+      // 같은 결과만 되돌아오고 아무것도 제출되지 않는다.
+      idemEl.value = uuid4();
+      if (data.duplicate) {
+        const box = openResult('is-partial', '이미 처리된 제출입니다 (중복 방지)');
+        box.appendChild(resultLine(data.message || '동일 요청이 이미 처리되었습니다.'));
+        box.appendChild(resultLine('새 토큰을 발급했습니다 — 정말 한 번 더 보내려면 다시 제출하세요.', 'is-muted'));
+        if (data.result) showSubmitted(Object.assign({}, data.result));
+        return;
+      }
+      showSubmitted(data);
+    } catch (err) {
+      showError('네트워크 오류로 제출 결과를 확인하지 못했습니다',
+        `${err} — 서버에는 이미 접수됐을 수 있으니, 다시 누르기 전에 batch 목록을 먼저 확인하세요.`);
+    } finally {
+      inFlight = false;
+      submitMeta.textContent = '';
+      updatePreview();   // submit 버튼 상태를 현재 폼 기준으로 되돌린다
+    }
   });
 
   // Cmd/Ctrl + Enter

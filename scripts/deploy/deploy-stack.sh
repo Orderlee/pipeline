@@ -136,6 +136,11 @@ genai_active() {
     compose config --services 2>/dev/null | grep -qx genai
 }
 
+# ComfyUI is independently profile-gated. It owns host GPU0 only and has no host port.
+comfyui_active() {
+    compose config --services 2>/dev/null | grep -qx comfyui
+}
+
 # embedding-service 도 profile gating (profiles:["embedding"]). prod+staging 둘 다 활성
 # (.env COMPOSE_PROFILES=...,embedding). 2026-06-24: docker/embedding/ 변경 시 자동 rebuild+recreate.
 # 이전엔 build target/up-d 목록에 없어 서비스(app.py/backends) 변경 시 운영자가 수동 재빌드해야 했음.
@@ -174,6 +179,9 @@ if [[ "${BUILD_REQUIRED}" == "true" ]]; then
     fi
     if genai_active; then
         build_targets+=(genai)
+    fi
+    if comfyui_active; then
+        build_targets+=(comfyui)
     fi
     if embedding_active; then
         build_targets+=(embedding-service)
@@ -235,6 +243,33 @@ fi
 if pg_backup_active; then
     compose up -d --no-deps pg-backup
     echo "pg-backup ensured running (cron daily 02:00 KST)"
+fi
+
+# ComfyUI local worker — start before GenAI so the engine is reachable as soon as Studio
+# advertises it. Model validation is part of container health and may take several minutes.
+if comfyui_active; then
+    if [[ "${BUILD_REQUIRED}" == "true" ]]; then
+        compose up -d --no-deps --force-recreate comfyui
+        echo "comfyui force-recreated to pick up new image"
+    else
+        compose up -d --no-deps comfyui
+        echo "comfyui ensured running"
+    fi
+    comfyui_ready=false
+    for i in $(seq 1 120); do
+        state=$(compose ps -a comfyui --format json 2>/dev/null | python3 -c "import json,sys; data=sys.stdin.read().strip(); print('') if not data else print(json.loads(data.split(chr(10))[0]).get('Health',''))" 2>/dev/null || echo "")
+        if [[ "${state}" == "healthy" ]]; then
+            echo "comfyui healthy (${i})"
+            comfyui_ready=true
+            break
+        fi
+        sleep 5
+    done
+    if [[ "${comfyui_ready}" != "true" ]]; then
+        compose logs --tail 100 comfyui || true
+        echo "::error::comfyui failed to become healthy"
+        exit 1
+    fi
 fi
 
 # 2026-05-28: GenAI Studio (profiles:["genai"]) — dagster 와 무관한 별도 FastAPI 컨테이너.

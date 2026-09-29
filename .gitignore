@@ -56,6 +56,9 @@ tests/unit/*
 # SEC-WEBHOOK-AUTH codex follow-up — compose env + idempotency + token path + TypeError guard.
 # fastapi.testclient + requests.mock 만 의존, dagster import 없음.
 !tests/unit/test_ls_webhook_security.py
+# 2026-09-10: LS 태스크 게이트 — 기본 off 고정 + 무작위 우회 표본이 asset 에 비례해 뽑히는지.
+# ls_task_gate 만 import (순수 함수), MinIO/LS/dagster 의존 없음.
+!tests/unit/test_ls_task_gate.py
 # Phase E #14 STRUCT-BOOTSTRAP-POLICY — BootstrapPolicy / decide_unit_ready 순수 로직.
 # sensor_bootstrap_policy 만 import, dagster 의존 없음.
 !tests/unit/test_bootstrap_policy.py
@@ -71,6 +74,8 @@ tests/unit/*
 !tests/unit/test_sam3_maintenance_gate.py
 !tests/unit/test_maintenance_guard_sensor.py
 !tests/unit/test_clear_maintenance_script.py
+# P3-2 — comfy GPU0 lease 읽기 게이트 (read-only, TTL 자연회복 + 임베딩 asset defer)
+!tests/unit/test_gpu_lease_gate.py
 # Section B — frozen snapshot builder candidate queries (mock cursor, no live PG)
 !tests/unit/test_postgres_train_candidates.py
 !tests/unit/test_train_dataset_builder.py
@@ -101,6 +106,37 @@ tests/unit/*
 !tests/unit/test_video_frames.py
 !tests/unit/test_video_reencode.py
 !tests/unit/test_sensor_helpers_supersede.py
+# 2026-09-15 CI 사각지대 해소 — 디스크에만 있어 CI 가 한 번도 돌리지 않던 테스트 편입.
+# 편입 전 실측: 25파일 중 51 failed / 95 passed (삭제된 API·낡은 상수를 검증 중이었음).
+# 아래 10파일은 수정 후 53 tests 전량 통과. 나머지 15파일은 미편입(별도 정리 대상).
+!tests/unit/test_dispatch_webhook.py
+!tests/unit/test_ingest_manifest_compaction.py
+!tests/unit/test_ingest_manifest_hydration.py
+!tests/unit/test_ingest_raw_key_paths.py
+!tests/unit/test_minio_resource.py
+!tests/unit/test_sam3_compare.py
+!tests/unit/test_sam3_detection_asset.py
+!tests/unit/test_yolo_thresholds.py
+!tests/unit/test_yolo_asset_thresholds.py
+!tests/unit/test_yolo_coco_payload.py
+# 2026-09-15 2차 회수 — 남은 ghost 14파일. 편입 전 실측 43 failed + 1 error 였고,
+# 원인은 전부 제품 변경 미추종(PG cutover 로 사라진 DuckDBResource/duckdb_resource fixture,
+# RuntimeProfile(is_staging)·PreparedDispatchRequest 시그니처 변경, MinIO upload_json/download_json
+# 전환, SAM3 per_prompt_score_thresholds 확장, defs/label 모듈 분할 등). 편입 후 987 passed.
+!tests/unit/test_archive_reuse.py
+!tests/unit/test_build_copy_outdated.py
+!tests/unit/test_dispatch_payload_helpers.py
+!tests/unit/test_dispatch_service.py
+!tests/unit/test_dispatch_step_status_guard.py
+!tests/unit/test_gemini_credentials_env.py
+!tests/unit/test_gemini_prompts.py
+!tests/unit/test_gemini_retry.py
+!tests/unit/test_gemini_video_preview.py
+!tests/unit/test_ingest_archive_policy.py
+!tests/unit/test_ingest_sensor_helpers.py
+!tests/unit/test_production_agent_dispatch_sensor.py
+!tests/unit/test_sam3_shadow_asset.py
+!tests/unit/test_sensor_run_status_error_handling.py
 # Phase 4-B integration tests (#12) — self-contained conftest, sidecar PG 의존
 # (DATAOPS_TEST_POSTGRES_DSN 미설정 시 자동 skip).
 !tests/integration/
@@ -253,6 +289,18 @@ scripts/recover_*_[0-9]*.py
 !tests/unit/test_genai_pg_recompute.py
 # genai Kling 리소스팩 표시 순서 (순수 함수, sys.path 로 docker/genai 얹어 import, 외부 호출 없음)
 !tests/unit/test_genai_kling_packs.py
+!tests/unit/test_comfy_local_adapter.py
+!tests/unit/test_comfyui_compose_contract.py
+!tests/unit/test_genai_comfy_nodes_ui.py
+# promote 의 image/video media 계약 — 유령 video LS 프로젝트 회귀 (jinja2 렌더 + pg 는 fake)
+!tests/unit/test_genai_promote_media_guard.py
+!tests/integration/test_comfy_local_migration_030.py
+# LS task 생성 결과 계약 — 순수 함수(dagster 의존은 import 만), 외부 호출 없음
+!tests/unit/test_ls_task_create_result_guard.py
+# LS SAM3 JSON 열거 — 순수 함수(fake client), 외부 호출 없음
+!tests/unit/test_ls_sam3_json_index.py
+# LS 합성 출처 배지 + 검수 항목 — 순수 함수(LS/MinIO 호출 없음)
+!tests/unit/test_ls_synthetic_provenance.py
 # 카메라 씬 분류(camera-angle-grouping-2026-07-29 design) — Gemini 5축 lib 파싱은 ffmpeg/Vertex
 # mock, 헬퍼는 순수 함수(dagster 의존 없음), PG CRUD 는 db_resource fixture(DATAOPS_TEST_POSTGRES_DSN
 # 미설정 시 skip), 인라인 게이트(video_loader)는 ffprobe 만 mock.
@@ -300,8 +348,32 @@ scripts/recover_*_[0-9]*.py
 # 배선. requests 세션 fake + build_sensor_context 만 의존, DB 접속 없음.
 !tests/unit/test_fiftyone_sync_sensor.py
 
+# 마이그레이션 러너의 문장 분리 — CONCURRENTLY 파일만 문장 단위로 보낸다는 계약.
+# DB 접속 없음(순수 함수 + MagicMock 커서). 이 테스트가 없으면 문장 2개짜리 CONCURRENTLY
+# 마이그레이션이 다시 조용히 배포를 막는다(2026-09-03 실측).
+!tests/unit/test_pg_migration_statement_split.py
+
 # MinIO vlm-raw/source-h 로컬 사본 (7.9GiB, git 추적 금지)
 /source-h/
 
 # macOS AppleDouble 리소스포크 (Finder/외부드라이브 경유로 생김, 바이너리 잔재)
 ._*
+
+# labels.caption_text_en (migration 025) — Gemini 영문 캡션 적재 + LS 검수 캡션 보존
+!tests/unit/test_labels_caption_en.py
+
+# 분석 계층 표준화 (docs/superpowers/specs/2026-09-16-analysis-standardization-design.md)
+!tests/unit/test_prompt_data_contract.py
+!tests/unit/test_cohort_registry.py
+!tests/unit/test_standard_artifact.py
+
+# Phase A0 coverage 사실·reference 계층 (migration 032) — 임시 DB 에 ensure_schema() 로
+# 001~032 를 적용한 뒤 CHECK/FK/뷰 계약을 검증. DATAOPS_TEST_POSTGRES_DSN 미설정 시 skip.
+!tests/integration/test_coverage_facts_migration_032.py
+
+# Phase F coverage 제어평면 (migration 033) — §5.2 deficit/share-cap 순수 계산의 단위 계약.
+!tests/unit/test_coverage_planner_math.py
+# 033 스키마 계약 + planner 입력 집계. 임시 DB 에 001~033 적용 후 CHECK/FK/뷰/mode gate 를
+# 검증하고, 032 의 두 뷰를 실제로 집계해 blocked 사유가 나오는지까지 본다.
+# DATAOPS_TEST_POSTGRES_DSN 미설정 시 skip.
+!tests/integration/test_coverage_control_plane_migration_033.py

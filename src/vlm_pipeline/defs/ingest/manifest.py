@@ -10,6 +10,7 @@ import os
 from datetime import datetime, timezone
 from pathlib import Path
 
+from vlm_pipeline.lib.atomic_json import write_json_atomic
 from vlm_pipeline.lib.env_utils import as_int, int_env
 from vlm_pipeline.resources.config import PipelineConfig
 from vlm_pipeline.resources.postgres import PostgresResource
@@ -270,10 +271,7 @@ def build_retry_manifest(
     if "archive_requested" in manifest:
         payload["archive_requested"] = manifest.get("archive_requested")
 
-    retry_manifest_path.write_text(
-        json.dumps(payload, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
+    write_json_atomic(retry_manifest_path, payload)
     context.log.warning(
         "transient 오류 재시도 manifest 생성: "
         f"{retry_manifest_path.name} (files={len(files)}, retry_attempt={next_attempt})"

@@ -130,24 +130,95 @@ def _default_label_config() -> str:
 </View>"""
 
 
-def _video_label_config(categories: list[str]) -> str:
-    """video project 전용 — TimelineLabels 만."""
+# ---------------------------------------------------------------------------
+# 합성(genai) 배치 provenance — 검수자가 실사 CCTV 와 구분할 수 있게 한다.
+#
+# 2026-09-21 실측: comfy_local 합성본이 LS 프로젝트 823 까지 도달했지만, `src/gemini/` 와
+# `defs/ls/` 어디에도 `synthetic`/`comfy_local` 참조가 없어 **검수자 화면에서 실사 CCTV 와
+# 구분할 수단이 전혀 없었다.** 합성본을 실사로 오인한 검수는 학습셋 오염으로 직결된다
+# (설계서 Phase D 의 목적 자체가 그 오인 방지다).
+#
+# 두 갈래로 싣는다:
+#   data 필드  — `synthetic`/`genai_engine`/`genai_batch_id`/`intended_event` (기계 판독용.
+#                LS export·API 로 그대로 나온다) + `provenance` (사람이 읽는 한 줄)
+#   label_config — 위 `provenance` 를 띄우는 배너 + 설계서 Phase D.3 의 4개 판정 체크리스트
+#
+# **합성 배치에만** 붙는다. `synthetic=False` 가 기본이고 그 경로의 출력은 이 변경 이전과
+# 바이트 단위로 같다 — 실사 프로젝트의 label_config 는 건드리지 않는다.
+# ---------------------------------------------------------------------------
+
+SYNTHETIC_QC_NAME = "synthetic_qc"
+
+# 설계서 Phase D.3 의 4개 판정. 순서·번호를 바꾸면 이미 쌓인 annotation 과 대조가 안 되므로
+# 문구 수정 시 번호는 유지할 것.
+SYNTHETIC_QC_CRITERIA: tuple[str, ...] = (
+    "1. 요청한 이벤트가 실제로 보인다",
+    "2. background·camera geometry 가 보존됐다",
+    "3. 마스크 경계·인체·불/연기 artifact 가 허용 가능하다",
+    "4. bbox 와 event label 이 실제 생성 결과에 맞는다",
+)
+
+_SYNTHETIC_BANNER = "합성 생성본(synthetic) — 실사 CCTV 가 아니다. 아래 출처를 먼저 확인할 것."
+_SYNTHETIC_QC_HEADER = "합성 검수 판정 — 통과한 항목만 체크 (미체크 = 불합격)"
+
+
+def build_synthetic_provenance(
+    engine: str | None, batch_id: str | None, categories: list[str] | None
+) -> dict[str, str]:
+    """합성 배치 task 의 `data` 에 실을 출처 필드.
+
+    값이 비면 `unknown` 으로 채운다 — 키 자체를 빼면 label_config 의 `$provenance` 가 빈 줄로
+    렌더되어 "합성인데 표시가 없는 화면"이 되고, 그건 이 기능이 막으려던 상태 그대로다.
+    """
+    engine_s = (engine or "").strip() or "unknown"
+    batch_s = (batch_id or "").strip() or "unknown"
+    events = [c.strip() for c in (categories or []) if c and c.strip()]
+    event_s = ", ".join(events) if events else "unknown"
+    return {
+        "synthetic": "true",
+        "genai_engine": engine_s,
+        "genai_batch_id": batch_s,
+        "intended_event": event_s,
+        "provenance": f"합성 생성본 · 엔진 {engine_s} · batch {batch_s} · 의도 이벤트 {event_s}",
+    }
+
+
+def _synthetic_banner_xml() -> str:
+    return f'  <Header value="{_SYNTHETIC_BANNER}"/>\n' '  <Text name="provenance" value="$provenance"/>\n'
+
+
+def _synthetic_qc_xml(to_name: str) -> str:
+    choices = "\n".join(f'    <Choice value="{c}"/>' for c in SYNTHETIC_QC_CRITERIA)
+    return (
+        f'  <Header value="{_SYNTHETIC_QC_HEADER}"/>\n'
+        f'  <Choices name="{SYNTHETIC_QC_NAME}" toName="{to_name}" choice="multiple" showInLine="false">\n'
+        f"{choices}\n"
+        "  </Choices>\n"
+    )
+
+
+def _video_label_config(categories: list[str], synthetic: bool = False) -> str:
+    """video project 전용 — TimelineLabels 만. synthetic=True 면 출처 배너 + 합성 판정 추가."""
+    banner = _synthetic_banner_xml() if synthetic else ""
+    qc = _synthetic_qc_xml("video") if synthetic else ""
     return f"""<View>
-  <Video name="video" value="$video" timelineHeight="120" />
+{banner}  <Video name="video" value="$video" timelineHeight="120" />
   <TimelineLabels name="videoLabels" toName="video">
 {_labels_xml(categories)}
   </TimelineLabels>
-</View>"""
+{qc}</View>"""
 
 
-def _image_label_config(categories: list[str]) -> str:
-    """image project 전용 — RectangleLabels 만."""
+def _image_label_config(categories: list[str], synthetic: bool = False) -> str:
+    """image project 전용 — RectangleLabels 만. synthetic=True 면 출처 배너 + 합성 판정 추가."""
+    banner = _synthetic_banner_xml() if synthetic else ""
+    qc = _synthetic_qc_xml("image") if synthetic else ""
     return f"""<View>
-  <Image name="image" value="$image" />
+{banner}  <Image name="image" value="$image" />
   <RectangleLabels name="imageLabels" toName="image">
 {_labels_xml(categories)}
   </RectangleLabels>
-</View>"""
+{qc}</View>"""
 
 
 def _parse_csv_or_json_list(raw: str | None) -> list[str]:

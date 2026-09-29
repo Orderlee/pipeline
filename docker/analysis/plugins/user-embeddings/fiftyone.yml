@@ -1,6 +1,6 @@
 name: "@user/embeddings"
-description: Embeddings 패널 보강 + 미디어 파일 이동/삭제 버튼
-version: 1.5.0
+description: Embeddings 패널 보강 + 미디어 파일 이동/삭제 + 프로젝트 번들 임포트 버튼
+version: 1.6.0
 fiftyone:
   version: ">=1.4"
 operators:
@@ -9,3 +9,5 @@ operators:
   - save_visualization_coords
   - move_media
   - delete_media
+  - import_project_bundle
+  - import_bundle_status

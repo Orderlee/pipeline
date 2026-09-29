@@ -17,9 +17,15 @@ resource.setrlimit(resource.RLIMIT_AS, (16 * 2**30, 16 * 2**30))
 
 sys.path.insert(0, "/workspace")
 
-_npzs = glob.glob("/data/fiftyone/sourceh/prompts/v*.npz")
-_vers = [os.path.basename(p)[:-4] for p in _npzs]
-_vers.sort(key=lambda v: tuple(int(x) for x in v.lstrip("v").split(".")))
+# BANK_LIST 순서 = gidx 블록 배정. **정렬이 아니라 이미 박힌 배정**에서 만든다
+# (bank_blocks 모듈 docstring: 2026-08-20 블록 드리프트 사고 + sourcei 갭 사례).
+# 예전 `sort(key=... int(x) ... v.lstrip("v") ...)` 는 `vGEN`/`vOPT` npz 가 생긴 뒤로
+# `int("GEN")` 에서 죽었고, 살아 있었더라도 이미 저장된 gidx 를 소급 재번호했을 것이다.
+# sourcei-prompts 는 vOPT=29 / 블록 30 공백 / vGEN=31 로 손으로 박힌 갭이 있어
+# 위치 리스트로 재현이 불가능하다 — 여기서 죽는 게 정상이다(압축하면 31개 필드가 어긋난다).
+import bank_blocks       # noqa: E402 — BANK_LIST 를 prompt_geometry import 전에 정해야 한다
+
+_vers = bank_blocks.bank_list("/data/fiftyone/sourceh/prompts", 'sourcei-prompts')
 os.environ["BANK_LIST"] = ",".join(_vers)
 
 import fiftyone as fo

@@ -7,6 +7,8 @@ import shutil
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from vlm_pipeline.lib.atomic_json import write_json_atomic
+
 from .hydration import (
     hydrate_manifest_files,
     raise_if_manifest_hydration_failed as check_manifest_hydration_failure,
@@ -19,12 +21,14 @@ if TYPE_CHECKING:
 
 
 def _persist_manifest(manifest_path: str | None, manifest: dict | None) -> None:
+    """manifest 를 원자적으로 제자리 재작성 (lib.atomic_json 위임).
+
+    센서가 매 tick pending/ 을 읽으므로 비원자적 쓰기의 중간 상태는 정상 manifest 를
+    손상으로 보이게 만든다 — 격리와 만나면 유실이다. 사유는 atomic_json docstring 참고.
+    """
     if not manifest_path or manifest is None:
         return
-    Path(manifest_path).write_text(
-        json.dumps(manifest, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
+    write_json_atomic(manifest_path, manifest)
 
 
 def _load_manifest_or_summary(

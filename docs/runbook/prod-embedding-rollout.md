@@ -68,7 +68,7 @@ print(len(ds), ds.get_field_schema().keys())
 # 상시 App (keep-alive; wait() 는 헤드리스에서 즉시 리턴하므로 sleep 루프)
 docker exec -d docker-analysis-1 sh -lc 'python -c "import fiftyone as fo,time; fo.launch_app(fo.load_dataset(\"prod_frames\"), port=5151); time.sleep(10**9)"'
 ```
-- 접속: **JupyterLab `http://10.0.0.10:8890`**, **FiftyOne App `http://10.0.0.10:5153`**.
+- 접속: **JupyterLab `http://10.0.0.10:8888`**, **FiftyOne App `http://10.0.0.10:5153`**.
 - 클러스터 그래프 x축 라벨값: **`detection_class`**(SAM3 클래스) + **`caption_cluster`**(캡션 의미 그룹) 둘 다 color-by/Distributions 가능.
 
 ## 6. 검증

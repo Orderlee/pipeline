@@ -111,48 +111,90 @@ def test_ratio_path_no_duration_boundary() -> None:
     assert len(got) >= 1
 
 
-def test_resolve_frame_sampling_policy_clip_event_current_uses_existing_profile_logic() -> None:
-    decision = resolve_frame_sampling_policy(
-        sampling_mode="clip_event",
-        requested_outputs=["captioning_video"],
-        image_profile="current",
-        duration_sec=40.0,
-        fps=30.0,
-        frame_count=1200,
+# ── 구 정책(장수 상한 기반) 테스트 — 1fps 고정 전환으로 비활성. 복구 시 함께 주석 해제 ──
+# def test_resolve_frame_sampling_policy_clip_event_current_uses_existing_profile_logic() -> None:
+#     decision = resolve_frame_sampling_policy(
+#         sampling_mode="clip_event",
+#         requested_outputs=["captioning_video"],
+#         image_profile="current",
+#         duration_sec=40.0,
+#         fps=30.0,
+#         frame_count=1200,
+#     )
+#     assert decision.sampling_mode == "clip_event"
+#     assert decision.effective_max_frames == 8
+#     assert decision.frame_interval_sec == 1.0
+#     assert decision.policy_source == "dynamic_default"
+#
+#
+# def test_resolve_frame_sampling_policy_raw_video_current_is_more_generous() -> None:
+#     decision = resolve_frame_sampling_policy(
+#         sampling_mode="raw_video",
+#         requested_outputs=["bbox"],
+#         image_profile="current",
+#         duration_sec=40.0,
+#         fps=30.0,
+#         frame_count=1200,
+#     )
+#     assert decision.sampling_mode == "raw_video"
+#     assert decision.effective_max_frames == 16
+#     assert decision.frame_interval_sec == 1.0
+#     assert decision.policy_source == "dynamic_default"
+#
+#
+# def test_resolve_frame_sampling_policy_spec_override_caps_dense_profile() -> None:
+#     decision = resolve_frame_sampling_policy(
+#         sampling_mode="clip_event",
+#         requested_outputs=["captioning_video", "bbox"],
+#         image_profile="dense",
+#         duration_sec=200.0,
+#         fps=30.0,
+#         frame_count=6000,
+#         spec_max_frames_per_video=6,
+#     )
+#     assert decision.effective_max_frames == 6
+#     assert decision.policy_source == "spec_override"
+#
+#
+
+
+def test_raw_video_interval_env_applies_to_raw_video_only(monkeypatch) -> None:
+    monkeypatch.setenv("RAW_VIDEO_FRAME_INTERVAL_SEC", "5")
+    kwargs = dict(requested_outputs=["bbox"], image_profile="current", duration_sec=40.0, fps=30.0, frame_count=1200)
+    raw = resolve_frame_sampling_policy(sampling_mode="raw_video", **kwargs)
+    assert (raw.frame_interval_sec, raw.effective_max_frames, raw.policy_source) == (
+        5.0,
+        8,
+        "raw_video_interval_env",
     )
-    assert decision.sampling_mode == "clip_event"
-    assert decision.effective_max_frames == 8
-    assert decision.frame_interval_sec == 1.0
-    assert decision.policy_source == "dynamic_default"
+    clip = resolve_frame_sampling_policy(sampling_mode="clip_event", **kwargs)
+    assert (clip.frame_interval_sec, clip.effective_max_frames) == (1.0, 40)
 
 
-def test_resolve_frame_sampling_policy_raw_video_current_is_more_generous() -> None:
-    decision = resolve_frame_sampling_policy(
-        sampling_mode="raw_video",
-        requested_outputs=["bbox"],
-        image_profile="current",
-        duration_sec=40.0,
-        fps=30.0,
-        frame_count=1200,
-    )
-    assert decision.sampling_mode == "raw_video"
-    assert decision.effective_max_frames == 16
-    assert decision.frame_interval_sec == 1.0
-    assert decision.policy_source == "dynamic_default"
+def test_resolve_frame_sampling_policy_is_fixed_1fps() -> None:
+    for mode in ("clip_event", "raw_video"):
+        decision = resolve_frame_sampling_policy(
+            sampling_mode=mode,
+            requested_outputs=["captioning_video", "bbox"],
+            image_profile="current",
+            duration_sec=40.0,
+            fps=30.0,
+            frame_count=1200,
+            spec_max_frames_per_video=6,  # 1fps 정책에서는 무시된다
+        )
+        assert decision.frame_interval_sec == 1.0
+        assert decision.effective_max_frames == 40
+        assert decision.policy_source == "fixed_1fps"
 
-
-def test_resolve_frame_sampling_policy_spec_override_caps_dense_profile() -> None:
-    decision = resolve_frame_sampling_policy(
-        sampling_mode="clip_event",
-        requested_outputs=["captioning_video", "bbox"],
-        image_profile="dense",
-        duration_sec=200.0,
-        fps=30.0,
-        frame_count=6000,
-        spec_max_frames_per_video=6,
-    )
-    assert decision.effective_max_frames == 6
-    assert decision.policy_source == "spec_override"
+        # 상한이 후보 개수와 같으므로 다운샘플이 걸리지 않는다 = 초당 정확히 1장
+        stamps = plan_frame_timestamps(
+            duration_sec=40.0,
+            fps=30.0,
+            frame_count=1200,
+            max_frames_per_video=decision.effective_max_frames,
+            frame_interval_sec=decision.frame_interval_sec,
+        )
+        assert stamps == [float(i) for i in range(40)]
 
 
 def test_extract_frame_jpeg_bytes_retries_previous_seek_on_empty_output(monkeypatch: pytest.MonkeyPatch) -> None:

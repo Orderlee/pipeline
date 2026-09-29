@@ -23,11 +23,17 @@
   G7 문장 근접중복 > 30% → 계수 p값·부호안정성 해석 금지. 유효 표본이 명목의 몇 분의 일
   G8 뱅크 크기 편차 4배↑ → 전량 행렬 금지(OOM). 행 청크로 흘릴 것
 
-쓰는 법
-    python3 analysis_standard.py run --config configs/sourcei.json
-    python3 analysis_standard.py run --dataset sourcei --gt-field gt --group-field camera \\
-            --banks v1.0.8.0,v1.0.8.1 --out /data/.../std_sourcei
+쓰는 법 (코호트 설정은 `cohort.py` 레지스트리 — 새 현장은 거기 한 줄 추가로 끝난다)
+    python3 analysis_standard.py run --dataset sourcei
+    python3 analysis_standard.py run --dataset sitej_subway --stages S0
     python3 analysis_standard.py guardrails          # 가드레일 표만 출력
+
+⚠️ 미등록 코호트는 기본값으로 폴백하지 않고 **거부 아티팩트**를 발행한다(`display_allowed=false`).
+   군집키를 자동 유도하면 거짓 유의가 나오기 때문이다 — `cohort.py` 모듈 주석 참고.
+
+⚠️ 가드레일의 `evidence` 는 **정적 문자열**이고 7,498장 구코호트 기준이다. 라이브 판정은
+   `fired`/`detail` 만 보라 — 라이브 6,032 에서 G3 는 발동하지 않는다(ICC 0.368 < 0.5).
+   상세: `docs/superpowers/specs/2026-09-16-icc-estimator-audit.md`
 """
 from __future__ import annotations
 import os, sys, json, csv, glob, time, argparse, collections
@@ -169,10 +175,16 @@ def s0_inventory(D, R):
     R["S0"] = dict(n=int(len(gt)), n_groups=int(len(cams)),
                    class_counts={classes[i]: int((gt == i).sum()) for i in range(len(classes))},
                    per_class_groups=per_class_cams, single_class_groups=len(single), per_group=per_cam)
-    R["guardrails"] += [check("G2", min(v for k, v in per_class_cams.items() if k != "normal") < 5,
-                              f"클래스별 존재 카메라 {per_class_cams}")]
-    log(f"S0 재고 — 표본 {len(gt):,} · 카메라 {len(cams)} · 클래스 {R['S0']['class_counts']}")
-    log(f"   클래스별 존재 카메라 {per_class_cams} · 단일클래스 카메라 {len(single)}")
+    # 군집키 이름은 코호트마다 다르다(sourcei=camera, sitej_subway=session) — "카메라"로
+    # 박아 두면 세션 30개를 카메라 30대로 읽는 오독이 난다.
+    gname = D.get("cohort_cfg", {}).get("group", "군집")
+    # 음성 클래스도 하드코딩하지 않는다 — G2 는 **이벤트 클래스**의 군집 지원을 본다.
+    ev = [c for c in D.get("events") or [k for k in per_class_cams if k != classes[0]]]
+    R["S0"]["group_field"] = gname
+    R["guardrails"] += [check("G2", min(per_class_cams[c] for c in ev) < 5,
+                              f"클래스별 존재 {gname} {per_class_cams}")]
+    log(f"S0 재고 — 표본 {len(gt):,} · {gname} {len(cams)} · 클래스 {R['S0']['class_counts']}")
+    log(f"   클래스별 존재 {gname} {per_class_cams} · 단일클래스 {gname} {len(single)}")
     return R
 
 
@@ -217,23 +229,8 @@ def s2_cluster(D, R):
     return R
 
 
-def _wave_iou(S, mem, bins=80):
-    lo = S.min(1); hi = S.max(1); w = np.maximum(hi - lo, 1e-6)
-    B = np.clip(((S - lo[:, None]) / w[:, None] * bins).astype(np.int32), 0, bins - 1)
-    f = S.shape[0]; fi = np.arange(f); h = {}
-    for c, idx in mem.items():
-        flat = (fi[:, None] * bins + B[:, idx]).ravel()
-        h[c] = np.bincount(flat, minlength=f * bins).reshape(f, bins).astype(np.float32) / len(idx)
-    out = {}
-    for c in mem:
-        if c == "normal": continue
-        inter = np.minimum(h["normal"], h[c]).sum(1); uni = np.maximum(h["normal"], h[c]).sum(1)
-        out[c] = inter / np.maximum(uni, 1e-9)
-    return out
-
-
 def s3_scoring(D, R):
-    from prompt_cos_db import topk_vote
+    from prompt_cos_db import WAVE_THR, topk_vote, wave_iou
     from sklearn.metrics import average_precision_score
     gt, classes, events = D["gt"], D["classes"], D["events"]
     rows = []
@@ -243,11 +240,17 @@ def s3_scoring(D, R):
         preds = dict(topk=topk_vote(S, lab, len(classes)))
         per = np.stack([np.where(lab == i, S, -2.0).max(1) for i in range(len(classes))], 1)
         preds["argmax"] = per.argmax(1)
-        io = _wave_iou(S, mem) if "normal" in mem and len(mem) > 1 else {}
+        io = wave_iou(S, mem) if "normal" in mem and len(mem) > 1 else {}
         if io:
-            iou_full = np.column_stack([np.ones(len(gt), np.float32)] +
-                                       [io[c] for c in classes if c != "normal" and c in io])
-            preds["wave"] = iou_full.argmin(1)
+            # 제품 규칙(pe_inference/01_TuningFree_v2.py:608): IoU < WAVE_THR 인 이벤트만 후보,
+            # 하나도 없으면 normal. 이전 구현은 normal 열에 상수 1.0 을 넣고 argmin 했는데
+            # IoU <= 1 이라 normal 을 **절대** 고를 수 없었다 (실측 fp_normal=1.0, f1_normal=0.0).
+            # 클래스 인덱스도 ev_idx 로 되돌린다 — io 에 빠진 이벤트 클래스가 있으면 열이 밀린다.
+            ev = [c for c in classes if c != "normal" and c in io]
+            I = np.stack([io[c] for c in ev], axis=1)
+            ev_idx = np.array([classes.index(c) for c in ev])
+            preds["wave"] = np.where((I < WAVE_THR).any(1),
+                                     ev_idx[I.argmin(1)], classes.index("normal"))
         for rule, p in preds.items():
             mf1, present, pc = macro_present(gt, p, classes, events)
             aps = [float(average_precision_score((gt == classes.index(c)).astype(int), -io[c]))
@@ -336,10 +339,67 @@ STAGES = [("S0", s0_inventory), ("S1", s1_geometry), ("S2", s2_cluster),
           ("S3", s3_scoring), ("S4", s4_stats), ("S5", s5_curation)]
 
 
+def publish_atomic(payload, path):
+    """부분 JSON 을 절대 노출하지 않는 발행.
+
+    직렬화 → flush → fsync → os.replace 순서다. 중간에 터지면 임시 파일까지 지우고
+    **이전 버전을 그대로 둔다** — 반쯤 쓰인 report 를 소비자가 읽는 것이 최악이다.
+    `allow_nan=False` 인 이유: NaN/Infinity 는 JSON 표준이 아니라 소비자 파서마다 다르게
+    깨진다(파이썬은 읽고 브라우저 `JSON.parse` 는 터진다 — 패널이 후자다).
+    """
+    tmp = f"{path}.tmp{os.getpid()}"
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=1, allow_nan=False, default=str)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def stage_status(R):
+    """스테이지별 `ok|error`.
+
+    `run()` 이 스테이지 예외를 **기록만 하고 계속**하므로(아래 참조) 여기서 드러내지 않으면
+    소비자는 죽은 스테이지가 든 report 를 정상으로 읽는다. 키 이름이 `S<숫자>` 인 것만 본다
+    — `verdict`·`guardrails` 같은 메타 키에 `error` 가 들어가도 스테이지로 세지 않는다.
+    """
+    def _one(v):
+        if not isinstance(v, dict):
+            return "ok"
+        if "error" in v:
+            return "error"
+        return "skipped" if "skipped" in v else "ok"
+
+    return {sid: _one(v) for sid, v in R.items()
+            if len(sid) == 2 and sid[0] == "S" and sid[1].isdigit()}
+
+
+def finalize_status(R):
+    """report 전체 판정. **스테이지가 하나라도 죽으면 표를 그리지 않는다.**"""
+    st = stage_status(R)
+    failed = sorted(k for k, v in st.items() if v == "error")
+    return dict(stages=st, failed_stages=failed,
+                status="error" if failed else "ok",
+                display_allowed=not failed, complete=True)
+
+
 def run(D, outdir):
     os.makedirs(outdir, exist_ok=True)
     R = dict(guardrails=[], started=time.strftime("%Y-%m-%d %H:%M:%S"))
+    # 스테이지 **선택 적재**: D 가 실을 수 있는 입력만 요청한다. 요청 안 된 스테이지를
+    # 그냥 돌리면 입력이 없어 예외가 나고, 그게 `error` 로 기록돼 display_allowed=False 가
+    # 된다 — "안 돌린 것"과 "돌리다 죽은 것"은 구별돼야 한다.
+    want = D.get("requested_stages")
     for sid, fn in STAGES:
+        if want is not None and sid not in want:
+            R[sid] = dict(skipped="요청되지 않은 스테이지")
+            continue
         try:
             R = fn(D, R)
         except Exception as e:
@@ -349,24 +409,30 @@ def run(D, outdir):
     fired = [g for g in R["guardrails"] if g["fired"]]
     R["verdict"] = dict(n_guardrails=len(R["guardrails"]), n_fired=len(fired),
                         fired=[g["id"] for g in fired])
-    json.dump(R, open(f"{outdir}/standard_report.json", "w"), ensure_ascii=False, indent=1, default=str)
+    R.update(finalize_status(R))
+    publish_atomic(R, f"{outdir}/standard_report.json")
+    # ⚠️ 스테이지 산출은 **`stages` 가 ok 일 때만** 읽는다. `skipped`/`error` 는 dict 이고
+    #    빈 값이 아니라서 `R.get("S3")` 진위 검사를 통과한다 — 그대로 순회하면 키 문자열을
+    #    행으로 착각해 `TypeError: string indices must be integers` 가 난다(실측).
+    _ok = {sid for sid, s in R["stages"].items() if s == "ok"}
     with open(f"{outdir}/standard_card.md", "w") as f:
         f.write(f"# 분석 표준 카드 — {D.get('name','(무명)')}\n\n생성 {R['started']}\n\n")
+        f.write(f"스테이지: {', '.join(f'{k}={v}' for k, v in sorted(R['stages'].items()))}\n\n")
         f.write(f"## 판정: 가드레일 {len(fired)}/{len(R['guardrails'])} 발동\n\n")
         f.write("| ID | 항목 | 발동 | 조치 | 실측 |\n|---|---|---|---|---|\n")
         for g in R["guardrails"]:
             f.write(f"| {g['id']} | {g['name']} | {'🔴 예' if g['fired'] else '⚪ 아니오'} | "
                     f"{g['action']} | {g['detail']} |\n")
-        if R.get("S3"):
+        if "S3" in _ok:
             f.write("\n## S3 채점\n\n| 뱅크 | 규칙 | 정확도 | macro-F1 | PR-AUC | 정상 오탐 |\n|---|---|---|---|---|---|\n")
             for r in R["S3"]:
                 f.write(f"| {r['bank']} | {r['rule']} | {r['acc']} | {r['macro_f1']} | {r['prauc']} | {r['fp_normal']} |\n")
-        if R.get("S4"):
+        if "S4" in _ok:
             s = R["S4"]
             f.write(f"\n## S4 통계\n\n- deff **{s['deff']}** · ICC **{s['icc']}** · 유효표본 **{s['n_effective']}**\n")
-            f.write(f"- macro-F1 95% CI(카메라 군집 부트스트랩) {s['macro_f1_ci']}\n")
+            f.write(f"- macro-F1 95% CI(군집 부트스트랩) {s['macro_f1_ci']}\n")
             f.write(f"- 필요 카메라 {s['cameras_needed']}\n")
-    if R.get("S3"):
+    if "S3" in _ok and R["S3"]:
         with open(f"{outdir}/S3_scoring.csv", "w", newline="", encoding="utf-8-sig") as f:
             w = csv.DictWriter(f, fieldnames=list(R["S3"][0].keys())); w.writeheader()
             for r in R["S3"]: w.writerow(r)
@@ -419,15 +485,32 @@ def main():
     r = sub.add_parser("run")
     r.add_argument("--dataset", default="sourcei")
     r.add_argument("--banks", default="v1.0.8.0,v1.0.8.1")
-    r.add_argument("--out", default="/data/fiftyone/frames_bank/report/sourcei_gt/standard")
+    r.add_argument("--out", default=None, help="기본값은 코호트에서 유도 (.../report/<dataset>)")
+    r.add_argument("--stages", default="S0",
+                   help="선택 적재할 스테이지. S1~S5 는 점수 행렬이 필요해 Phase 2 이후 가능")
+    r.add_argument("--legacy-sourcei-npz", action="store_true",
+                   help="구 load_sourcei 경로(7,498장 preds.npz). 라이브와 어긋나 대개 실패한다")
     a = ap.parse_args()
     if a.cmd == "guardrails":
         print(json.dumps(GUARDRAILS, ensure_ascii=False, indent=1)); return
-    banks = [b for b in a.banks.split(",") if b]
-    if a.dataset != "sourcei":
-        raise SystemExit(f"어댑터 없음: {a.dataset} — load_* 함수를 추가하세요 (load_sourcei 참고)")
-    D = load_sourcei(banks)
-    run(D, a.out)
+    out = a.out or f"/data/fiftyone/frames_bank/report/{a.dataset}"
+    if a.legacy_sourcei_npz:
+        # 구 경로 — 7,498장 preds.npz 를 읽는다. 라이브 sourcei(6,032)와 어긋나 assert 에서
+        # 터지므로 사실상 죽은 경로지만, S1~S3·S5 가 요구하는 점수 행렬을 만들 수 있는
+        # 유일한 어댑터라 참고용으로 남긴다. Phase 2 에서 라이브 기반으로 대체한다.
+        D = load_sourcei([b for b in a.banks.split(",") if b])
+        run(D, out)
+        return
+    import cohort
+    try:
+        D = cohort.load_cohort(a.dataset, stages=tuple(s for s in a.stages.split(",") if s))
+    except cohort.CohortRefused as e:
+        os.makedirs(out, exist_ok=True)
+        publish_atomic(cohort.refusal_artifact(a.dataset, e.reason_code, e.detail),
+                       f"{out}/standard_report.json")
+        log(f"거부 아티팩트 발행 → {out}/standard_report.json")
+        raise SystemExit(f"거부: {e}") from e
+    run(D, out)
 
 
 if __name__ == "__main__":

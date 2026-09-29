@@ -34,19 +34,34 @@ def _load_gemini_module():
     if src_str not in sys.path:
         sys.path.insert(0, src_str)
 
-    # 캐시 제거 — 부모 패키지부터 자식까지 모두.
-    for mod_name in list(sys.modules):
-        if mod_name == "vlm_pipeline" or mod_name.startswith("vlm_pipeline."):
-            del sys.modules[mod_name]
+    def _vlm_modules() -> list[str]:
+        return [n for n in list(sys.modules) if n == "vlm_pipeline" or n.startswith("vlm_pipeline.")]
 
-    module = importlib.import_module("vlm_pipeline.lib.gemini")
-    # 명시적 sanity check — 새 method 가 안 잡히면 CI 환경 진단이 쉽도록 즉시 fail.
-    if not hasattr(module, "is_vertex_server_error"):
-        raise RuntimeError(
-            f"Phase 4-A method missing from imported module ({module.__file__}). "
-            "CI runner 의 stale editable install 가능성."
-        )
-    return module
+    # 캐시 제거 — 부모 패키지부터 자식까지 모두. 단 원본은 보관했다가 되돌린다(아래 finally).
+    saved = {n: sys.modules[n] for n in _vlm_modules()}
+    for mod_name in saved:
+        del sys.modules[mod_name]
+
+    try:
+        module = importlib.import_module("vlm_pipeline.lib.gemini")
+        # 명시적 sanity check — 새 method 가 안 잡히면 CI 환경 진단이 쉽도록 즉시 fail.
+        if not hasattr(module, "is_vertex_server_error"):
+            raise RuntimeError(
+                f"Phase 4-A method missing from imported module ({module.__file__}). "
+                "CI runner 의 stale editable install 가능성."
+            )
+        return module
+    finally:
+        # 이 파일에 필요한 건 방금 로드한 모듈 객체 하나뿐이다. sys.modules 를 갈아치운 채
+        # 두면 **같은 세션의 다른 테스트가 조용히 깨진다** — 먼저 임포트된 테스트 모듈은 옛
+        # 모듈 객체를 붙들고 있는데, monkeypatch.setattr("vlm_pipeline...", ...) 같은 문자열
+        # 타깃은 재임포트된 새 객체에 걸려 패치가 무효가 된다.
+        # 실측(2026-09-15): 복구 없이는 test_dispatch_service 의
+        # test_process_dispatch_ingress_request_deferred_when_folder_in_flight 가
+        # has_active_dispatch_run 패치를 놓쳐 'deferred' 대신 'run_request' 를 돌려줬다.
+        for mod_name in _vlm_modules():
+            del sys.modules[mod_name]
+        sys.modules.update(saved)
 
 
 _gemini_lib = _load_gemini_module()

@@ -50,7 +50,9 @@ def _owner_run_is_running(context, owner_run_id: str | None) -> bool:
 
 
 def _release_serving(base_url: str, *, timeout: float = 10.0) -> None:
-    requests.post(f"{base_url.rstrip('/')}/maintenance/exit", timeout=timeout)
+    # force=true — 이 센서는 "owner 가 죽었다"고 이미 판정한 뒤에 부른다. 서빙의 owner
+    # 검증(409)은 살아있는 남의 정비창을 보호하기 위한 것이고, fail-safe 해제는 그 위에 선다.
+    requests.post(f"{base_url.rstrip('/')}/maintenance/exit", data={"force": "true"}, timeout=timeout)
     requests.post(f"{base_url.rstrip('/')}/warmup", timeout=timeout)
 
 

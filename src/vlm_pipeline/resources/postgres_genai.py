@@ -12,6 +12,8 @@ from __future__ import annotations
 
 from datetime import datetime
 
+from vlm_pipeline.lib.gpu_lease import GPU0_COMFY
+
 
 _BATCH_INSERT_SQL = """
 INSERT INTO genai_batches (
@@ -32,7 +34,12 @@ ON CONFLICT (job_id) DO NOTHING
 
 
 class PostgresGenAIMixin:
-    """genai_batches / genai_jobs 테이블 CRUD 및 batch status rollup."""
+    """genai_batches / genai_jobs 테이블 CRUD 및 batch status rollup.
+
+    ⚠️ `generation_gpu_leases` 는 **읽기만** 한다 (`get_generation_gpu_lease`).
+    acquire/heartbeat/release 는 docker/genai/db/pg.py 전속이다 — 자세한 이유는
+    `lib/gpu_lease.py` 모듈 docstring(역방향 교착) 참고.
+    """
 
     # ------------------------------------------------------------------
     # Write — submit (UI POST /genai/batches 가 호출)
@@ -194,3 +201,32 @@ class PostgresGenAIMixin:
                     (new_status, int(n_done), int(n_failed), completed_at, batch_id),
                 )
                 return new_status
+
+    # ------------------------------------------------------------------
+    # Read-only — GPU0 생성 lease (migration 030)
+    # ------------------------------------------------------------------
+    def get_generation_gpu_lease(self, resource: str = GPU0_COMFY) -> dict | None:
+        """`generation_gpu_leases` 한 행 조회. 행 없으면 None.
+
+        **SELECT 전용이다.** 이 mixin 에는 lease 를 쓰는 메서드가 없고, 앞으로도 두지
+        않는다 — Dagster 가 획득하면 comfy 가 영원히 못 잡는 역방향 교착이 된다
+        (`lib/gpu_lease.py` docstring).
+
+        테이블이 없는 환경(030 미적용 staging)에서는 조회가 예외를 던진다. 호출부가
+        fail-open 으로 삼키도록 의도적으로 여기서 잡지 않는다 — 이 자리에서 None 으로
+        뭉개면 "테이블 없음" 과 "lease 없음" 이 구분되지 않는다.
+        """
+        with self.connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT resource, owner_job_id, state, acquired_at, expires_at "
+                    "FROM generation_gpu_leases WHERE resource = %(resource)s",
+                    {"resource": resource},
+                )
+                row = cur.fetchone()
+                if row is None:
+                    return None
+                if isinstance(row, dict):
+                    return dict(row)
+                cols = ("resource", "owner_job_id", "state", "acquired_at", "expires_at")
+                return dict(zip(cols, row))

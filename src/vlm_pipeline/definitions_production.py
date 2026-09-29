@@ -11,7 +11,7 @@ from dagster import DefaultScheduleStatus, EnvVar, ScheduleDefinition, define_as
 from vlm_pipeline.defs.build.assets import build_dataset
 from vlm_pipeline.defs.build.classification import build_classification
 from vlm_pipeline.defs.build.sensor import build_dataset_on_finalize_sensor
-from vlm_pipeline.defs.genai import genai_poll_sensor
+from vlm_pipeline.defs.genai import genai_poll_sensor, synthetic_campaign_dispatch_sensor
 from vlm_pipeline.defs.viz import fiftyone_sync_sensor
 from vlm_pipeline.defs.dispatch.archive_dispatch_sensor import build_archive_dispatch_sensor
 from vlm_pipeline.defs.dispatch.production_agent_sensor import build_production_agent_dispatch_sensor
@@ -307,6 +307,8 @@ def build_production_sensors(
         ls_task_create_sensor,
         build_dataset_on_finalize_sensor,
         genai_poll_sensor,
+        # Phase F.2 — default STOPPED. 승인된 campaign 의 task 를 tick 당 최대 1건 제출.
+        synthetic_campaign_dispatch_sensor,
         fiftyone_sync_sensor,
         # 2026-05-20: dispatch_stage_job 종료 후 limit 초과분/누락분을 picking up.
         auto_labeling_sensor,

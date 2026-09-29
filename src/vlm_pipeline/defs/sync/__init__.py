@@ -1,2 +1,0 @@
-"""SYNC domain definitions."""
-

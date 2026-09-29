@@ -1,0 +1,2 @@
+# 이 디렉토리가 비어 있으면 좌석 라우터는 HTTP 만 서비스한다(현 상태).
+# `../gen-seat-cert.sh` 를 돌리면 여기에 tls.conf + cert/key 가 생기고 HTTPS 가 켜진다.

@@ -1,0 +1,282 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<title>FiftyOne 프로젝트 업로드</title>
+<style>
+  body{font-family:sans-serif;max-width:860px;margin:32px auto;padding:0 16px;color:#222;background:#fafafa}
+  h1{font-size:22px} h2{font-size:17px;margin-top:28px}
+  .card{background:#fff;border:1px solid #ddd;border-radius:10px;padding:18px;margin:14px 0}
+  .drop{border:2px dashed #888;border-radius:10px;padding:26px;text-align:center;color:#555;cursor:pointer}
+  .drop.over{background:#eef3ff;border-color:#3b6fd6}
+  .row{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin:10px 0}
+  input[type=text]{padding:7px 9px;border:1px solid #bbb;border-radius:6px;min-width:220px}
+  button{padding:8px 14px;border:0;border-radius:6px;background:#3b6fd6;color:#fff;cursor:pointer;font-size:14px}
+  button:disabled{background:#aab;cursor:not-allowed} button.gray{background:#666}
+  progress{width:100%;height:14px}
+  pre{background:#f3f3f3;border:1px solid #e2e2e2;border-radius:6px;padding:10px;max-height:260px;overflow:auto;font-size:12px;white-space:pre-wrap}
+  .ok{color:#177a2c} .bad{color:#b3261e} .warn{color:#8a6d00} .muted{color:#666;font-size:13px}
+  table{border-collapse:collapse;width:100%} td,th{border-bottom:1px solid #e5e5e5;padding:7px 6px;text-align:left;font-size:14px}
+  code{background:#eee;padding:1px 4px;border-radius:4px}
+  /* 돌아가기 링크는 button 과 같은 모양으로 — a 에는 button 규칙이 안 걸린다 */
+  a.btn{display:inline-block;padding:8px 14px;border-radius:6px;background:#666;color:#fff;text-decoration:none;font-size:14px}
+  .top{display:flex;justify-content:space-between;align-items:center;gap:12px}
+</style>
+</head>
+<body>
+<div class="top"><h1 style="margin:0">FiftyOne 프로젝트 업로드</h1>
+  <!-- 같은 오리진의 앱 루트. 좌석 쿠키(foseat)가 그대로 실려 원래 좌석으로 돌아간다 —
+       절대 URL 을 박으면 프록시/포트가 바뀔 때 죽고, 쿠키 없는 접속자는 좌석 배정을 다시 탄다. -->
+  <a class="btn" href="/">← FiftyOne 으로 돌아가기</a></div>
+<p class="muted">번들 디렉토리(<code>manifest.json</code>, <code>images/</code>, <code>image_embeddings.npz</code>, <code>prompts.csv</code>,
+<code>prompt_embeddings.npz</code>, 선택 <code>gt.csv</code>)를 <b>zip 하나</b>로 묶어 올리면 서버가 해제·검증하고, 이어서 임포트를 돌립니다.
+GT(<code>gt.csv</code>)가 있으면 좌표+성능, 없으면 좌표만 만들어집니다. 포맷 상세는 <code>docker/analysis/project_upload/UPLOAD_SPEC.md</code>.</p>
+
+<div class="card">
+  <h2 style="margin-top:0">1. 번들 zip 업로드</h2>
+  <div id="drop" class="drop">여기에 zip 을 끌어다 놓거나 클릭해서 선택</div>
+  <input id="file" type="file" accept=".zip,application/zip" style="display:none">
+  <div class="row">
+    <label>데이터셋 이름 (선택) <input id="name" type="text" placeholder="비우면 manifest.json 의 dataset"></label>
+    <label><input id="ow_bundle" type="checkbox"> 같은 이름 번들 디렉토리 덮어쓰기</label>
+    <button id="upload" disabled>업로드</button>
+  </div>
+  <div class="row"><progress id="prog" value="0" max="100" hidden></progress></div>
+  <div id="upmsg" class="muted"></div>
+  <pre id="validate" hidden></pre>
+</div>
+
+<div class="card">
+  <h2 style="margin-top:0">1-B. URL 로 가져오기 (서버가 직접 내려받음)</h2>
+  <p class="muted" style="margin-top:0">사내 파일서버·MinIO presigned 링크의 zip 을 서버가 받아 위 1번과 <b>같은 해제·검증</b>을 합니다.
+    데이터셋 이름·덮어쓰기는 <b>1번 칸의 값</b>을 그대로 씁니다. 사내 주소만 허용되며 외부 링크는 거부됩니다.</p>
+  <div class="row">
+    <label style="flex:1">zip URL <input id="furl" type="text" style="width:100%" placeholder="http://10.0.0.10:9000/bundle.zip"></label>
+    <button id="fetch">가져오기</button>
+  </div>
+  <div class="row"><progress id="fprog" value="0" max="100" hidden></progress></div>
+  <div id="fmsg" class="muted"></div>
+</div>
+
+<div class="card">
+  <h2 style="margin-top:0">2. 임포트 (FiftyOne 데이터셋 생성)</h2>
+  <div class="row">
+    <label>번들 <select id="bundle"></select></label>
+    <label><input id="ow_ds" type="checkbox"> 기존 데이터셋 덮어쓰기 (이 킷이 만든 것만 가능)</label>
+    <label title="compare 워크스페이스도 저장하지 않음 — Samples 단독으로 열림"><input id="skip_viz" type="checkbox"> emb_viz(UMAP) 생략 (compare 워크스페이스도 생략)</label>
+    <button id="ingest">임포트 시작</button>
+    <button id="refresh" class="gray">목록 새로고침</button>
+  </div>
+  <div id="jobmsg" class="muted"></div>
+  <pre id="tail" hidden></pre>
+  <div id="done" hidden></div>
+</div>
+
+<div class="card">
+  <h2 style="margin-top:0">서버에 있는 번들</h2>
+  <table><thead><tr><th><input id="pick_all" type="checkbox" title="전체 선택"></th><th>번들</th><th>GT</th><th>인제스트됨</th><th>경로</th></tr></thead><tbody id="list"></tbody></table>
+  <div class="row" style="margin-top:8px">
+    <button id="delete" class="gray" disabled>선택 삭제</button>
+    <span id="delmsg" class="muted"></span>
+  </div>
+  <p class="muted">삭제는 <b>번들 폴더 + 그 번들로 만든 데이터셋</b>을 함께 지웁니다 — 이미지는 번들을 제자리 참조하므로
+  번들만 지우면 데이터셋이 깨진 채 남습니다. 되돌릴 수 없습니다. (이 킷이 만들지 않은 데이터셋은 이름이 같아도 건드리지 않습니다.
+  Postgres 에 등록한 프롬프트 뱅크는 전역 레지스트리라 그대로 남습니다.)</p>
+  <p class="muted">대용량(수십 GB)은 브라우저 대신 네트워크 드라이브 <code>\\10.0.0.10\user\work_p\Datapipeline-Data-data_pipeline\docker\data\fiftyone\uploads\&lt;이름&gt;</code>
+  (user 계정 · 호스트 <code>docker/data/fiftyone/uploads/</code>) 에 번들 <b>폴더</b>를 복사해도 여기 목록에 뜹니다 — 복사가 끝난 뒤 검증하세요(중간엔 파일 누락으로 실패).
+  서버 셸에서는 <code>docker cp &lt;번들&gt; docker-analysis-1:/data/fiftyone/uploads/&lt;이름&gt;</code>.</p>
+</div>
+
+<script>
+const API = '/__upload';
+const $ = id => document.getElementById(id);
+let picked = null, lastDataset = null;
+
+function setMsg(el, text, cls) { el.textContent = text; el.className = cls || 'muted'; }
+function fmtBytes(b) { return b > 1e9 ? (b/1e9).toFixed(2)+' GB' : b > 1e6 ? (b/1e6).toFixed(1)+' MB' : Math.round(b/1e3)+' KB'; }
+
+// ── 파일 선택 / 드롭 ──
+$('drop').onclick = () => $('file').click();
+$('file').onchange = e => choose(e.target.files[0]);
+['dragenter','dragover'].forEach(ev => $('drop').addEventListener(ev, e => { e.preventDefault(); $('drop').classList.add('over'); }));
+['dragleave','drop'].forEach(ev => $('drop').addEventListener(ev, e => { e.preventDefault(); $('drop').classList.remove('over'); }));
+$('drop').addEventListener('drop', e => choose(e.dataTransfer.files[0]));
+function choose(f) {
+  if (!f) return;
+  if (!/\.zip$/i.test(f.name)) { setMsg($('upmsg'), 'zip 파일만 받습니다: ' + f.name, 'bad'); return; }
+  picked = f; $('upload').disabled = false;
+  $('drop').textContent = `${f.name} (${fmtBytes(f.size)}) — 업로드 버튼을 누르세요`;
+  setMsg($('upmsg'), '');
+}
+
+// ── 업로드 (PUT raw body — XHR 이라 진행률이 나온다) ──
+$('upload').onclick = () => {
+  if (!picked) return;
+  const q = new URLSearchParams();
+  if ($('name').value.trim()) q.set('name', $('name').value.trim());
+  if ($('ow_bundle').checked) q.set('overwrite', 'true');
+  const xhr = new XMLHttpRequest();
+  xhr.open('PUT', `${API}/archive?${q}`);
+  xhr.upload.onprogress = e => { if (e.lengthComputable) { $('prog').hidden = false; $('prog').value = Math.round(e.loaded / e.total * 100); } };
+  xhr.onerror = () => setMsg($('upmsg'), '업로드 실패 (네트워크)', 'bad');
+  xhr.onload = () => {
+    let r = {}; try { r = JSON.parse(xhr.responseText); } catch (_) {}
+    if (xhr.status !== 200) { setMsg($('upmsg'), `업로드 거부 (HTTP ${xhr.status}): ${r.detail || xhr.responseText.slice(0, 300)}`, 'bad'); return; }
+    showInstalled(r, $('upmsg'), '업로드');
+  };
+  $('upload').disabled = true; setMsg($('upmsg'), '업로드 중…');
+  xhr.send(picked);
+};
+
+// ── 설치 결과 표시 (업로드·URL 가져오기 공용 — 서버가 두 경로에 같은 shape 를 준다) ──
+function showInstalled(r, msgEl, what) {
+  const v = r.validate || {};
+  setMsg(msgEl, `${what} 완료: ${r.bundle} — 파일 ${r.files}개, ${fmtBytes(r.bytes)}, 검증 ${v.ok ? '통과' : '실패'} (모드: ${v.mode || '-'})`, v.ok ? 'ok' : 'bad');
+  $('validate').hidden = false;
+  $('validate').textContent = [
+    ...(v.errors || []).map(e => '오류: ' + e),
+    ...(v.warnings || []).map(w => '경고: ' + w),
+    (v.errors || []).length ? '' : '→ 아래 2단계에서 임포트를 시작하세요.',
+  ].join('\n');
+  lastDataset = r.dataset;
+  refreshList(r.bundle);
+}
+
+// ── URL 로 가져오기 (서버가 다운로드 → 같은 설치 코드) ──
+// 폴링 타이머는 임포트용(pollTimer)과 **별도 변수**다 — 하나로 쓰면 다운로드 중 임포트를 시작할 때
+// 서로의 setInterval 을 clear 해서 진행 표시가 멈춘다.
+let fetchTimer = null;
+$('fetch').onclick = async () => {
+  const url = $('furl').value.trim();
+  if (!url) { setMsg($('fmsg'), 'URL 을 입력하세요', 'bad'); return; }
+  const body = { url };
+  if ($('name').value.trim()) body.name = $('name').value.trim();
+  if ($('ow_bundle').checked) body.overwrite = true;
+  $('fetch').disabled = true; setMsg($('fmsg'), '요청 중…');
+  let res, r = {};
+  try {
+    res = await fetch(`${API}/fetch`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    r = await res.json();
+  } catch (e) { setMsg($('fmsg'), `요청 실패: ${e}`, 'bad'); $('fetch').disabled = false; return; }
+  if (res.status !== 202) { setMsg($('fmsg'), `거부 (HTTP ${res.status}): ${r.detail || ''}`, 'bad'); $('fetch').disabled = false; return; }
+  setMsg($('fmsg'), `다운로드 시작 (${r.host}) — job ${r.job_id}`);
+  if (fetchTimer) clearInterval(fetchTimer);
+  fetchTimer = setInterval(() => pollFetch(r.job_id), 1500);
+};
+
+async function pollFetch(jobId) {
+  let j = {};
+  try { j = (await (await fetch(`${API}/job?job_id=${encodeURIComponent(jobId)}`)).json()).job || {}; } catch (_) { return; }
+  if (j.state === 'running') {
+    const got = j.downloaded || 0, total = j.total;
+    if (j.phase === 'install') { $('fprog').hidden = true; setMsg($('fmsg'), '해제·검증 중…'); return; }
+    if (total) { $('fprog').hidden = false; $('fprog').value = Math.round(got / total * 100); setMsg($('fmsg'), `다운로드 중… ${fmtBytes(got)} / ${fmtBytes(total)}`); }
+    else { $('fprog').hidden = true; setMsg($('fmsg'), `다운로드 중… ${fmtBytes(got)}`); }
+    return;
+  }
+  clearInterval(fetchTimer); fetchTimer = null; $('fetch').disabled = false; $('fprog').hidden = true;
+  if (j.state === 'done' && j.result) showInstalled(j.result, $('fmsg'), '가져오기');
+  else setMsg($('fmsg'), `실패: ${(j.tail || []).slice(-1)[0] || '알 수 없는 오류'}`, 'bad');
+}
+
+// ── 번들 목록 ──
+async function refreshList(select) {
+  const res = await fetch(`${API}/bundles`); const items = res.ok ? await res.json() : [];
+  // 번들 이름은 서버가 [A-Za-z0-9._-] 로 제한하므로(_BUNDLE_NAME_RE) 속성 보간이 안전하다.
+  $('list').innerHTML = items.map(b => `<tr><td><input type="checkbox" class="pick" value="${b.bundle}"></td><td>${b.bundle}</td><td>${b.has_gt ? 'GT ✓ (좌표+성능)' : '없음 (좌표만)'}</td><td>${b.ingested ? '✓' : '-'}</td><td class="muted">${b.path}</td></tr>`).join('') || '<tr><td colspan="5" class="muted">없음</td></tr>';
+  document.querySelectorAll('.pick').forEach(c => c.onchange = syncDeleteBtn);
+  $('pick_all').checked = false; syncDeleteBtn();
+  const sel = $('bundle'); const cur = select || sel.value;
+  sel.innerHTML = items.map(b => `<option value="${b.bundle}">${b.bundle}${b.ingested ? ' (인제스트됨)' : ''}</option>`).join('');
+  if (cur) sel.value = cur;
+}
+$('refresh').onclick = () => refreshList();
+
+// ── 삭제 후 앱 세션에 남은 '지워진 데이터셋' 지우기 ──
+// FiftyOne 서버(좌석 프로세스)는 현재 데이터셋을 세션 상태로 들고 있어서, 열어둔 데이터셋을
+// 지운 직후 `/` 로 가면 클라이언트가 그 세션값을 따라 `/datasets/<지워진이름>` 으로 라우팅하고
+// **빈 화면**이 된다(2026-09-04 실측, root 자식 0개. 그 다음 이동에서야 저절로 복구된다).
+// 앱의 데이터셋 선택기가 쓰는 것과 같은 mutation 으로 현재 데이터셋을 비워 그 경로를 막는다.
+// ⚠️ 좌석 세션은 그 좌석의 모든 탭이 공유한다 — 이 호출은 같은 좌석 사용자를 데이터셋 선택
+//    화면으로 보낸다. 데이터셋이 실제로 사라졌을 때(r.datasets 비어있지 않을 때)만 부른다.
+async function clearAppDataset() {
+  try {
+    await fetch('/graphql', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        query: 'mutation($s:String!){ setDataset(subscription:$s, session:null, name:null, viewName:null) }',
+        variables: { s: 'upload-ui-' + Math.random().toString(36).slice(2) },
+      }),
+    });
+  } catch (_) { /* fail-soft — 실패해도 삭제는 이미 끝났고 최악이 옛 빈 화면 한 번이다 */ }
+}
+
+// ── 선택 삭제 ──
+function picks() { return [...document.querySelectorAll('.pick:checked')].map(c => c.value); }
+function syncDeleteBtn() { $('delete').disabled = picks().length === 0; }
+$('pick_all').onchange = e => { document.querySelectorAll('.pick').forEach(c => c.checked = e.target.checked); syncDeleteBtn(); };
+$('delete').onclick = async () => {
+  const bundles = picks(); if (!bundles.length) return;
+  // 먼저 dry-run 으로 "무엇이 지워지는지"(데이터셋 포함)를 받아 확인창에 그대로 보여준다 —
+  // 번들만 지우는 걸로 오해하면 데이터셋이 함께 사라진 걸 나중에 알게 된다.
+  setMsg($('delmsg'), '확인 중…');
+  const plan = await fetch(`${API}/delete`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ bundles, dry_run: true }) })
+    .then(r => r.json().then(j => ({ ok: r.ok, j }))).catch(e => ({ ok: false, j: { detail: String(e) } }));
+  if (!plan.ok) { setMsg($('delmsg'), `삭제 계획 실패: ${plan.j.detail || JSON.stringify(plan.j)}`, 'bad'); return; }
+  const lines = plan.j.items.map(i => i.error ? `· ${i.bundle}: ${i.error}`
+    : `· ${i.bundle} (${fmtBytes(i.bytes)}) → 데이터셋 ${i.datasets.length ? i.datasets.join(', ') : '없음'}`);
+  if (!confirm(`아래를 영구 삭제합니다 (되돌릴 수 없음):\n\n${lines.join('\n')}\n\n계속할까요?`)) { setMsg($('delmsg'), '취소됨'); return; }
+  $('delete').disabled = true; setMsg($('delmsg'), '삭제 중…');
+  const res = await fetch(`${API}/delete`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ bundles, confirm: true }) });
+  const r = await res.json().catch(() => ({}));
+  if (!res.ok) { setMsg($('delmsg'), `삭제 실패 (HTTP ${res.status}): ${r.detail || JSON.stringify(r)}`, 'bad'); syncDeleteBtn(); return; }
+  const done = r.items.filter(i => i.deleted).map(i => i.bundle);
+  setMsg($('delmsg'), `삭제됨: ${done.join(', ') || '없음'} · 데이터셋 ${r.datasets.length}개` + (r.errors.length ? ` · 실패: ${r.errors.join(' / ')}` : ''), r.errors.length ? 'warn' : 'ok');
+  if (r.datasets.length) await clearAppDataset();
+  if (done.length) {
+    // 삭제 직후 돌아갈 자리를 여기서도 준다 (헤더 링크와 같은 목적지). textContent 로 쓴 메시지
+    // 뒤에 노드로 붙인다 — innerHTML 로 합치면 서버 예외 문자열이 그대로 마크업이 된다.
+    const back = document.createElement('a');
+    back.href = '/'; back.textContent = '← FiftyOne 으로 돌아가기'; back.style.marginLeft = '10px';
+    $('delmsg').appendChild(back);
+  }
+  refreshList();
+};
+
+// ── 임포트 + 상태 폴링 ──
+let pollTimer = null;
+$('ingest').onclick = async () => {
+  const bundle = $('bundle').value; if (!bundle) { setMsg($('jobmsg'), '번들을 먼저 업로드/선택하세요', 'bad'); return; }
+  const body = { bundle, overwrite: $('ow_ds').checked, skip_viz: $('skip_viz').checked };
+  if ($('name').value.trim() && bundle === lastDatasetBundle()) body.name = $('name').value.trim();
+  $('done').hidden = true; $('tail').hidden = true;
+  const res = await fetch(`${API}/ingest`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  const r = await res.json().catch(() => ({}));
+  if (res.status === 409) { setMsg($('jobmsg'), `서버가 다른 작업 중입니다(409) — 잠시 후 재시도: ${JSON.stringify(r.current || r)}`, 'warn'); return; }
+  if (res.status !== 202) { setMsg($('jobmsg'), `임포트 시작 실패 (HTTP ${res.status}): ${r.detail || JSON.stringify(r)}`, 'bad'); return; }
+  setMsg($('jobmsg'), `임포트 진행 중… job ${r.job_id}`);
+  clearInterval(pollTimer);
+  pollTimer = setInterval(() => poll(r.job_id, body.name || null, bundle), 3000);
+};
+function lastDatasetBundle() { return $('bundle').value; }
+async function poll(jobId, nameOverride, bundle) {
+  const res = await fetch(`${API}/job?job_id=${encodeURIComponent(jobId)}`); if (!res.ok) return;
+  const s = await res.json(); const job = s.job || {};
+  $('tail').hidden = false; $('tail').textContent = (job.tail || []).join('\n');
+  if (job.state === 'running' || !job.state) { setMsg($('jobmsg'), `임포트 진행 중… job ${jobId}`); return; }
+  clearInterval(pollTimer);
+  if (job.state === 'done') {
+    setMsg($('jobmsg'), `임포트 완료 (job ${jobId})`, 'ok');
+    const m = (job.tail || []).join('\n').match(/\[완료\] '([^']+)'/);
+    const ds = nameOverride || (m ? m[1] : null) || lastDataset || bundle;
+    $('done').hidden = false;
+    $('done').innerHTML = `<p class="ok">FiftyOne 에서 열기: <a href="/datasets/${encodeURIComponent(ds)}" target="_blank">${ds}</a> — 문장 뷰는 <code>${ds}-prompts</code>. 이미 열린 FiftyOne 탭은 새로고침해야 목록에 뜹니다.</p>`;
+    refreshList(bundle);
+  } else {
+    setMsg($('jobmsg'), `임포트 실패 (job ${jobId}, returncode ${job.returncode}) — 아래 로그와 번들의 _artifacts/ingest.log 를 확인하세요`, 'bad');
+  }
+}
+refreshList();
+</script>
+</body>
+</html>

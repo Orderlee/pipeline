@@ -3,7 +3,8 @@
 Phase 3: Kling.  Phase 4: Higgsfield (fal.ai) / Nanobanana (Vertex) / GPT Image (OpenAI).
 """
 
-from .base import BaseGenAIAdapter, PollResult, SubmitResult
+from .base import AdapterDeferredError, BaseGenAIAdapter, PollResult, SubmitResult
+from .comfy_local import ComfyLocalAdapter
 from .gpt_image import GPTImageAdapter
 from .higgsfield import HiggsfieldAdapter
 from .kling import KlingAdapter, KlingError, KlingTransientError
@@ -17,6 +18,7 @@ _ADAPTERS: dict[str, type[BaseGenAIAdapter]] = {
     "veo": VeoAdapter,
     "nanobanana": NanobananaAdapter,
     "gpt_image": GPTImageAdapter,
+    "comfy_local": ComfyLocalAdapter,
 }
 
 
@@ -27,6 +29,7 @@ ENGINE_TAB: dict[str, str] = {
     "veo": "image2video",
     "nanobanana": "image2image",
     "gpt_image": "image2image",
+    "comfy_local": "image2image",
 }
 
 
@@ -53,7 +56,7 @@ def engine_max_concurrent(engine: str) -> int:
         return 0
     env_key = f"{engine.upper()}_MAX_CONCURRENT"
     raw = (os.getenv(env_key, "") or "").strip()
-    default = _KLING_DEFAULT_CONCURRENT if engine == "kling" else 0
+    default = _KLING_DEFAULT_CONCURRENT if engine == "kling" else (1 if engine == "comfy_local" else 0)
     if raw.lower() == "auto":
         # 요금제 이름에 동시성이 박혀 옴 (예 'Trial-Video-1000Units-5Con-1Months' → 5).
         # fetch 는 5분 캐시라 매 tick 호출돼도 QPS 안전.
@@ -124,6 +127,28 @@ def engine_options(engine: str) -> dict:
             "durations": [str(d) for d in ad.available_durations],
             "default_duration": str(ad.duration),
         }
+    if engine == "comfy_local":
+        ad = ComfyLocalAdapter()
+        return {
+            "workflows": [
+                {
+                    "value": "flux2-klein-4b-edit-v1",
+                    "label": "FLUX.2 Klein 4B Edit (FP8)",
+                    "requires_mask": False,
+                },
+                {
+                    "value": "sdxl-inpaint-cctv-v1",
+                    "label": "SDXL CCTV Inpaint",
+                    "requires_mask": True,
+                },
+            ],
+            "default_workflow": ad.default_workflow,
+            "default_negative_prompt": ad.default_negative_prompt,
+            "default_seed": 0,
+            "default_steps": 4,
+            "default_cfg": 6.0,
+            "default_denoise": 0.85,
+        }
     return {}
 
 
@@ -135,11 +160,15 @@ __all__ = [
     "BaseGenAIAdapter",
     "PollResult",
     "SubmitResult",
+    "AdapterDeferredError",
     "KlingAdapter",
+    "KlingError",
+    "KlingTransientError",
     "HiggsfieldAdapter",
     "VeoAdapter",
     "NanobananaAdapter",
     "GPTImageAdapter",
+    "ComfyLocalAdapter",
     "ENGINE_TAB",
     "get_adapter",
     "enabled_engines",

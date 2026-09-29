@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import io
 import logging
+import math
 import subprocess
 import time
 from collections.abc import Iterable
@@ -17,7 +18,7 @@ from pathlib import Path
 
 from PIL import Image
 
-from vlm_pipeline.lib.env_utils import int_env
+from vlm_pipeline.lib.env_utils import float_env, int_env
 
 logger = logging.getLogger(__name__)
 
@@ -185,45 +186,61 @@ def resolve_frame_sampling_policy(
     spec_max_frames_per_video: int | None = None,
 ) -> FrameSamplingDecision:
     normalized_mode = str(sampling_mode or "").strip().lower() or "clip_event"
-    normalized_profile = "dense" if str(image_profile or "").strip().lower() == "dense" else "current"
-    normalized_outputs = {
-        str(value or "").strip().lower() for value in (requested_outputs or []) if str(value or "").strip()
-    }
-    yolo_only = bool({"bbox", "classification_image"} & normalized_outputs) and not bool(
-        {"captioning_video", "captioning_image"} & normalized_outputs
-    )
 
-    base_target = target_frame_count(
-        duration_sec=duration_sec,
-        fps=fps,
-        frame_count=frame_count,
-        max_frames_per_video=24 if normalized_profile == "dense" else 12,
-        image_profile=normalized_profile,
-    )
+    # ── 구 정책(장수 상한 기반 동적 샘플링) — 1fps 고정 전환으로 비활성. 복구 시 아래 블록 주석 해제 ──
+    # normalized_profile = "dense" if str(image_profile or "").strip().lower() == "dense" else "current"
+    # normalized_outputs = {
+    #     str(value or "").strip().lower() for value in (requested_outputs or []) if str(value or "").strip()
+    # }
+    # yolo_only = bool({"bbox", "classification_image"} & normalized_outputs) and not bool(
+    #     {"captioning_video", "captioning_image"} & normalized_outputs
+    # )
+    #
+    # base_target = target_frame_count(
+    #     duration_sec=duration_sec,
+    #     fps=fps,
+    #     frame_count=frame_count,
+    #     max_frames_per_video=24 if normalized_profile == "dense" else 12,
+    #     image_profile=normalized_profile,
+    # )
+    #
+    # if normalized_mode == "raw_video":
+    #     dynamic_upper_bound = 36 if normalized_profile == "dense" else 24
+    #     dynamic_floor = 10 if normalized_profile == "dense" else 6
+    #     multiplier = 2 if yolo_only else 1
+    #     effective_max_frames = min(dynamic_upper_bound, max(dynamic_floor, base_target * multiplier))
+    # else:
+    #     effective_max_frames = base_target
+    #     if yolo_only:
+    #         clip_bbox_cap = 24 if normalized_profile == "dense" else 16
+    #         effective_max_frames = min(clip_bbox_cap, max(effective_max_frames, base_target + 2))
+    #
+    # policy_source = "dynamic_default"
+    # if spec_max_frames_per_video is not None:
+    #     try:
+    #         cap_value = max(1, int(spec_max_frames_per_video))
+    #     except (TypeError, ValueError):
+    #         cap_value = None
+    #     if cap_value is not None:
+    #         effective_max_frames = min(effective_max_frames, cap_value)
+    #         policy_source = "spec_override"
+    #
+    # duration = resolve_duration_sec(duration_sec, fps, frame_count)
+    # frame_interval_sec = 10.0 if duration >= 3600 else 1.0
 
-    if normalized_mode == "raw_video":
-        dynamic_upper_bound = 36 if normalized_profile == "dense" else 24
-        dynamic_floor = 10 if normalized_profile == "dense" else 6
-        multiplier = 2 if yolo_only else 1
-        effective_max_frames = min(dynamic_upper_bound, max(dynamic_floor, base_target * multiplier))
-    else:
-        effective_max_frames = base_target
-        if yolo_only:
-            clip_bbox_cap = 24 if normalized_profile == "dense" else 16
-            effective_max_frames = min(clip_bbox_cap, max(effective_max_frames, base_target + 2))
-
-    policy_source = "dynamic_default"
-    if spec_max_frames_per_video is not None:
-        try:
-            cap_value = max(1, int(spec_max_frames_per_video))
-        except (TypeError, ValueError):
-            cap_value = None
-        if cap_value is not None:
-            effective_max_frames = min(effective_max_frames, cap_value)
-            policy_source = "spec_override"
-
+    # ponytail: 1fps 고정. 상한을 후보 개수(= ceil(duration/1s))와 같게 두어 다운샘플이 절대 걸리지 않게 한다.
+    # 상한이 없으므로 24h 영상 = 86,400장. 길이 상한이 필요해지면 위 구 정책 블록을 되살릴 것.
+    # raw_video(영상 전체 → SAM3) 만 간격을 env 로 늘릴 수 있다. 전체 영상 1fps 는 SAM3 물량이
+    # 영상 길이(초)와 같아져 대량 배치가 수개월짜리가 된다. clip_event(검수 확정 구간)는 1fps 유지.
     duration = resolve_duration_sec(duration_sec, fps, frame_count)
-    frame_interval_sec = 10.0 if duration >= 3600 else 1.0
+    frame_interval_sec = 1.0
+    policy_source = "fixed_1fps"
+    if normalized_mode == "raw_video":
+        raw_interval = float_env("RAW_VIDEO_FRAME_INTERVAL_SEC", 1.0, minimum=1.0)
+        if raw_interval != 1.0:
+            frame_interval_sec = raw_interval
+            policy_source = "raw_video_interval_env"
+    effective_max_frames = math.ceil(duration / frame_interval_sec) if duration > 0 else 1
 
     return FrameSamplingDecision(
         sampling_mode=normalized_mode,

@@ -49,9 +49,21 @@ VALID_LABELING_METHODS = frozenset({
     "bbox",
     "skip",
 })
+# video 소스에서만 의미가 있는 방법. image batch(output_media='image') 에 이게 섞이면
+# dispatch 가 이미지뿐인 배치에 빈 video LS 프로젝트를 만든다
+# (2026-09-21 batch b4fe9a6f-339 → 유령 LS project 821).
+# 정본 계약은 lib/dispatch_payload.VIDEO_ONLY_LABELING_METHODS 와 동일 — 여기서 먼저
+# 막아야 사용자가 400 을 받고 Dagster run 실패를 안 본다.
+VIDEO_ONLY_LABELING_METHODS = frozenset({
+    "timestamp_video",
+    "captioning_video",
+    "classification_video",
+})
 # ops_register._VALID_GENAI_ENGINES 와 동기화 — 003_genai_veo.sql CHECK constraint 와 일치.
 # promote 단계에서 fail-loud 해야 사용자가 400 받고 Dagster run 실패 안 봄 (Codex MEDIUM-2).
-VALID_GENAI_ENGINES = frozenset({"kling", "higgsfield", "veo", "nanobanana", "gpt_image"})
+VALID_GENAI_ENGINES = frozenset(
+    {"kling", "higgsfield", "veo", "nanobanana", "gpt_image", "comfy_local"}
+)
 # batch.status 가 promote 가능한 셋. failed 면 결과물 자체가 없음.
 PROMOTABLE_STATUSES = frozenset({"succeeded", "partial_success", "done"})
 
@@ -60,6 +72,32 @@ def _output_ext_for(batch: dict) -> str:
     """batch.output_media 로 확장자 결정. video→.mp4, image→.png (genai 컨벤션)."""
     media = (batch.get("output_media") or "").strip().lower()
     return ".mp4" if media == "video" else ".png"
+
+
+def _output_media_of(batch: dict) -> str:
+    """batch.output_media 정규화. genai_batches.output_media 는 NOT NULL + {video,image}."""
+    return (batch.get("output_media") or "").strip().lower()
+
+
+def validate_labeling_method_for_media(labeling_method: list[str], output_media: str) -> None:
+    """이미지 전용 배치에 video 전용 라벨링 방법이 오면 400 으로 거부.
+
+    무시(조용한 드롭)가 아니라 거부하는 이유: 사용자가 고른 것과 다른 라벨링이 돌면
+    LS 프로젝트 구성이 요청과 달라지고, 그 사실이 로그에만 남는다.
+    """
+    if _normalize_media(output_media) != "image":
+        return
+    bad = [m for m in labeling_method if m in VIDEO_ONLY_LABELING_METHODS]
+    if bad:
+        raise PromoteValidationError(
+            f"image batch(output_media='image') 에 video 전용 labeling_method {sorted(set(bad))} "
+            f"— 이미지 배치는 {sorted(VALID_LABELING_METHODS - VIDEO_ONLY_LABELING_METHODS)} 중에서 선택"
+        )
+
+
+def _normalize_media(output_media: str | None) -> str:
+    rendered = str(output_media or "").strip().lower()
+    return rendered if rendered in {"image", "video"} else ""
 
 
 def _batch_outputs_dir(batch_id: str, submitted_at: datetime) -> Path:
@@ -137,6 +175,15 @@ def promote_batch_to_labeling(
             f"engine={engine!r} not in {sorted(VALID_GENAI_ENGINES)} "
             f"(ops_register 가 CHECK constraint 로 reject 했을 것)"
         )
+    if engine == "comfy_local" and label_policy != "required":
+        raise PromoteValidationError(
+            "comfy_local synthetic outputs require label_policy='required'"
+        )
+
+    output_media = _output_media_of(batch)
+    # 이미지 전용 배치에 video 메서드가 오면 여기서 400. dispatch 까지 흘러가면
+    # 빈 video LS 프로젝트가 생긴다 (2026-09-21 유령 project 821).
+    validate_labeling_method_for_media(labeling_method, output_media)
 
     output_ext = _output_ext_for(batch)
     # Codex HIGH-2: submitted_at 이 str/None 으로 오면 fallback to datetime.now() 가 잘못된
@@ -215,6 +262,9 @@ def promote_batch_to_labeling(
         # write_dispatch_manifest 가 manifest 에 통과 → ops_register 가 raw_files 에 INSERT.
         "source_type": "genai_output",
         "genai_engine": engine,
+        # dispatch 쪽 media 계약 (lib/dispatch_payload). image 면 captioning_image 의
+        # video 의존성(timestamp_video/captioning_video) 자동 확장을 끊는다.
+        "output_media": output_media,
         "label_policy": label_policy,
         "batch_id": batch_id,
         "items": items,
@@ -369,6 +419,15 @@ def repromote_batch_to_labeling(
             f"engine={engine!r} not in {sorted(VALID_GENAI_ENGINES)} "
             f"(ops_register 가 CHECK constraint 로 reject 했을 것)"
         )
+    if engine == "comfy_local" and label_policy != "required":
+        raise PromoteValidationError(
+            "comfy_local synthetic outputs require label_policy='required'"
+        )
+
+    output_media = _output_media_of(batch)
+    # 이미지 전용 배치에 video 메서드가 오면 여기서 400. dispatch 까지 흘러가면
+    # 빈 video LS 프로젝트가 생긴다 (2026-09-21 유령 project 821).
+    validate_labeling_method_for_media(labeling_method, output_media)
 
     output_ext = _output_ext_for(batch)
     folder_name = f"genai_{batch_id}"
@@ -404,6 +463,9 @@ def repromote_batch_to_labeling(
         "requested_at": now_iso,
         "source_type": "genai_output",
         "genai_engine": engine,
+        # dispatch 쪽 media 계약 (lib/dispatch_payload). image 면 captioning_image 의
+        # video 의존성(timestamp_video/captioning_video) 자동 확장을 끊는다.
+        "output_media": output_media,
         "label_policy": label_policy,
         "batch_id": batch_id,
         "items": items,

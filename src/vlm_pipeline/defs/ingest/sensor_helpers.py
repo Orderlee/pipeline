@@ -6,10 +6,13 @@ sensor_incoming, sensor_stuck_guard, sensor_bootstrap에서 공유.
 from __future__ import annotations
 
 import json
+import time
 from hashlib import sha1
 from pathlib import Path
 
 from dagster._core.storage.dagster_run import DagsterRunStatus, RunsFilter
+
+from vlm_pipeline.lib.env_utils import int_env
 
 INGEST_MANIFEST_JOB_NAMES = {
     "ingest_job",
@@ -58,51 +61,161 @@ def build_source_unit_run_key(
     return f"incoming-unit-{source_hash}"
 
 
-def read_manifest_payload(manifest_path: Path, context) -> dict:
+def read_manifest_payload(manifest_path: Path, context) -> tuple[dict, bool]:
+    """manifest JSON 읽기 → (payload, corrupt).
+
+    **corrupt 와 transient 를 반드시 구분한다.**
+    - corrupt=True — 내용이 잘못됐다(JSON 파싱 실패 · UTF-8 디코드 실패 · 객체 아님).
+      다시 읽어도 같으므로 호출부가 격리한다.
+    - corrupt=False + 빈 payload — 읽기 자체가 실패했거나(OSError 계열: CIFS 지연,
+      권한, 타임아웃) 내용이 비었다. **절대 격리하지 않는다** — NAS 장애 때 정상
+      manifest 를 대량으로 잃는다. 파일은 그대로 두고 다음 tick 에 다시 본다.
+    """
     try:
-        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
-    except Exception as exc:  # noqa: BLE001
+        raw = manifest_path.read_text(encoding="utf-8")
+    except OSError as exc:
+        context.log.warning(f"manifest 읽기 실패(일시적 — 유지): {manifest_path}: {exc}")
+        return {}, False
+    except UnicodeDecodeError as exc:
         context.log.warning(f"manifest JSON 파싱 실패: {manifest_path}: {exc}")
-        return {}
+        return {}, True
+
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        context.log.warning(f"manifest JSON 파싱 실패: {manifest_path}: {exc}")
+        return {}, True
 
     if not isinstance(payload, dict):
         context.log.warning(f"manifest 형식 오류(객체 아님): {manifest_path}")
-        return {}
-    return payload
+        return {}, True
+    return payload, False
 
 
-def load_pending_manifest_entries(manifests: list[Path], context) -> list[dict]:
+def seconds_since_modified(manifest_path: Path) -> float | None:
+    """마지막 수정 이후 경과 초. stat 실패 시 None(= 안정 여부 판단 불가)."""
+    try:
+        return max(0.0, time.time() - manifest_path.stat().st_mtime)
+    except OSError:
+        return None
+
+
+def resolve_invalid_manifest_path(processed_dir: Path, manifest_path: Path) -> Path:
+    base = processed_dir / f"{manifest_path.stem}.invalid.json"
+    if not base.exists():
+        return base
+    index = 2
+    while True:
+        candidate = processed_dir / f"{manifest_path.stem}.invalid__{index}.json"
+        if not candidate.exists():
+            return candidate
+        index += 1
+
+
+def quarantine_invalid_manifest(manifest_path: Path, processed_dir: Path, context) -> bool:
+    """손상 manifest 를 processed_dir 로 격리. 이동 실패는 warning 후 계속(fail-forward)."""
+    destination = resolve_invalid_manifest_path(processed_dir, manifest_path)
+    try:
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        manifest_path.rename(destination)
+    except OSError as exc:
+        context.log.warning(f"invalid manifest 격리 실패: {manifest_path} -> {destination}: {exc}")
+        return False
+    context.log.warning(f"invalid manifest 격리: {manifest_path.name} -> {destination.name}")
+    return True
+
+
+def load_pending_manifest_entries(
+    manifests: list[Path],
+    context,
+    *,
+    processed_dir: Path,
+    in_flight_manifest_paths: set[str] | None = None,
+) -> list[dict]:
+    """pending manifest 를 엔트리로 적재. 손상된 것은 엔트리를 만들지 않고 격리한다.
+
+    격리를 안 하면 빈 source_unit_path 엔트리가 만들어지고, build_source_unit_run_key 가
+    빈 문자열에도 예외 없이 키를 돌려주기 때문에 RunRequest 까지 간다. 그 run 은
+    ingest_manifest_flow._load_manifest_or_summary 의 무보호 json.loads 에서 죽고,
+    manifest 는 이동되지 않아 다음 tick 에 같은 일이 반복된다.
+
+    ## 오격리 방어선 두 겹 — 하나만으로는 부족하다
+
+    1. **쓰기 안정화 대기**(주 방어선). pending/ 에 쓰는 writer 가 전부 원자적이지는 않다 —
+       scripts/bootstrap_manifest.sh 는 셸 리다이렉트로 파일에 직접 스트리밍한다. 그 중간
+       상태는 부분 JSON 이라 '손상'과 바이트 단위로 구분되지 않는다. 게다가 쓰는 중인 파일을
+       rename 해도 열린 fd 는 inode 를 따라가므로, **완전히 유효한 manifest 가 .invalid.json
+       이름으로 격리되고 writer 는 성공했다고 보고**한다. 그래서 최근 수정된 파일은 손상으로
+       보여도 격리하지 않는다(MANIFEST_QUARANTINE_MIN_AGE_SEC, 기본 600초).
+    2. **in-flight 가드**(보조). 진행 중 run 이 재작성하는 manifest 는 나이와 무관하게 보류한다.
+       단 이 가드는 run 이 **이미 있는** manifest 만 덮는다 — 신규 생성 중인 파일은 태그가
+       없어 구조적으로 못 막는다. 그래서 1번이 주 방어선이다.
+
+    per-file fail-forward: 한 manifest 에서 예상 못 한 예외가 나도 나머지는 계속 처리한다
+    (CLAUDE.md 파일 오류 정책). 안 그러면 파일 하나가 센서 tick 전체를 멈춘다.
+    """
     entries: list[dict] = []
+    in_flight = in_flight_manifest_paths or set()
+    min_age_sec = max(0, int_env("MANIFEST_QUARANTINE_MIN_AGE_SEC", 600, 0))
+    quarantined = 0
+    held = 0
+
     for manifest_path in manifests:
-        payload = read_manifest_payload(manifest_path, context)
-        source_unit_path = str(payload.get("source_unit_path", "")).strip()
-        source_unit_dispatch_key = str(payload.get("source_unit_dispatch_key", "")).strip() or source_unit_path
-        stable_signature = str(payload.get("stable_signature", "")).strip()
-        manifest_id = str(payload.get("manifest_id", "") or manifest_path.stem).strip()
-        retry_of_manifest_id = str(payload.get("retry_of_manifest_id", "")).strip()
-        retry_reason = str(payload.get("retry_reason", "")).strip()
         try:
-            retry_attempt = int(payload.get("retry_attempt", 0) or 0)
-        except (TypeError, ValueError):
-            retry_attempt = 0
-        try:
-            mtime_ns = int(manifest_path.stat().st_mtime_ns)
-        except OSError:
-            mtime_ns = 0
-        entries.append(
-            {
-                "path": manifest_path,
-                "payload": payload,
-                "source_unit_path": source_unit_path,
-                "source_unit_dispatch_key": source_unit_dispatch_key,
-                "stable_signature": stable_signature,
-                "manifest_id": manifest_id,
-                "retry_of_manifest_id": retry_of_manifest_id,
-                "retry_attempt": retry_attempt,
-                "retry_reason": retry_reason,
-                "mtime_ns": mtime_ns,
-            }
-        )
+            payload, corrupt = read_manifest_payload(manifest_path, context)
+            if corrupt:
+                age_sec = seconds_since_modified(manifest_path)
+                if str(manifest_path) in in_flight:
+                    held += 1
+                    context.log.warning(f"manifest 파싱 실패했으나 run 진행 중 — 격리 보류: {manifest_path.name}")
+                elif age_sec is None or age_sec < min_age_sec:
+                    held += 1
+                    context.log.warning(
+                        f"manifest 파싱 실패했으나 쓰기 중일 수 있음 — 격리 보류: {manifest_path.name} "
+                        f"(age={age_sec if age_sec is None else round(age_sec)}s < {min_age_sec}s)"
+                    )
+                elif quarantine_invalid_manifest(manifest_path, processed_dir, context):
+                    quarantined += 1
+                continue
+            if not payload:
+                # 일시적 읽기 실패이거나 내용이 빈 manifest. 파일은 두고 다음 tick 재시도한다.
+                # 로그가 없으면 pending 에 영원히 남아도 아무도 모른다.
+                context.log.warning(f"manifest 내용 없음 — 건너뜀(pending 잔류): {manifest_path.name}")
+                continue
+
+            source_unit_path = str(payload.get("source_unit_path", "")).strip()
+            source_unit_dispatch_key = str(payload.get("source_unit_dispatch_key", "")).strip() or source_unit_path
+            stable_signature = str(payload.get("stable_signature", "")).strip()
+            manifest_id = str(payload.get("manifest_id", "") or manifest_path.stem).strip()
+            retry_of_manifest_id = str(payload.get("retry_of_manifest_id", "")).strip()
+            retry_reason = str(payload.get("retry_reason", "")).strip()
+            try:
+                retry_attempt = int(payload.get("retry_attempt", 0) or 0)
+            except (TypeError, ValueError):
+                retry_attempt = 0
+            try:
+                mtime_ns = int(manifest_path.stat().st_mtime_ns)
+            except OSError:
+                mtime_ns = 0
+            entries.append(
+                {
+                    "path": manifest_path,
+                    "payload": payload,
+                    "source_unit_path": source_unit_path,
+                    "source_unit_dispatch_key": source_unit_dispatch_key,
+                    "stable_signature": stable_signature,
+                    "manifest_id": manifest_id,
+                    "retry_of_manifest_id": retry_of_manifest_id,
+                    "retry_attempt": retry_attempt,
+                    "retry_reason": retry_reason,
+                    "mtime_ns": mtime_ns,
+                }
+            )
+        except Exception as exc:  # noqa: BLE001 — per-file fail-forward
+            context.log.warning(f"manifest 처리 실패(건너뜀): {manifest_path}: {exc}")
+
+    if quarantined or held:
+        context.log.info(f"manifest 판정: invalid_quarantined={quarantined} quarantine_held={held}")
     return entries
 
 
@@ -251,6 +364,35 @@ def collect_in_flight_source_units(context, runs: list | None = None) -> set[str
         return source_units
     except Exception as exc:  # noqa: BLE001
         context.log.warning(f"in-flight source_unit 수집 실패(중복 방어 약화): {exc}")
+        return set()
+
+
+def collect_in_flight_manifest_paths(context, runs: list | None = None) -> set[str]:
+    """진행 중 run 이 붙잡고 있는 manifest 경로 집합.
+
+    load_pending_manifest_entries 의 오격리 **보조** 방어선 입력이다. 주 방어선은 쓰기
+    안정화 대기 쪽이다 — 이 집합은 collect_in_flight_runs 가 보는 QUEUED/STARTED run 만
+    담으므로 STARTING·CANCELING 이나 **아직 run 이 없는 신규 생성 manifest 는 못 덮는다.**
+    완전성을 가정하지 말 것.
+
+    빈 집합을 돌려주면 이 가드가 조용히 꺼지므로(예외를 삼키는 경로 포함) 따로 테스트한다.
+    태그 키는 sensor_incoming 이 RunRequest 에 싣는 "manifest_path" 와 같아야 한다.
+    """
+    if runs is None:
+        runs = collect_in_flight_runs(context)
+    if not runs:
+        return set()
+
+    try:
+        paths: set[str] = set()
+        for run in runs:
+            tags = getattr(run, "tags", {}) or {}
+            manifest_path = str(tags.get("manifest_path", "") or "").strip()
+            if manifest_path:
+                paths.add(manifest_path)
+        return paths
+    except Exception as exc:  # noqa: BLE001
+        context.log.warning(f"in-flight manifest 경로 수집 실패(오격리 방어 약화): {exc}")
         return set()
 
 

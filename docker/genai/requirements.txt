@@ -5,6 +5,9 @@ python-multipart>=0.0.9
 psycopg2-binary>=2.9.9
 PyJWT>=2.8.0
 requests>=2.32.0
+httpx>=0.28.0
+websockets>=14.0
+Pillow>=10.4.0
 # Phase 4 어댑터 SDK — 키 미설정 시 import 안 되도 mocking 모드로 동작 가능
 google-genai>=0.3.0
 google-cloud-storage>=2.18.0

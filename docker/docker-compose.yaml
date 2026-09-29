@@ -181,6 +181,32 @@ x-analysis-base: &analysis-base
     - fiftyone-mongo
   restart: unless-stopped
 
+# ── FiftyOne 좌석 (다중 사용자) ───────────────────────────────────────────────
+# FiftyOne OSS 는 서버 상태가 프로세스 전역 싱글턴(`server/events/state.py` 의 `_state`)이고,
+# `set_dataset` 같은 mutation 이 발신자를 뺀 전 접속자에게 팬아웃된다(`server/mutation.py:118`).
+# 그래서 A 가 데이터셋을 바꾸면 B 화면도 같이 끌려간다 — 2026-08-31 실측. OSS 에는 user/session
+# 개념이 아예 없어서(Enterprise 전용) 격리 단위는 프로세스뿐이다 → "1인 1프로세스 = 1포트".
+# 데이터(데이터셋·라벨·saved view·brain run)는 같은 mongo 라 그대로 공유되고, 갈라지는 건 UI
+# 세션(데이터셋 선택·뷰/필터·샘플 선택·패널 레이아웃)뿐 — 의도한 그림 그대로다.
+#
+# 메모리: 좌석 하나가 부팅 직후 ≈0.65GiB, 무거운 패널을 쓰면 3.4GiB 까지 오른다(Pss 실측 —
+# 프로세스 간 공유분은 100MB 남짓뿐이라 좌석 수에 사실상 선형 비례). 유휴는 싸고 피크가 위험한
+# 모양이라 피크를 예측하는 대신 상한으로 막는다. 초과하면 그 좌석만 죽고 restart 로 돌아온다
+# (호스트 62.5G 를 2인이 공유 + oom_kill 이력 — 다른 컨테이너로 번지는 게 최악이다).
+# ponytail: 좌석 = 포트, 배정은 사람이 기억한다. 두 사람이 같은 포트에 붙으면 증상이 그대로
+#   재현되므로, 좌석 배정이 흔들리기 시작하면 그때 프록시(쿠키→백엔드 고정)를 얹는다.
+x-fiftyone-seat: &fiftyone-seat
+  <<: *analysis-base
+  command: ["sh", "-c", "exec python /workspace/fiftyone_relaunch.py"]
+  mem_limit: ${FIFTYONE_SEAT_MEM:-3g}
+  healthcheck:
+    test: ["CMD-SHELL", "curl -fsS http://localhost:5151/ >/dev/null || exit 1"]
+    interval: 60s
+    timeout: 10s
+    # 데이터셋 로드가 60만행 규모라 첫 응답까지 시간이 걸린다.
+    start_period: 300s
+    retries: 3
+
 services:
   app:
     build:
@@ -425,7 +451,11 @@ services:
 
   embedding-service:
     # PE-Core-L14-336 (open_clip) 이미지/텍스트 임베딩 → pgvector 적재용.
-    # GPU 0 (GPU 1 은 SAM3 포화). profile 로 환경별 생성 제어:
+    #   + (선택) PLM = PE-Lang 비전타워 + Llama 디코더, 이미지→문장 생성. PLM_ENABLED 로 게이트.
+    # GPU 배치: PE-Core = cuda:0, PLM = cuda:1. **cuda:1 은 SAM3 소유**라 PLM 이 단방향으로
+    # 양보한다(free VRAM 부족 시 로드 거부). 둘은 서로 다른 GPU 라 동시 상주 가능하고,
+    # 슬롯마다 독립 idle-unload 타이머로 각자 반납한다 (docker/embedding/gpu_guard.py).
+    # profile 로 환경별 생성 제어:
     #   생성하려면 COMPOSE_PROFILES=embedding + ENABLE_EMBEDDING=true (dagster 자산/센서 등록).
     # 단일 공유 컨테이너 정책(SAM3)과 달리 환경별 자체 생성 — staging-first 검증 위해.
     profiles: ["embedding"]
@@ -446,9 +476,23 @@ services:
       EMBEDDING_CHECKPOINT_PATH: ${EMBEDDING_CHECKPOINT_PATH:-}
       EMBEDDING_MODEL_VERSION: ${EMBEDDING_MODEL_VERSION:-}
       HF_HOME: /data/models/pe-core
-      CUDA_VISIBLE_DEVICES: "0"
-      NVIDIA_VISIBLE_DEVICES: "0"
+      # GPU 2장 모두 노출 — PE-Core 는 계속 cuda:0, PLM(PE-Lang) 만 cuda:1 을 쓴다.
+      # 컨테이너 view 의 cuda:0/cuda:1 = 호스트 GPU0/GPU1 (순서 그대로).
+      CUDA_VISIBLE_DEVICES: "0,1"
+      NVIDIA_VISIBLE_DEVICES: "0,1"
       PYTORCH_CUDA_ALLOC_CONF: "${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
+      # ── PLM (PE-Lang + Llama, 이미지→문장) ──────────────────────────────
+      # 기본 OFF. 코드는 이미지에 실려 있고 이 플래그로만 깨어난다 → 켜는 데 배포가 필요 없다
+      # (.env 수정 + recreate). ⚠️ cuda:1 은 SAM3(prod 서빙) 것이라 PLM 은 항상 양보한다:
+      # PLM_MIN_FREE_GB 미만이면 로드하지 않고 503. 3B/bf16 ≈ 7GB + 여유 → 9 가 기본값.
+      PLM_ENABLED: ${PLM_ENABLED:-false}
+      PLM_DEVICE: ${PLM_DEVICE:-cuda:1}
+      PLM_MODEL_ID: ${PLM_MODEL_ID:-facebook/Perception-LM-3B}
+      PLM_MIN_FREE_GB: ${PLM_MIN_FREE_GB:-9}
+      PLM_IDLE_UNLOAD_SECONDS: ${PLM_IDLE_UNLOAD_SECONDS:-120}
+      PLM_MAX_NEW_TOKENS: ${PLM_MAX_NEW_TOKENS:-128}
+      # facebook/Perception-LM-* 는 HF gated:manual (Meta 수동 승인) — 토큰 없으면 401.
+      HF_TOKEN: ${HF_TOKEN:-}
     networks:
       - default
       - pipeline-network
@@ -519,8 +563,8 @@ services:
   genai:
     profiles: ["genai"]
     build:
-      context: ./genai
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: genai/Dockerfile
     image: datapipeline-genai:0.1
     ports:
       - "${GENAI_PORT:-8088}:8088"
@@ -562,6 +606,15 @@ services:
       GENAI_AUTH_DISABLED: ${GENAI_AUTH_DISABLED:-}
       GENAI_INTERNAL_TOKEN: ${GENAI_INTERNAL_TOKEN:-}
       GENAI_ENGINES_ENABLED: ${GENAI_ENGINES_ENABLED:-kling,higgsfield,nanobanana,gpt_image}
+      COMFYUI_INTERNAL_URL: ${COMFYUI_INTERNAL_URL:-http://comfyui:8188}
+      COMFYUI_ALLOWED_WORKFLOWS: ${COMFYUI_ALLOWED_WORKFLOWS:-flux2-klein-4b-edit-v1,sdxl-inpaint-cctv-v1}
+      COMFYUI_DEFAULT_WORKFLOW: ${COMFYUI_DEFAULT_WORKFLOW:-flux2-klein-4b-edit-v1}
+      COMFY_LOCAL_MAX_CONCURRENT: ${COMFY_LOCAL_MAX_CONCURRENT:-1}
+      COMFYUI_MIN_FREE_VRAM_GB: ${COMFYUI_MIN_FREE_VRAM_GB:-14.5}
+      COMFYUI_LEASE_TTL_SECONDS: ${COMFYUI_LEASE_TTL_SECONDS:-1200}
+      COMFYUI_EMBEDDING_COORDINATION_REQUIRED: ${COMFYUI_EMBEDDING_COORDINATION_REQUIRED:-true}
+      COMFYUI_EMBEDDING_WARMUP_AFTER: ${COMFYUI_EMBEDDING_WARMUP_AFTER:-true}
+      EMBEDDING_API_URL: ${EMBEDDING_API_URL:-http://embedding-service:8003}
       GENAI_MAX_BYTES_PER_FILE: ${GENAI_MAX_BYTES_PER_FILE:-52428800}
       GENAI_MAX_FILES_PER_BATCH: ${GENAI_MAX_FILES_PER_BATCH:-20}
       # Phase 5 — quota / rate-limit (0 = off)
@@ -586,6 +639,56 @@ services:
     restart: unless-stopped
     depends_on:
       - postgres
+
+  comfyui:
+    # Local image generation worker. No host port: GenAI Studio is the only caller/UI.
+    # The profile remains opt-in until all manifest-pinned models are operator-provisioned.
+    profiles: ["comfyui"]
+    build:
+      context: ./comfyui
+      dockerfile: Dockerfile
+      args:
+        COMFYUI_COMMIT: ee71d5c4993f29086b27fde1629a945ae48425bf
+    image: datapipeline-comfyui:0.1
+    expose:
+      - "8188"
+    environment:
+      CUDA_VISIBLE_DEVICES: "0"
+      NVIDIA_VISIBLE_DEVICES: "0"
+      PYTORCH_CUDA_ALLOC_CONF: ${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}
+      # 모델 게이트는 두 관심사로 분리돼 있다 (계획서 P2-2). 한 플래그가 둘을 겸하면
+      # health 분기가 어느 값에서도 도달 불가였다: true 면 validate 가 먼저 죽어(crash-loop)
+      # 건강 상태를 보고할 기회가 없고, false 면 health 가 절대 실패하지 않았다.
+      #   COMFYUI_REQUIRE_MODELS           = 건강 여부. true 면 모델 미배치가 unhealthy.
+      #   COMFYUI_FAIL_FAST_ON_MODEL_ERROR = 기동 가능 여부. 기본 false = 기동은 하고 사유를 health 로 보고.
+      # manifest 불일치(파일은 있으나 size/SHA 다름·경로 이탈·manifest 손상)는 두 플래그와
+      # 무관하게 항상 unhealthy — 재현성이 깨진 상태를 플래그로 초록불로 만들 수 없다.
+      COMFYUI_REQUIRE_MODELS: ${COMFYUI_REQUIRE_MODELS:-true}
+      COMFYUI_VERIFY_MODEL_HASHES: ${COMFYUI_VERIFY_MODEL_HASHES:-true}
+      COMFYUI_FAIL_FAST_ON_MODEL_ERROR: ${COMFYUI_FAIL_FAST_ON_MODEL_ERROR:-false}
+    volumes:
+      - ./data/models/comfyui:/models:ro
+      - comfyui_input:/data/input
+      - comfyui_output:/data/output
+      - comfyui_user:/data/user
+    networks:
+      - default
+      - pipeline-network
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["0"]
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "python", "/opt/service/healthcheck.py"]
+      interval: 30s
+      timeout: 10s
+      start_period: 300s
+      retries: 3
+    shm_size: "2gb"
+    restart: unless-stopped
 
   mlflow:
     # MLflow 추적 서버 — 학습 params + 어떤 동결 스냅샷으로 학습했는지 + metrics + artifacts.
@@ -688,8 +791,10 @@ services:
     #   관측되면 autoheal 사이드카를 붙이거나 relaunch 를 자식 감시로 바꿀 것.
     <<: *analysis-base
     command: ["sh", "-c", "exec python /workspace/fiftyone_relaunch.py"]
+    # :5153 은 좌석 라우터(analysis-fiftyone-proxy)가 가져간다. 여기 포트는 프록시가 죽었을
+    # 때의 우회로 겸 디버깅용 직결 경로다.
     ports:
-      - "${FIFTYONE_PORT:-5151}:5151"
+      - "${FIFTYONE_PORT_1:-5158}:5151"
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://localhost:5151/ >/dev/null || exit 1"]
       interval: 60s
@@ -697,6 +802,52 @@ services:
       # 데이터셋 로드가 60만행 규모라 첫 응답까지 시간이 걸린다.
       start_period: 300s
       retries: 3
+
+  # 좌석 2~5 — 4~5인 동시 사용 대비. 유휴 4석 ≈ 2.6GiB, 최악 4×3g = 12GiB 로 상한이 잡힌다.
+  # 좌석 1(analysis-fiftyone)은 무거운 프롬프트 분석 전용이라 상한 없이 현 운영 상태로 둔다.
+  analysis-fiftyone-2:
+    <<: *fiftyone-seat
+    ports: ["${FIFTYONE_PORT_2:-5154}:5151"]
+
+  analysis-fiftyone-3:
+    <<: *fiftyone-seat
+    ports: ["${FIFTYONE_PORT_3:-5155}:5151"]
+
+  analysis-fiftyone-4:
+    <<: *fiftyone-seat
+    ports: ["${FIFTYONE_PORT_4:-5156}:5151"]
+
+  analysis-fiftyone-5:
+    <<: *fiftyone-seat
+    ports: ["${FIFTYONE_PORT_5:-5157}:5151"]
+
+  analysis-fiftyone-proxy:
+    # 좌석 라우터 — 모두가 :5153 하나로 접속하고 쿠키(`?seat=N` 로 최초 1회 지정)에 따라
+    # 서로 다른 FiftyOne 프로세스로 간다. 규칙과 이유는 analysis/nginx-seats.conf 주석 참고.
+    # conf 는 bind mount 라 `docker exec ... nginx -s reload` 로 재배포 없이 갱신된다
+    # (docker/analysis/** 는 배포 paths-ignore 대상 — 라벨링을 끊지 않는다).
+    profiles: ["analysis"]
+    image: nginx:alpine
+    volumes:
+      - ./analysis/nginx-seats.conf:/etc/nginx/conf.d/default.conf:ro
+      # HTTPS 준비물 자리. 비어 있으면 conf 의 와일드카드 include 가 아무것도 못 잡아
+      # HTTP 로만 돈다. analysis/gen-seat-cert.sh 가 여기에 tls.conf+cert 를 넣는다.
+      - ./analysis/seat-tls:/etc/nginx/seat-tls:ro
+    ports:
+      - "${FIFTYONE_PORT:-5151}:5151"
+      # TLS 를 켜기 전에는 아무도 listen 하지 않는다(연결 거부). 켜는 순간 바로 열린다.
+      - "${FIFTYONE_TLS_PORT:-5443}:5443"
+    networks:
+      - default
+    depends_on:
+      - analysis-fiftyone
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:5151/ >/dev/null || exit 1"]
+      interval: 60s
+      timeout: 10s
+      start_period: 300s
+      retries: 3
+    restart: unless-stopped
 
   analysis-streamlit:
     # 임베딩 대시보드 (:8501). 텍스트검색은 HNSW ~50ms, 랜딩 KMeans 는 캐시 미스 시 수백초.
@@ -725,11 +876,29 @@ services:
   fiftyone-mongo:
     # FiftyOne 메타데이터 전용 MongoDB 사이드카 (analysis 와 함께 생성). 데이터는 볼륨 영속.
     profiles: ["analysis"]
-    image: mongo:7
+    # mongo 8 — FiftyOne Enterprise 가 8.0+ 를 권장하고, OSS 는 min 6.0 뿐이라 상한이 없다
+    # (`fiftyone/constants.py`: MONGODB_MIN_VERSION=6.0). 2026-08-31 드라이런 통과:
+    # 1,440,402 docs 복원 0 실패, 데이터셋 6개·brain run·집계·UMAP 좌표(199,972×2) 전부 정상.
+    # ⚠️ **태그를 마이너까지 고정한다.** 예전엔 `mongo:8` 이었고, 그 위 주석이 경고했던
+    #    setFCV 를 아무도 실행하지 않아 FCV 가 7.0 에 머물러 있었다. 그 사이 태그가
+    #    8.0 → 8.2.12 로 흘렀고, 8.2 는 FCV 8.0 미만을 거부한다 → 2026-09-03 새벽
+    #    `exit 62` 크래시루프(재시작 11회, 0.45초마다 실패)로 FiftyOne 전체가 죽었다.
+    #    App 에는 `AutoReconnect: Connection reset by peer` 로만 보여서 원인이 가려졌다.
+    #    떠 있는 메이저 태그는 이 사고를 다음 메이저에서 그대로 재현한다.
+    # 현재 상태: mongod 8.2.12 · **FCV 8.0**(2026-09-03 복구 시 setFCV 완료).
+    #    8.1/8.2 로 올릴 때는 그 전에 setFCV 를 한 단계씩 올려야 한다.
+    # ⚠️ 되돌리기: FCV 가 8.0 이라 이미지 태그만 7 로 낮추는 길은 이미 막혔다. 파일 백업
+    #    `/home/user/backups/fiftyone-mongo-fcv-20260903-0831`(10.3G, FCV 7.0 시점)이
+    #    유일한 되돌림 수단이다. 데이터 파일이 uid 999·모드 600 이라 백업/복원은
+    #    **루트 컨테이너 경유**여야 한다 (`user` 의 cp 는 전량 권한 거부).
+    image: mongo:8.0
     # 4GB: 실측 RSS 5.5GiB(8GB 상한 시절) + 62.5G 2인 공유 호스트 회수 지시(2026-08-18).
     # -prompts 60만행 추가 후에도 쿼리 지연이 체감되면 6~8 로 되돌리는 게 낫다 — 상한이
     # 너무 낮으면 mongod 가 디스크로 spill 하며 App 이 느려진다.
     command: ["mongod", "--wiredTigerCacheSizeGB", "4"]
+    # 캐시 4GB + 오버헤드 = 실측 5.5GiB. 8g 는 넉넉한 상한이자 호스트 전체 OOM 방지선이다
+    # (이 호스트는 mem_limit 이 전무해서 컨테이너 하나가 62.5G 를 다 먹을 수 있었다).
+    mem_limit: ${FIFTYONE_MONGO_MEM:-8g}
     volumes:
       - ./data/fiftyone/mongo:/data/db
     networks:
@@ -740,6 +909,9 @@ volumes:
   minio_data:
   postgres_data:
   grafana_data:
+  comfyui_input:
+  comfyui_output:
+  comfyui_user:
 
 networks:
   default:

@@ -2403,10 +2403,79 @@ def _compute_class_centroids(
 # 메모리는 풀 크기(작은 행: image_id/key/rare_sim, 임베딩 미수신)에 묶여 코퍼스 크기와 무관.
 AL_CANDIDATE_POOL_MULT = 5
 
+# 후보로 삼을 image_role. `raw_video_frame` 은 2026-08-31 NAS 재구축으로 MinIO JPEG 이
+# 소실돼(188,190건) 임베딩만 남았다 — 큐에 넣어도 라벨러가 열 이미지가 없다.
+# 객체가 실재하는 role 만 남긴다. 재가동으로 새 raw_video_frame 이 쌓이면 여기에 추가한다.
+AL_CANDIDATE_IMAGE_ROLES = ("processed_clip_frame",)
+
+
+def _human_label_seed_ids(
+    rare_classes: tuple[str, ...] = ("fire", "smoke"),
+) -> tuple[dict[str, list[str]], list[str]]:
+    """**사람이 확정한** 라벨에서 (클래스별 씨앗, 확정 전체) 를 뽑는다.
+
+    Returns:
+        (by_class, all_confirmed)
+        - by_class      : rare_classes 한정 — rare centroid 계산용 **씨앗**
+        - all_confirmed : 클래스 무관 **확정된 프레임 전체** — 후보에서 제외할 대상
+
+    ⚠️ **둘을 반드시 구분해야 한다.** 씨앗만 제외하면 확정된 다른 클래스가 후보로 남는다.
+    실제로 그 버그가 있었다 — fire/smoke 2,468 만 제외해서 확정 intrusion 1,331 ·
+    no_harness 72 · falldown 26 이 "미라벨 후보"로 올라왔고, 큐가 **이미 답이 있는 프레임을
+    라벨링하라고 추천**했다. 확정 라벨은 클래스와 무관하게 전부 후보에서 빠져야 한다.
+
+    왜 FiftyOne `normalized_class` 를 안 쓰나 —
+      ① 그 필드는 **SAM3 자동 검출 결과**(weak label)이지 사람 라벨이 아니다. 그걸로 rare
+         centroid 를 만들면 "모델이 이미 찾는 것"을 다시 찾으라고 시키는 self-training 이 된다.
+      ② 2026-08-31 NAS 재구축으로 MinIO 라벨 객체가 소실돼 **전량 'none'** 이 됐고, 그래서
+         `active_learning_queue()` 가 빈 리스트를 반환해 왔다(조기 return).
+
+    대신 `labels`(review_status='finalized') → `processed_clips`(source_label_id) →
+    `image_metadata` → 프레임 image_id 로 내려온다. 클래스는 `labels` 에 컬럼이 없어서
+    (migration 026 미적용) **MinIO events JSON 을 SoT 로 읽는다** — 기존 Gemini 경로와 동일한
+    자리이며, `labels_key` + `event_index` 로 리스트 위치를 찾는다.
+    """
+    mc = _minio_client()
+    by_class: dict[str, list[str]] = {c: [] for c in rare_classes}
+    all_confirmed: list[str] = []
+
+    sql = """
+        SELECT l.labels_bucket, l.labels_key, l.event_index, im.image_id
+        FROM labels l
+        JOIN processed_clips pc ON pc.source_label_id = l.label_id
+        JOIN image_metadata im ON im.source_clip_id = pc.clip_id
+        WHERE l.review_status = 'finalized'
+          AND l.timestamp_start_sec IS NOT NULL
+        ORDER BY l.labels_key, l.event_index
+    """
+    with _pg_conn() as conn, conn.cursor() as cur:
+        cur.execute(sql)
+        rows = cur.fetchall()
+
+    events_cache: dict[tuple[str, str], list] = {}
+    for bucket, key, event_index, image_id in rows:
+        cache_key = (bucket, key)
+        if cache_key not in events_cache:
+            try:
+                events_cache[cache_key] = _read_minio_json(bucket, key, mc)
+            except Exception:  # noqa: BLE001 — per-object fail-forward
+                events_cache[cache_key] = []
+        # 카테고리를 못 읽어도 **확정된 프레임이라는 사실은 변하지 않으므로** 제외 목록에는 넣는다.
+        # (JSON 소실·인덱스 불일치 때문에 라벨된 프레임이 후보로 되살아나면 안 된다.)
+        all_confirmed.append(str(image_id))
+        events = events_cache[cache_key]
+        if not isinstance(events, list) or not (0 <= int(event_index) < len(events)):
+            continue
+        cat = normalize_class(str((events[int(event_index)] or {}).get("category") or ""))
+        if cat in by_class:
+            by_class[cat].append(str(image_id))
+    return by_class, all_confirmed
+
 
 def _rare_topk(
     centroid: Any, k: int, model_name: str,
     *, exclude_ids: list[str] | None = None, ef_search: int = 200,
+    image_roles: tuple[str, ...] | None = None,
 ) -> list[dict]:
     """centroid 벡터에 cosine 가까운 frame top-k (HNSW 인덱스). 임베딩 미반환 → 메모리 O(k).
 
@@ -2418,6 +2487,13 @@ def _rare_topk(
     excl = [str(i) for i in (exclude_ids or [])]
     params: dict = {"q": lit, "model": model_name, "k": int(k), "ef": ef_search}
     where = ["e.entity_type = 'frame'", "e.model_name = %(model)s"]
+    if image_roles:
+        # **객체가 실재하는 프레임만 후보로 삼는다.** 2026-08-31 NAS 재구축으로 MinIO 가
+        # 비면서 raw_video_frame 188,190 건의 JPEG 이 소실됐다. 임베딩 벡터는 DB 에 남아
+        # 있어 검색에는 걸리지만 **라벨러에게 보여줄 이미지가 없다** — 큐에 넣으면 100%
+        # 죽은 후보다(실측: 상위 50개 전부 MISS). role 로 좁혀야 실제로 열리는 것만 남는다.
+        where.append("im.image_role = ANY(%(roles)s)")
+        params["roles"] = list(image_roles)
     if excl:
         # image_id::text 캐스트로 컬럼 타입(uuid/text) 무관하게 비교 — 벡터 인덱스 정렬엔 영향 없음
         where.append("e.image_id::text <> ALL(%(excl)s)")
@@ -2499,16 +2575,25 @@ def active_learning_queue(n: int = 200, model_name: str | None = None) -> dict:
     if model_name is None:
         model_name = _active_model_name()
     try:
-        # 1. FiftyOne 라벨 맵 (작은 dict: label/caption 문자열만 → 메모리 안전, 임베딩 아님)
-        fo_metadata = _load_fo_metadata_for_dq("normalized_class")
-        labeled_ids_by_class: dict[str, list[str]] = {"fire": [], "smoke": []}
-        labeled_non_none: list[str] = []
-        for iid, meta in fo_metadata.items():
-            lbl = str(meta.get("label") or "none")
-            if lbl != "none":
-                labeled_non_none.append(iid)
-            if lbl in labeled_ids_by_class:
-                labeled_ids_by_class[lbl].append(iid)
+        # 1. 씨앗 = **사람이 확정한 라벨** (SAM3 weak label 아님 — self-training 회피)
+        #    제외 = 확정된 프레임 **전체**. 씨앗(fire/smoke)만 빼면 확정 intrusion 등이
+        #    "미라벨 후보"로 되살아나 이미 답이 있는 프레임을 추천하게 된다.
+        labeled_ids_by_class, labeled_non_none = _human_label_seed_ids(("fire", "smoke"))
+
+        # 사람 라벨이 아직 없는 구간에서는 기존 FiftyOne weak label 로 폴백한다.
+        # (전환기 호환. 폴백이 쓰이면 rare centroid 가 SAM3 파생이 되어 self-training 위험이
+        #  돌아오므로 reason 에 남기고, 사람 라벨이 생기면 자동으로 위 경로가 이긴다.)
+        seeded_from = "human_finalized"
+        if not labeled_non_none:
+            seeded_from = "fiftyone_weak_label"
+            fo_metadata = _load_fo_metadata_for_dq("normalized_class")
+            labeled_ids_by_class = {"fire": [], "smoke": []}
+            for iid, meta in fo_metadata.items():
+                lbl = str(meta.get("label") or "none")
+                if lbl != "none":
+                    labeled_non_none.append(iid)
+                if lbl in labeled_ids_by_class:
+                    labeled_ids_by_class[lbl].append(iid)
 
         # 2. 라벨된 fire/smoke 임베딩만 로드(소수) → centroid
         seed_ids = labeled_ids_by_class["fire"] + labeled_ids_by_class["smoke"]
@@ -2525,14 +2610,28 @@ def active_learning_queue(n: int = 200, model_name: str | None = None) -> dict:
         if not rare_classes:
             return {"rows": [], "n_candidates": 0, "n": n, "reason_counts": {}, "truncated": False}
 
-        total_frames = _count_frames_for_dq(model_name)
+        # 후보 수도 role 로 좁혀 센다 — 좁히지 않으면 객체가 소실된 raw_video_frame
+        # 188,190 건이 후보로 계상돼 n_candidates 가 거짓으로 부풀려진다(실측 189,619 → 실제
+        # 열리는 건 3,897). 대시보드가 그대로 표시하므로 반드시 여기서 맞춘다.
+        with _pg_conn() as _c, _c.cursor() as _cur:
+            _cur.execute(
+                """SELECT count(*) FROM image_embeddings e
+                   JOIN image_metadata im ON im.image_id = e.image_id
+                   WHERE e.entity_type='frame' AND e.model_name=%s
+                     AND im.image_role = ANY(%s)""",
+                (model_name, list(AL_CANDIDATE_IMAGE_ROLES)),
+            )
+            total_frames = int(_cur.fetchone()[0])
         n_candidates = max(0, total_frames - len(labeled_non_none))
 
         # 3. centroid 별 인덱스 top-pool (미라벨만; 임베딩 미수신). image_id 기준 max rare_sim 병합.
         pool_k = max(n * AL_CANDIDATE_POOL_MULT, n + 100)
         best: dict[str, dict] = {}
         for cls in rare_classes:
-            for h in _rare_topk(centroids[cls], pool_k, model_name, exclude_ids=labeled_non_none):
+            for h in _rare_topk(
+                centroids[cls], pool_k, model_name,
+                exclude_ids=labeled_non_none, image_roles=AL_CANDIDATE_IMAGE_ROLES,
+            ):
                 iid = str(h["image_id"])
                 rs = float(h["rare_sim"])
                 prev = best.get(iid)
@@ -2544,7 +2643,16 @@ def active_learning_queue(n: int = 200, model_name: str | None = None) -> dict:
                         "minio_key": f"{bucket}/{key}" if bucket and key else "",
                     }
         if not best:
-            return {"rows": [], "n_candidates": n_candidates, "n": n, "reason_counts": {}, "truncated": False}
+            # 후보 0 은 정상 상태일 수 있다 — "객체가 실재하면서 아직 사람이 확정하지 않은
+            # 프레임" 이 없다는 뜻이다. 2026-09-10 현재가 그렇다: 객체가 살아 있는 3,897 은
+            # 전부 아카이브 코호트(=확정 라벨)이고, 나머지 188,190 raw_video_frame 은 JPEG 이
+            # 소실됐다. 원인을 남겨야 "고장"과 "고를 게 없음"을 구분할 수 있다.
+            return {
+                "rows": [], "n_candidates": n_candidates, "n": n,
+                "reason_counts": {}, "truncated": False,
+                "seeded_from": seeded_from, "n_seeds": len(labeled_non_none),
+                "empty_reason": "no_unlabeled_candidate_with_live_object",
+            }
 
         # 4. uniqueness/representativeness 는 후보 풀 한정 조회 (없으면 0)
         fo_scores = _fo_scores_for_ids(list(best.keys()))
@@ -2598,6 +2706,10 @@ def active_learning_queue(n: int = 200, model_name: str | None = None) -> dict:
             "n": n,
             "reason_counts": reason_counts,
             "truncated": False,
+            # 씨앗 출처를 반드시 남긴다 — human_finalized 와 fiftyone_weak_label 은 의미가
+            # 전혀 다르다(후자는 SAM3 파생이라 self-training). 이 값 없이는 결과 해석 불가.
+            "seeded_from": seeded_from,
+            "n_seeds": len(labeled_non_none),
         }
 
     except Exception as exc:  # noqa: BLE001

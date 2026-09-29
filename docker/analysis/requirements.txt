@@ -1,26 +1,35 @@
-jupyterlab
+# ⚠️ 버전을 전부 고정한다. 2026-09-03 까지 `fiftyone` 만 핀돼 있고 나머지 20여 개가 떠
+#    있었다. 그 사이 이미지(2026-07-28 빌드)와 requirements(08-21 에 fastapi 추가)가
+#    벌어졌는데, `docker/analysis/**` 는 배포 워크플로의 paths-ignore 안이라 CI 가 이
+#    재빌드를 절대 돌리지 않는다 → 손으로 `pip install` 한 것만 살아 있었고, 09-02 23:28
+#    recreate 로 analysis-sync 가 fastapi 를 잃고 크래시루프에 빠졌다.
+#    핀이 없으면 재빌드가 곧 드리프트다(같은 날 matplotlib 3.11 이 boxplot 의 `labels` 를
+#    `tick_labels` 로 바꿔 그림 스크립트가 죽었다). 아래 값은 2026-09-03 실행 중이던
+#    컨테이너에서 그대로 뜬 것이라, 재빌드가 당시 환경을 재현한다.
+#    올릴 때는 한 번에 하나씩, 패널(:5153) 로드까지 확인하고 올릴 것.
+jupyterlab==4.6.2
 fiftyone==1.19.0
-psycopg2-binary
-boto3
-pandas
-plotly
-umap-learn
-requests
-streamlit
-streamlit-autorefresh
+psycopg2-binary==2.9.12
+boto3==1.43.57
+pandas==3.0.5
+plotly==6.9.0
+umap-learn==0.5.12
+requests==2.34.2
+streamlit==1.60.0
+streamlit-autorefresh==1.0.1
 # Vertex Gemini 쿼리 번역(KO→EN cross-lingual) — analysis 에서 genai.Client(vertexai=True). 미설치/미인증 시 코드가 사전 fallback.
-google-genai
-# 직접 import 하는 패키지는 명시 선언 (현재는 fiftyone 의 전이 의존성으로 설치되지만,
+google-genai==2.14.0
+# 직접 import 하는 패키지는 명시 선언 (fiftyone 의 전이 의존성으로도 들어오지만,
 # fiftyone 이 의존성을 바꾸면 조용히 깨진다 — report_charts/promptviz 가 직접 쓴다)
-numpy
-matplotlib
-scipy
-scikit-learn
-pyyaml
-threadpoolctl
-Pillow
-pymongo
-voxel51-eta
+numpy==2.4.6
+matplotlib==3.11.1
+scipy==1.17.1
+scikit-learn==1.9.0
+pyyaml==6.0.3
+threadpoolctl==3.6.0
+Pillow==12.3.0
+pymongo==4.9.2
+voxel51-eta==0.16.0
 # analysis-sync 서비스 (sync_api.py) — 내부 전용 동기화 API 서버
-fastapi
-uvicorn
+fastapi==0.141.1
+uvicorn==0.51.0

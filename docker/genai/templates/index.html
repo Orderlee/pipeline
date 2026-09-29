@@ -48,6 +48,7 @@
                 else 'google · veo' if e == 'veo'
                 else 'gemini · image' if e == 'nanobanana'
                 else 'openai · image' if e == 'gpt_image'
+                else 'gpu0 · local' if e == 'comfy_local'
                 else '—'
               ) %}
               {# 각 input+label 을 wrapper 로 묶어 grid item 1개로. CSS sibling 안정. #}
@@ -185,6 +186,54 @@
               GPT Image (<span class="gs-mono">gpt-image-1</span>) — 동기 호출, 추가 옵션 없음. 결과는 PNG.
             </p>
           </div>
+
+          {% set c = engine_options.get("comfy_local") %}
+          {% if c %}
+          <div class="gs-engine-opt" data-only-engine="comfy_local" style="display:none">
+            <div style="padding:8px 10px;margin-bottom:10px;border:1px solid #5b4b1f;border-radius:7px;background:#211d10">
+              <strong>synthetic · human review required</strong><br>
+              <span class="gs-hint">GPU0 단일 실행. 결과는 격리 저장되며 명시적 Promote 후 Label Studio 검수가 필요합니다.</span>
+            </div>
+            <div class="gs-field">
+              <div class="gs-field__label gs-mono">workflow_id</div>
+              <div class="gs-select-shell">
+                <select name="workflow_id" id="gs-comfy-workflow" disabled>
+                  {% for w in c.workflows %}
+                    <option value="{{ w.value }}" data-requires-mask="{{ 'true' if w.requires_mask else 'false' }}"
+                            {% if w.value == c.default_workflow %}selected{% endif %}>{{ w.label }}</option>
+                  {% endfor %}
+                </select>
+                {{ icon('chevDown', size=13) }}
+              </div>
+            </div>
+            <div class="gs-row-2">
+              <div class="gs-field">
+                <div class="gs-field__label gs-mono">seed (0=random)</div>
+                <input type="number" name="seed" value="{{ c.default_seed }}" min="0" max="9223372036854775807"
+                       title="0이면 작업마다 무작위 seed를 사용하고, 양수이면 지정한 seed를 사용합니다." disabled>
+              </div>
+              <div class="gs-field">
+                <div class="gs-field__label gs-mono">steps</div>
+                <input type="number" name="steps" id="gs-comfy-steps" value="{{ c.default_steps }}" min="1" max="60"
+                       title="노이즈를 제거하며 이미지를 다듬는 반복 횟수입니다. FLUX는 4 고정, SDXL은 기본 30입니다." disabled>
+              </div>
+            </div>
+            <div class="gs-row-2" id="gs-comfy-sdxl-tuning" style="display:none">
+              <div class="gs-field">
+                <div class="gs-field__label gs-mono">cfg</div>
+                <input type="number" name="cfg" value="{{ c.default_cfg }}" min="0" max="20" step="0.1" disabled>
+              </div>
+              <div class="gs-field">
+                <div class="gs-field__label gs-mono">denoise</div>
+                <input type="number" name="denoise" value="{{ c.default_denoise }}" min="0.01" max="1" step="0.01" disabled>
+              </div>
+            </div>
+            <div class="gs-field" id="gs-comfy-negative-wrap" style="display:none">
+              <div class="gs-field__label gs-mono">negative_prompt</div>
+              <textarea name="negative_prompt" rows="3" disabled>{{ c.default_negative_prompt }}</textarea>
+            </div>
+          </div>
+          {% endif %}
         </section>
 
         <!-- 이미지 dropzone (text2video 탭에선 hide) -->
@@ -211,6 +260,15 @@
             <input type="file" name="files" multiple accept=".png,.jpg,.jpeg,.webp"
                    class="gs-file-input" id="gs-files-input">
           </label>
+        </section>
+
+        <section class="gs-section" id="gs-comfy-mask-section" style="display:none">
+          <div class="gs-section__head">
+            <span class="gs-section__title">Inpaint mask</span>
+            <span class="gs-section__hint gs-mono">SDXL 전용 · source와 동일 해상도</span>
+          </div>
+          <input type="file" name="mask_file" id="gs-comfy-mask" accept=".png" disabled>
+          <p class="gs-hint">흰색(255) 영역만 편집합니다. 0/255 이진 PNG가 아니거나 비어 있거나 source와 해상도가 다르면 제출 전에 거부됩니다.</p>
         </section>
 
         <!-- Prompt -->
@@ -405,6 +463,7 @@
         'higgsfield': 'Higgsfield 옵션 (fal.ai)',
         'nanobanana': 'Nanobanana 옵션 (Vertex Gemini)',
         'gpt_image': 'GPT Image 옵션 (OpenAI)',
+        'comfy_local': 'Local ComfyUI 옵션 (GPU0)',
       };
       titleEl.textContent = pretty[eng] || (eng + ' 옵션');
     }
@@ -414,7 +473,29 @@
         t.classList.toggle('is-active', t.dataset.tab === cardTab);
       });
     }
+    syncComfyWorkflow();
   }
+
+  function syncComfyWorkflow() {
+    const checked = document.querySelector('input[name=engine]:checked');
+    const isComfy = checked && checked.value === 'comfy_local';
+    const workflow = document.getElementById('gs-comfy-workflow');
+    const selected = workflow ? workflow.options[workflow.selectedIndex] : null;
+    const needsMask = Boolean(isComfy && selected && selected.dataset.requiresMask === 'true');
+    const maskSection = document.getElementById('gs-comfy-mask-section');
+    const maskInput = document.getElementById('gs-comfy-mask');
+    const tuning = document.getElementById('gs-comfy-sdxl-tuning');
+    const negative = document.getElementById('gs-comfy-negative-wrap');
+    const steps = document.getElementById('gs-comfy-steps');
+    if (maskSection) maskSection.style.display = needsMask ? '' : 'none';
+    if (maskInput) { maskInput.disabled = !needsMask; maskInput.required = needsMask; }
+    if (tuning) tuning.style.display = needsMask ? '' : 'none';
+    if (negative) negative.style.display = needsMask ? '' : 'none';
+    if (tuning) tuning.querySelectorAll('input').forEach(i => { i.disabled = !needsMask; });
+    if (negative) negative.querySelectorAll('textarea').forEach(i => { i.disabled = !needsMask; });
+    if (steps && isComfy) steps.value = needsMask ? '30' : '4';
+  }
+  document.getElementById('gs-comfy-workflow')?.addEventListener('change', syncComfyWorkflow);
   document.querySelectorAll('input[name=engine]').forEach(r => {
     r.addEventListener('change', syncEngine);
   });

@@ -238,6 +238,24 @@ def main() -> int:
         "prediction 에 없는 카테고리가 나오면 `other` 로 coerce 됨.",
     )
     p_create.add_argument(
+        "--synthetic",
+        action="store_true",
+        help="합성 생성본(source_type=genai_output) 배치. 라벨러 게이트에 "
+        "LS_TASK_GATE_SYNTHETIC_BYPASS_RATIO(기본 1.0) 가 적용된다 — 자동 검출 0건이어도 "
+        "사람에게 보낸다. 합성의 목적이 자동 검출이 약한 클래스를 채우는 것이기 때문.",
+    )
+    p_create.add_argument(
+        "--genai-engine",
+        default="",
+        help="합성 배치의 생성 엔진 (예: comfy_local). --synthetic 일 때 LS task data/화면의 출처 배지에 표시된다. "
+        "sensor 가 raw_files(정본) 에서 읽어 넘긴다. 비면 'unknown' 으로 표시.",
+    )
+    p_create.add_argument(
+        "--genai-batch-id",
+        default="",
+        help="합성 배치 id. --synthetic 일 때 출처 배지에 표시된다. 비면 'unknown' 으로 표시.",
+    )
+    p_create.add_argument(
         "--project-suffix",
         default="",
         help="project 이름 접미사 (예: YYMMDD_HHMM). dispatch.requested_at 기준으로 sensor 가 채움. "

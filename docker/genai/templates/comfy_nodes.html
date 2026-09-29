@@ -1,0 +1,376 @@
+{% extends "base.html" %}
+{% set page = "comfy_nodes" %}
+{% from "_icons.html" import icon %}
+
+{% block title %}Comfy Nodes · GenAI Studio{% endblock %}
+
+{% block body %}
+<section class="nc-shell">
+  <div class="nc-toolbar">
+    <div>
+      <div class="nc-toolbar__title">Native ComfyUI Canvas</div>
+      <div class="nc-toolbar__hint">공식 ComfyUI frontend · 기본 Run = Load Image 1장 · 여러 장 = 상단 M×1 Batch · 승인 graph만 실행</div>
+    </div>
+    <div class="nc-workflows" role="group" aria-label="Approved workflows">
+      {% for workflow_id in contracts %}
+      <button type="button" data-workflow-id="{{ workflow_id }}"
+              class="nc-workflow {% if workflow_id == selected_workflow %}is-active{% endif %}">
+        {{ 'FLUX.2 Klein Edit' if workflow_id.startswith('flux2-') else 'SDXL Inpaint' }}
+      </button>
+      {% endfor %}
+    </div>
+    <span class="cn-status {% if comfy_enabled %}is-ready{% else %}is-disabled{% endif %}">
+      <span class="cn-status__dot"></span>
+      {% if comfy_enabled %}execution enabled{% else %}view/edit only{% endif %}
+    </span>
+    <button type="button" class="gs-pill nc-bulk-open" id="nc-bulk-open"
+            {% if not comfy_enabled %}disabled{% endif %}>M×1 Batch</button>
+    <a class="gs-pill muted" href="/genai/bulk?engine=comfy_local&amp;pair_mode=cartesian">N×M Bulk</a>
+    <a class="gs-pill muted" href="/">Form view</a>
+  </div>
+
+  <dialog class="nc-bulk-dialog" id="nc-bulk-dialog">
+    <div class="nc-bulk-dialog__head">
+      <div>
+        <strong>M images × 1 node prompt</strong>
+        <p>Load Image 노드 대신 여기서 원본을 선택하고, 아래 M×1 실행 버튼을 누르세요.</p>
+      </div>
+      <button type="button" class="nc-bulk-close" id="nc-bulk-close" aria-label="닫기">×</button>
+    </div>
+    <div class="nc-bulk-dialog__body">
+      <label class="nc-bulk-field">
+        <span>Source images <b class="gs-mono" id="nc-bulk-source-count">0</b></span>
+        <input type="file" id="nc-bulk-files" multiple accept=".png,.jpg,.jpeg,.webp">
+        <small>최대 {{ max_bulk_jobs }} jobs · 파일당 50MB · 선택 순서대로 등록</small>
+      </label>
+      <label class="nc-bulk-field" id="nc-bulk-mask-field" hidden>
+        <span>Inpaint masks <b class="gs-mono" id="nc-bulk-mask-count">0</b></span>
+        <input type="file" id="nc-bulk-masks" multiple accept=".png">
+        <small>SDXL 전용 · 각 원본과 동일 크기의 PNG 마스크를 같은 순서로 선택</small>
+      </label>
+      <div class="nc-bulk-summary gs-mono" id="nc-bulk-summary">이미지를 선택하세요.</div>
+      <div class="nc-bulk-result" id="nc-bulk-result" aria-live="polite" hidden></div>
+    </div>
+    <div class="nc-bulk-dialog__foot">
+      <button type="button" class="gs-pill muted" id="nc-bulk-cancel">취소</button>
+      <button type="button" class="nc-bulk-run" id="nc-bulk-run" disabled>M×1 실행</button>
+    </div>
+  </dialog>
+
+  {% if created_batch_id %}
+  <div class="cn-created">
+    Batch <span class="gs-mono">{{ created_batch_id }}</span>가 생성되었습니다.
+    <a href="/genai/batches/{{ created_batch_id }}">상세 보기 →</a>
+  </div>
+  {% endif %}
+
+  {% if not comfy_enabled %}
+  <div class="nc-disabled-notice">
+    모델 배치와 <span class="gs-mono">comfy_local</span> 활성화 전까지 캔버스 편집만 가능합니다.
+    Run 요청은 GenAI gateway에서 차단됩니다.
+  </div>
+  {% endif %}
+
+  <div class="nc-frame-wrap">
+    <div class="nc-loading" id="nc-loading">
+      <span class="nc-spinner"></span> ComfyUI canvas 연결 중…
+    </div>
+    <iframe id="nc-frame" class="nc-frame" src="{{ comfy_native_url }}"
+            title="Native ComfyUI node canvas"></iframe>
+  </div>
+</section>
+{% endblock %}
+
+{% block extra_scripts %}
+<script>
+(() => {
+  const contracts = {{ contracts | tojson }};
+  const frame = document.getElementById('nc-frame');
+  const loading = document.getElementById('nc-loading');
+  const buttons = [...document.querySelectorAll('[data-workflow-id]')];
+  const bulkDialog = document.getElementById('nc-bulk-dialog');
+  const bulkOpen = document.getElementById('nc-bulk-open');
+  const bulkClose = document.getElementById('nc-bulk-close');
+  const bulkCancel = document.getElementById('nc-bulk-cancel');
+  const bulkRun = document.getElementById('nc-bulk-run');
+  const bulkFiles = document.getElementById('nc-bulk-files');
+  const bulkMasks = document.getElementById('nc-bulk-masks');
+  const bulkMaskField = document.getElementById('nc-bulk-mask-field');
+  const bulkSourceCount = document.getElementById('nc-bulk-source-count');
+  const bulkMaskCount = document.getElementById('nc-bulk-mask-count');
+  const bulkSummary = document.getElementById('nc-bulk-summary');
+  const bulkResult = document.getElementById('nc-bulk-result');
+  let selected = {{ selected_workflow | tojson }};
+  let loadToken = 0;
+
+  async function waitForComfy(token) {
+    for (let i = 0; i < 160; i += 1) {
+      if (token !== loadToken) return null;
+      try {
+        if (frame.contentWindow && frame.contentWindow.app && frame.contentWindow.graph) {
+          return frame.contentWindow.app;
+        }
+      } catch (_) {}
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+    throw new Error('ComfyUI frontend initialization timed out');
+  }
+
+  function restoreApiLinks(app, prompt) {
+    const graph = app.graph;
+    const nodesById = new Map(graph._nodes.map(node => [String(node.id), node]));
+    let expectedLinks = 0;
+    for (const [targetId, spec] of Object.entries(prompt)) {
+      const target = nodesById.get(String(targetId));
+      if (!target) throw new Error(`ComfyUI target node ${targetId} was not loaded`);
+      for (const [inputName, value] of Object.entries(spec.inputs || {})) {
+        if (!Array.isArray(value) || value.length !== 2) continue;
+        const source = nodesById.get(String(value[0]));
+        if (!source || !Number.isInteger(Number(value[1]))) continue;
+        expectedLinks += 1;
+        const targetSlot = target.findInputSlot(inputName);
+        if (targetSlot < 0) throw new Error(`ComfyUI input ${targetId}.${inputName} was not loaded`);
+        if (target.inputs[targetSlot].link == null) {
+          const link = source.connect(Number(value[1]), target, targetSlot);
+          if (!link) throw new Error(`Failed to connect ${value[0]} to ${targetId}.${inputName}`);
+        }
+      }
+    }
+    const actualLinks = Object.keys(graph.links || {}).length;
+    if (actualLinks !== expectedLinks) {
+      throw new Error(`ComfyUI link restoration mismatch: ${actualLinks}/${expectedLinks}`);
+    }
+  }
+
+  function fitGraph(app) {
+    const nodes = app.graph._nodes;
+    if (!nodes.length) return;
+    const minX = Math.min(...nodes.map(node => node.pos[0]));
+    const minY = Math.min(...nodes.map(node => node.pos[1]));
+    const maxX = Math.max(...nodes.map(node => node.pos[0] + node.size[0]));
+    const maxY = Math.max(...nodes.map(node => node.pos[1] + node.size[1]));
+    app.canvas.ds.fitToBounds([minX, minY, maxX - minX, maxY - minY], { zoom: 0.7 });
+  }
+
+  async function loadWorkflow(workflowId) {
+    selected = workflowId;
+    const token = ++loadToken;
+    buttons.forEach(button => button.classList.toggle('is-active', button.dataset.workflowId === workflowId));
+    loading.hidden = false;
+    loading.textContent = '승인 workflow를 불러오는 중…';
+    try {
+      const app = await waitForComfy(token);
+      if (!app || token !== loadToken) return;
+      installNativeRunGuard(app);
+      try {
+        await app.loadApiJson(structuredClone(contracts[workflowId].prompt));
+      } catch (error) {
+        // Recent ComfyUI releases load all nodes before their workflow-manager metadata
+        // hook can reject an API-format graph. Nodes are authoritative here.
+        if (!frame.contentWindow.graph || frame.contentWindow.graph._nodes.length === 0) throw error;
+      }
+      restoreApiLinks(app, contracts[workflowId].prompt);
+      try {
+        app.graph.arrange();
+        fitGraph(app);
+        app.canvas.setDirty(true, true);
+      } catch (_) {}
+      loading.hidden = true;
+    } catch (error) {
+      loading.hidden = false;
+      loading.textContent = `ComfyUI 연결 실패: ${error.message}`;
+    }
+  }
+
+  frame.addEventListener('load', () => loadWorkflow(selected));
+  buttons.forEach(button => button.addEventListener('click', () => {
+    loadWorkflow(button.dataset.workflowId);
+    syncBulkPanel();
+  }));
+
+  function syncBulkPanel() {
+    const sourceCount = bulkFiles.files.length;
+    const maskCount = bulkMasks.files.length;
+    const needsMasks = selected === 'sdxl-inpaint-cctv-v1';
+    bulkMaskField.hidden = !needsMasks;
+    bulkSourceCount.textContent = sourceCount;
+    bulkMaskCount.textContent = maskCount;
+    let problem = '';
+    if (sourceCount === 0) problem = '이미지를 1장 이상 선택하세요.';
+    else if (sourceCount > {{ max_bulk_jobs }}) problem = '최대 {{ max_bulk_jobs }}장까지 선택할 수 있습니다.';
+    else if (needsMasks && maskCount !== sourceCount) {
+      problem = `SDXL은 이미지마다 마스크가 필요합니다. images=${sourceCount}, masks=${maskCount}`;
+    }
+    bulkSummary.textContent = problem || `${sourceCount} images × 현재 node prompt 1개 = ${sourceCount} jobs`;
+    bulkRun.disabled = Boolean(problem) || !{{ 'true' if comfy_enabled else 'false' }};
+  }
+
+  function closeBulkDialog() {
+    if (bulkDialog.open) bulkDialog.close();
+  }
+
+  /** 승인 graph 의 미디어 입력이 실재 파일을 가리키는가. 아니면 그 binding 이름을 돌려준다.
+      템플릿은 `source.png` 같은 플레이스홀더를 들고 있는데 Comfy input 볼륨에 그 파일은
+      없다(2026-09-21 실측: /data/input 에 genai-*.jpg 46개, source.png/mask.png 0개).
+      그대로 기본 Run 을 누르면 Comfy 가 "Missing Inputs" 를 내고 프론트가 미리보기를 404 로
+      받는데, 사용자에게는 "이미지를 올렸는데 작업이 안 된다" 로 보인다. 위젯의 알려진 값
+      목록이 비어 있으면(입력 목록 조회 실패) 막지 않는다 — 기존 동작 유지. */
+  function unresolvedMediaInput(app) {
+    const bindings = contracts[selected]?.bindings || {};
+    for (const name of ['source_image', 'mask_image']) {
+      const binding = bindings[name];
+      if (!binding) continue;
+      const [nodeId, inputName] = binding;
+      const node = app.graph?._nodes?.find(item => String(item.id) === String(nodeId));
+      const widget = node?.widgets?.find(item => item.name === inputName);
+      if (!widget) continue;
+      const values = widget.options?.values;
+      if (Array.isArray(values) && values.length > 0 && !values.includes(widget.value)) return name;
+    }
+    return '';
+  }
+
+  function installNativeRunGuard(app) {
+    if (app.__genaiM1RunGuard || typeof app.queuePrompt !== 'function') return;
+    const nativeQueuePrompt = app.queuePrompt.bind(app);
+    app.queuePrompt = async (...args) => {
+      if (bulkFiles.files.length > 0) {
+        syncBulkPanel();
+        bulkResult.textContent = 'M×1 이미지가 선택되어 기본 Run을 차단했습니다. 이 창의 M×1 실행 버튼을 사용하세요.';
+        bulkResult.classList.add('is-error');
+        bulkResult.hidden = false;
+        if (!bulkDialog.open) bulkDialog.showModal();
+        return;
+      }
+      const unresolved = unresolvedMediaInput(app);
+      if (unresolved) {
+        bulkResult.textContent =
+          `${unresolved} 가 아직 실재하는 파일을 가리키지 않습니다(템플릿 플레이스홀더). ` +
+          '이 창에서 이미지를 선택하고 M×1 실행을 누르세요 — 기본 Run 으로는 생성되지 않습니다.';
+        bulkResult.classList.add('is-error');
+        bulkResult.hidden = false;
+        if (!bulkDialog.open) bulkDialog.showModal();
+        return;
+      }
+      return nativeQueuePrompt(...args);
+    };
+    app.__genaiM1RunGuard = true;
+  }
+
+  function uuid4() {
+    if (window.crypto?.randomUUID) return window.crypto.randomUUID();
+    const bytes = new Uint8Array(16);
+    window.crypto.getRandomValues(bytes);
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    const hex = [...bytes].map(value => value.toString(16).padStart(2, '0')).join('');
+    return `${hex.slice(0,8)}-${hex.slice(8,12)}-${hex.slice(12,16)}-${hex.slice(16,20)}-${hex.slice(20)}`;
+  }
+
+  async function attachFirstFileToCanvas(app, bindingName, file) {
+    const upload = new FormData();
+    const dot = file.name.lastIndexOf('.');
+    const rawExt = dot >= 0 ? file.name.slice(dot).toLowerCase() : '';
+    const safeExt = /^\.(png|jpe?g|webp)$/.test(rawExt) ? rawExt : '.png';
+    upload.append('image', file, `genai-node-${uuid4()}${safeExt}`);
+    upload.append('type', 'input');
+    upload.append('overwrite', 'false');
+    const response = await fetch('/genai/comfy-native/upload/image', {
+      method: 'POST',
+      body: upload,
+    });
+    const payload = await response.json();
+    if (!response.ok || !payload.name) {
+      throw new Error(payload.error || `Comfy input upload failed (HTTP ${response.status})`);
+    }
+    const uploadedName = payload.subfolder ? `${payload.subfolder}/${payload.name}` : payload.name;
+    const binding = contracts[selected]?.bindings?.[bindingName];
+    if (!binding) throw new Error(`승인 workflow에 ${bindingName} binding이 없습니다.`);
+    const [nodeId, inputName] = binding;
+    const node = app.graph._nodes.find(item => String(item.id) === String(nodeId));
+    const widget = node?.widgets?.find(item => item.name === inputName);
+    if (!node || !widget) throw new Error(`${bindingName} 노드 입력을 찾지 못했습니다.`);
+    if (Array.isArray(widget.options?.values) && !widget.options.values.includes(uploadedName)) {
+      widget.options.values.push(uploadedName);
+    }
+    widget.value = uploadedName;
+    try { widget.callback?.(uploadedName); } catch (_) {}
+    app.canvas.setDirty(true, true);
+  }
+
+  bulkOpen?.addEventListener('click', () => {
+    bulkResult.hidden = true;
+    bulkResult.textContent = '';
+    syncBulkPanel();
+    bulkDialog.showModal();
+  });
+  bulkClose.addEventListener('click', closeBulkDialog);
+  bulkCancel.addEventListener('click', closeBulkDialog);
+  bulkFiles.addEventListener('change', syncBulkPanel);
+  bulkMasks.addEventListener('change', syncBulkPanel);
+
+  bulkRun.addEventListener('click', async () => {
+    syncBulkPanel();
+    if (bulkRun.disabled) return;
+    bulkRun.disabled = true;
+    bulkRun.textContent = '노드 검증 및 등록 중…';
+    bulkResult.hidden = true;
+    bulkResult.textContent = '';
+    try {
+      const app = await waitForComfy(loadToken);
+      if (!app) throw new Error('ComfyUI canvas를 불러오지 못했습니다.');
+      await attachFirstFileToCanvas(app, 'source_image', bulkFiles.files[0]);
+      if (selected === 'sdxl-inpaint-cctv-v1') {
+        await attachFirstFileToCanvas(app, 'mask_image', bulkMasks.files[0]);
+      }
+      const compiled = await app.graphToPrompt();
+      if (!compiled?.output) throw new Error('현재 노드 그래프를 직렬화하지 못했습니다.');
+
+      const data = new FormData();
+      data.append('engine', 'comfy_local');
+      data.append('prompts_text', '__from_approved_node_graph__');
+      data.append('idempotency_token', uuid4());
+      data.append('pair_mode', 'cartesian');
+      data.append('text_only', 'false');
+      data.append('workflow_id', selected);
+      data.append('prompt_graph', JSON.stringify(compiled.output));
+      [...bulkFiles.files].forEach(file => data.append('files', file, file.name));
+      if (selected === 'sdxl-inpaint-cctv-v1') {
+        [...bulkMasks.files].forEach(file => data.append('mask_files', file, file.name));
+      }
+
+      const response = await fetch('/genai/bulk-batches', {
+        method: 'POST',
+        headers: {'Accept': 'application/json'},
+        body: data,
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.detail || payload.error?.message || `HTTP ${response.status}`);
+      const result = payload.duplicate ? payload.result : payload;
+      if (result.failed?.length) {
+        throw new Error(`일부 등록 실패: ${result.failed.map(item => item.error).join(', ')}`);
+      }
+      const ids = (result.submitted || []).map(item => item.batch_id).filter(Boolean);
+      bulkResult.replaceChildren();
+      bulkResult.append(`${result.total_jobs || bulkFiles.files.length} jobs 등록 완료 `);
+      ids.forEach((id, index) => {
+        if (index) bulkResult.append(' · ');
+        const link = document.createElement('a');
+        link.href = `/genai/batches/${encodeURIComponent(id)}`;
+        link.textContent = id;
+        bulkResult.append(link);
+      });
+      bulkResult.classList.remove('is-error');
+      bulkResult.hidden = false;
+    } catch (error) {
+      bulkResult.textContent = error.message || String(error);
+      bulkResult.classList.add('is-error');
+      bulkResult.hidden = false;
+    } finally {
+      bulkRun.textContent = 'M×1 실행';
+      syncBulkPanel();
+    }
+  });
+})();
+</script>
+{% endblock %}

@@ -22,10 +22,10 @@ CCTV/보안 영상을 수집 → 중복제거 → Gemini 라벨링 → SAM3 bbox
 - **페르소나 라우팅 힌트는 훅이 자동으로 준다:** `.claude/settings.json` 의 `UserPromptSubmit` 이
   `.claude/hooks/persona_router.py` 를 실행해, 프롬프트에 트리거 키워드가 보이면 상위 3개
   페르소나를 위임 후보로 제안한다 (합계 2점 미만이면 침묵, 예외는 조용히 통과). 페르소나 정의는
-  `.claude/agents/*.md` 19종, 라우팅표 정본은 `docs/references/agent-teams.md` §2.
+  `.claude/agents/*.md` 24종, 라우팅표 정본은 `docs/references/agent-teams.md` §2.
 - **새 페르소나를 추가할 때:** 라우터는 별도 키워드 테이블이 아니라 `.claude/agents/<name>.md`
   frontmatter `description` 안의 `Triggers — <쉼표 구분 키워드>` 구간만 읽는다. 그 구간이 없으면
-  파일이 있어도 **라우팅 대상이 아니다**(수동 위임만 가능) — 현재 19종 중
+  파일이 있어도 **라우팅 대상이 아니다**(수동 위임만 가능) — 현재 24종 중
   `codex`/`dagster-impl`/`deploy-auditor`/`pipeline-explorer`/`qa-strategist` 5종이 이 상태다.
 
 ---
@@ -213,7 +213,11 @@ git -C /home/user/work_p/Datapipeline-Data-data_pipeline_test status       # dev
   - ⚠️ **새 테스트 파일의 기본값은 "CI 미실행"이다.** `.gitignore` 가 `tests/unit/*` 등을 blanket
     무시하고 `!tests/unit/<파일>` allowlist 로만 편입한다. allowlist 에 안 넣으면 untracked 라
     CI 가 절대 돌리지 않는다 — 로컬 pytest 초록/빨강은 CI 신호가 아니다. 편입 여부는
-    `git ls-files tests/` 로만 확인 (2026-08-18 에 14파일을 이 경로로 편입, CI 732 passed).
+    `git ls-files tests/` 로만 확인 (2026-09-15 기준 CI 899 passed / 31 skipped).
+    ⚠️ 이 함정은 실제 부채로 굳었던 이력이 있다 — 2026-09-15 실측에서 디스크 149 vs 추적 124,
+    즉 **25파일이 CI 에서 한 번도 안 돌아간 상태**였고 돌려보니 51 failed 였다(삭제된
+    `duckdb_resource` fixture·바뀐 시그니처를 검증 중). 그중 10파일을 수정 후 편입했고
+    나머지 15파일은 여전히 미편입이다.
 
 ---
 
@@ -312,6 +316,9 @@ git -C /home/user/work_p/Datapipeline-Data-data_pipeline_test status       # dev
 - **GPU 할당 정책 (2026-05-22 업데이트)**:
   - **dagster 계열**: 호스트 GPU 0+1 둘 다 노출 (`CUDA_VISIBLE_DEVICES=0,1` + `NVIDIA_VISIBLE_DEVICES=0,1`).
     - Python torch (Places365) → default `cuda:0` = 호스트 GPU 0 (CUDA cores)
+      ⚠️ 이건 **능력이지 관측된 워크로드가 아니다** — prod 는 `INGEST_DEFER_VIDEO_ENV_CLASSIFICATION=true`
+      로 인라인 경로가 막혀 있고 `video_env_backfill_job` 은 0 runs ever(2026-09-21 실측).
+      반면 **staging 은 defer 조건이 `not is_staging` 이라 실제로 GPU 0 에서 돈다.**
     - ffmpeg NVENC → `REENCODE_NVENC_GPU_INDICES` (default "0,1") round-robin → 양 GPU 의 NVENC unit 활용 (RTX A4000 NVENC unit GPU 당 1개)
   - **SAM3 (별도 컨테이너)**: 호스트 GPU 1 의 CUDA cores 만 사용 (`CUDA_VISIBLE_DEVICES=1`). 컨테이너 view 에서는 `cuda:0` 로 보이지만 호스트는 GPU 1.
     - **workers=3** (`SAM3_WORKERS`, prod `.env` 현재값) — process 3개 model 로드 ≈ 11.1 GB / 16 GB.
@@ -358,12 +365,11 @@ git -C /home/user/work_p/Datapipeline-Data-data_pipeline_test status       # dev
 | 스크립트 | 용도 | 상태 |
 |---------|------|------|
 | ~~`scripts/query_local_duckdb.py`~~ | 로컬 DuckDB 읽기 쿼리 | **`scripts/archive/` 로 이동됨 ❌** — 대신 `docker exec docker-postgres-1 psql -U airflow -d vlm_pipeline -c "..."` |
-| `scripts/backfill_video_metadata.py` | video_metadata 결손 백필 | DuckDB legacy ⚠️ (guard 적용, `ALLOW_LEGACY_DUCKDB_SCRIPT=1` 필요) |
-| `scripts/cleanup_duplicate_assets.py` | checksum duplicate 정리 | DuckDB legacy ⚠️ (guard 적용, `ALLOW_LEGACY_DUCKDB_SCRIPT=1` 필요) |
-| `scripts/recompute_archive_checksums.py` | archive 원본 재해시 | DuckDB legacy ⚠️ (guard 적용, `ALLOW_LEGACY_DUCKDB_SCRIPT=1` 필요) |
-| `scripts/reupload_minio_from_archive.py` | archive 기준 MinIO 재업로드 | DuckDB legacy ⚠️ (guard 적용, `ALLOW_LEGACY_DUCKDB_SCRIPT=1` 필요) |
-| `scripts/staging_test_dispatch.py` | staging dispatch 테스트 | DuckDB legacy ⚠️ (guard 적용, `ALLOW_LEGACY_DUCKDB_SCRIPT=1` 필요) |
-| `scripts/verify_mvp.sh` | E2E 검증 | 사용 가능 |
+| `scripts/backfill_video_metadata.py` | video_metadata 결손 백필 | 사용 가능 (psycopg2 — DuckDB 잔재 없음) |
+| `scripts/cleanup_duplicate_assets.py` | checksum duplicate 정리 | 사용 가능 (psycopg2 — DuckDB 잔재 없음) |
+| `scripts/recompute_archive_checksums.py` | archive 원본 재해시 | 사용 가능 (psycopg2 — DuckDB 잔재 없음) |
+| `scripts/reupload_minio_from_archive.py` | archive 기준 MinIO 재업로드 | 사용 가능 (psycopg2 — DuckDB 잔재 없음) |
+| `scripts/staging_test_dispatch.py` | staging dispatch 테스트 | 사용 가능 (psycopg2 — DuckDB 잔재 없음) |
 | `scripts/promote_model.py` | MinIO 체크포인트 → 호스트 materialize + env + recreate (승격/롤백) | MLOps (만들되 기본 미실행; `--dry-run` CI-safe) |
 | `scripts/promote_pe_core.py` | PE-Core 포인터 전환 + partial-HNSW + 서빙 교체 (승격/롤백) | MLOps (만들되 기본 미실행; `--dry-run`) |
 | `scripts/dataset_pull.py` | dataset_catalog pin 해석 → `dvc get` (DVC 버전 데이터셋 pull) | MLOps (기본 dry-run) |
@@ -381,6 +387,11 @@ git -C /home/user/work_p/Datapipeline-Data-data_pipeline_test status       # dev
 - `scripts/archive/recover_uploading.py` — uploading 복구 (완료)
 - `scripts/archive/backfill_vhc_sam3_bbox.py` — VHC 288건 SAM3 bbox 백필 (완료된 일회성, 제거된 duckdb 모듈 import 라 현행 미실행)
 - `scripts/archive/run_scanner.sh` — legacy 스캐너 shim (대체: auto_bootstrap 센서 / `scripts/bootstrap_manifest.sh`)
+- `scripts/archive/migrate_duckdb_to_postgres.py` — DuckDB → Postgres 1회 이관 (완료)
+- `scripts/archive/verify_mvp.sh` — 구 E2E 검증 (2026-09-15 이동). `:6` 이 없는 컨테이너
+  `pipeline-dagster-1` 을 가리키고 `:10,26,52` 가 `duckdb /data/pipeline.duckdb` 를 읽어
+  PG cutover 이후 첫 줄부터 실패한다. `scripts/setup.sh` 의 마지막 안내도 이 스크립트를
+  가리키고 있었다 — 함께 교정. PG 기준 재작성이 필요하면 archive 의 6단계 체크리스트를 출발점으로.
 
 ---
 
@@ -474,9 +485,8 @@ git -C /home/user/work_p/Datapipeline-Data-data_pipeline_test status       # dev
   python scripts/promote_model.py --model sam3 --model-version-id <id>            # 기본 dry-run
   ```
   성공 시 `status='promoted'`, `promoted_at`/`promoted_env` 기록.
-- ⚠️ **알려진 버그 (미수정)**: `--model-version-id` 가 `type=int` 로 선언돼 있는데
-  `model_registry.model_version_id` 는 `TEXT`(`mv-3f9a2b1c4d5e` 형태)다 → 실제 ID 를 넘기면
-  argparse 가 `invalid int value` 로 죽는다. `promote_pe_core.py` 는 이 버그 없음.
+- ✅ **옛 `type=int` 버그는 수정됨** (커밋 337e57e, 2026-09-15 재확인): `promote_model.py:233` 은
+  `type` 없이 선언돼 `mv-3f9a2b1c4d5e` 형태 TEXT ID 를 그대로 받는다.
 - ⚠️ **SAM3 env 주입은 사실상 no-op**: compose 의 `sam3` 서비스는 `SAM3_CHECKPOINT_PATH` 를
   `${...}` 치환 없이 리터럴 `/models/sam3.1_multiplex.pt` 로 박아뒀다. 승격이 동작하는 실제 이유는
   같은 고정 호스트 경로에 새 체크포인트 **바이트를 덮어쓰기** 때문이지 env 때문이 아니다.
@@ -493,10 +503,9 @@ git -C /home/user/work_p/Datapipeline-Data-data_pipeline_test status       # dev
 - **fail-safe**: 정비 플래그(`gpu_maintenance_lock` 테이블)에 `owner_run_id`+heartbeat/TTL.
   `maintenance_guard_sensor` 가 stale 감지 시 자동 해제. 수동 복구는 `scripts/clear_maintenance.sh`
   → 상세 절차는 `.agent/skill/mlops-finetune/SKILL.md` §9.
-- ⚠️ **`clear_maintenance.sh` 의 기본 URL 이 죽어 있다**: `SAM3_API_URL` 기본값이
-  `http://10.0.0.10:8002` (도달 불가), `EMBEDDING_API_URL` 기본값은 IP 도 포트도 틀림
-  (`:8000`, 실제 컨테이너 포트 8003). `curl -sf` 라 타임아웃이 WARN 으로 삼켜져 **아무것도 안 하고
-  성공처럼 보인다.** 실행 전 반드시 env 를 명시할 것:
+- ✅ **옛 "죽은 기본 URL + 조용한 성공" 버그는 수정됨** (커밋 337e57e, 2026-09-15 재확인):
+  `clear_maintenance.sh:16-17` 기본값이 `http://localhost:8002` / `http://localhost:8004` 로 고쳐졌고
+  `FAILURES` 카운터가 붙어 실패가 더는 WARN 으로 삼켜지지 않는다. env 명시는 이제 선택:
   ```bash
   SAM3_API_URL=http://localhost:8002 EMBEDDING_API_URL=http://localhost:8004 \
     scripts/clear_maintenance.sh all       # 인자는 positional [sam3|pe_core|all] — `--env prod` 아님
@@ -513,7 +522,8 @@ git -C /home/user/work_p/Datapipeline-Data-data_pipeline_test status       # dev
 - ⚠️ `/srv/data-repos/dvc-ingest.env` (post-receive 훅이 source 하는 파일) 가 구 MinIO IP
   `10.0.0.51` 를 하드코딩하고 있어 **git push 기반 자동 카탈로그 ingest 는 현재 깨져 있을 가능성이 높다.**
 - pin: `dataset_catalog_aliases`(task당 alias 1개) — `pin_alias()` API 만 갱신. pull: `python scripts/dataset_pull.py --task <t> --alias current --dest <dir>` (기본 dry-run, `--no-dry-run` 으로 실 pull).
-  ⚠️ 실 pull 의 md5 검증은 스텁(`_computed_md5()` 가 항상 `None`)이라 성공해도 mismatch 로 exit 3 난다.
+  ✅ 옛 md5 스텁 버그는 수정됨 — `_computed_md5()` 는 존재하지 않고 `dataset_pull.py:72` 가 실구현
+  `lib/dvc_pull.compute_dvc_md5()`(파일=내용 md5, 디렉토리=`.dir`)를 호출한다.
 - 학습셋 빌더가 pinned alias 를 source 로 쓰면 `train_dataset_versions.dataset_catalog_id` 로 역링크 + MLflow 에 `dvc_*` lineage 기록.
 
 ### env 노브
@@ -583,13 +593,14 @@ git -C /home/user/work_p/Datapipeline-Data-data_pipeline_test status       # dev
   이 포인터를 원자 전환하는 방식 (`scripts/promote_pe_core.py`)
 - **프롬프트/온톨로지 DB (migrations 018~022) 적용 상태 주의**: `prompt_banks`/`bank_sentences`(019)와
   prompt partial HNSW(021)는 prod 에 **러너 밖에서 수동 선적용**됐다(`_pg_migrations` 에 기록).
-  `generation_prompts`+`v_prompt_*` 뷰(018/020)는 **파일만 main 에 있고 prod DB 미적용** —
-  018 은 `video_metadata` 를 ALTER 하므로 라벨링 중 psql 수동 적용 금지. 러너에 지연 게이트가
-  없어서 **다음 이미지 재빌드 배포의 부팅 시 자동 적용된다.** `generation_prompts` write 경로는
-  2026-08-21 `clip_timestamp` 에 배선됨(`postgres_labeling.py`, fail-soft — **018 미적용인 현 prod 에서는
-  매 run WARN 만 남기고 행 0개**, 계보는 018 부팅 적용 이후부터). **022(`label_classes`/`label_class_aliases`)도
-  파일만 main, prod 미적용**(2026-08-25 실측) — CREATE+INSERT ON CONFLICT 만이라 018 과 달리 라벨링 중
-  psql 선적용해도 안전. 정본은 `src/vlm_pipeline/data/label_ontology.json`(13 클래스) — `env_utils.CATEGORY_TO_CLASSES`·
+  ✅ **018/020/022/023 은 이미 prod 에 적용됐다** (2026-09-21 실측 정정 — 이전 서술은
+  "파일만 main, prod 미적용" 이었다). `_pg_migrations` 기준 018·020 = 2026-09-09 02:35,
+  022·023 = 2026-09-09 04:11. `label_classes` 는 실재하며 **canonical 15개**(022 의 13 +
+  026 의 `intrusion`/`no_harness`). 즉 예고됐던 "부팅 시 자동 적용"은 그때 일어났다.
+  `generation_prompts` 테이블도 실재한다 — 다만 **행은 0개**다. write 경로는 2026-08-21
+  `clip_timestamp` 에 배선돼 있으므로(`postgres_labeling.py`, fail-soft), 행이 0이라는 건
+  018 미적용 때문이 아니라 **그 이후 계보를 남길 라벨링 run 이 없었다는 뜻**이다 — 원인을
+  혼동하지 말 것. 정본은 `src/vlm_pipeline/data/label_ontology.json` — `env_utils.CATEGORY_TO_CLASSES`·
   `ls_tasks.CATEGORY_SYNONYMS`·GenAI `promote.html` PRESETS·022 는 파생본이고 `tests/unit/test_label_ontology.py`
   parity 가 강제한다. **매핑 수정은 JSON 만.** `smoking` 은 canonical 이면서 `smoke` alias 이기도 함(미해결) —
   소비자는 canonical 일치를 alias 보다 먼저(`env_utils.resolve_to_canonical`).

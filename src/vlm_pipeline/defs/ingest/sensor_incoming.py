@@ -15,6 +15,7 @@ from vlm_pipeline.resources.config import PipelineConfig
 from .runtime_policy import pending_manifest_allowed
 from .sensor_helpers import (
     build_source_unit_run_key,
+    collect_in_flight_manifest_paths,
     collect_in_flight_runs,
     collect_in_flight_source_units,
     load_pending_manifest_entries,
@@ -79,7 +80,16 @@ def incoming_manifest_sensor(context):
         yield SkipReason("pending manifest 없음")
         return
 
-    manifest_entries = load_pending_manifest_entries(manifests, context)
+    # in-flight 조회를 격리 판정보다 **앞에서** 한다. 진행 중 run 이 재작성하는 manifest 를
+    # 손상으로 오인해 격리하면 정상 작업을 잃는다 (sensor_helpers 참고).
+    in_flight_runs = collect_in_flight_runs(context)
+    in_flight_manifest_paths = collect_in_flight_manifest_paths(context, in_flight_runs)
+    manifest_entries = load_pending_manifest_entries(
+        manifests,
+        context,
+        processed_dir=processed_dir,
+        in_flight_manifest_paths=in_flight_manifest_paths,
+    )
     if manifest_entries:
         allowed_entries: list[dict] = []
         blocked_entries = 0
@@ -120,7 +130,6 @@ def incoming_manifest_sensor(context):
         int_env("INCOMING_SENSOR_MAX_NEW_RUN_REQUESTS_PER_TICK", 2, 1),
     )
     max_retry_per_manifest = int_env("INCOMING_SENSOR_MAX_RETRY_PER_MANIFEST", 3, 1)
-    in_flight_runs = collect_in_flight_runs(context)
     in_flight_run_count = len(in_flight_runs)
 
     for entry in selected_entries:

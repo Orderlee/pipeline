@@ -8,6 +8,8 @@ Pure psycopg2 로 호출.
 from __future__ import annotations
 
 import os
+import json
+import secrets
 from contextlib import contextmanager
 from datetime import datetime
 from typing import Any
@@ -45,6 +47,201 @@ def connect():
         raise
     finally:
         pool.putconn(conn)
+
+
+def acquire_generation_gpu_lease(owner_job_id: str, ttl_seconds: int) -> str | None:
+    """Acquire the singleton GPU0 Comfy lease, stealing only released/expired rows.
+
+    Returns the **fencing token** of the acquisition, or None when a live lease is
+    held by someone else.  The token — not the job id — identifies one acquisition:
+    the same ``owner_job_id`` retried after a crash gets a fresh token, so a stale
+    first attempt can no longer heartbeat or release the lease its own retry now
+    holds (see ``heartbeat_generation_gpu_lease`` / ``release_generation_gpu_lease``).
+    Callers must keep the returned token for the life of the acquisition.
+
+    ⚠️ Deliberately **no token check on this statement.**  Recovery must never depend
+    on anybody presenting a token: the ``ON CONFLICT ... WHERE`` below steals any row
+    that is not active or whose ``expires_at`` has passed, so a lease whose owner died
+    (or whose release was refused) still frees GPU0 once its TTL elapses.  This is the
+    path that ends the 2026-09-18 class of outage; do not gate it on a token.
+    """
+    token = secrets.token_hex(24)
+    with connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO generation_gpu_leases (
+                    resource, owner_job_id, lease_token, state,
+                    acquired_at, heartbeat_at, expires_at, released_at,
+                    release_reason, updated_at
+                ) VALUES (
+                    'gpu0_comfy', %s, %s, 'active', now(), now(),
+                    now() + (%s * interval '1 second'), NULL, NULL, now()
+                )
+                ON CONFLICT (resource) DO UPDATE SET
+                    owner_job_id = EXCLUDED.owner_job_id,
+                    lease_token = EXCLUDED.lease_token,
+                    state = 'active',
+                    acquired_at = now(),
+                    heartbeat_at = now(),
+                    expires_at = EXCLUDED.expires_at,
+                    released_at = NULL,
+                    release_reason = NULL,
+                    updated_at = now()
+                WHERE generation_gpu_leases.state <> 'active'
+                   OR generation_gpu_leases.expires_at <= now()
+                RETURNING lease_token
+                """,
+                (owner_job_id, token, int(ttl_seconds)),
+            )
+            row = cur.fetchone()
+    return str(row[0]) if row else None
+
+
+def heartbeat_generation_gpu_lease(
+    owner_job_id: str, ttl_seconds: int, lease_token: str | None = None
+) -> bool:
+    """Extend the lease this caller holds.  False = refused, and that is never silent.
+
+    Accepts only an ``active`` lease owned by ``owner_job_id``.  When ``lease_token``
+    is given it must also equal the row's token, so an acquisition that has already
+    been superseded — including one by the *same* job id after a retry — cannot push
+    the expiry of somebody else's work.  Callers holding a token must pass it;
+    omitting it keeps the pre-token owner-only match for callers that legitimately
+    have none (poll(), which recovers its owner from the prompt-scoped provenance row
+    rather than from an acquire).  Refusal returns False for the caller to log — it
+    means the lease was lost, not that nothing happened.
+    """
+    with connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE generation_gpu_leases
+                   SET heartbeat_at=now(),
+                       expires_at=now() + (%(ttl)s * interval '1 second'),
+                       updated_at=now()
+                 WHERE resource='gpu0_comfy'
+                   AND owner_job_id=%(owner)s
+                   AND state='active'
+                   AND (%(token)s::text IS NULL OR lease_token = %(token)s::text)
+                """,
+                {"ttl": int(ttl_seconds), "owner": owner_job_id, "token": lease_token},
+            )
+            return cur.rowcount == 1
+
+
+def release_generation_gpu_lease(
+    owner_job_id: str, reason: str, lease_token: str | None = None
+) -> bool:
+    """Release the lease this caller holds.  False = refused (someone else owns it).
+
+    Same matching rule as the heartbeat: owner, ``active`` state, and — when a token
+    is presented — that exact token.  A refused release is *correct*, not a leak: it
+    means the row now belongs to a newer acquisition, which must keep GPU0.  The row
+    the refused caller was thinking of is already gone, and any genuinely orphaned
+    lease is reclaimed by ``acquire_generation_gpu_lease``'s TTL steal, which does not
+    consult tokens at all.  So no token mismatch can pin GPU0 for longer than one TTL.
+    """
+    with connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE generation_gpu_leases
+                   SET state='released', released_at=now(),
+                       release_reason=%(reason)s, updated_at=now()
+                 WHERE resource='gpu0_comfy'
+                   AND owner_job_id=%(owner)s
+                   AND state='active'
+                   AND (%(token)s::text IS NULL OR lease_token = %(token)s::text)
+                """,
+                {"reason": reason[:500], "owner": owner_job_id, "token": lease_token},
+            )
+            return cur.rowcount == 1
+
+
+def upsert_genai_job_provenance(record: dict[str, Any]) -> None:
+    with connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO genai_job_provenance (
+                    job_id, workflow_id, workflow_sha256, model_manifest_sha256,
+                    prompt_sha256, negative_prompt_sha256, seed, input_sha256,
+                    mask_sha256, provider_prompt_id, params_json, gpu_started_at,
+                    created_at, updated_at
+                ) VALUES (
+                    %s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,now(),now(),now()
+                )
+                ON CONFLICT (job_id) DO UPDATE SET
+                    workflow_id=EXCLUDED.workflow_id,
+                    workflow_sha256=EXCLUDED.workflow_sha256,
+                    model_manifest_sha256=EXCLUDED.model_manifest_sha256,
+                    prompt_sha256=EXCLUDED.prompt_sha256,
+                    negative_prompt_sha256=EXCLUDED.negative_prompt_sha256,
+                    seed=EXCLUDED.seed,
+                    input_sha256=EXCLUDED.input_sha256,
+                    mask_sha256=EXCLUDED.mask_sha256,
+                    provider_prompt_id=EXCLUDED.provider_prompt_id,
+                    params_json=EXCLUDED.params_json,
+                    gpu_started_at=now(),
+                    gpu_completed_at=NULL,
+                    output_sha256=NULL,
+                    updated_at=now()
+                """,
+                (
+                    record["job_id"], record["workflow_id"], record["workflow_sha256"],
+                    record["model_manifest_sha256"], record["prompt_sha256"],
+                    record.get("negative_prompt_sha256"), int(record["seed"]),
+                    record["input_sha256"], record.get("mask_sha256"),
+                    record.get("provider_prompt_id"),
+                    json.dumps(record.get("params") or {}, ensure_ascii=False),
+                ),
+            )
+
+
+def provenance_owner_for_prompt(provider_prompt_id: str) -> str | None:
+    with connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT job_id FROM genai_job_provenance WHERE provider_prompt_id=%s",
+                (provider_prompt_id,),
+            )
+            row = cur.fetchone()
+    return str(row[0]) if row else None
+
+
+def provenance_age_seconds(provider_prompt_id: str) -> float | None:
+    """Seconds since the job took GPU0, or None when there is no in-flight record."""
+    with connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT EXTRACT(EPOCH FROM (now() - gpu_started_at))
+                  FROM genai_job_provenance
+                 WHERE provider_prompt_id=%s AND gpu_started_at IS NOT NULL
+                """,
+                (provider_prompt_id,),
+            )
+            row = cur.fetchone()
+    return float(row[0]) if row and row[0] is not None else None
+
+
+def complete_genai_job_provenance(provider_prompt_id: str, output_sha256: str | None) -> str | None:
+    with connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE genai_job_provenance
+                   SET output_sha256=COALESCE(%s, output_sha256),
+                       gpu_completed_at=COALESCE(gpu_completed_at, now()),
+                       updated_at=now()
+                 WHERE provider_prompt_id=%s
+                RETURNING job_id
+                """,
+                (output_sha256, provider_prompt_id),
+            )
+            row = cur.fetchone()
+    return str(row[0]) if row else None
 
 
 # ----------------------------------------------------------------------

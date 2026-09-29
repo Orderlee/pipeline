@@ -33,7 +33,10 @@ clear_pg() {
 clear_serving() {
   local name="$1" base="$2"
   echo "[serving] ${name} (${base}) exit+warmup"
-  if curl -sf --max-time "${CURL_MAX_TIME}" -X POST "${base%/}/maintenance/exit" >/dev/null; then
+  # force=true 는 이 스크립트의 존재 이유다: 서빙은 owner 가 다른 exit 를 409 로 거부하지만,
+  # 운영자의 강제 해제는 owner 를 모르는 상태에서도 반드시 통해야 한다.
+  # (force 를 안 실은 exit 는 owner 불일치 시 거부되어 "해제했다고 착각"이 생긴다.)
+  if curl -sf --max-time "${CURL_MAX_TIME}" -X POST -d 'force=true' "${base%/}/maintenance/exit" >/dev/null; then
     echo "  exit ok"
   else
     echo "  exit FAIL — ${base} 도달 불가/거부. 정비락이 서버측에 남아있다."

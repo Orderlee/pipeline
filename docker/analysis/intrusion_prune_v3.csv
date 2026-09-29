@@ -1,0 +1,501 @@
+gidx,decision,consensus,frames_bleed,frames_sitej,bundle_use,bundle_theft,text
+2000,keep,both_event,0,0,5,2,A person walks along the narrow aisle in front of electrical panels.
+2001,drop,both_mixed,0,0,0,0,A person walks toward the camera in the underground ventilation plant room.
+2002,drop,both_mixed,0,0,0,0,A person walks away with back turned through the underground electrical switchgear room.
+2003,keep,both_event,0,0,0,0,A person stands still beside a cabinet in the bare concrete plant bay with control cabinets.
+2004,keep,both_event,2,0,0,0,A person walks in through an open door into the narrow passage behind the cabinet row.
+2005,keep,both_event,0,0,0,0,A person steps over a low threshold inside the underground ventilation plant room.
+2006,keep,both_event,0,0,0,0,A person crosses the open floor of the underground electrical switchgear room.
+2007,keep,both_event,0,0,0,0,A person passes behind a cabinet row in the bare concrete plant bay with control cabinets.
+2008,drop,split,0,0,0,0,A person looks up at a control panel from the narrow aisle in front of electrical panels.
+2009,drop,split,3,0,0,0,A person is walking away down the narrow passage behind the cabinet row.
+2010,keep,both_event,0,0,1,0,A person stops and stands still in the underground electrical switchgear room.
+2011,keep,both_event,0,0,6,0,A figure walks in through the heavy door of the bare concrete plant bay with control cabinets.
+2012,keep,both_event,0,0,0,0,A person crosses the raised threshold into the narrow aisle in front of electrical panels.
+2013,keep,both_event,0,0,0,0,A person navigates the open space inside the underground ventilation plant room.
+2014,drop,both_mixed,0,0,0,0,A person is partially obscured while passing behind cabinets in the underground electrical switchgear room.
+2015,drop,split,0,0,0,0,A person gazes up at the equipment in the narrow passage behind the cabinet row.
+2016,drop,both_mixed,0,0,0,0,A person slowly walks toward the lens inside the bare concrete plant bay with control cabinets.
+2017,drop,split,0,0,0,0,A person heads in the opposite direction down the narrow aisle in front of electrical panels.
+2018,keep,both_event,0,0,0,0,A person remains entirely still beside a panel in the underground ventilation plant room.
+2019,keep,both_event,0,0,2,4,A person enters the underground electrical switchgear room through an open doorway.
+2020,keep,both_event,0,0,0,0,A person carefully steps over the threshold into the bare concrete plant bay with control cabinets.
+2021,keep,both_event,8,0,0,0,A person strides across the floor of the narrow passage behind the cabinet row.
+2022,drop,both_mixed,1,0,0,0,A person walks behind a pillar in the underground electrical switchgear room.
+2023,drop,split,0,0,0,6,A person faces a high control panel in the underground ventilation plant room.
+2024,drop,both_mixed,42,0,0,0,A person approaches the overhead camera in the bare concrete plant bay with control cabinets.
+2025,keep,both_event,0,0,0,0,A person walks from one side to the other in the bare concrete plant bay with control cabinets.
+2026,drop,both_mixed,0,0,0,0,A person vanishes behind a cabinet row in the underground electrical switchgear room.
+2027,drop,split,0,0,0,0,A person looks directly up at the panels in the narrow passage behind the cabinet row.
+2028,drop,both_mixed,1,0,0,0,A person comes closer to the camera inside the underground electrical switchgear room.
+2029,drop,both_mixed,0,0,0,0,A person departs with their back to the viewer in the underground ventilation plant room.
+2030,keep,both_event,0,0,0,0,A person pauses next to a control unit in the bare concrete plant bay with control cabinets.
+2031,keep,both_event,0,0,0,0,A person brings their foot over a low threshold in the underground electrical switchgear room.
+2032,keep,both_event,12,0,0,0,A person traverses the open ground of the underground ventilation plant room.
+2033,drop,split,0,0,0,0,A person slips behind the equipment row in the narrow aisle in front of electrical panels.
+2034,drop,split,0,0,0,0,A person inspects the upper section of a panel in the bare concrete plant bay with control cabinets.
+2035,drop,split,0,0,0,0,A person retreats down the path inside the bare concrete plant bay with control cabinets.
+2036,keep,both_event,0,0,0,0,A person halts and stands still beside a cabinet in the underground ventilation plant room.
+2037,keep,both_event,0,0,0,0,A person strolls in through an open door to the narrow aisle in front of electrical panels.
+2038,keep,both_event,0,0,0,0,A person safely steps over a low threshold into the narrow passage behind the cabinet row.
+2039,drop,both_mixed,1,0,0,0,A person walks mostly hidden behind a column in the bare concrete plant bay with control cabinets.
+2040,drop,both_mixed,839,2,0,0,A person walks directly toward the fixed camera in the narrow passage behind the cabinet row.
+2041,keep,both_event,1,0,0,0,A person crosses the threshold of an open door in the underground ventilation plant room.
+2042,keep,both_event,0,0,0,0,A person lifts a foot over the low threshold of the narrow aisle in front of electrical panels.
+2043,drop,both_mixed,0,0,0,0,A person ducks out of sight behind a cabinet row in the underground electrical switchgear room.
+2044,drop,split,0,0,0,0,A person turns their face up to a panel in the bare concrete plant bay with control cabinets.
+2045,keep,both_event,0,0,0,0,A person waits silently beside a large cabinet in the underground electrical switchgear room.
+2046,drop,both_mixed,0,0,0,0,A person walks behind a thick pillar in the narrow aisle in front of electrical panels.
+2047,drop,split,0,0,0,0,A person gazes upward at the tall equipment in the underground electrical switchgear room.
+2048,drop,both_mixed,0,0,0,0,A person is walking away with back turned in the narrow aisle in front of electrical panels.
+2049,keep,both_event,0,0,2,0,A person makes their entrance through a heavy door in the bare concrete plant bay with control cabinets.
+2050,keep,both_event,0,0,0,0,A person covers the distance across the open floor of the underground electrical switchgear room.
+2051,drop,both_mixed,1,0,0,0,A person moves toward the overhead lens in the narrow passage behind the cabinet row.
+2052,keep,both_event,0,0,0,0,A person holds still beside an electrical cabinet in the narrow aisle in front of electrical panels.
+2053,keep,both_event,0,0,0,0,A person walks past the rear of a cabinet row in the underground ventilation plant room.
+2054,drop,split,0,0,0,0,A person is looking up at a panel inside the underground electrical switchgear room.
+2055,drop,both_mixed,0,0,0,0,A person heads directly for the camera in the bare concrete plant bay with control cabinets.
+2056,keep,both_event,0,0,4,0,A person stands at rest beside a tall cabinet in the underground electrical switchgear room.
+2057,keep,both_event,0,0,2,0,A person navigates a low step in the narrow aisle in front of electrical panels.
+2058,drop,split,0,0,3,0,A person walks in the shadow behind a cabinet row in the underground electrical switchgear room.
+2059,drop,split,0,0,0,0,A person tilts their head up at the controls in the narrow passage behind the cabinet row.
+2060,drop,both_mixed,0,0,0,0,A person travels away with their back turned in the bare concrete plant bay with control cabinets.
+2061,keep,both_event,1,0,0,0,A person is firmly planted beside a cabinet in the narrow passage behind the cabinet row.
+2062,keep,both_event,0,0,0,0,A person moves along the back side of a cabinet row in the narrow aisle in front of electrical panels.
+2063,keep,both_event,153,0,0,0,A person follows the path of the narrow passage behind the cabinet row.
+2064,drop,both_mixed,0,0,0,0,A person is closing the distance to the camera in the underground electrical switchgear room.
+2065,drop,both_mixed,0,0,0,0,A person fades into the distance while walking away in the underground ventilation plant room.
+2066,drop,both_mixed,0,0,0,0,A person ducks behind a large concrete pillar in the underground ventilation plant room.
+2067,drop,split,0,0,0,0,A person focuses upward on a control panel in the bare concrete plant bay with control cabinets.
+2068,keep,both_event,4,0,0,0,A person makes a steady advance down the narrow aisle in front of electrical panels.
+2069,drop,both_mixed,0,0,0,0,A person slowly retreats down the underground electrical switchgear room with back turned.
+2070,keep,both_event,0,0,0,0,A person steps behind a long cabinet row in the narrow passage behind the cabinet row.
+2071,drop,split,0,0,0,0,A person looks straight up at a panel in the underground ventilation plant room.
+2072,drop,both_mixed,0,0,0,0,A person approaches the viewpoint from within the bare concrete plant bay with control cabinets.
+2073,keep,both_event,0,0,0,0,A person lifts their shoe over a low threshold in the bare concrete plant bay with control cabinets.
+2074,keep,both_event,3,0,1,0,A person walks perpendicularly across the open space in the narrow aisle in front of electrical panels.
+2075,drop,split,0,0,0,0,A person contemplates a high control panel in the narrow passage behind the cabinet row.
+2076,drop,both_mixed,0,0,0,0,A person heads straight for the camera in the underground ventilation plant room.
+2077,keep,both_event,0,0,0,0,A person traverses the clear area of the underground electrical switchgear room.
+2078,drop,split,0,0,0,0,A person lifts their gaze to a control panel in the narrow aisle in front of electrical panels.
+2079,drop,both_mixed,3,0,0,1,A person walks steadily toward the camera lens in the underground electrical switchgear room.
+2080,drop,both_mixed,0,0,0,0,A person points their back to the camera while walking in the underground ventilation plant room.
+2081,keep,both_event,0,0,0,0,A person remains stationary beside a side cabinet in the narrow aisle in front of electrical panels.
+2082,keep,both_event,8,0,0,0,A person appears through the open doorway of the bare concrete plant bay with control cabinets.
+2083,keep,both_event,0,0,0,0,A person walks straight through an equipment room doorway with a heavy steel door.
+2084,keep,both_event,0,0,0,0,A person stands perfectly still just inside an equipment room doorway with a heavy steel door.
+2085,keep,both_event,0,0,0,0,A person is stepping slowly over the threshold of an equipment room doorway with a heavy steel door.
+2086,keep,both_event,0,0,0,0,A person halts quietly near an equipment room doorway with a heavy steel door.
+2087,drop,split,0,0,0,0,A backlit person walks out of an equipment room doorway with a heavy steel door.
+2088,drop,split,0,0,0,0,A partly hidden person stands at an equipment room doorway with a heavy steel door.
+2089,keep,both_event,0,0,0,0,A person is moving at a steady pace through an equipment room doorway with a heavy steel door.
+2090,keep,both_event,0,0,0,0,A person traverses the space near an equipment room doorway with a heavy steel door.
+2091,drop,both_mixed,0,0,0,0,A silhouette of a person moves through an equipment room doorway with a heavy steel door.
+2092,keep,both_event,0,0,0,0,A person walks quietly down the aisle of a railway signal relay rack room.
+2093,drop,split,0,0,0,0,A person stands facing away in a dim railway signal relay rack room.
+2094,keep,both_event,0,0,0,0,A person is stepping forward along the floor in a railway signal relay rack room.
+2095,keep,both_event,0,0,0,0,A person halts and looks ahead in a railway signal relay rack room.
+2096,keep,both_event,2,0,0,0,A person moves slowly past the glass fronts in a railway signal relay rack room.
+2097,keep,both_event,0,0,0,0,A person pauses near the back wall of a railway signal relay rack room.
+2098,drop,both_mixed,0,0,0,0,A half obscured person walks toward the camera in a railway signal relay rack room.
+2099,keep,both_event,0,0,0,0,A person navigates the narrow space inside a railway signal relay rack room.
+2100,keep,both_event,0,0,0,0,A person proceeds down a long corridor within a railway signal relay rack room.
+2101,drop,both_mixed,0,0,0,0,A person is standing quietly in the shadows of a railway signal relay rack room.
+2102,keep,both_event,0,0,0,0,A person crosses over to the other side of a railway signal relay rack room.
+2103,drop,both_mixed,0,0,0,0,A person advances away from the lens inside a railway signal relay rack room.
+2104,drop,both_mixed,0,0,0,0,A partly hidden person stands still inside a railway signal relay rack room.
+2105,keep,both_event,0,0,0,0,A person is moving smoothly across a railway signal relay rack room.
+2106,drop,any_framing,0,0,0,0,A person steps into the frame while in a railway signal relay rack room.
+2107,keep,both_event,0,0,0,0,A person strolls back toward the door of a railway signal relay rack room.
+2108,keep,both_event,2,0,0,0,A person is standing alone in the center of a railway signal relay rack room.
+2109,keep,both_event,0,0,0,0,A person walks right along the middle of a subway tunnel track bed.
+2110,keep,both_event,0,0,0,0,A person stands completely still between the rails of a subway tunnel track bed.
+2111,keep,both_event,0,0,0,0,A person is stepping cautiously over a running rail onto a subway tunnel track bed.
+2112,drop,both_mixed,0,0,0,0,A person halts in the dim light of a subway tunnel track bed.
+2113,keep,both_event,1,0,0,0,A person moves down the length of a subway tunnel track bed.
+2114,drop,both_mixed,0,0,0,0,A person is visible receding into the distance on a subway tunnel track bed.
+2115,keep,both_event,0,0,0,0,A person pauses to look down the passage of a subway tunnel track bed.
+2116,drop,both_mixed,0,0,0,0,A small figure of a person walks on a subway tunnel track bed.
+2117,drop,both_mixed,1,0,0,0,A person proceeds away from the camera along a subway tunnel track bed.
+2118,keep,both_event,2,0,0,4,A person crosses over the steel rails on a subway tunnel track bed.
+2119,drop,both_mixed,11,0,0,0,A partly hidden person stands beside a column on a subway tunnel track bed.
+2120,drop,both_mixed,0,0,0,0,A person waits silently in the grey light of a subway tunnel track bed.
+2121,keep,both_event,1,0,0,0,A person stops abruptly while walking along a subway tunnel track bed.
+2122,keep,both_event,0,0,0,0,A person traverses the space between rails on a subway tunnel track bed.
+2123,keep,both_event,0,0,0,0,A person stands facing the side wall of a subway tunnel track bed.
+2124,drop,both_mixed,0,0,0,0,A person heads into the dark recesses of a subway tunnel track bed.
+2125,keep,both_event,0,0,0,0,A person is standing upright right in the middle of a subway tunnel track bed.
+2126,drop,any_framing,0,0,0,0,A person passes through the frame on a subway tunnel track bed.
+2127,keep,both_event,50,0,0,0,A person walks directly toward a tunnel crossover beside a point machine.
+2128,keep,both_event,4,0,1,0,A person stands observing the tracks at a tunnel crossover beside a point machine.
+2129,keep,both_event,3,0,0,0,A person is stepping carefully over a rail at a tunnel crossover beside a point machine.
+2130,keep,both_event,33,0,0,0,A person halts quietly near a tunnel crossover beside a point machine.
+2131,keep,both_event,0,0,0,0,A person pauses midway across a tunnel crossover beside a point machine.
+2132,keep,both_event,209,0,0,0,A person navigates the junction near a tunnel crossover beside a point machine.
+2133,keep,both_event,0,0,0,0,A person proceeds straight ahead through a tunnel crossover beside a point machine.
+2134,keep,both_event,24,0,0,0,A person is standing silently next to a tunnel crossover beside a point machine.
+2135,keep,both_event,39,0,0,0,A person crosses from one track to another at a tunnel crossover beside a point machine.
+2136,keep,both_event,0,0,0,0,A person is moving across the sleepers at a tunnel crossover beside a point machine.
+2137,drop,both_mixed,0,0,0,0,A silhouette of a person moves around a tunnel crossover beside a point machine.
+2138,keep,both_event,29,0,0,0,A person makes steady progress near a tunnel crossover beside a point machine.
+2139,keep,both_event,91,32,0,0,A person walks closely along a raised walkway beside a tunnel wall.
+2140,keep,both_event,5,0,0,0,A person stands perfectly upright on a raised walkway beside a tunnel wall.
+2141,keep,both_event,3,0,0,0,A person halts halfway down a raised walkway beside a tunnel wall.
+2142,keep,both_event,18,0,0,0,A person pauses near a concrete column on a raised walkway beside a tunnel wall.
+2143,drop,both_mixed,35,0,0,0,A partly hidden person stands on a raised walkway beside a tunnel wall.
+2144,drop,both_mixed,0,0,0,0,A person is walking out of the shadows on a raised walkway beside a tunnel wall.
+2145,keep,both_event,4,11,0,0,A person approaches a marked exit from a raised walkway beside a tunnel wall.
+2146,keep,both_event,91,25,0,0,A person traverses the long straight line of a raised walkway beside a tunnel wall.
+2147,drop,both_mixed,5,5,0,0,A small figure of a person moves down a raised walkway beside a tunnel wall.
+2148,drop,both_mixed,0,0,0,0,A person is standing in the dim light on a raised walkway beside a tunnel wall.
+2149,keep,both_event,4,3,0,0,A person passes a steel beam on a raised walkway beside a tunnel wall.
+2150,drop,both_mixed,3,0,0,0,A person is a tiny dark figure walking far down a twin-track tunnel with concrete columns.
+2151,drop,both_mixed,3,0,0,0,A person walks as a small silhouette at the distant end of a twin-track tunnel with concrete columns.
+2152,drop,split,0,0,0,0,A person stands as a distant speck between the rails of a twin-track tunnel with concrete columns.
+2153,drop,both_mixed,1,0,0,0,A person recedes into the distance as a tiny shape in a twin-track tunnel with concrete columns.
+2154,drop,split,4,0,0,0,A person shows up as a mid-distance figure stepping over rails in a twin-track tunnel with concrete columns.
+2155,drop,both_mixed,24,0,0,0,A person is seen at a medium distance walking steadily through a twin-track tunnel with concrete columns.
+2156,drop,both_mixed,55,0,0,0,A person occupies a fifth of the view while walking down a twin-track tunnel with concrete columns.
+2157,drop,both_mixed,0,0,0,0,A person fills a third of the frame while standing in a twin-track tunnel with concrete columns.
+2158,drop,both_mixed,5,0,0,0,A person approaches closer taking up a third of a twin-track tunnel with concrete columns.
+2159,drop,any_framing,0,0,0,0,A person is fairly close and visible at a third height in a twin-track tunnel with concrete columns.
+2160,drop,both_mixed,0,0,0,0,A person stands at a third of the camera height inside a twin-track tunnel with concrete columns.
+2161,drop,both_mixed,0,0,0,0,A person paces nearer filling a third of the screen in a twin-track tunnel with concrete columns.
+2162,drop,both_mixed,19,0,0,0,A person takes up half the vertical frame while standing in a twin-track tunnel with concrete columns.
+2163,drop,any_framing,0,0,0,0,A person looms large in the near foreground of a twin-track tunnel with concrete columns.
+2164,drop,both_mixed,35,1,0,0,A person walks right in front of the lens filling a twin-track tunnel with concrete columns.
+2165,drop,both_mixed,13,0,0,0,A person stands as a large prominent figure passing through a twin-track tunnel with concrete columns.
+2166,drop,both_mixed,136,1,0,0,A person occupies half the image height while moving in a twin-track tunnel with concrete columns.
+2167,drop,any_framing,0,0,0,0,A person is partly clipped at the side edge of a twin-track tunnel with concrete columns.
+2168,drop,both_mixed,0,0,0,0,A person walks mostly out of frame at the border of a twin-track tunnel with concrete columns.
+2169,drop,any_framing,487,39,0,0,A person is cut off by the extreme camera edge in a twin-track tunnel with concrete columns.
+2170,drop,any_framing,0,0,0,0,A person exits the side of the view in a twin-track tunnel with concrete columns.
+2171,drop,both_mixed,0,0,0,0,A person as a tiny dark shape walks across the distant underground station concourse.
+2172,drop,split,0,0,0,0,A person is completely still in the back of the underground station concourse.
+2173,drop,both_mixed,4,0,0,0,A person as a very small figure moves away across an underground station concourse.
+2174,drop,any_framing,0,0,0,0,A person appears as a miniature silhouette far across the underground station concourse.
+2175,drop,both_mixed,0,0,0,0,A person is barely more than a speck moving through the underground station concourse.
+2176,drop,both_mixed,0,0,0,0,A person wanders in the dark at the farthest end of the underground station concourse.
+2177,drop,both_mixed,0,0,0,0,A person covers about a fifth of the view while pacing the underground station concourse.
+2178,drop,both_mixed,0,0,0,0,A person stands casually in the middle distance on the underground station concourse.
+2179,drop,both_mixed,0,0,0,0,A person walks steadily at a mid-distance over an underground station concourse.
+2180,drop,both_mixed,0,0,0,0,A person framed at a moderate distance crosses the underground station concourse.
+2181,drop,any_framing,0,0,0,0,A person takes up a modest part of the frame in an underground station concourse.
+2182,drop,both_mixed,0,0,0,0,A person seen at medium range halts and stands in the underground station concourse.
+2183,drop,both_mixed,0,0,0,0,A person at a third of the screen height strolls through the underground station concourse.
+2184,drop,both_mixed,0,0,0,0,A person fills a third of the shot walking straight across the underground station concourse.
+2185,drop,both_mixed,0,0,0,0,A person stands noticeably close making up a third of an underground station concourse view.
+2186,drop,both_mixed,0,0,0,0,A person getting closer occupies about a third of the underground station concourse.
+2187,drop,both_mixed,0,0,0,0,A person is a moderately large figure waiting in the underground station concourse.
+2188,drop,both_mixed,0,0,0,0,A person approaching the camera fills a third of the underground station concourse height.
+2189,drop,any_framing,0,0,0,0,A person in the near foreground dominates the underground station concourse.
+2190,drop,any_framing,8,0,0,0,A person is a massive shape taking up half the underground station concourse shot.
+2191,drop,both_mixed,0,0,0,0,A person looming close to the lens walks over the underground station concourse.
+2192,drop,any_framing,0,0,0,0,A person stands directly in front of the underground station concourse.
+2193,drop,both_mixed,0,0,0,0,A person blocks the near view while passing through an underground station concourse.
+2194,drop,both_mixed,0,0,0,0,A person just clips the left edge while entering the underground station concourse.
+2195,drop,any_framing,0,0,0,0,A person is half-visible at the extreme border of an underground station concourse.
+2196,drop,any_framing,0,0,0,0,A person shows only partly at the frame margin in the underground station concourse.
+2197,drop,any_framing,0,0,0,0,A person steps mostly out of sight on the edge of the underground station concourse.
+2198,drop,both_mixed,0,0,0,0,A person stands partially obscured at the boundary of the underground station concourse.
+2199,drop,both_mixed,0,0,0,0,A person is caught on the extreme edge walking by the underground station concourse.
+2200,drop,any_framing,10,0,0,0,A person is a tiny backlit dot walking near a station entrance lobby with glass doors.
+2201,drop,any_framing,0,0,0,0,A person stands deep in the background in a station entrance lobby with glass doors.
+2202,drop,both_framing,0,0,0,1,A person looks like a tiny distant mark in a station entrance lobby with glass doors.
+2203,drop,any_framing,0,0,0,0,A person is visible far away moving toward the station entrance lobby with glass doors.
+2204,drop,any_framing,40,0,0,7,A person waits as a diminutive figure at a station entrance lobby with glass doors.
+2205,drop,any_framing,1,0,2,0,A person wanders as a speck deep inside a station entrance lobby with glass doors.
+2206,drop,any_framing,0,0,0,0,A person is a mid-sized shape walking in a station entrance lobby with glass doors.
+2207,drop,any_framing,0,0,0,0,A person crosses the station entrance lobby with glass doors at a fifth of the height.
+2208,drop,any_framing,3,0,0,23,A person pauses at medium distance in a station entrance lobby with glass doors.
+2209,drop,both_framing,1,0,0,0,A person grows to a third of the height in a station entrance lobby with glass doors.
+2210,drop,any_framing,31,2,0,0,A person is a clear third-height figure moving by a station entrance lobby with glass doors.
+2211,drop,any_framing,15,0,0,1,A person fills a third of a station entrance lobby with glass doors standing fairly close.
+2212,drop,any_framing,0,0,0,0,A person in the foreground walks huge through a station entrance lobby with glass doors.
+2213,drop,both_framing,0,0,0,0,A person towers in the immediate foreground of a station entrance lobby with glass doors.
+2214,drop,both_framing,10,0,0,0,A person blocks much of the station entrance lobby with glass doors as a massive shape.
+2215,drop,any_framing,3,0,0,1,A person strides past a station entrance lobby with glass doors taking up half the screen.
+2216,drop,any_framing,20,71,0,0,A person pauses near the lens as a large shape by a station entrance lobby with glass doors.
+2217,drop,both_framing,31,0,0,0,A person grazes the corner of the frame by a station entrance lobby with glass doors.
+2218,drop,both_framing,0,0,0,2,A person is seen exiting the view half-cut in a station entrance lobby with glass doors.
+2219,drop,any_framing,2,0,0,0,A person walks along the fringe of a station entrance lobby with glass doors heavily clipped.
+2220,drop,both_framing,0,0,0,0,A person is visible as only a sliver by a station entrance lobby with glass doors.
+2221,drop,both_framing,0,0,0,1,A person disappears past the edge of a station entrance lobby with glass doors.
+2222,drop,both_mixed,147,0,0,0,A person walks as a tiny blob way down a concourse beside closed shop shutters.
+2223,drop,both_mixed,1,0,0,0,A person is a minute dark figure standing in a concourse beside closed shop shutters.
+2224,drop,both_mixed,0,0,0,0,A person strolls far away barely visible in a concourse beside closed shop shutters.
+2225,drop,both_mixed,16,0,0,0,A person looks tiny waiting far back in a concourse beside closed shop shutters.
+2226,drop,both_mixed,10,0,0,0,A person moves out of the distant dark of a concourse beside closed shop shutters.
+2227,keep,both_event,7,0,0,0,A person stands midway along a concourse beside closed shop shutters.
+2228,drop,both_mixed,703,0,0,0,A person traverses a concourse beside closed shop shutters as a mid-distance figure.
+2229,drop,both_mixed,0,0,0,0,A person stands prominently filling a third of a concourse beside closed shop shutters.
+2230,drop,both_mixed,50,0,0,0,A person halts fairly close by a concourse beside closed shop shutters.
+2231,drop,any_framing,8,0,0,0,A person fills half of the shot in a concourse beside closed shop shutters.
+2232,drop,both_mixed,3,0,0,0,A person walks right through a concourse beside closed shop shutters as a giant shape.
+2233,drop,any_framing,436,0,0,0,A person gets cut off at the side of a concourse beside closed shop shutters.
+2234,drop,both_mixed,0,0,0,0,A person is heavily clipped walking at the border of a concourse beside closed shop shutters.
+2235,drop,both_mixed,0,0,0,0,A person waits touching the extreme edge by a concourse beside closed shop shutters.
+2236,drop,both_mixed,15,0,0,0,A person walks out of the camera bounds in a concourse beside closed shop shutters.
+2237,drop,any_framing,5,0,0,0,A person shows only an arm and leg by a concourse beside closed shop shutters.
+2238,drop,both_mixed,943,24,0,0,A person is a distant speck walking near the station luggage locker area.
+2239,drop,both_mixed,43,0,0,0,A person stands far off in the dark by a station luggage locker area.
+2240,drop,both_mixed,3,0,0,0,A person looks like a tiny speck pacing by the station luggage locker area.
+2241,drop,both_mixed,21,0,0,0,A person crosses the station luggage locker area walking far away as a small figure.
+2242,drop,both_mixed,14,0,0,0,A person is seen waiting at the distant station luggage locker area very small.
+2243,drop,both_mixed,14,0,0,0,A person heads toward the station luggage locker area deep in the shot as a speck.
+2244,drop,both_mixed,1,0,0,0,A person covers a fifth of the screen walking past a station luggage locker area.
+2245,drop,both_mixed,3,0,0,0,A person stands doing nothing in a station luggage locker area as a mid-sized shape.
+2246,drop,both_mixed,0,0,0,0,A person strolls through the station luggage locker area caught in the middle ground.
+2247,drop,both_mixed,16,0,0,0,A person stops at a medium distance by the station luggage locker area.
+2248,drop,both_mixed,2,0,0,0,A person is walking near the station luggage locker area fairly close.
+2249,drop,both_mixed,0,0,0,0,A person pauses by a station luggage locker area occupying a good third of the frame.
+2250,drop,any_framing,28,0,0,0,A person moves closer becoming a third of the station luggage locker area scene.
+2251,drop,both_mixed,0,0,0,0,A person stops near the camera in the station luggage locker area noticeably large.
+2252,drop,any_framing,0,0,0,0,A person in the foreground obscures the station luggage locker area heavily.
+2253,drop,both_mixed,0,0,0,0,A person fills half the vertical space while walking in a station luggage locker area.
+2254,drop,any_framing,28,0,0,0,A person covers the station luggage locker area standing directly in front of the lens.
+2255,drop,both_mixed,0,0,0,0,A person paces the near foreground of a station luggage locker area filling half the shot.
+2256,drop,both_mixed,1,0,0,0,A person completely dominates the view standing in a station luggage locker area.
+2257,drop,any_framing,0,0,0,0,A person is sliced off the edge of a station luggage locker area.
+2258,drop,both_mixed,4,0,0,0,A person stands on the extreme border of the station luggage locker area.
+2259,drop,any_framing,0,0,0,0,A person is clipped by the station luggage locker area exiting the side frame.
+2260,drop,both_mixed,0,0,0,0,A person paces the absolute edge of the station luggage locker area heavily cropped.
+2261,drop,split,0,0,0,0,A person pauses with their whole body visible in the bare concrete plant bay with control cabinets.
+2262,drop,split,4,0,3,22,A person is completely visible while walking across the underground electrical switchgear room.
+2263,drop,split,0,0,0,0,A person stops in plain sight inside the underground ventilation plant room.
+2264,drop,split,0,0,0,0,A person walks with their entire body exposed in the bare concrete plant bay with control cabinets.
+2265,drop,split,1,0,0,0,A person makes a complete figure while standing in the narrow passage behind the cabinet row.
+2266,keep,both_event,0,0,0,0,A person passes clearly across the floor of the underground electrical switchgear room.
+2267,drop,split,0,0,1,0,A person stands completely unobstructed in the narrow aisle in front of electrical panels.
+2268,drop,both_mixed,0,0,0,0,A person steps fully into the frame inside the narrow passage behind the cabinet row.
+2269,drop,split,1,0,0,0,A person waits in full view at the end of the underground ventilation plant room.
+2270,keep,both_event,0,0,0,0,A person heads through the clear space of the narrow passage behind the cabinet row.
+2271,drop,split,0,0,0,0,A person is completely shown while pacing in the underground ventilation plant room.
+2272,keep,both_event,0,0,0,0,A person steps into the wide open part of the narrow aisle in front of electrical panels.
+2273,drop,split,0,0,0,0,A person stands with their whole figure clear in the bare concrete plant bay with control cabinets.
+2274,drop,both_framing,10,0,0,0,A person walks by with only their head and shoulders visible above a foreground duct.
+2275,drop,both_mixed,0,0,0,0,A person stands half hidden by a cabinet row in the underground electrical switchgear room.
+2276,drop,both_mixed,0,0,0,0,A person moves with their upper body showing above a duct in the underground ventilation plant room.
+2277,drop,both_mixed,0,0,0,0,A person pauses while partly concealed by equipment in the narrow aisle in front of electrical panels.
+2278,drop,both_mixed,1,0,0,0,A person steps forward while cut off by a foreground duct in the bare concrete plant bay with control cabinets.
+2279,drop,both_mixed,0,0,0,0,A person stands with their head and chest visible over a duct in the underground electrical switchgear room.
+2280,drop,both_mixed,5,0,0,0,A person stops with only their top half showing in the bare concrete plant bay with control cabinets.
+2281,drop,both_mixed,1,0,0,0,A person heads forward while mostly hidden by a duct in the narrow passage behind the cabinet row.
+2282,drop,both_mixed,5,0,0,0,A person walks out but remains half covered by cabinets in the underground electrical switchgear room.
+2283,drop,both_mixed,0,0,0,0,A person stands with shoulders framed by a foreground duct in the underground ventilation plant room.
+2284,drop,both_mixed,0,0,0,0,A person shifts position while partly shielded in the narrow aisle in front of electrical panels.
+2285,drop,both_mixed,0,0,0,0,A person steps into view with their bottom half blocked in the bare concrete plant bay with control cabinets.
+2286,drop,both_mixed,1,0,0,0,A person walks past a duct that hides their legs in the narrow passage behind the cabinet row.
+2287,drop,both_mixed,0,0,0,0,A person pauses while their body is intersected by a cabinet row in the underground electrical switchgear room.
+2288,drop,both_mixed,0,0,0,0,A person stands with their torso blocked in the narrow aisle in front of electrical panels.
+2289,drop,both_mixed,18,0,0,0,A person walks while cut off by a foreground structure in the bare concrete plant bay with control cabinets.
+2290,drop,both_mixed,2,0,0,0,A person passes by with their lower half out of sight in the narrow passage behind the cabinet row.
+2291,drop,both_mixed,0,0,0,0,A person is seen from the chest up behind a duct in the underground electrical switchgear room.
+2292,drop,both_mixed,0,0,0,0,A person stops while half hidden by a tall cabinet row in the underground ventilation plant room.
+2293,drop,both_mixed,0,0,0,0,A person stands with their upper half visible over a duct in the bare concrete plant bay with control cabinets.
+2294,drop,both_mixed,0,0,0,0,A person steps forward with their legs hidden in the underground electrical switchgear room.
+2295,drop,both_mixed,0,0,0,0,A person walks by showing only a head over a foreground duct in the underground ventilation plant room.
+2296,drop,both_mixed,0,0,0,0,A person pauses half blocked by an electrical row in the narrow aisle in front of electrical panels.
+2297,drop,both_mixed,0,0,0,0,A person moves with their body mostly covered by a duct in the bare concrete plant bay with control cabinets.
+2298,drop,both_mixed,0,0,0,0,A person is seen as a narrow vertical sliver beside a column in the underground electrical switchgear room.
+2299,drop,both_mixed,0,0,0,0,A person stands as a vertical slice visible beside a pillar in the narrow aisle in front of electrical panels.
+2300,drop,any_framing,0,0,0,0,A person is a thin sliver appearing at the edge of the narrow passage behind the cabinet row.
+2301,drop,both_mixed,0,0,0,0,A person stands partly obscured by the frame edge in the underground ventilation plant room.
+2302,drop,any_framing,0,0,0,0,A person is just a narrow sliver beside a support in the bare concrete plant bay with control cabinets.
+2303,drop,both_mixed,0,0,0,0,A person stands as a thin visible edge beside a column in the underground electrical switchgear room.
+2304,drop,both_mixed,2,0,0,0,A person moves while heavily cropped by the camera frame in the underground ventilation plant room.
+2305,drop,both_mixed,0,0,0,0,A person pauses revealing only a narrow shoulder and arm in the narrow aisle in front of electrical panels.
+2306,drop,both_mixed,0,0,0,0,A person steps showing a vertical slice of a figure in the bare concrete plant bay with control cabinets.
+2307,drop,both_mixed,4,0,0,0,A person walks hugging the wall as a thin sliver in the narrow passage behind the cabinet row.
+2308,drop,both_mixed,0,0,0,0,A person stands mostly cut off by a pillar in the underground electrical switchgear room.
+2309,drop,both_mixed,0,0,0,0,A person heads toward the exit mostly off screen in the underground ventilation plant room.
+2310,drop,both_mixed,0,0,0,0,A person stops as a narrow slice against the frame in the narrow passage behind the cabinet row.
+2311,drop,both_mixed,0,0,0,0,A person passes appearing as a very thin figure by a column in the underground electrical switchgear room.
+2312,drop,both_mixed,1,0,0,0,A person stands just catching the edge of the view in the underground ventilation plant room.
+2313,drop,both_mixed,0,0,0,0,A person moves forward as a slight sliver of a body in the narrow aisle in front of electrical panels.
+2314,drop,both_mixed,0,0,0,0,A person steps away while clipped by the camera edge in the narrow passage behind the cabinet row.
+2315,drop,both_mixed,0,0,0,0,A person stands on the boundary of the frame in the underground ventilation plant room.
+2316,drop,both_mixed,0,0,0,0,A person appears as a thin vertical edge passing a pillar in the narrow aisle in front of electrical panels.
+2317,drop,both_mixed,0,0,0,0,A person moves showing a slight shoulder slice in the bare concrete plant bay with control cabinets.
+2318,drop,any_framing,0,0,0,0,A person appears as a backlit silhouette with no clothing detail in the underground electrical switchgear room.
+2319,drop,both_mixed,0,0,0,0,A person stands in stark silhouette inside the narrow aisle in front of electrical panels.
+2320,drop,both_mixed,0,0,0,0,A person steps forward as a dark silhouette without features in the narrow passage behind the cabinet row.
+2321,drop,both_mixed,0,0,0,0,A person passes by showing just a leg and a long shadow in the underground electrical switchgear room.
+2322,drop,any_framing,0,0,0,0,A person is a dark shape lit from behind in the underground ventilation plant room.
+2323,drop,both_mixed,0,0,0,0,A person stands as a featureless outline in the narrow aisle in front of electrical panels.
+2324,drop,both_mixed,0,0,0,0,A person walks creating a stark dark silhouette in the narrow passage behind the cabinet row.
+2325,drop,both_mixed,0,0,0,0,A person is just a shadowy figure moving through the underground electrical switchgear room.
+2326,drop,both_mixed,0,0,0,0,A person steps into view leaving a leg fragment and shadow in the underground ventilation plant room.
+2327,drop,both_mixed,0,0,0,0,A person stands backlit without any surface detail in the narrow aisle in front of electrical panels.
+2328,drop,both_mixed,0,0,0,0,A person passes casting a distinct shadow while largely obscured in the bare concrete plant bay with control cabinets.
+2329,drop,both_mixed,0,0,0,0,A person is seen moving away as a dark backlit shape in the underground electrical switchgear room.
+2330,drop,both_mixed,1,0,0,0,A person shows just a stepping leg and a stretching shadow in the underground ventilation plant room.
+2331,drop,both_mixed,0,0,0,0,A person stands heavily backlit blocking all clothing features in the narrow aisle in front of electrical panels.
+2332,drop,both_mixed,0,0,0,0,A person turns as a dark silhouette in the bare concrete plant bay with control cabinets.
+2333,drop,both_mixed,0,0,0,0,A person steps leaving only their bottom half and a wall shadow in the narrow passage behind the cabinet row.
+2334,drop,both_mixed,0,0,0,0,A person walks past as an unlit silhouette against a bright light in the underground electrical switchgear room.
+2335,drop,any_framing,0,0,0,0,A person is barely identifiable behind a dark shadow in the underground ventilation plant room.
+2336,drop,both_mixed,3,0,0,0,A person moves as a completely dark backlit figure in the narrow passage behind the cabinet row.
+2337,drop,both_mixed,1,0,0,0,A person walks leaving only a lower limb and a shadow trailing in the underground electrical switchgear room.
+2338,drop,any_framing,0,0,0,0,A person appears as a completely featureless silhouette in the underground ventilation plant room.
+2339,drop,both_framing,99,0,0,0,A person walks with their face turned away and shadowed by a raised hood.
+2340,drop,both_mixed,0,0,0,0,A person stands with their body vertically split by a foreground pipe in the underground electrical switchgear room.
+2341,drop,both_mixed,1,0,0,0,A person moves away with their head completely hidden by a hood in the underground ventilation plant room.
+2342,drop,both_mixed,0,0,0,0,A person steps past while intersected by a large pipe in the narrow aisle in front of electrical panels.
+2343,drop,both_mixed,0,0,0,0,A person walks forward with their face shadowed deeply in the bare concrete plant bay with control cabinets.
+2344,drop,both_mixed,8,0,0,0,A person passes by with their figure divided by a foreground pipe in the narrow passage behind the cabinet row.
+2345,drop,both_mixed,0,0,0,0,A person stands looking away with their features obscured by a hood in the underground electrical switchgear room.
+2346,drop,both_mixed,0,0,0,0,A person walks across getting split by a suspended pipe in the underground ventilation plant room.
+2347,drop,both_mixed,0,0,0,0,A person waits with a hooded face turned from the camera in the narrow aisle in front of electrical panels.
+2348,drop,both_mixed,0,0,0,0,A person heads down the hall with their shadowed face obscured in the narrow passage behind the cabinet row.
+2349,drop,both_mixed,0,0,0,0,A person walks while partly blocked by a descending pipe in the underground electrical switchgear room.
+2350,drop,both_mixed,0,0,0,0,A person stands with a hood covering their head entirely in the underground ventilation plant room.
+2351,drop,both_mixed,0,0,3,0,A person steps back with a dark hood shadowing their face in the underground electrical switchgear room.
+2352,drop,both_mixed,0,0,0,0,A person is visually divided by a metal pipe while walking in the underground ventilation plant room.
+2353,drop,both_mixed,0,0,0,0,A person walks behind a pipe that splits their torso in the bare concrete plant bay with control cabinets.
+2354,drop,both_mixed,126,0,0,0,A person moves with their head covered by a dark hood in the narrow passage behind the cabinet row.
+2355,drop,both_mixed,0,0,0,0,A person passes while bisected by a bare foreground pipe in the underground electrical switchgear room.
+2356,drop,both_mixed,0,0,0,0,A person stands facing away deeply shadowed in the underground ventilation plant room.
+2357,drop,both_mixed,0,0,0,0,A person pauses while their raised hood completely hides their face in the bare concrete plant bay with control cabinets.
+2358,drop,both_mixed,0,0,0,0,A person steps by with their figure sliced by a descending pipe in the narrow passage behind the cabinet row.
+2359,drop,both_mixed,0,0,0,0,A person stands partly split by a thick metal pipe in the underground ventilation plant room.
+2360,drop,both_mixed,0,0,0,0,A person walks past appearing separated by a foreground pipe in the bare concrete plant bay with control cabinets.
+2361,drop,split,0,0,0,0,A person crosses an equipment room doorway with a heavy steel door under blown-out ceiling glare.
+2362,drop,split,0,0,0,0,A person steps away from the equipment room doorway with a heavy steel door into deep shadow.
+2363,keep,both_event,0,0,0,0,A person is visible entering an equipment room doorway with a heavy steel door.
+2364,drop,split,0,0,0,0,A person wearing dark clothing walks by an equipment room doorway with a heavy steel door.
+2365,drop,any_framing,0,0,0,0,A person casts a reflection on the glossy floor near an equipment room doorway with a heavy steel door.
+2366,drop,split,0,0,0,0,A person enters a brightly lit space through an equipment room doorway with a heavy steel door.
+2367,drop,split,0,0,0,0,A person approaches an equipment room doorway with a heavy steel door under harsh overhead lights.
+2368,drop,split,0,0,0,0,A person stands backlit in an equipment room doorway with a heavy steel door.
+2369,drop,split,0,0,0,0,A lone figure walks past an equipment room doorway with a heavy steel door in the dim light.
+2370,keep,both_event,1,0,0,0,A person emerges from an equipment room doorway with a heavy steel door.
+2371,drop,both_mixed,0,0,0,0,A person in low-contrast clothing stands beside an equipment room doorway with a heavy steel door.
+2372,drop,any_framing,0,0,0,0,A person is half hidden by shadow near an equipment room doorway with a heavy steel door.
+2373,drop,split,0,0,0,0,A person waits near an equipment room doorway with a heavy steel door under ceiling glare.
+2374,drop,both_mixed,0,0,0,0,A figure steps into the light near an equipment room doorway with a heavy steel door.
+2375,drop,both_mixed,0,0,0,0,A person walks into the near-black shadow by an equipment room doorway with a heavy steel door.
+2376,drop,split,0,0,0,0,A person walks through a railway signal relay rack room lit only by pale cabinet faces.
+2377,drop,split,0,0,0,0,A person stands between rows in a railway signal relay rack room under blown-out ceiling glare.
+2378,drop,split,0,0,0,0,A person crosses a railway signal relay rack room covered by near-black shadow across half the frame.
+2379,drop,both_mixed,0,0,0,0,A person walks away from the camera inside an evenly lit bright railway signal relay rack room.
+2380,drop,any_framing,0,0,0,0,A person wearing dark clothing blends into the background of a railway signal relay rack room.
+2381,drop,split,0,0,0,0,A person stands still and backlit in a dim railway signal relay rack room.
+2382,drop,split,0,0,0,0,A person walks past cabinets in a railway signal relay rack room leaving a reflection on the floor.
+2383,keep,both_event,0,0,0,0,A person walks across the glossy floor of a railway signal relay rack room.
+2384,drop,both_mixed,1,0,0,0,A person casts a long shadow while standing in a railway signal relay rack room.
+2385,drop,split,0,0,0,0,A person walks slowly through a dim railway signal relay rack room.
+2386,keep,both_event,0,0,0,0,A person stands beside tall cabinets in a railway signal relay rack room.
+2387,drop,split,0,0,0,0,A person enters a railway signal relay rack room stepping into bright even light.
+2388,drop,both_mixed,0,0,0,0,A person walks out of the near-black shadow in a railway signal relay rack room.
+2389,keep,both_event,11,0,0,0,Someone walks steadily across a railway signal relay rack room.
+2390,drop,both_mixed,0,0,2,0,A person stands still on a subway tunnel track bed wearing dark clothing low-contrast against grey concrete.
+2391,drop,both_mixed,0,0,2,0,A person walks away from the camera along a subway tunnel track bed in near-black shadow.
+2392,drop,split,0,0,0,0,A person steps onto a subway tunnel track bed illuminated by blown-out ceiling glare.
+2393,drop,both_mixed,0,0,0,0,A person stands backlit in the distance on a subway tunnel track bed.
+2394,drop,split,0,0,0,0,A person walks steadily on a subway tunnel track bed under dim lighting.
+2395,keep,both_event,0,0,0,0,A person steps carefully across a subway tunnel track bed.
+2396,drop,both_mixed,0,0,1,0,A person in dark clothes walks into the shadows on a subway tunnel track bed.
+2397,drop,both_mixed,2,0,0,0,A person enters the field of view on a subway tunnel track bed.
+2398,drop,any_framing,1,0,0,0,A person casts a faint reflection on damp concrete on a subway tunnel track bed.
+2399,drop,split,0,0,0,0,A person stands silently on a subway tunnel track bed under harsh overhead light.
+2400,keep,both_event,0,0,0,0,A person steps away from the wall on a subway tunnel track bed.
+2401,drop,both_mixed,0,0,0,0,A person walks into the bright glare on a subway tunnel track bed.
+2402,keep,both_event,1,0,5,0,Someone stands alone in the center of a subway tunnel track bed.
+2403,drop,any_framing,0,0,0,0,A person is partially obscured by shadows on a subway tunnel track bed.
+2404,drop,both_mixed,0,0,0,0,A person walks past a tunnel crossover beside a point machine in a dim light.
+2405,drop,both_mixed,1,0,0,0,A person stands near a tunnel crossover beside a point machine with near-black shadow across half the frame.
+2406,drop,both_mixed,0,0,0,0,A person crosses the rails at a tunnel crossover beside a point machine under blown-out ceiling glare.
+2407,drop,both_mixed,273,1,0,0,A person wearing dark clothing stands low-contrast against grey concrete near a tunnel crossover beside a point machine.
+2408,drop,both_mixed,1,0,0,0,A person walks away into the darkness from a tunnel crossover beside a point machine.
+2409,drop,both_mixed,0,0,0,0,A person is backlit while standing at a tunnel crossover beside a point machine.
+2410,drop,both_mixed,154,10,0,0,A person walks across an evenly lit bright area near a tunnel crossover beside a point machine.
+2411,drop,any_framing,49,0,0,0,A person casts a long shadow at a tunnel crossover beside a point machine.
+2412,keep,both_event,2,0,0,0,A lone figure crosses a tunnel crossover beside a point machine.
+2413,drop,both_mixed,1,0,0,0,A person appears from the shadows near a tunnel crossover beside a point machine.
+2414,drop,split,31,0,0,0,A person is visible stepping across a tunnel crossover beside a point machine.
+2415,drop,both_mixed,0,0,0,0,A person waits near a tunnel crossover beside a point machine in the grey light.
+2416,drop,both_mixed,0,0,0,0,A dark figure stands still near a tunnel crossover beside a point machine.
+2417,keep,both_event,212,0,0,0,A person stops mid-stride at a tunnel crossover beside a point machine.
+2418,drop,any_framing,0,0,0,0,A person is half hidden by darkness at a tunnel crossover beside a point machine.
+2419,drop,both_mixed,15,0,0,0,A person walks along a raised walkway beside a tunnel wall wearing dark clothing low-contrast against grey concrete.
+2420,drop,both_mixed,0,0,0,0,A person stands still on a raised walkway beside a tunnel wall in near-black shadow.
+2421,drop,both_mixed,0,0,0,0,A person walks toward the camera on a raised walkway beside a tunnel wall under blown-out ceiling glare.
+2422,drop,both_mixed,0,0,0,0,A person emerges from a dim section of a raised walkway beside a tunnel wall.
+2423,drop,both_mixed,10,0,0,0,A person casts a shadow while walking on a raised walkway beside a tunnel wall.
+2424,drop,both_mixed,1,0,0,0,A person walks in silhouette along a raised walkway beside a tunnel wall.
+2425,drop,both_mixed,0,0,0,0,A person walks into the bright light on a raised walkway beside a tunnel wall.
+2426,drop,both_mixed,4,0,0,0,A person in low-contrast dark clothes stands on a raised walkway beside a tunnel wall.
+2427,drop,both_mixed,4,86,0,0,A person waits on a raised walkway beside a tunnel wall under harsh overhead lights.
+2428,drop,both_mixed,155,99,0,0,A person crosses a bright patch on a raised walkway beside a tunnel wall.
+2429,drop,both_mixed,3,0,0,0,A person walks steadily on a raised walkway beside a tunnel wall in the grey light.
+2430,drop,both_mixed,0,0,0,0,A person steps into the dark zone of a raised walkway beside a tunnel wall.
+2431,keep,both_event,4,0,0,0,A person in a navy work uniform walks through the underground station concourse.
+2432,keep,both_event,0,0,0,0,A person wearing blue coveralls stands still in the station luggage locker area.
+2433,keep,both_event,1,0,0,0,A person in a pale work shirt crosses the station entrance lobby with glass doors.
+2434,keep,both_event,8,0,0,0,A person wearing a dark hooded sweatshirt with the hood up walks down the twin-track tunnel with concrete columns.
+2435,keep,both_event,11,0,0,0,A person in a knit cap waits by the concourse beside closed shop shutters.
+2436,keep,both_event,0,0,0,0,A person wearing a dark jacket and jeans approaches the station luggage locker area.
+2437,keep,both_event,0,0,0,7,A person with a shoulder bag steps into the underground station concourse.
+2438,keep,both_event,2,0,0,0,A person carrying a dark bag in one hand enters the station entrance lobby with glass doors.
+2439,keep,both_event,3,0,0,0,A single person in a navy work uniform pauses on the concourse beside closed shop shutters.
+2440,keep,both_event,0,0,0,0,A person in blue coveralls is walking alone across the underground station concourse.
+2441,drop,both_mixed,0,0,0,0,A person in a pale work shirt stands in the distance of the twin-track tunnel with concrete columns.
+2442,keep,both_event,13,0,0,0,A person with their hood up steps through the station entrance lobby with glass doors.
+2443,keep,both_event,37,0,0,0,A person wearing a knit cap and plain dark jacket walks along the concourse beside closed shop shutters.
+2444,keep,both_event,0,0,0,0,A person with a backpack traverses the station luggage locker area.
+2445,keep,both_event,0,0,0,0,A person carrying a dark bag passes through the underground station concourse.
+2446,drop,both_mixed,0,0,0,0,A person walking empty-handed is silhouetted in the station entrance lobby with glass doors.
+2447,keep,both_event,2,0,0,0,A person in a navy work uniform moves down the twin-track tunnel with concrete columns.
+2448,keep,both_event,13,0,0,0,A person in blue coveralls stops on the concourse beside closed shop shutters.
+2449,keep,both_event,1,0,0,0,A person wearing a pale work shirt wanders into the station luggage locker area.
+2450,keep,both_event,1,0,0,0,A person in a dark hooded sweatshirt heads across the underground station concourse.
+2451,keep,both_event,0,0,0,0,A person wearing a knit cap is seen walking in the twin-track tunnel with concrete columns.
+2452,keep,both_event,3,0,12,5,A person in plain dark clothes and jeans crosses the station entrance lobby with glass doors.
+2453,keep,both_event,3,0,0,0,A person carrying a shoulder bag pauses near the concourse beside closed shop shutters.
+2454,keep,both_event,0,0,0,0,A person with a dark bag in one hand stands still in the station luggage locker area.
+2455,drop,split,0,0,0,0,A person walks empty-handed away from the camera on the underground station concourse.
+2456,drop,both_mixed,1,0,0,0,A person wearing blue coveralls and another figure further back navigate the station entrance lobby with glass doors.
+2457,keep,both_event,32,0,0,0,A person in a pale work shirt strides past the concourse beside closed shop shutters.
+2458,keep,both_event,6,0,0,0,A person with the hood up waits alone in the station luggage locker area.
+2459,keep,both_event,0,0,0,0,A person wearing a knit cap enters the underground station concourse.
+2460,keep,both_event,0,0,0,0,A person in a dark jacket and jeans steps along the twin-track tunnel with concrete columns.
+2461,keep,both_event,0,0,0,0,A person wearing a backpack stands quietly in the station entrance lobby with glass doors.
+2462,keep,both_event,5,0,0,0,A person holding a dark bag proceeds down the concourse beside closed shop shutters.
+2463,keep,both_event,0,0,0,0,A person walking empty-handed appears in the station luggage locker area.
+2464,drop,split,0,0,0,0,A person in blue coveralls walks toward the camera in the twin-track tunnel with concrete columns.
+2465,keep,both_event,128,0,0,0,A person in a dark hooded sweatshirt halts on the concourse beside closed shop shutters.
+2466,keep,both_event,0,0,0,0,A person in a dark jacket and jeans is walking through the underground station concourse.
+2467,keep,both_event,0,0,0,0,A person with a shoulder bag steps into the twin-track tunnel with concrete columns.
+2468,keep,both_event,0,0,0,0,A person wearing a navy work uniform stops briefly in the station luggage locker area.
+2469,keep,both_event,173,0,0,0,A person in a dark hooded sweatshirt with the hood up leaves the station entrance lobby with glass doors.
+2470,keep,both_event,0,0,0,0,A person carrying a backpack stands on the wide underground station concourse.
+2471,keep,both_event,0,0,0,0,A person with a dark bag navigates the twin-track tunnel with concrete columns.
+2472,drop,both_mixed,0,0,0,0,A person walking empty-handed approaches the brightly backlit station entrance lobby with glass doors.
+2473,keep,both_event,1,0,0,0,A person in a pale work shirt takes a step across the underground station concourse.
+2474,keep,both_event,0,0,0,0,A person in a dark hooded sweatshirt walks past a pillar in the twin-track tunnel with concrete columns.
+2475,keep,both_event,20,0,2,0,A person in a knit cap stands empty-handed near the station entrance lobby with glass doors.
+2476,keep,both_event,1,0,0,0,A person in a dark jacket and jeans waits on the concourse beside closed shop shutters.
+2477,keep,both_event,4,0,0,0,A person with a shoulder bag heads toward the station luggage locker area.
+2478,keep,both_event,1,0,0,0,A person swinging a dark bag in one hand crosses the underground station concourse.
+2479,keep,both_event,2,0,0,0,A person wearing a navy work uniform approaches the station entrance lobby with glass doors.
+2480,keep,both_event,20,1,11,0,A person in plain dark clothes walks empty-handed toward the station entrance lobby with glass doors.
+2481,keep,both_event,3,0,0,0,A person with a backpack pauses on the concourse beside closed shop shutters.
+2482,drop,both_mixed,0,0,0,0,A small person in a navy work uniform stands far back in the underground station concourse.
+2483,drop,both_mixed,11,0,0,0,A person in blue coveralls is partly occluded in the twin-track tunnel with concrete columns.
+2484,keep,both_event,0,0,0,0,A person wearing a knit cap stands alone at the station luggage locker area.
+2485,drop,both_mixed,139,0,0,0,A person walks empty-handed with another figure further back down the concourse beside closed shop shutters.
+2486,keep,both_event,4,2,0,0,A person with the hood up walks toward the station entrance lobby with glass doors.
+2487,keep,both_event,0,0,0,0,A person in a plain dark jacket stands waiting in the station luggage locker area.
+2488,drop,split,6,0,0,3,A person walks empty-handed near the bright station entrance lobby with glass doors.
+2489,keep,both_event,24,0,0,0,A person in a navy work uniform continues past the concourse beside closed shop shutters.
+2490,drop,both_mixed,0,0,0,0,A person in a pale work shirt appears on the distant underground station concourse.
+2491,drop,both_mixed,2,0,0,0,A person walks empty-handed into the frame of the twin-track tunnel with concrete columns.
+2492,keep,both_event,13,0,0,0,A person in a navy work uniform and a second figure cross the station entrance lobby with glass doors.
+2493,keep,both_event,0,0,0,0,A person in a navy work uniform stands quietly in the twin-track tunnel with concrete columns.
+2494,drop,split,0,0,0,0,A person in blue coveralls enters the bright station entrance lobby with glass doors.
+2495,keep,both_event,0,0,0,0,A person in a knit cap approaches a pillar in the underground station concourse.
+2496,drop,both_mixed,51,0,0,0,A person walks empty-handed while a second figure further back waits in the station luggage locker area.
+2497,drop,both_mixed,0,0,0,0,A person in a navy work uniform is silhouetted against the underground station concourse.
+2498,keep,both_event,1,0,0,0,A person in blue coveralls steps past a concrete pillar in the twin-track tunnel with concrete columns.
+2499,keep,both_event,2,0,0,0,A person walks empty-handed past the long concourse beside closed shop shutters.

@@ -15,7 +15,11 @@ import os
 
 from dagster import Failure, Field, asset
 
-from vlm_pipeline.defs.embed.helpers import build_caption_embedding_rows, build_frame_embedding_rows
+from vlm_pipeline.defs.embed.helpers import (
+    await_embedding_gpu,
+    build_caption_embedding_rows,
+    build_frame_embedding_rows,
+)
 from vlm_pipeline.lib.embedding import get_embedding_client
 from vlm_pipeline.lib.embedding_model_name import build_versioned_model_name
 from vlm_pipeline.resources.minio import MinIOResource
@@ -52,8 +56,19 @@ def _run_reembed(context, db: PostgresResource, minio: MinIOResource) -> dict:
         return {"embedded": 0, "new_model_name": new_model_name, "incumbent": incumbent, "gated": True}
 
     client = get_embedding_client()
-    if not client.wait_until_ready():
-        raise Failure(description="embedding-service not ready — reembed aborting (systemic)")
+    ready, defer_reason = await_embedding_gpu(db, client)
+    if not ready:
+        if defer_reason is None:
+            raise Failure(description="embedding-service not ready — reembed aborting (systemic)")
+        # comfy 가 GPU0 를 들고 있다 → 재임베딩은 resumable(ON CONFLICT upsert)이라 다음 실행이
+        # 남은 대상부터 이어받는다. gpu_trainer 슬롯을 붙잡고 헛도는 것보다 비우고 나가는 쪽이 낫다.
+        context.log.info("reembed: %s", defer_reason)
+        return {
+            "embedded": 0,
+            "new_model_name": new_model_name,
+            "incumbent": incumbent,
+            "deferred": "gpu0_comfy_lease",
+        }
 
     total = 0
     for et in entity_types:

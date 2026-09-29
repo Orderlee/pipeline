@@ -11,7 +11,11 @@ import os
 
 from dagster import Failure, Field, asset
 
-from vlm_pipeline.defs.embed.helpers import build_caption_embedding_rows, build_frame_embedding_rows
+from vlm_pipeline.defs.embed.helpers import (
+    await_embedding_gpu,
+    build_caption_embedding_rows,
+    build_frame_embedding_rows,
+)
 from vlm_pipeline.lib.embedding import get_embedding_client
 from vlm_pipeline.resources.minio import MinIOResource
 from vlm_pipeline.resources.postgres import PostgresResource
@@ -89,8 +93,18 @@ def caption_embedding(
         # Paginate over ALL captions (rows 501+ unreachable without offset).
         # One run processes every caption; offset advances by the actual page size returned.
         client = get_embedding_client()
-        if not client.wait_until_ready():
-            raise Failure(description="embedding-service not ready — caption_embedding aborting (systemic)")
+        ready, defer_reason = await_embedding_gpu(db, client)
+        if not ready:
+            if defer_reason is None:
+                raise Failure(description="embedding-service not ready — caption_embedding aborting (systemic)")
+            context.log.info("caption_embedding[force_reembed]: %s", defer_reason)
+            return {
+                "embedded": 0,
+                "failed": 0,
+                "pending": 0,
+                "force_reembed": True,
+                "deferred": "gpu0_comfy_lease",
+            }
         try:
             translate = _make_gemini_translate()
         except Exception as exc:
@@ -166,8 +180,18 @@ def caption_embedding(
         return {"embedded": 0, "failed": 0, "pending": 0, "force_reembed": force_reembed}
 
     client = get_embedding_client()
-    if not client.wait_until_ready():
-        raise Failure(description="embedding-service not ready — caption_embedding aborting (systemic)")
+    ready, defer_reason = await_embedding_gpu(db, client)
+    if not ready:
+        if defer_reason is None:
+            raise Failure(description="embedding-service not ready — caption_embedding aborting (systemic)")
+        context.log.info("caption_embedding: %s", defer_reason)
+        return {
+            "embedded": 0,
+            "failed": 0,
+            "pending": len(pending),
+            "force_reembed": force_reembed,
+            "deferred": "gpu0_comfy_lease",
+        }
 
     try:
         translate = _make_gemini_translate()
@@ -233,8 +257,13 @@ def frame_embedding(
 
     client = get_embedding_client()
     # 서비스 미가동은 systemic 실패 → Failure 로 run 을 실패시켜 가시화 (per-frame fail-forward 와 구분).
-    if not client.wait_until_ready():
-        raise Failure(description="embedding-service not ready — frame_embedding aborting (systemic)")
+    # 단 comfy 가 GPU0 lease 를 들고 있어서 안 뜨는 것이면 systemic 이 아니라 **일시적**이다 → skip 후 다음 tick.
+    ready, defer_reason = await_embedding_gpu(db, client)
+    if not ready:
+        if defer_reason is None:
+            raise Failure(description="embedding-service not ready — frame_embedding aborting (systemic)")
+        context.log.info("frame_embedding: %s", defer_reason)
+        return {"embedded": 0, "failed": 0, "pending": len(pending), "deferred": "gpu0_comfy_lease"}
 
     rows, failed = build_frame_embedding_rows(pending, minio=minio, client=client, model_name=model_name)
     inserted = db.batch_insert_embeddings(rows)

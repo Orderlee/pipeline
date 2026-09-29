@@ -715,135 +715,184 @@ if _active == "🩺 데이터 품질":
             st.warning(f"라벨 의심 스코어 계산 실패: {exc}")
 
 if _active == "🎯 능동학습":
-    if st.button("🔄 재계산", key="al_recompute"):
-        _clear_al_caches()
-        st.rerun()
-    frm_n_al = counts.get("frame", 0)
-    st.caption(
-        "능동학습(Active Learning) 및 캡션 품질 교차검증 — 라벨 없는 프레임 중 희귀 이벤트와 가까운 것을 우선 레이블링."
-    )
+    # 선택기 두 계열을 한 탭에 둔다 — 사용자에게는 "후보를 골라 라벨러에게 보낸다"는 한 가지 일이다.
+    # 기존 rare-centroid 는 **지우지 않는다**: 사람 확정 라벨이 없는 새 현장에서는 learner 를
+    # 만들 수 없어 그때 유일하게 쓸 수 있는 선택기다.
+    _STRATS = {
+        "희귀클래스 중심점 (무학습)": "rare",
+        "learner margin (불확실성)": "margin",
+        "learner coverage (다양성)": "coverage",
+    }
+    _sname = st.radio("선택기", list(_STRATS), horizontal=True, key="al_strategy")
+    _strat = _STRATS[_sname]
+    if _strat == "rare":
+        st.caption(
+            "learner 없이 **사람 확정 라벨의 클래스 중심점과 가까운 것**을 고른다. "
+            "GT 가 아직 없는 현장에서 씨앗을 만들 때 쓴다. margin 을 못 쓰므로 "
+            "라벨 효율은 learner 계열보다 낮다(E4 실측: coverage 계열은 균형 코호트에서 random 에 짐)."
+        )
+        if st.button("🔄 재계산", key="al_recompute"):
+            _clear_al_caches()
+            st.rerun()
+        frm_n_al = counts.get("frame", 0)
+        st.caption(
+            "능동학습(Active Learning) 및 캡션 품질 교차검증 — 라벨 없는 프레임 중 희귀 이벤트와 가까운 것을 우선 레이블링."
+        )
 
-    # ── 능동학습 큐 ──
-    st.subheader("🎯 능동학습 큐 (Active Learning Queue)")
-    al_n = st.slider("큐 크기 (n)", 50, 500, 200, 50, key="al_n")
-    if frm_n_al == 0:
-        st.info("frame 임베딩이 없습니다.")
-    else:
-        try:
-            al_result = _al_queue(frm_n_al, al_n, fp.DEFAULT_MODEL)
-            al_rows = al_result.get("rows", [])
-            n_candidates = al_result.get("n_candidates", 0)
-            al1, al2 = st.columns(2)
-            al1.metric("후보(none) 프레임 수", n_candidates)
-            al2.metric(f"큐 상위 {al_n}개 추출됨", len(al_rows))
-            if al_rows:
-                import pandas as pd
+        # ── 능동학습 큐 ──
+        st.subheader("🎯 능동학습 큐 (Active Learning Queue)")
+        al_n = st.slider("큐 크기 (n)", 50, 500, 200, 50, key="al_n")
+        if frm_n_al == 0:
+            st.info("frame 임베딩이 없습니다.")
+        else:
+            try:
+                al_result = _al_queue(frm_n_al, al_n, fp.DEFAULT_MODEL)
+                al_rows = al_result.get("rows", [])
+                n_candidates = al_result.get("n_candidates", 0)
+                al1, al2 = st.columns(2)
+                al1.metric("후보 프레임 수(객체 실재)", n_candidates)
+                al2.metric(f"큐 상위 {al_n}개 추출됨", len(al_rows))
 
-                al_df = pd.DataFrame(al_rows)[
-                    ["image_id", "al_score", "reason", "nearest_rare_class",
-                     "rare_sim", "representativeness", "uniqueness", "minio_key"]
-                ]
-                st.dataframe(al_df, use_container_width=True, hide_index=True)
-                st.caption(
-                    "al_score = 0.45×rare_sim + 0.30×representativeness + 0.25×uniqueness. "
-                    "reason: near-fire/smoke=희귀이벤트 근접, edge/unique=고유 프레임, representative=대표 프레임. "
-                    "다양성 보장: top-n의 최소 20%는 non-near-rare로 채워짐."
-                )
-                reason_counts = al_result.get("reason_counts", {})
-                if reason_counts:
-                    st.json(reason_counts)
-                truncated_flag = al_result.get("truncated", False)
-                if truncated_flag:
+                # 씨앗 출처는 결과 해석의 전제다 — human_finalized 와 fiftyone_weak_label 은
+                # 의미가 전혀 다르다(후자는 SAM3 파생이라 self-training).
+                seeded_from = al_result.get("seeded_from")
+                n_seeds = al_result.get("n_seeds", 0)
+                if seeded_from == "human_finalized":
+                    st.success(f"✅ 씨앗 = **사람 확정 라벨** {n_seeds:,}개 (SAM3 파생 아님)")
+                elif seeded_from == "fiftyone_weak_label":
                     st.warning(
-                        f"⚠️ 전체 프레임 수 > DQ_FULL_MATRIX_MAX_N={fp.DQ_FULL_MATRIX_MAX_N}; "
-                        "부분 결과입니다 (image_id 순 앞부분)."
+                        f"⚠️ 씨앗 = FiftyOne weak label {n_seeds:,}개 — **SAM3 자동 검출 파생**이다. "
+                        "rare centroid 가 모델 출력에서 나오므로 self-training 위험이 있다. "
+                        "사람 확정 라벨이 생기면 자동으로 그쪽이 쓰인다."
                     )
-                # CSV 내보내기 버튼
-                import csv
-                import io
 
-                csv_buf = io.StringIO()
-                writer = csv.DictWriter(
-                    csv_buf,
-                    fieldnames=["image_id", "minio_key", "al_score", "reason", "nearest_rare_class"],
-                    extrasaction="ignore",
-                )
-                writer.writeheader()
-                writer.writerows(al_rows)
-                st.download_button(
-                    label="📥 CSV 다운로드",
-                    data=csv_buf.getvalue().encode("utf-8"),
-                    file_name="labeling_queue.csv",
-                    mime="text/csv",
-                    key=f"al_csv_download_{al_n}",
-                )
-            else:
-                st.info(
-                    "능동학습 큐 없음. FiftyOne 'frames' 에 normalized_class, uniqueness, representativeness 필드 필요."
-                )
-        except Exception as exc:  # noqa: BLE001 — AL 계산 실패 표시
-            st.warning(f"능동학습 큐 계산 실패: {exc}")
-
-    st.divider()
-
-    # ── 캡션 키워드 앵커링 분석 ──
-    st.subheader("💬 캡션 키워드 앵커링 분석")
-    if frm_n_al == 0:
-        st.info("frame 임베딩이 없습니다.")
-    else:
-        try:
-            cq_result = _caption_quality(frm_n_al, fp.DEFAULT_MODEL)
-            overall_rate = cq_result.get("overall_keyword_anchor_rate", 0.0)
-            by_class = cq_result.get("by_class", {})
-            examples_missing = cq_result.get("examples_missing", [])
-
-            cq1, cq2 = st.columns(2)
-            cq1.metric(
-                "키워드 앵커링률",
-                f"{overall_rate:.1%}",
-                help="캡션 품질 점수가 아닙니다. canonical 키워드가 직접 등장한 비율입니다.",
-            )
-            total_labeled_cnt = sum(v["n"] for v in by_class.values()) if by_class else 0
-            cq2.metric("분석 라벨 프레임 수", total_labeled_cnt)
-
-            if by_class:
-                import pandas as pd
-
-                cq_df = pd.DataFrame([
-                    {
-                        "class": cls,
-                        "n": stats["n"],
-                        "캡션 키워드 있음": stats["caption_has_matching_kw"],
-                        "캡션 키워드 없음": stats["caption_missing_kw"],
-                        "keyword_anchor_rate": f"{stats['keyword_anchor_rate']:.1%}",
-                    }
-                    for cls, stats in sorted(by_class.items())
-                ])
-                st.dataframe(cq_df, use_container_width=True, hide_index=True)
-                st.caption(
-                    "keyword_anchor_rate = 캡션에 canonical 키워드가 직접 등장한 비율 (품질 점수 아님). "
-                    "Gemini 자유형 한국어 캡션은 canonical 키워드 없이도 정확할 수 있어 낮은 값은 정상. "
-                    "키워드 매핑: fall→fall/넘어/쓰러/낙상, fire→fire/flame/화재, smoke→smoke/연기."
-                )
-            else:
-                st.info(
-                    "캡션 키워드 앵커링 결과 없음. FiftyOne 'frames' 에 normalized_class + caption 필드 필요."
-                )
-
-            if examples_missing:
-                with st.expander(f"키워드 없이 맥락 표현만 사용된 예시 ({len(examples_missing)}개) (정상일 수 있음)"):
+                if al_rows:
                     import pandas as pd
 
-                    ex_df = pd.DataFrame(examples_missing)[["image_id", "normalized_class", "caption"]]
-                    st.dataframe(ex_df, use_container_width=True, hide_index=True)
+                    al_df = pd.DataFrame(al_rows)[
+                        ["image_id", "al_score", "reason", "nearest_rare_class",
+                         "rare_sim", "representativeness", "uniqueness", "minio_key"]
+                    ]
+                    st.dataframe(al_df, use_container_width=True, hide_index=True)
                     st.caption(
-                        "이 프레임들은 라벨은 있지만 캡션에 canonical 키워드가 없음. "
-                        "맥락 표현(예: '쓰러진 사람' 대신 '바닥에 누운 사람')이 사용된 경우 정상."
+                        "**실제 랭킹은 rare_sim 단독이다.** al_score 식에 representativeness·uniqueness "
+                        "가중치(0.30/0.25)가 있지만 두 필드는 FiftyOne 에서 계산된 적이 없어 항상 0이라, "
+                        "al_score 는 rare_sim 의 단조변환이다. "
+                        "reason: near-fire/smoke=희귀이벤트 근접, edge/unique=고유 프레임. "
+                        "후보는 **MinIO 객체가 실재하는 image_role 로 한정**된다 — 2026-08-31 NAS "
+                        "재구축으로 raw_video_frame 188,190건의 JPEG 이 소실돼 큐에 넣어도 열 수 없다."
+                    )
+                    reason_counts = al_result.get("reason_counts", {})
+                    if reason_counts:
+                        st.json(reason_counts)
+                    truncated_flag = al_result.get("truncated", False)
+                    if truncated_flag:
+                        st.warning(
+                            f"⚠️ 전체 프레임 수 > DQ_FULL_MATRIX_MAX_N={fp.DQ_FULL_MATRIX_MAX_N}; "
+                            "부분 결과입니다 (image_id 순 앞부분)."
+                        )
+                    # CSV 내보내기 버튼
+                    import csv
+                    import io
+
+                    csv_buf = io.StringIO()
+                    writer = csv.DictWriter(
+                        csv_buf,
+                        fieldnames=["image_id", "minio_key", "al_score", "reason", "nearest_rare_class"],
+                        extrasaction="ignore",
+                    )
+                    writer.writeheader()
+                    writer.writerows(al_rows)
+                    st.download_button(
+                        label="📥 CSV 다운로드",
+                        data=csv_buf.getvalue().encode("utf-8"),
+                        file_name="labeling_queue.csv",
+                        mime="text/csv",
+                        key=f"al_csv_download_{al_n}",
+                    )
+                else:
+                    # 빈 큐가 항상 고장은 아니다 — "고를 게 없다"가 정상 상태일 수 있어서
+                    # 사유를 구분해 보여준다. 예전 안내문은 FiftyOne 필드 탓으로 돌렸지만
+                    # 실제 원인이 아니었다(uniqueness/representativeness 는 없어도 큐는 돈다).
+                    empty_reason = al_result.get("empty_reason")
+                    if empty_reason == "no_unlabeled_candidate_with_live_object":
+                        st.info(
+                            "**고를 후보가 없습니다 — 고장이 아닙니다.**\n\n"
+                            "능동학습 후보 = *MinIO 객체가 실재하면서 아직 사람이 확정하지 않은* 프레임. "
+                            "현재 두 조건을 동시에 만족하는 프레임이 0개입니다.\n\n"
+                            f"- 사람 확정 프레임 **{al_result.get('n_seeds', 0):,}개** — 이미 답이 있어 후보에서 제외\n"
+                            "- 나머지 `raw_video_frame` 188,190개 — 2026-08-31 NAS 재구축으로 "
+                            "**JPEG 이 소실**돼 라벨러가 열 수 없음\n\n"
+                            "파이프라인이 재가동되어 새 프레임이 쌓이면 자동으로 후보가 생깁니다."
+                        )
+                    else:
+                        st.info(f"능동학습 큐 없음 (사유: {empty_reason or '미상'}).")
+            except Exception as exc:  # noqa: BLE001 — AL 계산 실패 표시
+                st.warning(f"능동학습 큐 계산 실패: {exc}")
+
+        st.divider()
+
+        # ── 캡션 키워드 앵커링 분석 ──
+        st.subheader("💬 캡션 키워드 앵커링 분석")
+        if frm_n_al == 0:
+            st.info("frame 임베딩이 없습니다.")
+        else:
+            try:
+                cq_result = _caption_quality(frm_n_al, fp.DEFAULT_MODEL)
+                overall_rate = cq_result.get("overall_keyword_anchor_rate", 0.0)
+                by_class = cq_result.get("by_class", {})
+                examples_missing = cq_result.get("examples_missing", [])
+
+                cq1, cq2 = st.columns(2)
+                cq1.metric(
+                    "키워드 앵커링률",
+                    f"{overall_rate:.1%}",
+                    help="캡션 품질 점수가 아닙니다. canonical 키워드가 직접 등장한 비율입니다.",
+                )
+                total_labeled_cnt = sum(v["n"] for v in by_class.values()) if by_class else 0
+                cq2.metric("분석 라벨 프레임 수", total_labeled_cnt)
+
+                if by_class:
+                    import pandas as pd
+
+                    cq_df = pd.DataFrame([
+                        {
+                            "class": cls,
+                            "n": stats["n"],
+                            "캡션 키워드 있음": stats["caption_has_matching_kw"],
+                            "캡션 키워드 없음": stats["caption_missing_kw"],
+                            "keyword_anchor_rate": f"{stats['keyword_anchor_rate']:.1%}",
+                        }
+                        for cls, stats in sorted(by_class.items())
+                    ])
+                    st.dataframe(cq_df, use_container_width=True, hide_index=True)
+                    st.caption(
+                        "keyword_anchor_rate = 캡션에 canonical 키워드가 직접 등장한 비율 (품질 점수 아님). "
+                        "Gemini 자유형 한국어 캡션은 canonical 키워드 없이도 정확할 수 있어 낮은 값은 정상. "
+                        "키워드 매핑: fall→fall/넘어/쓰러/낙상, fire→fire/flame/화재, smoke→smoke/연기."
+                    )
+                else:
+                    st.info(
+                        "캡션 키워드 앵커링 결과 없음. FiftyOne 'frames' 에 normalized_class + caption 필드 필요."
                     )
 
-        except Exception as exc:  # noqa: BLE001 — 캡션 앵커링 계산 실패 표시
-            st.warning(f"캡션 키워드 앵커링 분석 실패: {exc}")
+                if examples_missing:
+                    with st.expander(f"키워드 없이 맥락 표현만 사용된 예시 ({len(examples_missing)}개) (정상일 수 있음)"):
+                        import pandas as pd
 
+                        ex_df = pd.DataFrame(examples_missing)[["image_id", "normalized_class", "caption"]]
+                        st.dataframe(ex_df, use_container_width=True, hide_index=True)
+                        st.caption(
+                            "이 프레임들은 라벨은 있지만 캡션에 canonical 키워드가 없음. "
+                            "맥락 표현(예: '쓰러진 사람' 대신 '바닥에 누운 사람')이 사용된 경우 정상."
+                        )
+
+            except Exception as exc:  # noqa: BLE001 — 캡션 앵커링 계산 실패 표시
+                st.warning(f"캡션 키워드 앵커링 분석 실패: {exc}")
+
+    else:
+        import al_review
+        al_review.render(_uniform_thumb, strategy=_strat)
 if _active == "🧩 HDBSCAN":
     if st.button("🔄 재계산", key="hdbscan_recompute"):
         _hdbscan.clear()

@@ -405,12 +405,50 @@ def sync_labels(dry_run: bool) -> dict:
 
 
 # ────────────────────── prompts ──────────────────────
+import bank_blocks       # 같은 /workspace 디렉토리 (경량, prompt_geometry 미의존)
+
+# promptmap 은 `--profile frames` 로만 돈다(아래 sync_prompts) → 블록 정본은 이 데이터셋이다.
+PROMPTS_DATASET = "frames-prompts"
+
+
 def _bank_list_from_npz(npz_dir: str) -> list[str]:
-    """rebuild_banks_all.py:20-23 과 동일한 구성 — npz glob → semantic sort."""
-    npzs = glob.glob(os.path.join(npz_dir, "v*.npz"))
-    versions = [os.path.basename(p)[:-4] for p in npzs]
-    versions.sort(key=lambda v: tuple(int(x) for x in v.lstrip("v").split(".")))
-    return versions
+    """BANK_LIST 순서 = gidx 블록 배정. **정렬이 아니라 이미 박힌 배정**에서 만든다.
+
+    ⚠️ 예전엔 `sort(key=lambda v: tuple(int(x) for x in v.lstrip("v").split(".")))` 였다.
+    두 가지가 틀렸다:
+    ① `vGEN.2026.08.28` / `vOPT.2026.08.28` 이 디스크에 생긴 뒤로 `int("GEN")` 이 터져
+       **센서가 매 tick 실패**했다(2026-09-09 실측 — 그래서 frames-prompts 가 29버전에서
+       멈춰 있었다).
+    ② 더 중요한 것: 정렬로 만든 순서는 입력이 바뀌면 같이 바뀌는데 **그 위치가 곧 gidx
+       블록**이라, 이미 저장된 gidx 를 소급해 다른 문장에 가리키게 만든다(2026-08-20 사고).
+    `bank_blocks.bank_list` 는 `frames-prompts` 에 박힌 블록을 그대로 두고 신규만 뒤에
+    붙인다(append-only). 자세한 계약과 sourcei 갭 사례는 그 모듈 docstring 참고.
+    """
+    return bank_blocks.bank_list(npz_dir, PROMPTS_DATASET)
+
+
+# promptmap 이 만들지 않는 파생 필드 → 복원 담당 스크립트. overwrite 로 날아가면 이걸 다시 돌려야 한다.
+DERIVED_FIELD_OWNERS = {
+    "purity": "refresh_sentence_metrics.py",
+    "purity_tier": "refresh_sentence_metrics.py",
+    "adopted": "refresh_sentence_metrics.py",
+    "wins": "refresh_sentence_metrics.py",
+    "n_cameras": "refresh_sentence_metrics.py",
+    "wave_gain": "wave_prompts_attach.py",
+    "wave_role": "wave_prompts_attach.py",
+    "nearest_gt": "refresh_prompt_links.py",
+    "nearest_key": "refresh_prompt_links.py",
+}
+
+
+def _derived_fields_at_risk() -> list[tuple[str, str]]:
+    """리빌드로 사라질 파생 필드 [(필드, 복원 스크립트)]. 데이터셋이 없으면 빈 리스트."""
+    import fiftyone as fo
+
+    if not fo.dataset_exists(PROMPTS_DATASET):
+        return []
+    sch = fo.load_dataset(PROMPTS_DATASET).get_field_schema()
+    return [(f, owner) for f, owner in sorted(DERIVED_FIELD_OWNERS.items()) if f in sch]
 
 
 def sync_prompts(dry_run: bool) -> dict:
@@ -426,6 +464,8 @@ def sync_prompts(dry_run: bool) -> dict:
     if dry_run or not versions:
         warnings.append(f"BANK_LIST={bank_list or '(empty)'}")
         warnings.append(f"cmd={' '.join(cmd)}")
+        for f, owner in _derived_fields_at_risk():
+            warnings.append(f"⚠️ overwrite 로 사라짐: {f} (복원: {owner})")
         return {
             "target": "prompts",
             "dry_run": bool(dry_run),
@@ -434,6 +474,23 @@ def sync_prompts(dry_run: bool) -> dict:
             "remaining": len(versions),
             "warnings": warnings,
         }
+
+    # ⚠️ promptmap 은 `overwrite=True` 로 데이터셋을 통째로 다시 만든다 — 순서가 틀린 채
+    #    들어가면 되돌릴 수 없다. 파괴 직전에 기존 블록 무이동을 한 번 더 못 박는다.
+    bank_blocks.assert_blocks_preserved(versions, PROMPTS_DATASET)
+
+    # ⚠️ 그리고 **promptmap 이 만들지 않는 파생 필드**가 얹혀 있으면 멈춘다 (2026-09-09).
+    #    이 함수는 promptmap 하나만 돌리고 끝난다(아래) — 후속 스테이지를 체이닝하지 않는다.
+    #    그래서 overwrite 가 파생 필드를 지우면 **아무도 복구하지 않는다.** 정렬 버그로 센서가
+    #    죽어 있던 동안엔 이 구멍이 가려져 있었을 뿐이라, 고치는 김에 같이 막는다.
+    lost = _derived_fields_at_risk()
+    if lost and os.environ.get("SYNC_PROMPTS_ALLOW_DESTRUCTIVE", "").lower() not in ("1", "true", "yes"):
+        raise RuntimeError(
+            f"{PROMPTS_DATASET} 에 promptmap 이 복원하지 않는 파생 필드가 있다: "
+            + ", ".join(f"{f}(<-{owner})" for f, owner in lost)
+            + f". promptmap 은 overwrite=True 라 이대로 돌면 이 필드들이 사라지고 이 함수는 "
+              f"후속 스테이지를 돌리지 않는다. 진행하려면 SYNC_PROMPTS_ALLOW_DESTRUCTIVE=1 로 "
+              f"명시하고, 리빌드 뒤 위 스크립트들을 다시 돌려 파생 필드를 복원할 것.")
 
     env = dict(os.environ)
     env["BANK_LIST"] = bank_list

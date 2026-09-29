@@ -114,6 +114,35 @@ def lookup_asset_id_by_raw_key(dsn: str, raw_key: str, conn=None) -> str | None:
     return row[0] if row else None
 
 
+#: fps 를 모를 때 쓰는 구간 일치 허용오차(초). 프레임 양자화 오차는 0.5/fps 이므로
+#: fps>=10 이면 안전하다. ls_sync.py 경로는 항상 실제 fps 를 넘기므로 이 값은 쓰이지 않는다.
+_CAPTION_REUSE_FALLBACK_TOLERANCE_SEC = 0.05
+
+
+def _reusable_caption(prior: list, start_sec: float, end_sec: float, fps: float | None) -> tuple:
+    """구간이 '사실상 동일한' 이전 이벤트의 (caption_text, caption_text_en) 을 돌려준다.
+
+    정확 일치로 비교하면 안 된다 — LS 왕복이 초→프레임→초로 양자화하기 때문이다
+    (`ls_tasks_create.py` 의 `round(sec * fps)` ↔ `ls_sync_converters.py` 의 `frame / fps`).
+    사람이 손대지 않아도 값이 달라진다: 실측 5,000건에서 정확일치율이 fps=30 에서 90.2%,
+    **fps=29.97 에서는 21.3%** 다(양 끝점 모두 맞아야 하므로 이벤트 단위로는 그 제곱).
+
+    양자화 오차는 끝점당 0.5/fps 로 **길이와 무관한 절대량**이라, IoU 같은 상대 척도가 아니라
+    절대 허용오차로 비교한다. 허용오차는 1프레임(=2×최대 양자화 오차)으로 잡아, 사람이 실제로
+    경계를 옮긴 경우(LS UI 드래그는 프레임 단위보다 훨씬 크다)는 걸러낸다.
+    """
+    tolerance = (1.0 / fps) if fps else _CAPTION_REUSE_FALLBACK_TOLERANCE_SEC
+    best = (None, None)
+    best_gap = None
+    for start_prev, end_prev, ko_prev, en_prev in prior:
+        gap = max(abs(start_sec - start_prev), abs(end_sec - end_prev))
+        if gap > tolerance:
+            continue
+        if best_gap is None or gap < best_gap:
+            best_gap, best = gap, (ko_prev, en_prev)
+    return best
+
+
 def upsert_video_labels(
     dsn: str,
     labels_bucket: str,
@@ -121,6 +150,7 @@ def upsert_video_labels(
     asset_id: str,
     new_events: list[dict],
     conn=None,
+    fps: float | None = None,
 ) -> tuple[int, int]:
     """labels_key 기준으로 기존 row 전부 DELETE → 사람 submit 결과로 INSERT.
 
@@ -164,6 +194,25 @@ def upsert_video_labels(
             deleted_row = cur.fetchone()
             deleted = int(deleted_row[0]) if deleted_row else 0
 
+            # LS TimelineLabels 검수는 category/timestamp 만 돌려준다(annotation_to_events 에
+            # 캡션 필드가 없다). 아래 DELETE + 재INSERT 를 그대로 두면 Gemini 가 만든
+            # caption_text / caption_text_en 이 통째로 NULL 이 된다 — 검수 한 번에 캡션 소실.
+            # 그래서 DELETE 전에 구간별 캡션을 떠 두고 **구간이 그대로인 이벤트에만** 되붙인다.
+            # 사람이 경계를 옮긴 이벤트는 캡션이 그 구간을 더 이상 설명하지 않으므로 NULL 로 남긴다.
+            cur.execute(
+                """
+                SELECT timestamp_start_sec, timestamp_end_sec, caption_text, caption_text_en
+                FROM labels
+                WHERE labels_key = %s
+                """,
+                (labels_key,),
+            )
+            prior_captions: list[tuple[float, float, object, object]] = [
+                (float(start_prev), float(end_prev), ko_prev, en_prev)
+                for start_prev, end_prev, ko_prev, en_prev in cur.fetchall()
+                if start_prev is not None and end_prev is not None and (ko_prev or en_prev)
+            ]
+
             cur.execute("DELETE FROM labels WHERE labels_key = %s", (labels_key,))
 
             inserted = 0
@@ -173,6 +222,7 @@ def upsert_video_labels(
                 end_sec = ev["timestamp"][1]
                 token = f"{asset_id}|manual_review|{i}|{start_sec}|{end_sec}"
                 label_id = hashlib.sha1(token.encode()).hexdigest()
+                caption_prev, caption_en_prev = _reusable_caption(prior_captions, start_sec, end_sec, fps)
                 cur.execute(
                     """
                     INSERT INTO labels (
@@ -180,9 +230,10 @@ def upsert_video_labels(
                         label_format, label_tool, label_source,
                         review_status, event_index, event_count,
                         timestamp_start_sec, timestamp_end_sec,
+                        caption_text, caption_text_en,
                         label_status, created_at
                     ) VALUES (%s, %s, %s, %s, 'json', 'label_studio', 'manual_review',
-                              'reviewed', %s, %s, %s, %s, 'completed', NOW())
+                              'reviewed', %s, %s, %s, %s, %s, %s, 'completed', NOW())
                     """,
                     (
                         label_id,
@@ -193,6 +244,8 @@ def upsert_video_labels(
                         event_count,
                         start_sec,
                         end_sec,
+                        caption_prev,
+                        caption_en_prev,
                     ),
                 )
                 inserted += 1

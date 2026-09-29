@@ -227,14 +227,15 @@ def _maybe_write_outputs_manifest(
             # 트랜잭션 안에서 batch + jobs 조회 + manifest 작성. lock 은 commit 시 해제.
             cur.execute(
                 """
-                SELECT engine, output_media FROM genai_batches WHERE batch_id = %s
+                SELECT engine, output_media, prompt, options_json
+                  FROM genai_batches WHERE batch_id = %s
                 """,
                 (batch_id,),
             )
             row = cur.fetchone()
             if row is None:
                 return
-            engine_db, output_media_db = row
+            engine_db, output_media_db, prompt_text, options_text = row
             cur.execute(
                 """
                 SELECT seq_in_batch, status, provider_job_id, cost_units
@@ -266,4 +267,86 @@ def _maybe_write_outputs_manifest(
                 output_media=output_media_db or output_media,
                 items=items,
             )
+            if engine_db == "comfy_local":
+                cur.execute(
+                    """
+                    SELECT j.seq_in_batch, p.workflow_id, p.workflow_sha256,
+                           p.model_manifest_sha256, p.prompt_sha256,
+                           p.negative_prompt_sha256, p.seed, p.input_sha256,
+                           p.mask_sha256, p.provider_prompt_id, p.output_sha256,
+                           p.params_json, p.gpu_started_at, p.gpu_completed_at
+                      FROM genai_jobs j
+                      LEFT JOIN genai_job_provenance p ON p.job_id=j.job_id
+                     WHERE j.batch_id=%s
+                     ORDER BY j.seq_in_batch
+                    """,
+                    (batch_id,),
+                )
+                provenance_rows = cur.fetchall()
+                try:
+                    options = json.loads(options_text) if options_text else {}
+                except (TypeError, ValueError):
+                    options = {}
+
+                def _iso(value):
+                    return value.isoformat() if hasattr(value, "isoformat") else value
+
+                jobs = []
+                for values in provenance_rows:
+                    (
+                        seq,
+                        workflow_id,
+                        workflow_sha,
+                        manifest_sha,
+                        prompt_sha,
+                        negative_sha,
+                        seed,
+                        input_sha,
+                        mask_sha,
+                        provider_prompt_id,
+                        output_sha,
+                        params,
+                        gpu_started,
+                        gpu_completed,
+                    ) = values
+                    jobs.append(
+                        {
+                            "seq": int(seq),
+                            "workflow_id": workflow_id,
+                            "workflow_sha256": workflow_sha,
+                            "model_manifest_sha256": manifest_sha,
+                            "prompt_sha256": prompt_sha,
+                            "negative_prompt_sha256": negative_sha,
+                            "seed": int(seed) if seed is not None else None,
+                            "input_sha256": input_sha,
+                            "mask_sha256": mask_sha,
+                            "provider_prompt_id": provider_prompt_id,
+                            "output_sha256": output_sha,
+                            "params": params or {},
+                            "gpu_started_at": _iso(gpu_started),
+                            "gpu_completed_at": _iso(gpu_completed),
+                        }
+                    )
+                # 배치 negative prompt 는 "요청"이지 "사실"이 아니다. negative_prompt
+                # 바인딩이 없는 워크플로(FLUX.2 Klein)는 이 값을 끝내 쓰지 않는데,
+                # 적용된 `prompt` 옆에 나란히 찍히면 쓴 것처럼 읽힌다. 진실은 job 단위 —
+                # 실제로 바인딩됐을 때만 negative_prompt_sha256 이 채워진다.
+                # 요청값은 버리지 않고 `..._requested` 로 남긴다(안 썼다 ≠ 몰랐다).
+                # schema_version 2 = params 에 sampler 추가 + 미바인딩 항목 명시적 null.
+                negative_requested = options.get("negative_prompt")
+                negative_applied = any(job["negative_prompt_sha256"] for job in jobs)
+                atomic_write_json(
+                    outputs_dir.parent / "provenance.json",
+                    {
+                        "schema_version": 2,
+                        "batch_id": batch_id,
+                        "engine": engine_db,
+                        "prompt": prompt_text,
+                        "negative_prompt": negative_requested if negative_applied else None,
+                        "negative_prompt_requested": negative_requested,
+                        "created_at": datetime.now().isoformat(),
+                        "jobs": jobs,
+                    },
+                )
+            # Manifest remains the final completion marker after every companion artifact.
             atomic_write_json(outputs_dir / "_manifest.json", manifest)

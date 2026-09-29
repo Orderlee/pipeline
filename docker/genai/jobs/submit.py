@@ -33,6 +33,7 @@ def submit_batch(
     files: list[tuple[str, bytes]],     # [(filename, bytes), ...]  text-only 모드 시 []
     requested_by: str | None = None,
     options: dict | None = None,
+    control_files: list[tuple[str, bytes]] | None = None,
 ) -> dict:
     if not prompt or not prompt.strip():
         raise ValueError("prompt empty")
@@ -44,6 +45,9 @@ def submit_batch(
         # 현재 txt2video 지원 엔진은 Veo 뿐. 다른 엔진이 mode=txt2video 보내면 명시 거부.
         raise ValueError(f"txt2video 지원 안 함: engine={engine!r} (veo 만 가능)")
     adapter = get_adapter(engine)
+    controls = list(control_files or [])
+    if controls and len(controls) != len(files):
+        raise ValueError("control_files must map 1:1 to source files")
 
     batch_id = str(uuid.uuid4())[:12]
     n = len(files) if files else 1   # text-only: 1 job
@@ -52,7 +56,9 @@ def submit_batch(
     # 1) DB INSERT — batch + N jobs (status='pending')
     # input_total_bytes 는 quota 집계용 (limits.check_daily_quota 가 options_json 파싱)
     options_with_bytes = dict(options or {})
-    options_with_bytes["input_total_bytes"] = sum(len(b) for _, b in files)
+    options_with_bytes["input_total_bytes"] = sum(len(b) for _, b in files) + sum(
+        len(b) for _, b in controls
+    )
     pg.insert_genai_batch({
         "batch_id": batch_id,
         "engine": engine,
@@ -97,13 +103,35 @@ def submit_batch(
         )
         atomic_write_json(originals_dir / "_manifest.json", originals_manifest)
 
+    # Optional controls (currently one binary mask per SDXL inpaint source). Controls stay
+    # quarantined with the batch and are never exposed as ingest candidates.
+    if controls:
+        controls_dir = batch_root / "controls"
+        control_items: list[dict] = []
+        for seq, (filename, blob) in enumerate(controls, start=1):
+            ext = PurePosixPath(filename).suffix or ".png"
+            target_name = f"{seq:03d}{ext}"
+            atomic_write_bytes(controls_dir / target_name, blob)
+            control_items.append(
+                {
+                    "seq": seq,
+                    "filename": target_name,
+                    "original_filename": filename,
+                    "size": len(blob),
+                }
+            )
+        atomic_write_json(
+            controls_dir / "_manifest.json",
+            {"kind": "controls", "batch_id": batch_id, "items": control_items},
+        )
+
     # 4) 어댑터 submit (per job) — 비동기/동기 분기
     # text-only: 단일 job, image_bytes=b"" / filename="" 으로 호출.
     #
     # 동시성 게이트 (Q6 — Kling 1303 회피): engine 동시 한도가 있으면(>0) 현재
     # in-flight 수를 고려해 한도까지만 즉시 submit. 나머지는 처음부터 'pending'
     # 으로 두고 sensor drain 이 슬롯 빌 때 제출. 1303 은 race 안전망으로만 처리.
-    from adapters import KlingTransientError, engine_max_concurrent
+    from adapters import AdapterDeferredError, KlingTransientError, engine_max_concurrent
     max_conc = engine_max_concurrent(engine)
     budget = None
     if max_conc > 0:
@@ -118,7 +146,13 @@ def submit_batch(
             pg.mark_job_deferred(job_id, f"{engine} 동시 작업 한도 대기 (max={max_conc})")
             continue
         try:
-            sub = adapter.submit(blob, filename, prompt, options=options)
+            submit_options = dict(options or {})
+            submit_options["_job_id"] = job_id
+            if controls:
+                mask_name, mask_blob = controls[seq - 1]
+                submit_options["_mask_filename"] = mask_name
+                submit_options["_mask_bytes"] = mask_blob
+            sub = adapter.submit(blob, filename, prompt, options=submit_options)
             pg.update_job_submitted(job_id, sub.provider_job_id)
             if budget is not None:
                 budget -= 1
@@ -137,6 +171,10 @@ def submit_batch(
         except KlingTransientError as exc:
             # 1303 등 — race 로 한도 초과. failed 아님, deferred 로 두고 budget 소진
             # 처리해 같은 pass 에서 더 안 쏨 (Codex Q1).
+            pg.mark_job_deferred(job_id, str(exc))
+            if budget is not None:
+                budget = 0
+        except AdapterDeferredError as exc:
             pg.mark_job_deferred(job_id, str(exc))
             if budget is not None:
                 budget = 0

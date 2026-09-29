@@ -1,0 +1,301 @@
+{
+  "schema_version": 2,
+  "comfy_node_revision": {
+    "repository": "https://github.com/Comfy-Org/ComfyUI.git",
+    "commit": "ee71d5c4993f29086b27fde1629a945ae48425bf",
+    "custom_nodes": [],
+    "note": "Must equal ARG COMFYUI_COMMIT in docker/comfyui/Dockerfile and services.comfyui.build.args.COMFYUI_COMMIT in docker/docker-compose.yaml; tests/unit/test_comfyui_compose_contract.py enforces all three. No custom nodes and no ComfyUI-Manager are installed, so every class_type used by workflows/ is a core node of this revision."
+  },
+  "vram": {
+    "gpu": "NVIDIA RTX A4000, 16376 MiB, host GPU0 (CUDA_VISIBLE_DEVICES=0)",
+    "comfy_vram_state": "LOW_VRAM (main.py --lowvram)",
+    "staged_vram_mb_source": "measured - ComfyUI 'Model <name> prepared for dynamic VRAM loading. <N>MB Staged' lines from `docker logs docker-comfyui-1` (image datapipeline-comfyui:0.1, 2026-09-18 activation run: 26 FLUX executions, 1 SDXL execution). Same boot logged 'Total VRAM 16102 MB' and 'Set vram state to: LOW_VRAM'.",
+    "staged_vram_mb_meaning": "Weight staging footprint per model as reported by ComfyUI. It is NOT peak process VRAM: under LOW_VRAM weights are streamed, and activations are not included.",
+    "peak_process_vram_gb": 15.02,
+    "peak_process_vram_note": "MEASURED: YES (2026-09-21, P2-4 quality UAT). 15.02 GB is the highest GPU0 total observed across both workflows over 20 generations; the FLUX workflow owns that maximum. Per-workflow figures are in workflows.<id>.peak_process_vram_gb_measured. Source and method in peak_process_vram_gb_source.",
+    "peak_process_vram_gb_source": "measured - P2-4 20-image quality UAT, 2026-09-21, prod docker-comfyui-1 on host GPU0 (RTX A4000, 16376 MiB, --lowvram). Method: `nvidia-smi --query-gpu=index,memory.used --format=csv,noheader,nounits` sampled once per second for the whole UAT; per job the maximum GPU0 value inside [gpu_started_at-2s, gpu_completed_at+2s] taken from genai_job_provenance. This is a whole-GPU figure and includes the ~0.7 GB idle baseline from other host processes. Jobs are serialized by the gpu0_comfy lease so run windows never overlap. Caveat: ComfyUI --lowvram keeps weights cached between executions, so a workflow's peak depends on which workflow ran before it - use min_gb as the isolated-footprint estimate and max_gb for capacity planning. Review sheet: docs/genai_rollout/comfyui-uat-20-review-sheet-2026-09-21.md",
+    "preflight_threshold_gb": 14.5,
+    "preflight_threshold_note": "COMFYUI_MIN_FREE_VRAM_GB, the GenAI adapter's admission threshold (docker/docker-compose.yaml default; prod overrides in docker/.env). RAISED 13 -> 14.5 on 2026-09-21 after the P2-4 UAT. Derivation: the gate is evaluated in _prepare_gpu AFTER the embedding service has unloaded PE-Core, so it does not guard against the embedding service - it guards against OTHER GPU0 tenants (angle-dav2-1 runs with CUDA_VISIBLE_DEVICES=0). Measured on a 16376 MiB card with a 784 MiB baseline from those tenants: a warm FLUX run peaked at 15379 MiB total, i.e. 14.25 GB of its own footprint; a cold run needs about 13.0 GB (7 of 10 runs clustered at 13.78 GB total, 3 carried weight-cache residue at 15.36 GB). The old 13 GB therefore admitted jobs whenever free VRAM was 13.0-14.25 GB and a warm run then OOMed. 14.5 closes that window; today's post-unload free is 14.94 GB so normal operation still passes, with 0.44 GB of slack before the gate starts deferring. Rejection is the safe failure (AdapterDeferredError -> lease released -> retried next tick); admission followed by OOM wastes a GPU run and a lease cycle. If deferrals become frequent the fix is to flush the weight cache before each run (POST /free {unload_models, free_memory}) so the requirement becomes a deterministic ~13.0 GB - NOT to lower this threshold again.",
+    "baseline_other_tenants_gb": 0.77,
+    "baseline_other_tenants_note": "MEASURED 2026-09-21: 784 MiB held on host GPU0 by processes that are not ComfyUI and not the embedding service (three compute apps; angle-dav2-1 runs with CUDA_VISIBLE_DEVICES=0). peak_process_vram_gb is a whole-GPU figure, so a workflow's OWN footprint is peak_process_vram_gb - baseline_other_tenants_gb, and that difference is what the admission threshold has to cover. Re-measure with: nvidia-smi --query-compute-apps=gpu_uuid,pid,used_memory --format=csv,noheader (GPU0 uuid from --query-gpu=index,uuid) while ComfyUI is idle and PE-Core is unloaded."
+  },
+  "models": [
+    {
+      "path": "diffusion_models/flux-2-klein-4b-fp8.safetensors",
+      "sha256": "97ed34fe0567e436200f2faee3939b88f2b5d99f8af2a4dc16532c4245c0ccb6",
+      "size_bytes": 4070624520,
+      "license": "apache-2.0",
+      "source": "https://huggingface.co/black-forest-labs/FLUX.2-klein-4b-fp8/resolve/main/flux-2-klein-4b-fp8.safetensors",
+      "comfy_model_names": [
+        "Flux2"
+      ],
+      "staged_vram_mb": 3882,
+      "used_by": [
+        "flux2-klein-4b-edit-v1"
+      ]
+    },
+    {
+      "path": "text_encoders/qwen_3_4b.safetensors",
+      "sha256": "6c671498573ac2f7a5501502ccce8d2b08ea6ca2f661c458e708f36b36edfc5a",
+      "size_bytes": 8044982048,
+      "license": "apache-2.0",
+      "source": "https://huggingface.co/Comfy-Org/flux2-klein-4B/resolve/main/split_files/text_encoders/qwen_3_4b.safetensors",
+      "comfy_model_names": [
+        "Flux2TEModel_"
+      ],
+      "staged_vram_mb": 7671,
+      "used_by": [
+        "flux2-klein-4b-edit-v1"
+      ]
+    },
+    {
+      "path": "vae/flux2-vae.safetensors",
+      "sha256": "d64f3a68e1cc4f9f4e29b6e0da38a0204fe9a49f2d4053f0ec1fa1ca02f9c4b5",
+      "size_bytes": 336213556,
+      "license": "apache-2.0",
+      "source": "https://huggingface.co/Comfy-Org/flux2-dev/resolve/main/split_files/vae/flux2-vae.safetensors",
+      "comfy_model_names": [
+        "AutoencoderKL"
+      ],
+      "staged_vram_mb": 160,
+      "used_by": [
+        "flux2-klein-4b-edit-v1"
+      ]
+    },
+    {
+      "path": "checkpoints/sd_xl_base_1.0_0.9vae.safetensors",
+      "sha256": "e6bb9ea85bbf7bf6478a7c6d18b71246f22e95d41bcdd80ed40aa212c33cfeff",
+      "size_bytes": 6938078334,
+      "license": "creativeml-openrail++-m",
+      "source": "https://huggingface.co/stabilityai/stable-diffusion-xl-base-1.0/resolve/main/sd_xl_base_1.0_0.9vae.safetensors",
+      "comfy_model_names": [
+        "SDXL",
+        "SDXLClipModel",
+        "AutoencoderKL"
+      ],
+      "staged_vram_mb": 6615,
+      "staged_vram_breakdown_mb": {
+        "SDXL": 4896,
+        "SDXLClipModel": 1560,
+        "AutoencoderKL": 159
+      },
+      "used_by": [
+        "sdxl-inpaint-cctv-v1"
+      ]
+    }
+  ],
+  "workflows": {
+    "flux2-klein-4b-edit-v1": {
+      "file": "workflows/flux2-klein-4b-edit-v1.json",
+      "models": [
+        "diffusion_models/flux-2-klein-4b-fp8.safetensors",
+        "text_encoders/qwen_3_4b.safetensors",
+        "vae/flux2-vae.safetensors"
+      ],
+      "staged_vram_mb_total": 11713,
+      "peak_process_vram_gb": 15.02,
+      "peak_process_vram_gb_measured": {
+        "n_runs": 10,
+        "min_gb": 13.45,
+        "max_gb": 15.02,
+        "samples_mib": [
+          13777,
+          13781,
+          13781,
+          13781,
+          13783,
+          13783,
+          13843,
+          15347,
+          15373,
+          15379
+        ],
+        "source": "P2-4 UAT 2026-09-21; method in vram.peak_process_vram_gb_source"
+      },
+      "exec_seconds_measured": {
+        "n_runs": 10,
+        "min": 12.02,
+        "median": 12.31,
+        "max": 12.95,
+        "source": "ComfyUI 'Prompt executed in N seconds', same UAT. Near-constant because node 5 ImageScaleToTotalPixels normalizes every input to 1 MP."
+      },
+      "inputs": {
+        "source_image": {
+          "node": "1",
+          "input": "image",
+          "class_type": "LoadImage",
+          "type": "image_filename",
+          "caller": "operator",
+          "required": true
+        },
+        "prompt": {
+          "node": "6",
+          "input": "text",
+          "class_type": "CLIPTextEncode",
+          "type": "string",
+          "caller": "operator",
+          "required": true
+        },
+        "seed": {
+          "node": "14",
+          "input": "noise_seed",
+          "class_type": "RandomNoise",
+          "type": "integer",
+          "caller": "operator",
+          "required": false
+        },
+        "steps": {
+          "node": "16",
+          "input": "steps",
+          "class_type": "Flux2Scheduler",
+          "type": "integer",
+          "caller": "operator",
+          "required": false,
+          "fixed_value": 4,
+          "note": "Distilled Klein schedule; the adapter rejects any value other than 4."
+        },
+        "filename_prefix": {
+          "node": "19",
+          "input": "filename_prefix",
+          "class_type": "SaveImage",
+          "type": "string",
+          "caller": "adapter",
+          "required": true
+        }
+      },
+      "unbound": {
+        "mask_image": "not accepted - no mask node in the graph",
+        "negative_prompt": "not bindable - node 7 ConditioningZeroOut derives the negative branch from the positive one",
+        "cfg": "fixed at 1.0 inside node 13 CFGGuider",
+        "denoise": "not applicable - node 17 SamplerCustomAdvanced consumes the full sigma schedule"
+      },
+      "fixed": {
+        "sampler_name": "euler",
+        "cfg": 1.0,
+        "scheduler_node": "Flux2Scheduler",
+        "megapixels": 1.0
+      }
+    },
+    "sdxl-inpaint-cctv-v1": {
+      "file": "workflows/sdxl-inpaint-cctv-v1.json",
+      "models": [
+        "checkpoints/sd_xl_base_1.0_0.9vae.safetensors"
+      ],
+      "staged_vram_mb_total": 6615,
+      "peak_process_vram_gb": 12.64,
+      "peak_process_vram_gb_measured": {
+        "n_runs": 10,
+        "min_gb": 7.55,
+        "max_gb": 12.64,
+        "samples_mib": [
+          7727,
+          7727,
+          7727,
+          7727,
+          7727,
+          7887,
+          8111,
+          8719,
+          12943,
+          12943
+        ],
+        "source": "P2-4 UAT 2026-09-21; method in vram.peak_process_vram_gb_source. The two 12943 MiB samples followed FLUX executions, so they carry FLUX cache residue - 7.55 GB is the better isolated-footprint estimate."
+      },
+      "exec_seconds_measured": {
+        "n_runs": 10,
+        "min": 10.11,
+        "median": 14.97,
+        "max": 29.43,
+        "source": "ComfyUI 'Prompt executed in N seconds', same UAT. Scales with source resolution because this workflow has no resize node: 960x480 ~10.1s, 1108x828 ~14.8s, 1920x1080 ~29s."
+      },
+      "inputs": {
+        "source_image": {
+          "node": "1",
+          "input": "image",
+          "class_type": "LoadImage",
+          "type": "image_filename",
+          "caller": "operator",
+          "required": true
+        },
+        "mask_image": {
+          "node": "2",
+          "input": "image",
+          "class_type": "LoadImageMask",
+          "type": "image_filename",
+          "caller": "operator",
+          "required": true,
+          "note": "Binary 0/255 PNG, identical resolution to source_image; only the 255 region is edited."
+        },
+        "prompt": {
+          "node": "4",
+          "input": "text",
+          "class_type": "CLIPTextEncode",
+          "type": "string",
+          "caller": "operator",
+          "required": true
+        },
+        "negative_prompt": {
+          "node": "5",
+          "input": "text",
+          "class_type": "CLIPTextEncode",
+          "type": "string",
+          "caller": "operator",
+          "required": false
+        },
+        "seed": {
+          "node": "7",
+          "input": "seed",
+          "class_type": "KSampler",
+          "type": "integer",
+          "caller": "operator",
+          "required": false
+        },
+        "steps": {
+          "node": "7",
+          "input": "steps",
+          "class_type": "KSampler",
+          "type": "integer",
+          "caller": "operator",
+          "required": false,
+          "default_value": 30
+        },
+        "cfg": {
+          "node": "7",
+          "input": "cfg",
+          "class_type": "KSampler",
+          "type": "number",
+          "caller": "operator",
+          "required": false,
+          "default_value": 6.0
+        },
+        "denoise": {
+          "node": "7",
+          "input": "denoise",
+          "class_type": "KSampler",
+          "type": "number",
+          "caller": "operator",
+          "required": false,
+          "default_value": 0.85
+        },
+        "filename_prefix": {
+          "node": "10",
+          "input": "filename_prefix",
+          "class_type": "SaveImage",
+          "type": "string",
+          "caller": "adapter",
+          "required": true
+        }
+      },
+      "unbound": {},
+      "fixed": {
+        "sampler_name": "dpmpp_2m",
+        "scheduler": "karras",
+        "grow_mask_by": 6
+      }
+    }
+  },
+  "notes": {
+    "input_schema_source": "Derived from each workflow JSON's own `bindings` map - the only parameters the gateway is allowed to substitute. tests/unit/test_comfyui_compose_contract.py asserts inputs == bindings, so the schema cannot drift from the graph.",
+    "value_constraints_owner": "Ranges and the FLUX steps==4 rule are enforced by docker/genai/adapters/comfy_local.py; this manifest records the wiring, not the validator."
+  }
+}

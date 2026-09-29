@@ -15,6 +15,7 @@ try:
         _video_label_config,
         _image_label_config,
         _parse_csv_or_json_list,
+        build_synthetic_provenance,
         parse_rectangle_labels_config,
         fetch_project_label_config,
         build_label_normalizer,
@@ -30,11 +31,14 @@ try:
         list_sam3_json_keys,
         read_json_from_minio,
     )
+    from gemini.ls_task_gate import GateConfig, GateStats
+    from gemini.ls_task_gate import decide as gate_decide
 except ModuleNotFoundError:
     from ls_tasks_label_config import (  # type: ignore[no-redef]
         _video_label_config,
         _image_label_config,
         _parse_csv_or_json_list,
+        build_synthetic_provenance,
         parse_rectangle_labels_config,
         fetch_project_label_config,
         build_label_normalizer,
@@ -50,6 +54,8 @@ except ModuleNotFoundError:
         list_sam3_json_keys,
         read_json_from_minio,
     )
+    from ls_task_gate import GateConfig, GateStats  # type: ignore[no-redef]
+    from ls_task_gate import decide as gate_decide  # type: ignore[no-redef]
 
 
 FROM_NAME = "videoLabels"
@@ -77,13 +83,26 @@ def extract_folder_name(prefix: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-def create_image_task(ls_url: str, headers: dict, project_id: int, image_url: str, folder: str) -> dict:
+def create_image_task(
+    ls_url: str,
+    headers: dict,
+    project_id: int,
+    image_url: str,
+    folder: str,
+    extra: dict | None = None,
+) -> dict:
+    """extra 는 `data` 에 함께 실을 추가 필드 (합성 배치 provenance 등). 기본 None = 기존 payload 그대로.
+
+    미디어/폴더 키를 나중에 덮어써서 extra 가 `image`/`folder` 를 침범하지 못하게 한다.
+    """
+    data = dict(extra or {})
+    data.update({"image": image_url, "folder": folder})
     resp = requests.post(
         f"{ls_url}/api/tasks/",
         headers={**headers, "Content-Type": "application/json"},
         json={
             "project": project_id,
-            "data": {"image": image_url, "folder": folder},
+            "data": data,
         },
     )
     resp.raise_for_status()
@@ -103,13 +122,23 @@ def _get_review_state_fns():
 # ---------------------------------------------------------------------------
 
 
-def create_task(ls_url: str, headers: dict, project_id: int, video_url: str, folder: str) -> dict:
+def create_task(
+    ls_url: str,
+    headers: dict,
+    project_id: int,
+    video_url: str,
+    folder: str,
+    extra: dict | None = None,
+) -> dict:
+    """extra 는 `data` 에 함께 실을 추가 필드 (합성 배치 provenance 등). 기본 None = 기존 payload 그대로."""
+    data = dict(extra or {})
+    data.update({"video": video_url, "folder": folder})
     resp = requests.post(
         f"{ls_url}/api/tasks/",
         headers={**headers, "Content-Type": "application/json"},
         json={
             "project": project_id,
-            "data": {"video": video_url, "folder": folder},
+            "data": data,
         },
     )
     resp.raise_for_status()
@@ -300,6 +329,20 @@ def _resolve_category_targets(args) -> list[str]:
     return _parse_csv_or_json_list(raw)
 
 
+def _synthetic_provenance(args, target_cats: list[str]) -> dict[str, str]:
+    """합성 배치 task 의 `data` 에 실을 출처 필드 — 엔진/batch/의도 이벤트.
+
+    엔진·batch_id 는 sensor 가 `raw_files`(정본) 에서 읽어 CLI 로 넘긴다. 의도 이벤트는
+    dispatch 가 요구한 카테고리(`--categories`) 그대로다 — 합성은 그 클래스를 채우려고 만든
+    것이므로 "요청한 이벤트" 와 같은 값이다.
+    """
+    return build_synthetic_provenance(
+        getattr(args, "genai_engine", "") or "",
+        getattr(args, "genai_batch_id", "") or "",
+        target_cats,
+    )
+
+
 def _build_project_title(folder_name: str, mode: str, suffix: str) -> str:
     """`<folder>_<mode>_<suffix>`. suffix 는 dispatch.requested_at 을 YYMMDD_HHMM 으로 포맷한 값."""
     base = f"{folder_name}_{mode}"
@@ -332,10 +375,18 @@ def _create_video(args, minio, auth_headers: dict) -> None:
     target_cats = _resolve_category_targets(args)
     suffix = getattr(args, "project_suffix", "") or ""
     title = _build_project_title(folder_name, "video", suffix)
+    # 합성 여부는 label_config(프로젝트 생성 시점에 확정) 과 task data 양쪽에 필요하므로
+    # 프로젝트를 만들기 **전에** 읽는다.
+    is_synthetic = bool(getattr(args, "synthetic", False))
+    provenance = _synthetic_provenance(args, target_cats) if is_synthetic else {}
 
     print(f"[INFO] video mode: prefix={prefix}, project={title}, categories={target_cats or '(none)'}")
+    if provenance:
+        print(f"[INFO] 합성 provenance: {provenance['provenance']}")
 
-    project_id = _ensure_dated_project(args.ls_url, auth_headers, title, _video_label_config(target_cats))
+    project_id = _ensure_dated_project(
+        args.ls_url, auth_headers, title, _video_label_config(target_cats, synthetic=is_synthetic)
+    )
 
     print(f"[INFO] 원본 영상 목록 조회 중... (bucket={args.bucket}, prefix={prefix})")
     video_keys = list_clip_keys(minio, args.bucket, prefix)
@@ -350,6 +401,10 @@ def _create_video(args, minio, auth_headers: dict) -> None:
 
     created = skipped = error = 0
     collected_label_keys: list[str] = []
+
+    gate_cfg = GateConfig.from_env()
+    gate_stats = GateStats()
+    print(f"[INFO] {gate_cfg.describe()}{' — 합성 배치' if is_synthetic else ''}")
 
     for key in video_keys:
         stem = Path(key).stem
@@ -367,12 +422,19 @@ def _create_video(args, minio, auth_headers: dict) -> None:
                 print(f"[WARN] events JSON 읽기 실패 {json_key}: {exc}")
                 events = []
 
+        # 게이트: 열거 기준이 events JSON 이 아니라 vlm-raw 영상 키라, 이벤트 0건 영상도
+        # 여기까지 온다. 실측 81.2%가 그 경우였다.
+        decision = gate_decide(len(events), key, gate_cfg, is_synthetic)
+        gate_stats.record(decision)
+        if not decision.send:
+            continue
+
         try:
             video_url = generate_presigned_url(minio, args.bucket, key, DEFAULT_PRESIGN_EXPIRES)
             rel = key[len(prefix) :].lstrip("/") if key.startswith(prefix) else key
             subfolder = rel.split("/", 1)[0] if "/" in rel else ""
             task_folder = subfolder or folder_name
-            task = create_task(args.ls_url, auth_headers, project_id, video_url, task_folder)
+            task = create_task(args.ls_url, auth_headers, project_id, video_url, task_folder, extra=provenance)
             task_id = task["id"]
 
             pred_count = 0
@@ -404,6 +466,11 @@ def _create_video(args, minio, auth_headers: dict) -> None:
         print(f"[INFO] review state 저장 완료 ({args.ls_url})")
 
     print(f"\n[DONE] video mode: 생성 {created} / 스킵(기존) {skipped} / 오류 {error}")
+    print(f"[GATE] {gate_stats.summary()}")
+    # 호출부(defs/ls/sensor.py)가 파싱하는 기계 판독 줄. 이게 없으면 "0건 생성"과 "정상 생성"을
+    # 구분할 수 없어 job SUCCESS + ls_task_status='created' + LS task 0건 이 동시에 성립한다
+    # (2026-09-21 실측).
+    print(f"[RESULT] mode=video created={created} skipped={skipped} " f"error={error} gated_out={gate_stats.gated_out}")
 
 
 def _create_image(args, minio, auth_headers: dict) -> None:
@@ -420,10 +487,17 @@ def _create_image(args, minio, auth_headers: dict) -> None:
         return
     suffix = getattr(args, "project_suffix", "") or ""
     title = _build_project_title(folder_name, "image", suffix)
+    # video mode 와 동일 — 프로젝트 생성 전에 합성 여부를 확정해야 label_config 에 반영된다.
+    is_synthetic = bool(getattr(args, "synthetic", False))
+    provenance = _synthetic_provenance(args, target_cats) if is_synthetic else {}
 
     print(f"[INFO] image mode: prefix={prefix}, project={title}, categories={target_cats}")
+    if provenance:
+        print(f"[INFO] 합성 provenance: {provenance['provenance']}")
 
-    project_id = _ensure_dated_project(args.ls_url, auth_headers, title, _image_label_config(target_cats))
+    project_id = _ensure_dated_project(
+        args.ls_url, auth_headers, title, _image_label_config(target_cats, synthetic=is_synthetic)
+    )
 
     existing = fetch_existing_task_image_stems(args.ls_url, auth_headers, project_id)
     json_index = list_sam3_json_keys(minio, args.label_bucket, prefix)
@@ -451,6 +525,10 @@ def _create_image(args, minio, auth_headers: dict) -> None:
     processed_bucket = getattr(args, "processed_bucket", None) or "vlm-processed"
     created = skipped = error = dropped_no_image = 0
 
+    gate_cfg = GateConfig.from_env()
+    gate_stats = GateStats()
+    print(f"[INFO] {gate_cfg.describe()}{' — 합성 배치' if is_synthetic else ''}")
+
     for stem, json_key in json_index.items():
         if stem in existing:
             skipped += 1
@@ -473,13 +551,9 @@ def _create_image(args, minio, auth_headers: dict) -> None:
             continue
 
         try:
-            image_url = generate_presigned_url(minio, processed_bucket, image_key, DEFAULT_PRESIGN_EXPIRES)
-            rel = image_key[len(prefix) :].lstrip("/") if image_key.startswith(prefix) else image_key
-            subfolder = rel.split("/", 1)[0] if "/" in rel else ""
-            task_folder = subfolder or folder_name
-            task = create_image_task(args.ls_url, auth_headers, project_id, image_url, task_folder)
-            task_id = task["id"]
-
+            # 게이트: 박스 수를 알아야 판정할 수 있으므로 태스크 생성 **전에** 변환한다.
+            # (예전에는 create_image_task 뒤에 있어서, 임계값으로 박스가 전부 떨어져도
+            #  빈 태스크가 이미 만들어진 뒤였다 — 실측 54.9%가 그 경우였다.)
             ls_result = sam3_coco_to_ls_rectangles(
                 coco,
                 allowed_labels,
@@ -489,12 +563,25 @@ def _create_image(args, minio, auth_headers: dict) -> None:
                 normalizer=normalizer,
                 class_thresholds=class_thresholds,
             )
+            decision = gate_decide(len(ls_result or []), json_key, gate_cfg, is_synthetic)
+            gate_stats.record(decision)
+            if not decision.send:
+                continue
+
+            image_url = generate_presigned_url(minio, processed_bucket, image_key, DEFAULT_PRESIGN_EXPIRES)
+            rel = image_key[len(prefix) :].lstrip("/") if image_key.startswith(prefix) else image_key
+            subfolder = rel.split("/", 1)[0] if "/" in rel else ""
+            task_folder = subfolder or folder_name
+            task = create_image_task(args.ls_url, auth_headers, project_id, image_url, task_folder, extra=provenance)
+            task_id = task["id"]
+
             pred_count = 0
             if ls_result:
                 create_prediction(args.ls_url, auth_headers, task_id, ls_result)
                 pred_count = len(ls_result)
 
-            print(f"[CREATED]  task {task_id} ← {stem} (bbox {pred_count})")
+            why = "" if decision.reason == "has_result" else f" [{decision.reason}]"
+            print(f"[CREATED]  task {task_id} ← {stem} (bbox {pred_count}){why}")
             created += 1
 
         except Exception as exc:
@@ -514,6 +601,11 @@ def _create_image(args, minio, auth_headers: dict) -> None:
     print(
         f"\n[DONE] image mode: 생성 {created} / 스킵(기존) {skipped} / "
         f"이미지경로 누락 {dropped_no_image} / 오류 {error}"
+    )
+    print(f"[GATE] {gate_stats.summary()}")
+    print(
+        f"[RESULT] mode=image created={created} skipped={skipped} "
+        f"error={error + dropped_no_image} gated_out={gate_stats.gated_out}"
     )
 
 

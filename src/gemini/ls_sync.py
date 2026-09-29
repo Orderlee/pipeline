@@ -380,6 +380,9 @@ def run(
                         asset_id,
                         new_events,
                         conn=db_conn,
+                        # 캡션 재사용 구간 비교용 — annotation_to_events 가 프레임→초로 되돌린
+                        # 값이라 양자화 오차를 fps 로 환산해야 한다.
+                        fps=fps,
                     )
                 except FinalizedLabelsSkip:
                     print(f"[SKIP-FIN] task {task_id} → {json_key} finalized, MinIO overwrite 방지")

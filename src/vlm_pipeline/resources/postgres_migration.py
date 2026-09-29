@@ -19,6 +19,7 @@ PG는 마이그레이션이 멱등하고 빠르므로 두 메서드의 구현은
 
 from __future__ import annotations
 
+import re
 import threading
 from contextlib import contextmanager
 from pathlib import Path
@@ -26,6 +27,76 @@ from typing import ClassVar
 
 import psycopg2
 import psycopg2.extensions
+
+_CONCURRENTLY_RE = re.compile(r"\bCONCURRENTLY\b", re.IGNORECASE)
+_EXPLICIT_BEGIN_RE = re.compile(r"^\s*BEGIN\s*;", re.IGNORECASE | re.MULTILINE)
+_DOLLAR_TAG_RE = re.compile(r"\$[A-Za-z_][A-Za-z_0-9]*\$|\$\$")
+
+
+def _scan_quoted(sql_text: str, start: int) -> int:
+    """``'``로 시작하는 리터럴의 끝(닫는 따옴표 다음 인덱스). ``''`` 는 이스케이프."""
+    n = len(sql_text)
+    j = start + 1
+    while j < n:
+        if sql_text[j] != "'":
+            j += 1
+        elif j + 1 < n and sql_text[j + 1] == "'":
+            j += 2
+        else:
+            return j + 1
+    return n
+
+
+def _split_sql_statements(sql_text: str) -> list[str]:
+    """세미콜론 기준 문장 분리 — 문자열·달러인용·주석 안의 ``;`` 은 경계로 보지 않는다.
+
+    마이그레이션 파일을 한 문장씩 보내야 하는 경우(CONCURRENTLY)에만 쓴다. 순진한
+    ``split(';')`` 은 ``DO $$ ... ; ... $$`` 와 ``'a;b'`` 리터럴을 쪼개 파일을 망가뜨린다.
+    """
+    out: list[str] = []
+    buf: list[str] = []
+    has_code = False  # 주석·공백만 있는 조각은 문장이 아니다 (빈 쿼리 실행 = psycopg2 오류)
+    i, n = 0, len(sql_text)
+    while i < n:
+        ch = sql_text[i]
+        pair = sql_text[i : i + 2]
+        if pair == "--":  # 줄 주석
+            end = sql_text.find("\n", i)
+            end = n if end == -1 else end + 1
+            buf.append(sql_text[i:end])
+            i = end
+        elif pair == "/*":  # 블록 주석
+            end = sql_text.find("*/", i + 2)
+            end = n if end == -1 else end + 2
+            buf.append(sql_text[i:end])
+            i = end
+        elif ch == "'":  # 문자열 리터럴('' 이스케이프 포함)
+            j = _scan_quoted(sql_text, i)
+            buf.append(sql_text[i:j])
+            has_code = True
+            i = j
+        elif ch == "$" and _DOLLAR_TAG_RE.match(sql_text, i):  # 달러 인용 ($$ 또는 $tag$)
+            tag = _DOLLAR_TAG_RE.match(sql_text, i).group(0)  # type: ignore[union-attr]
+            end = sql_text.find(tag, i + len(tag))
+            end = n if end == -1 else end + len(tag)
+            buf.append(sql_text[i:end])
+            has_code = True
+            i = end
+        elif ch == ";":
+            if has_code:
+                out.append("".join(buf).strip() + ";")
+                buf = []
+                has_code = False
+            # 주석만 모인 조각이면 버리지 않고 다음 문장 앞에 붙인다(원문 주석 보존).
+            i += 1
+        else:
+            buf.append(ch)
+            has_code = has_code or not ch.isspace()
+            i += 1
+    if has_code:
+        out.append("".join(buf).strip())
+    return out
+
 
 # 메타 테이블 — 적용 이력 추적. 마이그레이션 시스템 자체가 의존하므로 별도 파일 없이
 # 코드 안에 둔다 (chicken-and-egg 해결).
@@ -93,6 +164,7 @@ class PostgresMigrationMixin:
             "013_mlops_finetune.sql",
             "014_gpu_maintenance_lock.sql",
             "016_dataset_catalog.sql",
+            "030_comfy_local.sql",
         }
     )
 
@@ -113,6 +185,9 @@ class PostgresMigrationMixin:
         "015_embedding_active_model.sql": "SELECT 1 FROM pg_available_extensions WHERE name = 'vector'",
         # 021: 뱅크 문장 벡터(entity_type='prompt')용 partial HNSW. 008/009 과 동일 전제조건.
         "021_prompt_embedding_index.sql": "SELECT 1 FROM pg_available_extensions WHERE name = 'vector'",
+        # 029: al_frame partial HNSW. 027 에서 분리 — 027 은 al_frames 테이블(pgvector 무관)이라
+        #      무조건 적용돼야 하는데 인덱스를 같이 넣었다가 vanilla postgres 에서 러너가 죽었다.
+        "029_al_frame_embedding_index.sql": "SELECT 1 FROM pg_available_extensions WHERE name = 'vector'",
     }
 
     def ensure_runtime_schema(self) -> None:
@@ -219,11 +294,28 @@ class PostgresMigrationMixin:
         """
         sql_text = path.read_text(encoding="utf-8")
         with conn.cursor() as cur:
-            cur.execute(sql_text)
+            # CONCURRENTLY 는 트랜잭션 안에서 실행할 수 없다. AUTOCOMMIT 커넥션이라 안전해 보이지만,
+            # 문장이 2개 이상인 파일을 한 번에 보내면 PG 가 그 simple query 전체를 **암시적 트랜잭션**
+            # 으로 감싸므로 첫 CONCURRENTLY 에서 ActiveSqlTransaction 이 난다 (021 은 문장이 하나라
+            # 우연히 통과했고, 문장 3개인 024 에서 드러났다 — 2026-09-03 재현). 그런 파일만 문장 단위로
+            # 나눠 보낸다. 나머지 파일(BEGIN/COMMIT·DO $$ 포함)은 기존처럼 통째 실행 = 동작 불변.
+            for stmt in cls._statements_for(sql_text):
+                cur.execute(stmt)
             cur.execute(
                 "INSERT INTO _pg_migrations (name) VALUES (%s) ON CONFLICT (name) DO NOTHING",
                 (path.name,),
             )
+
+    @classmethod
+    def _statements_for(cls, sql_text: str) -> list[str]:
+        """실행 단위 목록. CONCURRENTLY 파일만 문장 단위로 쪼개고, 그 외엔 통째 1건."""
+        if not _CONCURRENTLY_RE.search(sql_text):
+            return [sql_text]
+        if _EXPLICIT_BEGIN_RE.search(sql_text):
+            # 파일이 스스로 트랜잭션을 열었다면 쪼개도 어차피 실패한다 — 조용히 고치지 말고
+            # 원문 그대로 실행해 "트랜잭션 안에서 CONCURRENTLY" 오류를 그대로 드러낸다.
+            return [sql_text]
+        return _split_sql_statements(sql_text)
 
     @classmethod
     def _verify_assertions(

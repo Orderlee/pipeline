@@ -101,7 +101,12 @@ class PostgresDetectionMixin:
                         im.frame_sec
                     FROM image_metadata im
                     JOIN raw_files r ON r.asset_id = im.source_asset_id
-                    WHERE im.image_role IN ('processed_clip_frame', 'raw_video_frame')
+                    -- source_image 는 영상에서 뽑은 프레임이 아니라 **직접 인제스트된 정지
+                    -- 이미지**다(GenAI 생성물이 promote 로 들어오는 형태). 2026-09-21 까지
+                    -- 이 역할이 빠져 있어서 comfy_local 합성본이 SAM3 후보가 되지 못했고,
+                    -- COCO JSON 이 안 생기니 image LS task 의 재료 자체가 없었다. 라벨러
+                    -- 게이트보다 앞선 관문이라 게이트를 아무리 열어도 도달하지 못한다.
+                    WHERE im.image_role IN ('processed_clip_frame', 'raw_video_frame', 'source_image')
                       AND {pending_clause}
                       {query_cond}
                     ORDER BY im.extracted_at

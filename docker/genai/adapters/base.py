@@ -108,6 +108,10 @@ class PollResult:
         self.cost_units = cost_units
 
 
+class AdapterDeferredError(RuntimeError):
+    """Admission/resource shortage. Keep the job pending and retry on a later sensor tick."""
+
+
 class BaseGenAIAdapter(Protocol):
     engine: str               # 'kling' | 'higgsfield' | 'nanobanana' | 'gpt_image'
     output_media: str         # 'video' | 'image'

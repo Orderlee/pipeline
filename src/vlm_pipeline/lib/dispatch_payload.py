@@ -25,6 +25,24 @@ _OUTPUT_PRIORITY = {
     "skip": 999,
 }
 
+# video 소스에서만 의미가 있는 라벨링 방법.
+#
+# 2026-09-21 batch b4fe9a6f-339(comfy_local, 이미지 1장): 요청은 `[captioning_image, bbox]`
+# 였는데 `_OUTPUT_DEPENDENCIES["captioning_image"] = ["timestamp_video", "captioning_video"]`
+# (env_utils.py) 가 의존성으로 두 video 메서드를 붙여 4개로 확장됐고, LS 생성 단계가
+# 이미지뿐인 배치에 빈 video 프로젝트(LS id 821)를 만들었다.
+#
+# 그 의존성은 "비디오에서 프레임을 뽑으려면 먼저 이벤트 구간(timestamp)을 알아야 한다"는
+# video 전제라, 원본이 이미지면 성립하지 않는다. 따라서 payload 가 이미지 전용임을
+# 선언하면(`output_media='image'`) video 전용 메서드는 의존성으로도 자동 추가하지 않는다.
+VIDEO_ONLY_LABELING_METHODS = frozenset(
+    {
+        "timestamp_video",
+        "captioning_video",
+        "classification_video",
+    }
+)
+
 _NO_LABELING_MARKERS = frozenset(
     {
         "필요없음",
@@ -115,18 +133,47 @@ def _has_no_labeling_marker(values: list[str]) -> bool:
     return False
 
 
-def _finalize_outputs(values: list[str]) -> list[str]:
+def normalize_media_kind(value: Any) -> str:
+    """dispatch payload 의 매체 선언을 'image' / 'video' / '' 로 정규화.
+
+    선언이 없으면 빈 문자열 — 기존 dispatch 요청(선언 없음)은 media 필터를 타지 않는다.
+    """
+    rendered = str(value or "").strip().lower()
+    if rendered in {"image", "images", "img"}:
+        return "image"
+    if rendered in {"video", "videos"}:
+        return "video"
+    return ""
+
+
+def _finalize_outputs(values: list[str], *, media_kind: str = "") -> list[str]:
     resolved = resolve_outputs(run_mode=None, outputs_raw=",".join(values))
     deduped: list[str] = []
     for item in resolved:
         rendered = str(item or "").strip().lower()
         if not rendered or rendered not in VALID_OUTPUTS or rendered in deduped:
             continue
+        if media_kind == "image" and rendered in VIDEO_ONLY_LABELING_METHODS:
+            # 의존성 자동 추가분만 여기서 걸러진다 — 명시 요청은 parse 단계에서 이미 reject.
+            continue
         deduped.append(rendered)
     if deduped and all(item in YOLO_OUTPUTS for item in deduped):
         deduped = [item for item in deduped if item in YOLO_OUTPUTS]
     deduped.sort(key=lambda item: (_OUTPUT_PRIORITY.get(item, 999), item))
     return deduped
+
+
+def _reject_video_methods_on_image_media(values: list[str], media_kind: str) -> None:
+    """이미지 전용 배치에 video 전용 메서드가 명시 요청되면 fail-loud.
+
+    조용히 버리면 "요청한 것과 다른 라벨링이 돌았다"가 로그에만 남으므로 거부한다.
+    GenAI promote 는 같은 계약을 HTTP 400 으로 먼저 막는다(jobs/promote.py).
+    """
+    if media_kind != "image":
+        return
+    rejected = [item for item in values if item in VIDEO_ONLY_LABELING_METHODS]
+    if rejected:
+        raise ValueError(f"video_labeling_method_on_image_media:{','.join(rejected)}")
 
 
 def parse_dispatch_request_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
@@ -177,6 +224,7 @@ def parse_dispatch_request_payload(payload: Mapping[str, Any]) -> dict[str, Any]
     raw_labeling_method = _normalize_output_list(payload.get("labeling_method"))
     raw_outputs = _normalize_output_list(payload.get("outputs"))
     run_mode = str(payload.get("run_mode") or "").strip().lower()
+    media_kind = normalize_media_kind(payload.get("output_media") or payload.get("media_kind"))
 
     if raw_labeling_method:
         if invalid_labeling_method:
@@ -184,20 +232,30 @@ def parse_dispatch_request_payload(payload: Mapping[str, Any]) -> dict[str, Any]
         valid_outputs = [item for item in raw_labeling_method if item in VALID_LABELING_METHODS]
         if not valid_outputs:
             raise ValueError("invalid_labeling_method")
-        labeling_method = _finalize_outputs(valid_outputs)
+        _reject_video_methods_on_image_media(valid_outputs, media_kind)
+        labeling_method = _finalize_outputs(valid_outputs, media_kind=media_kind)
     elif raw_outputs:
         if invalid_outputs:
             raise ValueError("invalid_outputs")
         valid_outputs = [item for item in raw_outputs if item in VALID_OUTPUTS]
         if not valid_outputs:
             raise ValueError("invalid_outputs")
-        labeling_method = _finalize_outputs(valid_outputs)
+        _reject_video_methods_on_image_media(valid_outputs, media_kind)
+        labeling_method = _finalize_outputs(valid_outputs, media_kind=media_kind)
     elif run_mode:
         if run_mode not in _RUN_MODE_TO_OUTPUTS:
             raise ValueError(f"invalid_run_mode:{run_mode}")
-        labeling_method = list(_RUN_MODE_TO_OUTPUTS[run_mode])
+        labeling_method = [
+            item
+            for item in _RUN_MODE_TO_OUTPUTS[run_mode]
+            if not (media_kind == "image" and item in VIDEO_ONLY_LABELING_METHODS)
+        ]
     else:
         raise ValueError("missing_labeling_method_or_outputs_or_run_mode")
+
+    if not labeling_method:
+        # media 필터가 전부 걷어낸 경우 — 조용히 빈 dispatch 를 만들지 않는다.
+        raise ValueError("no_labeling_method_for_image_media")
 
     categories = raw_categories
     classes = raw_classes

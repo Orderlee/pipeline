@@ -57,6 +57,29 @@ class EmbeddingClient:
         r.raise_for_status()
         return r.json()["vector"]
 
+    def caption(self, image_bytes: bytes, prompt: str, max_new_tokens: int | None = None) -> str:
+        """이미지 → 서술 문장 (PLM, cuda:1).
+
+        ⚠️ GPU1 은 SAM3 소유라 여유 없으면 서비스가 503 을 준다 — 재시도는 호출자 책임.
+        """
+        data = {"prompt": prompt}
+        if max_new_tokens:
+            data["max_new_tokens"] = str(max_new_tokens)
+        r = self._session.post(
+            f"{self.base_url}/caption",
+            files={"file": ("image.jpg", image_bytes, "application/octet-stream")},
+            data=data,
+            timeout=max(self.timeout, 180.0),
+        )
+        r.raise_for_status()
+        return r.json()["text"]
+
+    def release(self, target: str = "all") -> dict:
+        """VRAM 반납. 단계 사이에 명시적으로 부른다 (GPU1 을 SAM3 에 돌려줌)."""
+        r = self._session.post(f"{self.base_url}/unload", params={"target": target}, timeout=60)
+        r.raise_for_status()
+        return r.json()
+
     def embed_text(self, text: str) -> list[float]:
         """텍스트 → 1024-d 벡터 (동일 임베딩 공간, 텍스트→이미지 검색용)."""
         r = self._session.post(

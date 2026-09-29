@@ -12,18 +12,27 @@ Phase 3 은 Kling 만 (Image→Video 탭 1개). Phase 4 에서 나머지 3엔진
 
 from __future__ import annotations
 
+import asyncio
+import base64
+import json
+import logging
 import os
 import re
 import secrets
 from pathlib import Path
+from pathlib import PurePosixPath
 from typing import Annotated
 
+import httpx
+import requests
+import websockets
 from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.encoders import jsonable_encoder
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from fastapi.websockets import WebSocket, WebSocketDisconnect
 
 from adapters import ENGINE_TAB, all_engine_options, enabled_engines, engines_by_tab
 from db import pg
@@ -32,6 +41,7 @@ from jobs.submit import submit_batch
 import limits
 
 
+_LOG = logging.getLogger("genai.app")
 _ROOT = Path(__file__).parent
 templates = Jinja2Templates(directory=str(_ROOT / "templates"))
 # 헤더 환경 배지. GENAI_ENV_LABEL 로 명시 오버라이드, 미설정 시 staging DB 경로 여부로 유도.
@@ -70,6 +80,22 @@ _MAX_BYTES_PER_FILE = int(os.getenv("GENAI_MAX_BYTES_PER_FILE", str(50 * 1024 * 
 # bulk 상한(_MAX_BULK_JOBS=50)과 정합. async 엔진(kling/veo)은 job 즉시 defer+드레인이라 안전.
 _MAX_FILES_PER_BATCH = int(os.getenv("GENAI_MAX_FILES_PER_BATCH", "50"))
 _ALLOWED_EXT = {".png", ".jpg", ".jpeg", ".webp"}
+_COMFY_NODE_WORKFLOWS = (
+    "flux2-klein-4b-edit-v1",
+    "sdxl-inpaint-cctv-v1",
+)
+_COMFY_EDITABLE_BINDINGS = frozenset(
+    {
+        "source_image",
+        "mask_image",
+        "prompt",
+        "negative_prompt",
+        "seed",
+        "steps",
+        "cfg",
+        "denoise",
+    }
+)
 
 # bulk-submit 묶음 id — 영숫자 / _ / - / . 1~64자. namespacing (team-a.run-001) 용도로 . 허용.
 _BULK_GROUP_ID_RE = re.compile(r"[A-Za-z0-9_.-]{1,64}")
@@ -131,6 +157,354 @@ def _load_nas_original_blob(batch_id: str, seq: int) -> tuple[bytes | None, str]
     return None, str(candidate_parents[0] / f"{int(seq):03d}.*")
 
 
+def _load_nas_control_blob(batch_id: str, seq: int) -> tuple[bytes | None, str]:
+    """Load the quarantined per-job control image (currently an inpaint mask)."""
+    from datetime import datetime
+
+    nas_root = Path(os.getenv("GENAI_NAS_INCOMING", "/nas/data/genai_studio"))
+    batch = pg.get_batch_with_jobs(batch_id) or {}
+    ts = batch.get("submitted_at")
+    if not isinstance(ts, datetime):
+        ts = datetime.now()
+    parent = nas_root / ts.strftime("%Y-%m-%d") / batch_id / "controls"
+    hits = [p for p in parent.glob(f"{int(seq):03d}.*") if not p.name.endswith(".partial")]
+    if hits:
+        return hits[0].read_bytes(), hits[0].name
+    return None, str(parent / f"{int(seq):03d}.*")
+
+
+def _validate_inpaint_pair(source: bytes, mask: bytes) -> None:
+    """Require same-size, non-empty raster inputs before they reach ComfyUI."""
+    import io
+
+    from PIL import Image, UnidentifiedImageError
+
+    try:
+        with Image.open(io.BytesIO(source)) as source_image, Image.open(io.BytesIO(mask)) as mask_image:
+            if source_image.size != mask_image.size:
+                raise ValueError(
+                    f"source/mask dimensions differ: {source_image.size} != {mask_image.size}"
+                )
+            grayscale = mask_image.convert("L")
+            if grayscale.getbbox() is None:
+                raise ValueError("mask has no selected pixels")
+            colors = grayscale.getcolors(maxcolors=257)
+            if colors is None or any(value not in {0, 255} for _count, value in colors):
+                raise ValueError("mask must be binary (pixels must be 0 or 255)")
+    except UnidentifiedImageError as exc:
+        raise ValueError("source or mask is not a decodable image") from exc
+
+
+def _load_comfy_node_contracts() -> dict[str, dict]:
+    """Load only repository-owned workflow templates for the visual node editor.
+
+    The browser receives a visualization contract, but POSTs only allowlisted scalar
+    bindings to /genai/batches. It never sends or executes an arbitrary node graph.
+    """
+    root = Path(os.getenv("COMFYUI_CONTRACT_ROOT", "/app/comfy_contract")) / "workflows"
+    configured = {
+        item.strip()
+        for item in os.getenv("COMFYUI_ALLOWED_WORKFLOWS", ",".join(_COMFY_NODE_WORKFLOWS)).split(",")
+        if item.strip()
+    }
+    contracts: dict[str, dict] = {}
+    for workflow_id in _COMFY_NODE_WORKFLOWS:
+        if workflow_id not in configured:
+            continue
+        path = root / f"{workflow_id}.json"
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        if payload.get("workflow_id") != workflow_id:
+            raise RuntimeError(f"invalid Comfy workflow contract: {workflow_id}")
+        contracts[workflow_id] = payload
+    return contracts
+
+
+def _normalize_comfy_value(value):
+    if isinstance(value, list) and len(value) == 2:
+        return [str(value[0]), value[1]]
+    return value
+
+
+def _safe_comfy_input_name(value: object) -> str:
+    name = str(value or "").strip()
+    path = PurePosixPath(name)
+    if (
+        not name
+        or path.is_absolute()
+        or ".." in path.parts
+        or path.suffix.lower() not in _ALLOWED_EXT
+    ):
+        raise ValueError("unsafe Comfy input image name")
+    return name
+
+
+def _match_comfy_native_prompt(graph: object) -> tuple[str, dict[str, object]]:
+    """Accept scalar edits only when graph structure exactly matches an approved template."""
+    if not isinstance(graph, dict):
+        raise ValueError("prompt graph must be an object")
+    for workflow_id, contract in _load_comfy_node_contracts().items():
+        template = contract["prompt"]
+        if set(map(str, graph)) != set(map(str, template)):
+            continue
+        bindings = {
+            (str(ref[0]), str(ref[1])): name
+            for name, ref in (contract.get("bindings") or {}).items()
+        }
+        values: dict[str, object] = {}
+        matched = True
+        for node_id, expected_node in template.items():
+            actual_node = graph.get(str(node_id))
+            if not isinstance(actual_node, dict) or actual_node.get("class_type") != expected_node.get(
+                "class_type"
+            ):
+                matched = False
+                break
+            expected_inputs = expected_node.get("inputs") or {}
+            actual_inputs = actual_node.get("inputs") or {}
+            if set(actual_inputs) != set(expected_inputs):
+                matched = False
+                break
+            for input_name, expected_value in expected_inputs.items():
+                actual_value = actual_inputs[input_name]
+                binding = bindings.get((str(node_id), str(input_name)))
+                if binding in _COMFY_EDITABLE_BINDINGS:
+                    values[binding] = actual_value
+                    continue
+                if _normalize_comfy_value(actual_value) != _normalize_comfy_value(expected_value):
+                    matched = False
+                    break
+            if not matched:
+                break
+        if not matched:
+            continue
+
+        values["source_image"] = _safe_comfy_input_name(values.get("source_image"))
+        if "mask_image" in values:
+            values["mask_image"] = _safe_comfy_input_name(values["mask_image"])
+        prompt = str(values.get("prompt") or "").strip()
+        if not prompt or len(prompt) > 10_000:
+            raise ValueError("prompt must contain 1..10000 characters")
+        values["prompt"] = prompt
+        if "negative_prompt" in values:
+            negative = str(values.get("negative_prompt") or "").strip()
+            if len(negative) > 10_000:
+                raise ValueError("negative prompt exceeds 10000 characters")
+            values["negative_prompt"] = negative
+        seed = int(values.get("seed") or 0)
+        steps = int(values.get("steps") or (4 if workflow_id.startswith("flux2-") else 30))
+        if seed < 0 or seed >= 2**63:
+            raise ValueError("seed must be in [0, 2^63)")
+        if workflow_id.startswith("flux2-") and steps != 4:
+            raise ValueError("FLUX.2 Klein workflow requires steps=4")
+        if not 1 <= steps <= 60:
+            raise ValueError("steps must be in [1, 60]")
+        values["seed"] = seed
+        values["steps"] = steps
+        if "cfg" in values:
+            cfg = float(values["cfg"])
+            if not 0 <= cfg <= 20:
+                raise ValueError("cfg must be in [0, 20]")
+            values["cfg"] = cfg
+        if "denoise" in values:
+            denoise = float(values["denoise"])
+            if not 0 < denoise <= 1:
+                raise ValueError("denoise must be in (0, 1]")
+            values["denoise"] = denoise
+        return workflow_id, values
+    raise ValueError("graph structure does not match an approved Comfy workflow")
+
+
+def _fetch_comfy_input(name: str) -> bytes:
+    path = PurePosixPath(_safe_comfy_input_name(name))
+    subfolder = "" if str(path.parent) == "." else str(path.parent)
+    response = requests.get(
+        f"{os.getenv('COMFYUI_INTERNAL_URL', 'http://comfyui:8188').rstrip('/')}/view",
+        params={"filename": path.name, "type": "input", "subfolder": subfolder},
+        timeout=60,
+    )
+    if response.status_code == 404:
+        raise ValueError(
+            "Load Image node has no available file selected. "
+            "For one image, select it inside the Load Image node; "
+            "for multiple images, use the top M×1 Batch dialog and its run button."
+        )
+    response.raise_for_status()
+    if len(response.content) > _MAX_BYTES_PER_FILE:
+        raise ValueError("Comfy input exceeds GenAI upload limit")
+    return response.content
+
+
+def _basic_auth_valid(authorization: str | None) -> bool:
+    auth_disabled = os.getenv("GENAI_AUTH_DISABLED", "").strip().lower() == "true"
+    expected_user = os.getenv("GENAI_BASIC_AUTH_USER", "").strip()
+    expected_password = os.getenv("GENAI_BASIC_AUTH_PASS", "").strip()
+    if auth_disabled and not expected_user and not expected_password:
+        return True
+    if not authorization or not authorization.lower().startswith("basic "):
+        return False
+    try:
+        decoded = base64.b64decode(authorization.split(None, 1)[1]).decode("utf-8")
+        user, password = decoded.split(":", 1)
+    except (ValueError, UnicodeDecodeError):
+        return False
+    return secrets.compare_digest(user, expected_user) and secrets.compare_digest(
+        password, expected_password
+    )
+
+
+def _normalize_proxy_path(path: str, *, casefold: bool = True) -> str:
+    """Resolve '.'/'..' the way httpx does before the request reaches ComfyUI.
+
+    Matching on the raw path let `./prompt` and `x/../prompt` slip past the guard
+    below while httpx still normalized them onto ComfyUI's real /prompt — executing an
+    arbitrary node graph with no template match, no GPU lease and no provenance row.
+
+    `casefold=False` keeps the original spelling for the *forwarded* path: the frontend
+    bundle is served as case-sensitive hashed files (`assets/index-CENPJz5u.js`), so a
+    casefolded path 404s on ComfyUI's static route and the canvas never boots.  The
+    allowlist below casefolds its own copy, so folding is not needed for safety.
+    """
+    parts: list[str] = []
+    for part in path.split("/"):
+        if not part or part == ".":
+            continue
+        if part == "..":
+            if parts:
+                parts.pop()
+            continue
+        parts.append(part)
+    joined = "/".join(parts)
+    return joined.casefold() if casefold else joined
+
+
+# ----- ComfyUI proxy allowlist ------------------------------------------
+# 근거 (추측 금지 — 세 출처의 교집합):
+#   1. ComfyUI 고정 커밋 ee71d5c (docker/comfyui/Dockerfile 의 COMFYUI_COMMIT) 의
+#      `@routes.*` 선언 전수.  server.py 가 모든 라우트를 `/` 와 `/api` 양쪽에 등록한다.
+#   2. comfyui-frontend-package 1.52.7 (requirements.txt 고정) 번들이 실제로 호출하는
+#      경로 — `apiURL(e) = api_base + "/api" + e`, `internalURL` = `+ "/internal"`,
+#      `fileURL` = api_base 직속(=정적 파일).
+#   3. prod `docker-genai-1` 접근로그 실측: ws, api/jobs(폴링), api/object_info,
+#      api/system_stats, api/history, 그리고 iframe base `/genai/comfy-native/`.
+# 여기에 없는 경로는 403 이다 — custom node 가 라우트를 추가해도 경계가 유지된다.
+_COMFY_PROMPT_PATHS = frozenset({"prompt"})
+# 실행/자원 제어는 GenAI 가 소유한다.  jobs/cancel 계열은 내부적으로 interrupt+dequeue 라
+# blocklist 시절 뚫려 있던 같은 등급의 구멍이었다.
+_COMFY_BLOCKED_PATHS = frozenset({"queue", "interrupt", "free", "jobs/cancel"})
+_COMFY_API_EXACT = frozenset(
+    {
+        "embeddings",
+        "experiment/models",
+        "extensions",
+        "features",
+        "global_subgraphs",
+        "history",
+        "i18n",
+        "jobs",
+        "models",
+        "node_replacements",
+        "object_info",
+        "settings",
+        "system_stats",
+        "upload/image",
+        "upload/mask",
+        "userdata",
+        "users",
+        "v2/userdata",
+        "view",
+        "workflow_templates",
+    }
+)
+_COMFY_API_PREFIXES = (
+    "experiment/models/",
+    "global_subgraphs/",
+    "history/",
+    "jobs/",
+    "models/",
+    "object_info/",
+    "settings/",
+    "userdata/",
+    "view_metadata/",
+    "workflow_templates/",
+)
+# `/internal/*` 서브앱 — 프론트의 로그 패널과 파일 탐색기가 읽기 전용으로 쓴다.
+_COMFY_INTERNAL_EXACT = frozenset({"logs", "logs/raw", "logs/subscribe", "folder_paths"})
+_COMFY_INTERNAL_PREFIXES = ("files/",)
+# 정적 자원 (web_root = comfyui-frontend-package/static + 서버가 마운트하는 templates/docs).
+_COMFY_STATIC_EXACT = frozenset({"", "index.html", "user.css", "materialdesignicons.min.css"})
+_COMFY_STATIC_PREFIXES = (
+    "assets/",
+    "cursor/",
+    "docs/",
+    "extensions/",
+    "fonts/",
+    "scripts/",
+    "templates/",
+)
+_COMFY_STATIC_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
+
+
+def _comfy_proxy_verdict(normalized: str, method: str) -> str:
+    """Classify a normalized proxy path: 'prompt' | 'blocked' | 'allow' | 'deny'."""
+    key = normalized.casefold()
+    if key == "internal" or key.startswith("internal/"):
+        rest = key[len("internal/") :] if key.startswith("internal/") else ""
+        if rest in _COMFY_INTERNAL_EXACT or any(rest.startswith(p) for p in _COMFY_INTERNAL_PREFIXES):
+            return "allow"
+        return "deny"
+    # ComfyUI mirrors every route under /api, and the frontend always uses that form.
+    api = key[len("api/") :] if key.startswith("api/") else key
+    if api in _COMFY_PROMPT_PATHS:
+        return "prompt"
+    if api in _COMFY_BLOCKED_PATHS or (api.startswith("jobs/") and api.endswith("/cancel")):
+        return "blocked"
+    if api in _COMFY_API_EXACT or any(api.startswith(prefix) for prefix in _COMFY_API_PREFIXES):
+        return "allow"
+    # Static assets are served from the bare path only (never behind /api).
+    if api == key and method.upper() in _COMFY_STATIC_METHODS:
+        if key in _COMFY_STATIC_EXACT or any(key.startswith(prefix) for prefix in _COMFY_STATIC_PREFIXES):
+            return "allow"
+    return "deny"
+
+
+async def _comfy_http_proxy(request: Request, path: str) -> Response:
+    base = os.getenv("COMFYUI_INTERNAL_URL", "http://comfyui:8188").rstrip("/")
+    headers = {
+        key: value
+        for key, value in request.headers.items()
+        if key.lower() not in {"host", "authorization", "content-length", "connection"}
+    }
+    try:
+        async with httpx.AsyncClient(timeout=120, follow_redirects=False) as client:
+            upstream = await client.request(
+                request.method,
+                f"{base}/{path.lstrip('/')}",
+                params=request.query_params,
+                content=await request.body(),
+                headers=headers,
+            )
+    except httpx.RequestError as exc:
+        return JSONResponse({"error": f"ComfyUI unavailable: {exc}"}, status_code=503)
+    response_headers = _safe_comfy_proxy_headers(upstream.headers)
+    return Response(content=upstream.content, status_code=upstream.status_code, headers=response_headers)
+
+
+def _safe_comfy_proxy_headers(headers) -> dict[str, str]:
+    """Keep useful headers without letting a Unicode filename turn previews into HTTP 500."""
+    allowed = {"content-type", "cache-control", "etag", "last-modified", "content-disposition"}
+    safe: dict[str, str] = {}
+    for key, value in headers.items():
+        if key.lower() not in allowed:
+            continue
+        try:
+            key.encode("latin-1")
+            value.encode("latin-1")
+        except UnicodeEncodeError:
+            continue
+        safe[key] = value
+    return safe
+
+
 def create_app() -> FastAPI:
     app = FastAPI(title="GenAI Studio", version="0.1.0")
     app.mount("/static", StaticFiles(directory=str(_ROOT / "static")), name="static")
@@ -183,17 +557,266 @@ def create_app() -> FastAPI:
             },
         )
 
+    @app.get("/genai/comfy-nodes", response_class=HTMLResponse)
+    def comfy_nodes(
+        request: Request,
+        workflow_id: str | None = None,
+        created: str | None = None,
+        user: str = Depends(_check_auth),
+    ):
+        contracts = _load_comfy_node_contracts()
+        if not contracts:
+            raise HTTPException(status_code=503, detail="no Comfy node workflow is enabled")
+        selected = (workflow_id or next(iter(contracts))).strip()
+        if selected not in contracts:
+            raise HTTPException(status_code=404, detail="workflow_id is not allowlisted")
+        return templates.TemplateResponse(
+            request=request,
+            name="comfy_nodes.html",
+            context={
+                "user": user,
+                "contracts": contracts,
+                "selected_workflow": selected,
+                "comfy_enabled": "comfy_local" in enabled_engines(),
+                "created_batch_id": (created or "").strip() or None,
+                "comfy_native_url": "/genai/comfy-native/",
+                "max_bulk_jobs": _MAX_BULK_JOBS,
+                "max_files_per_batch": _MAX_FILES_PER_BATCH,
+            },
+        )
+
+    @app.get("/genai/comfy-native")
+    def comfy_native_redirect(_user: str = Depends(_check_auth)):
+        return RedirectResponse("/genai/comfy-native/", status_code=307)
+
+    @app.post("/genai/comfy-native/api/prompt")
+    @app.post("/api/prompt")
+    async def comfy_native_prompt(
+        request: Request,
+        user: str = Depends(_check_auth),
+    ):
+        if "comfy_local" not in enabled_engines():
+            return JSONResponse(
+                {
+                    "error": {
+                        "type": "comfy_local_disabled",
+                        "message": "comfy_local engine is disabled until validated models are installed",
+                    },
+                    "node_errors": {},
+                },
+                status_code=503,
+            )
+        try:
+            payload = await request.json()
+            workflow_id, values = _match_comfy_native_prompt(payload.get("prompt"))
+            source_name = str(values["source_image"])
+            source = _fetch_comfy_input(source_name)
+            controls = None
+            if workflow_id == "sdxl-inpaint-cctv-v1":
+                mask_name = str(values["mask_image"])
+                mask = _fetch_comfy_input(mask_name)
+                _validate_inpaint_pair(source, mask)
+                controls = [(PurePosixPath(mask_name).name, mask)]
+            limits.check_rate_limit(user)
+            limits.check_daily_quota(user, len(source) + sum(len(blob) for _, blob in controls or []))
+            client_id = str(payload.get("client_id") or "").strip()
+            if client_id and not re.fullmatch(r"[A-Za-z0-9_.:-]{1,128}", client_id):
+                raise ValueError("invalid native Comfy client_id")
+            options = {
+                "workflow_id": workflow_id,
+                "seed": values["seed"],
+                "steps": values["steps"],
+                "native_client_id": client_id,
+            }
+            for key in ("negative_prompt", "cfg", "denoise"):
+                if key in values:
+                    options[key] = values[key]
+            result = submit_batch(
+                engine="comfy_local",
+                prompt=str(values["prompt"]),
+                files=[(PurePosixPath(source_name).name, source)],
+                requested_by=user,
+                options=options,
+                control_files=controls,
+            )
+            batch = pg.get_batch_with_jobs(result["batch_id"]) or {}
+            jobs = batch.get("jobs") or []
+            job = jobs[0] if jobs else {}
+            provider_prompt_id = str(job.get("provider_job_id") or "")
+            if not provider_prompt_id:
+                detail = str(job.get("error_message") or "local generation was deferred")
+                status_code = 409 if job.get("status") == "pending" else 422
+                return JSONResponse(
+                    {
+                        "error": {"type": "genai_submit_not_started", "message": detail},
+                        "node_errors": {},
+                        "genai_batch_id": result["batch_id"],
+                    },
+                    status_code=status_code,
+                )
+            return JSONResponse(
+                {
+                    "prompt_id": provider_prompt_id,
+                    "number": 0,
+                    "node_errors": {},
+                    "genai_batch_id": result["batch_id"],
+                }
+            )
+        except (ValueError, KeyError, TypeError, requests.RequestException) as exc:
+            return JSONResponse(
+                {
+                    "error": {"type": "restricted_workflow_rejected", "message": str(exc)},
+                    "node_errors": {},
+                },
+                status_code=400,
+            )
+        except limits.LimitExceeded as exc:
+            return JSONResponse(
+                {"error": {"type": "genai_limit", "message": str(exc)}, "node_errors": {}},
+                status_code=429,
+            )
+
+    @app.post("/genai/comfy-native/api/interrupt")
+    @app.post("/genai/comfy-native/api/free")
+    @app.post("/genai/comfy-native/api/queue")
+    @app.post("/api/queue")
+    @app.post("/api/free")
+    @app.post("/api/interrupt")
+    def comfy_native_dangerous_control(_user: str = Depends(_check_auth)):
+        return JSONResponse(
+            {
+                "error": {
+                    "type": "managed_by_genai",
+                    "message": "queue, interrupt and model release are managed by GenAI Studio",
+                }
+            },
+            status_code=403,
+        )
+
+    async def _guarded_comfy_proxy(request: Request, path: str, user: str) -> Response:
+        """Single allowlist gate for both catch-alls.
+
+        Anything not named in the allowlist above is refused, so a custom node that
+        registers a new route does not silently widen the proxy.
+        """
+        # Decide on the normalized path, forward the same path with its original case.
+        normalized = _normalize_proxy_path(path, casefold=False)
+        verdict = _comfy_proxy_verdict(normalized, request.method)
+        if verdict == "prompt":
+            return await comfy_native_prompt(request, user)
+        if verdict == "blocked":
+            return comfy_native_dangerous_control(user)
+        if verdict == "deny":
+            # 조용한 실패 금지 — 어떤 경로가 막혔는지 남겨야 UI 회귀를 추적할 수 있다.
+            _LOG.warning(
+                "comfy proxy denied: user=%s method=%s raw_path=%r normalized=%r",
+                user,
+                request.method,
+                path,
+                normalized,
+            )
+            return JSONResponse(
+                {
+                    "error": {
+                        "type": "comfy_path_not_allowlisted",
+                        "message": f"ComfyUI path '{normalized}' is not on the GenAI proxy allowlist",
+                    },
+                    "node_errors": {},
+                },
+                status_code=403,
+            )
+        # Forward the normalized path so ComfyUI receives exactly what was inspected.
+        return await _comfy_http_proxy(request, normalized)
+
+    # Keep this catch-all after the restricted execution/control routes.  The
+    # native frontend resolves its API relative to the iframe base path.
+    @app.api_route(
+        "/genai/comfy-native/{path:path}",
+        methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    )
+    async def comfy_native_proxy(
+        request: Request,
+        path: str,
+        user: str = Depends(_check_auth),
+    ):
+        return await _guarded_comfy_proxy(request, path, user)
+
+    @app.api_route(
+        "/api/{path:path}",
+        methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    )
+    async def comfy_api_proxy(
+        request: Request,
+        path: str,
+        user: str = Depends(_check_auth),
+    ):
+        return await _guarded_comfy_proxy(request, f"api/{path}", user)
+
+    @app.websocket("/genai/comfy-native/ws")
+    @app.websocket("/ws")
+    async def comfy_websocket_proxy(websocket: WebSocket):
+        if not _basic_auth_valid(websocket.headers.get("authorization")):
+            await websocket.close(code=4401)
+            return
+        base = os.getenv("COMFYUI_INTERNAL_URL", "http://comfyui:8188").rstrip("/")
+        target = re.sub(r"^http", "ws", base) + "/ws"
+        if websocket.url.query:
+            target += f"?{websocket.url.query}"
+        await websocket.accept()
+        try:
+            async with websockets.connect(target, max_size=None) as upstream:
+
+                async def client_to_upstream():
+                    while True:
+                        message = await websocket.receive()
+                        if message["type"] == "websocket.disconnect":
+                            return
+                        if message.get("text") is not None:
+                            await upstream.send(message["text"])
+                        elif message.get("bytes") is not None:
+                            await upstream.send(message["bytes"])
+
+                async def upstream_to_client():
+                    async for message in upstream:
+                        if isinstance(message, str):
+                            await websocket.send_text(message)
+                        else:
+                            await websocket.send_bytes(message)
+
+                tasks = {
+                    asyncio.create_task(client_to_upstream()),
+                    asyncio.create_task(upstream_to_client()),
+                }
+                done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+                for task in pending:
+                    task.cancel()
+                for task in done:
+                    task.result()
+        except (OSError, websockets.WebSocketException, WebSocketDisconnect):
+            try:
+                await websocket.close(code=1013)
+            except RuntimeError:
+                pass
+
     @app.post("/genai/batches")
     async def submit(
         request: Request,
         engine: Annotated[str, Form()],
         prompt: Annotated[str, Form()],
         files: Annotated[list[UploadFile] | None, File()] = None,
+        mask_file: Annotated[UploadFile | None, File()] = None,
         model_name: Annotated[str | None, Form()] = None,
         mode: Annotated[str | None, Form()] = None,
         duration: Annotated[str | None, Form()] = None,
         aspect_ratio: Annotated[str | None, Form()] = None,
         bulk_group_id: Annotated[str | None, Form()] = None,
+        workflow_id: Annotated[str | None, Form()] = None,
+        negative_prompt: Annotated[str | None, Form()] = None,
+        seed: Annotated[str | None, Form()] = None,
+        steps: Annotated[str | None, Form()] = None,
+        cfg: Annotated[str | None, Form()] = None,
+        denoise: Annotated[str | None, Form()] = None,
+        return_to: Annotated[str | None, Form()] = None,
         user: str = Depends(_check_auth),
     ):
         if engine not in enabled_engines():
@@ -229,9 +852,42 @@ def create_app() -> FastAPI:
                 raise HTTPException(status_code=413,
                                     detail=f"file too large: {len(blob)} > {_MAX_BYTES_PER_FILE}")
             loaded.append((f.filename or "image", blob))
+        controls: list[tuple[str, bytes]] = []
+        if mask_file is not None and (mask_file.filename or "").strip():
+            mask_ext = Path(mask_file.filename or "").suffix.lower()
+            if mask_ext != ".png":
+                raise HTTPException(status_code=415, detail="inpaint mask must be a PNG")
+            mask_blob = await mask_file.read()
+            if len(mask_blob) > _MAX_BYTES_PER_FILE:
+                raise HTTPException(status_code=413, detail="mask file too large")
+            controls.append((mask_file.filename or "mask.png", mask_blob))
+
+        if engine == "comfy_local":
+            selected_workflow = (workflow_id or "flux2-klein-4b-edit-v1").strip()
+            if len(loaded) != 1:
+                raise HTTPException(
+                    status_code=400, detail="comfy_local requires exactly one source image per batch"
+                )
+            if selected_workflow == "sdxl-inpaint-cctv-v1":
+                if len(controls) != 1:
+                    raise HTTPException(status_code=400, detail="SDXL inpaint requires one mask")
+                try:
+                    _validate_inpaint_pair(loaded[0][1], controls[0][1])
+                except ValueError as exc:
+                    raise HTTPException(status_code=400, detail=str(exc)) from exc
+            elif selected_workflow == "flux2-klein-4b-edit-v1":
+                if controls:
+                    raise HTTPException(status_code=400, detail="FLUX.2 edit does not accept a mask")
+            else:
+                raise HTTPException(status_code=400, detail="workflow_id is not allowlisted")
+        elif controls:
+            raise HTTPException(status_code=400, detail="mask_file is only supported by comfy_local")
         # daily quota 검사 (입력 bytes + 일별 batch 수)
         try:
-            limits.check_daily_quota(user, sum(len(b) for _, b in loaded))
+            limits.check_daily_quota(
+                user,
+                sum(len(b) for _, b in loaded) + sum(len(b) for _, b in controls),
+            )
         except limits.LimitExceeded as exc:
             raise HTTPException(status_code=429, detail=str(exc))
         # 엔진별 옵션 (Kling 의 model_name/mode/duration 등) 통과
@@ -244,6 +900,21 @@ def create_app() -> FastAPI:
             options["duration"] = duration
         if aspect_ratio:
             options["aspect_ratio"] = aspect_ratio
+        if engine == "comfy_local":
+            options["workflow_id"] = (workflow_id or "flux2-klein-4b-edit-v1").strip()
+            if negative_prompt:
+                options["negative_prompt"] = negative_prompt.strip()
+            for key, raw_value, caster in (
+                ("seed", seed, int),
+                ("steps", steps, int),
+                ("cfg", cfg, float),
+                ("denoise", denoise, float),
+            ):
+                if raw_value is not None and raw_value.strip() != "":
+                    try:
+                        options[key] = caster(raw_value)
+                    except ValueError as exc:
+                        raise HTTPException(status_code=400, detail=f"invalid {key}") from exc
         # bulk submit 묶음 id — CLI bulk-submit 가 N batch 를 1 group 으로 묶을 때
         # options_json 에 그대로 저장 (스키마 변경 X). UI 가 그룹 필터에 활용.
         if bulk_group_id and bulk_group_id.strip():
@@ -263,6 +934,7 @@ def create_app() -> FastAPI:
             files=loaded,
             requested_by=user,
             options=options or None,
+            control_files=controls or None,
         )
         # API 클라이언트가 명시적으로 JSON 요청한 경우만 JSONResponse.
         # 브라우저 (HTML 폼) 는 첫 화면 그대로 머무르도록 303 Redirect → '/?created=<batch_id>'
@@ -270,10 +942,8 @@ def create_app() -> FastAPI:
         accept = (request.headers.get("accept") or "").lower()
         if "application/json" in accept and "text/html" not in accept:
             return JSONResponse(result)
-        return RedirectResponse(
-            url=f"/?created={result['batch_id']}",
-            status_code=303,
-        )
+        target = "/genai/comfy-nodes" if return_to == "/genai/comfy-nodes" else "/"
+        return RedirectResponse(url=f"{target}?created={result['batch_id']}", status_code=303)
 
     @app.get("/genai/batches", response_class=HTMLResponse)
     def list_batches(
@@ -557,11 +1227,24 @@ def create_app() -> FastAPI:
     def bulk_form(request: Request, user: str = Depends(_check_auth)):
         """대량 (이미지 × 프롬프트) 제출 폼. 클라이언트 JS 가 plan/cost preview."""
         from lib.kling_pricing import pricing_table_json
+        requested_engine = (request.query_params.get("engine") or "").strip()
+        bulk_engines = enabled_engines()
+        selected_engine = requested_engine if requested_engine in bulk_engines else (
+            bulk_engines[0] if bulk_engines else None
+        )
+        requested_pair_mode = (request.query_params.get("pair_mode") or "").strip()
+        selected_pair_mode = (
+            requested_pair_mode
+            if requested_pair_mode in {"paired", "cartesian"}
+            else "cartesian" if selected_engine == "comfy_local" else "paired"
+        )
         return templates.TemplateResponse(
             request=request,
             name="bulk.html",
             context={
-                "engines": enabled_engines(),
+                "engines": bulk_engines,
+                "selected_engine": selected_engine,
+                "selected_pair_mode": selected_pair_mode,
                 "engine_options": all_engine_options(),
                 "engine_tab": ENGINE_TAB,
                 "max_bulk_jobs": _MAX_BULK_JOBS,
@@ -581,10 +1264,18 @@ def create_app() -> FastAPI:
         text_only: Annotated[str, Form()] = "false",
         bulk_group_id: Annotated[str | None, Form()] = None,
         files: Annotated[list[UploadFile] | None, File()] = None,
+        mask_files: Annotated[list[UploadFile] | None, File()] = None,
         model_name: Annotated[str | None, Form()] = None,
         mode: Annotated[str | None, Form()] = None,
         duration: Annotated[str | None, Form()] = None,
         aspect_ratio: Annotated[str | None, Form()] = None,
+        workflow_id: Annotated[str | None, Form()] = None,
+        negative_prompt: Annotated[str | None, Form()] = None,
+        seed: Annotated[str | None, Form()] = None,
+        steps: Annotated[str | None, Form()] = None,
+        cfg: Annotated[str | None, Form()] = None,
+        denoise: Annotated[str | None, Form()] = None,
+        prompt_graph: Annotated[str | None, Form()] = None,
         user: str = Depends(_check_auth),
     ):
         import asyncio as _asyncio
@@ -621,6 +1312,39 @@ def create_app() -> FastAPI:
         if pair_mode not in ("paired", "cartesian"):
             raise HTTPException(status_code=400,
                                 detail=f"pair_mode 는 paired|cartesian (got {pair_mode!r})")
+        if prompt_graph:
+            if engine != "comfy_local":
+                raise HTTPException(
+                    status_code=400,
+                    detail="prompt_graph is only supported by comfy_local",
+                )
+            if len(prompt_graph) > 1_000_000:
+                raise HTTPException(status_code=413, detail="prompt_graph is too large")
+            try:
+                graph_workflow_id, graph_values = _match_comfy_native_prompt(
+                    json.loads(prompt_graph)
+                )
+            except (json.JSONDecodeError, ValueError, KeyError, TypeError) as exc:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"approved Comfy graph required: {exc}",
+                ) from exc
+            if workflow_id and workflow_id.strip() != graph_workflow_id:
+                raise HTTPException(
+                    status_code=400,
+                    detail="workflow_id does not match prompt_graph",
+                )
+            workflow_id = graph_workflow_id
+            prompts_text = str(graph_values["prompt"])
+            negative_prompt = (
+                str(graph_values["negative_prompt"])
+                if "negative_prompt" in graph_values
+                else None
+            )
+            seed = str(graph_values["seed"])
+            steps = str(graph_values["steps"])
+            cfg = str(graph_values["cfg"]) if "cfg" in graph_values else None
+            denoise = str(graph_values["denoise"]) if "denoise" in graph_values else None
         if bulk_group_id:
             bgi = bulk_group_id.strip()
             if bgi and not _BULK_GROUP_ID_RE.fullmatch(bgi):
@@ -651,10 +1375,69 @@ def create_app() -> FastAPI:
                                         detail=f"파일 너무 큼 ({f.filename}, {len(blob)} > {_MAX_BYTES_PER_FILE})")
                 loaded.append((f.filename or "image", blob))
 
+        mask_files = [f for f in (mask_files or []) if (f.filename or "").strip()]
+        controls: list[tuple[str, bytes]] = []
+        for f in mask_files:
+            ext = Path(f.filename or "").suffix.lower()
+            if ext != ".png":
+                raise HTTPException(status_code=415, detail=f"inpaint mask must be PNG ({f.filename})")
+            blob = await f.read()
+            if len(blob) > _MAX_BYTES_PER_FILE:
+                raise HTTPException(status_code=413, detail=f"mask file too large ({f.filename})")
+            controls.append((f.filename or "mask.png", blob))
+
+        selected_workflow: str | None = None
+        if engine == "comfy_local":
+            selected_workflow = (workflow_id or "flux2-klein-4b-edit-v1").strip()
+            configured_workflows = {
+                item.strip()
+                for item in os.getenv(
+                    "COMFYUI_ALLOWED_WORKFLOWS", ",".join(_COMFY_NODE_WORKFLOWS)
+                ).split(",")
+                if item.strip()
+            }
+            if (
+                selected_workflow not in _COMFY_NODE_WORKFLOWS
+                or selected_workflow not in configured_workflows
+            ):
+                raise HTTPException(status_code=400, detail="workflow_id is not allowlisted")
+            if selected_workflow == "sdxl-inpaint-cctv-v1":
+                if len(controls) != len(loaded):
+                    raise HTTPException(
+                        status_code=400,
+                        detail=(
+                            "SDXL inpaint requires one mask per source image in the same order "
+                            f"(images={len(loaded)}, masks={len(controls)})"
+                        ),
+                    )
+                for index, (source_item, mask_item) in enumerate(zip(loaded, controls), start=1):
+                    try:
+                        _validate_inpaint_pair(source_item[1], mask_item[1])
+                    except ValueError as exc:
+                        raise HTTPException(
+                            status_code=400,
+                            detail=f"source/mask pair {index} invalid: {exc}",
+                        ) from exc
+            elif controls:
+                raise HTTPException(status_code=400, detail="FLUX.2 edit does not accept masks")
+        elif controls:
+            raise HTTPException(status_code=400, detail="mask_files are only supported by comfy_local")
+
+        # Comfy bulk convenience: one prompt is a broadcast instruction for every
+        # selected source image.  Normalize this server-side as well as in the UI so
+        # stale tabs/API clients that still submit pair_mode=paired do not fail M×1.
+        if (
+            engine == "comfy_local"
+            and not is_text_only
+            and len(prompts) == 1
+            and len(loaded) > 1
+        ):
+            pair_mode = "cartesian"
+
         # 4) plan 구성
         plan: list[dict] = []
         if is_text_only:
-            plan = [{"prompt": p, "files": []} for p in prompts]
+            plan = [{"prompt": p, "files": [], "controls": []} for p in prompts]
         elif pair_mode == "paired":
             if len(loaded) != len(prompts):
                 raise HTTPException(
@@ -665,12 +1448,17 @@ def create_app() -> FastAPI:
                         "cartesian 모드로 변경하거나 개수를 맞춰주세요."
                     ),
                 )
-            for p, item in zip(prompts, loaded):
-                plan.append({"prompt": p, "files": [item]})
+            for index, (p, item) in enumerate(zip(prompts, loaded)):
+                pair_controls = [controls[index]] if controls else []
+                plan.append({"prompt": p, "files": [item], "controls": pair_controls})
         else:  # cartesian: 같은 prompt 마다 _MAX_FILES_PER_BATCH 단위 chunk
             for p in prompts:
                 for i in range(0, len(loaded), _MAX_FILES_PER_BATCH):
-                    plan.append({"prompt": p, "files": loaded[i:i + _MAX_FILES_PER_BATCH]})
+                    plan.append({
+                        "prompt": p,
+                        "files": loaded[i:i + _MAX_FILES_PER_BATCH],
+                        "controls": controls[i:i + _MAX_FILES_PER_BATCH] if controls else [],
+                    })
 
         # 5) hard cap — 총 jobs 수
         total_jobs = sum(max(1, len(b["files"])) for b in plan)
@@ -688,7 +1476,13 @@ def create_app() -> FastAPI:
         usage = limits.usage(user)
         rem_b = usage.get("daily_batches", {}).get("remaining")
         rem_bytes = usage.get("daily_bytes", {}).get("remaining")
-        total_input_bytes = sum(len(b) for _, b in loaded)
+        # Cartesian mode reuses the same upload for every prompt, but every generated
+        # batch persists its own quarantined copy. Account for those actual bytes.
+        total_input_bytes = sum(
+            len(blob)
+            for batch in plan
+            for _filename, blob in batch["files"] + batch["controls"]
+        )
         if rem_b is not None and n_batches > rem_b:
             raise HTTPException(status_code=429,
                                 detail=f"일별 배치 한도 초과: 제출 {n_batches} > 잔여 {rem_b}")
@@ -698,7 +1492,7 @@ def create_app() -> FastAPI:
 
         # 7) options
         bgi = bgi or f"bgi-{_uuid.uuid4().hex[:12]}"
-        common_opts: dict[str, str] = {}
+        common_opts: dict[str, object] = {}
         if model_name:
             common_opts["model_name"] = model_name
         if mode:
@@ -709,6 +1503,36 @@ def create_app() -> FastAPI:
             common_opts["aspect_ratio"] = aspect_ratio
         if is_text_only:
             common_opts.setdefault("mode", "txt2video")
+        if engine == "comfy_local":
+            common_opts["workflow_id"] = selected_workflow or "flux2-klein-4b-edit-v1"
+            if negative_prompt:
+                common_opts["negative_prompt"] = negative_prompt.strip()
+            for key, raw_value, caster in (
+                ("seed", seed, int),
+                ("steps", steps, int),
+                ("cfg", cfg, float),
+                ("denoise", denoise, float),
+            ):
+                if raw_value is not None and raw_value.strip() != "":
+                    try:
+                        common_opts[key] = caster(raw_value)
+                    except ValueError as exc:
+                        raise HTTPException(status_code=400, detail=f"invalid {key}") from exc
+            parsed_seed = int(common_opts.get("seed", 0))
+            is_flux_workflow = bool(selected_workflow and selected_workflow.startswith("flux2-"))
+            parsed_steps = int(common_opts.get("steps", 4 if is_flux_workflow else 30))
+            parsed_cfg = float(common_opts.get("cfg", 6.0))
+            parsed_denoise = float(common_opts.get("denoise", 0.85))
+            if parsed_seed < 0 or parsed_seed >= 2**63:
+                raise HTTPException(status_code=400, detail="seed must be in [0, 2^63)")
+            if is_flux_workflow and parsed_steps != 4:
+                raise HTTPException(status_code=400, detail="FLUX.2 Klein workflow requires steps=4")
+            if not 1 <= parsed_steps <= 60:
+                raise HTTPException(status_code=400, detail="steps must be in [1, 60]")
+            if not 0 <= parsed_cfg <= 20:
+                raise HTTPException(status_code=400, detail="cfg must be in [0, 20]")
+            if not 0 < parsed_denoise <= 1:
+                raise HTTPException(status_code=400, detail="denoise must be in (0, 1]")
         common_opts["bulk_group_id"] = bgi
 
         # 8) 순차 submit (sleep with throttle)
@@ -720,11 +1544,13 @@ def create_app() -> FastAPI:
                     engine=engine, prompt=b["prompt"],
                     files=b["files"], requested_by=user,
                     options=dict(common_opts),
+                    control_files=b["controls"] or None,
                 )
                 submitted.append({
                     "i": i,
                     "batch_id": result.get("batch_id"),
                     "n_images": len(b["files"]),
+                    "n_controls": len(b["controls"]),
                 })
             except Exception as exc:
                 failed.append({"i": i, "error": str(exc), "type": type(exc).__name__})
@@ -736,7 +1562,10 @@ def create_app() -> FastAPI:
         result_payload = {
             "bulk_group_id": bgi,
             "engine": engine,
+            "workflow_id": selected_workflow,
+            "pair_mode": pair_mode,
             "total_planned": len(plan),
+            "total_jobs": total_jobs,
             "submitted": submitted,
             "failed": failed,
         }
@@ -846,7 +1675,7 @@ def create_app() -> FastAPI:
             opts_retry = {}
         is_text_only_retry = (opts_retry.get("mode") or "").strip().lower() == "txt2video"
 
-        from adapters import KlingTransientError, get_adapter
+        from adapters import AdapterDeferredError, KlingTransientError, get_adapter
         adapter = get_adapter(engine)
 
         if is_text_only_retry:
@@ -863,6 +1692,16 @@ def create_app() -> FastAPI:
                 pg.recompute_batch_status(batch_id)  # batch 를 'running' 으로 둔 채 이탈 방지
                 raise HTTPException(status_code=410, detail=f"original file gone: {orig_name}")
 
+        opts_retry["_job_id"] = job_id
+        if engine == "comfy_local" and opts_retry.get("workflow_id") == "sdxl-inpaint-cctv-v1":
+            mask_blob, mask_name = _load_nas_control_blob(batch_id, int(seq))
+            if mask_blob is None:
+                pg.update_job_status(job_id, status="failed", error_message="control mask gone")
+                pg.recompute_batch_status(batch_id)
+                raise HTTPException(status_code=410, detail=f"control mask gone: {mask_name}")
+            opts_retry["_mask_bytes"] = mask_blob
+            opts_retry["_mask_filename"] = mask_name
+
         try:
             sub = adapter.submit(blob, orig_name, prompt, options=opts_retry or None)
         except KlingTransientError as exc:
@@ -872,6 +1711,15 @@ def create_app() -> FastAPI:
             pg.recompute_batch_status(batch_id)
             return {"job_id": job_id, "status": "pending", "action": "deferred",
                     "detail": str(exc)}
+        except AdapterDeferredError as exc:
+            pg.mark_job_deferred(job_id, str(exc))
+            pg.recompute_batch_status(batch_id)
+            return {
+                "job_id": job_id,
+                "status": "pending",
+                "action": "deferred",
+                "detail": str(exc),
+            }
         except Exception as exc:
             # 외부 API 실패 시 status='failed' 로 되돌림
             pg.update_job_status(job_id, status="failed",
@@ -902,6 +1750,29 @@ def create_app() -> FastAPI:
         """미완료(pending/submitted/running) job 을 일괄 취소. pending 정지 = drain 이 더 이상
         제출 안 함(과금 차단). 이미 submitted 된 job 은 Kling 에 provider-cancel API 가 없어
         DB 상에서만 abandon (계속 생성될 수 있음)."""
+        # A local Comfy job owns GPU0 until its prompt is interrupted and resources are
+        # released. Provider APIs without cancellation keep the existing DB-only behavior.
+        with pg.connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT b.engine, j.provider_job_id
+                      FROM genai_jobs j JOIN genai_batches b ON b.batch_id=j.batch_id
+                     WHERE j.batch_id=%s AND j.status IN ('submitted','running')
+                    """,
+                    (batch_id,),
+                )
+                active_jobs = cur.fetchall()
+        for engine, provider_job_id in active_jobs:
+            if engine == "comfy_local" and provider_job_id:
+                try:
+                    from adapters import get_adapter
+
+                    get_adapter(engine).cancel(provider_job_id)
+                except Exception:
+                    # Cancellation remains fail-forward: DB terminal state is authoritative,
+                    # while the lease TTL is the crash-safe cleanup path.
+                    pass
         n = pg.cancel_batch(batch_id, f"cancelled by {user} (재작업)")
         return {"batch_id": batch_id, "cancelled_jobs": n}
 
@@ -1052,7 +1923,7 @@ def create_app() -> FastAPI:
         deferred 로 두고 다음 tick 재시도.
         """
         _check_internal(request)
-        from adapters import KlingTransientError, engine_max_concurrent, get_adapter
+        from adapters import AdapterDeferredError, KlingTransientError, engine_max_concurrent, get_adapter
         import json as _json
 
         result = {"submitted": 0, "deferred": 0, "failed": 0}
@@ -1088,6 +1959,17 @@ def create_app() -> FastAPI:
                                              error_message="original file gone (drain)")
                         result["failed"] += 1
                         continue
+                opts["_job_id"] = job_id
+                if engine == "comfy_local" and opts.get("workflow_id") == "sdxl-inpaint-cctv-v1":
+                    mask_blob, mask_name = _load_nas_control_blob(batch_id, seq)
+                    if mask_blob is None:
+                        pg.update_job_status(
+                            job_id, status="failed", error_message="control mask gone (drain)"
+                        )
+                        result["failed"] += 1
+                        continue
+                    opts["_mask_bytes"] = mask_blob
+                    opts["_mask_filename"] = mask_name
                 try:
                     sub = adapter.submit(blob, name, job["prompt"], options=opts or None)
                     pg.update_job_submitted(job_id, sub.provider_job_id)
@@ -1108,6 +1990,11 @@ def create_app() -> FastAPI:
                         )
                 except KlingTransientError as exc:
                     # 슬롯 아직 참 — deferred 유지, 같은 engine pass 중단 (Codex Q1)
+                    pg.mark_job_deferred(job_id, str(exc))
+                    result["deferred"] += 1
+                    if budget is not None:
+                        budget = 0
+                except AdapterDeferredError as exc:
                     pg.mark_job_deferred(job_id, str(exc))
                     result["deferred"] += 1
                     if budget is not None:

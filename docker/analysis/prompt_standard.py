@@ -53,10 +53,12 @@ WINNING_FORM = {c: max(v, key=v.get) for c, v in SELECTIVITY.items()}
 FORM_QUOTA = 0.70                            # 승리 형태가 차지해야 할 최소 비율
 
 # §10 — normal 에 들어가면 이벤트 클래스를 강탈하는 어휘. 부정형도 금지("no smoke" 도 자석이다)
+# ⚠️ 여기 있는 것은 **클래스의 성질**(어느 현장에서나 그 클래스를 오염시키는 어휘)만이다.
+# 현장 고유 오탐원(source-i의 escalator, 창고의 forklift 등)은 EnvProfile.banned 에 둔다 —
+# 전역에 넣으면 새 현장이 남의 현장 규칙을 상속한다.
 BANNED = {
     "normal": r"\b(lying|lie|lies|lay|laid|fallen|fall|falls|falling|collapse\w*|slump\w*|sprawl\w*|"
               r"unconscious|motionless|fire|flame\w*|burn\w*|smoke|smok\w*|haze|emergency|injur\w*|blaze)\b",
-    "falldown": r"\bescalator\w*\b",          # 이 현장 최대 오탐원 — falldown 문장에서 배제
     "fire": r"\b(smoke|smok\w*|haze|smell)\b",
     "smoke": r"\b(flame\w*|fire|burning|blaze)\b",
 }
@@ -85,6 +87,7 @@ class EnvProfile:
     places: list                             # 장소 어휘 후보 (문장당 최대 1개, 골고루)
     confusers: list                          # 이 현장에서 실제로 오경보를 낸 것들 (normal 문장이 덮어야 함)
     known_traps: list = field(default_factory=list)   # 실측된 강탈 문장 (모방 금지 예시)
+    banned: dict = field(default_factory=dict)        # 현장 고유 금칙어 {클래스: 정규식}
     classes: list = field(default_factory=lambda: list(CLASSES))
 
 
@@ -113,9 +116,22 @@ sourcei = EnvProfile(
                  "a worker bending to collect items from the floor",
                  "In a CCTV footage at a parking lot, a cleaner is sweeping the floor.",
                  "A man is lying forward on an escalator instead of standing upright."],
+    banned={"falldown": r"\bescalator\w*\b"},   # 이 현장 최대 오탐원
 )
 
 ENVS = {"sourcei": sourcei}
+
+
+def load_env(spec: str) -> EnvProfile:
+    """`--env` 해석. 등록된 이름이거나 **현장 프로필 JSON 파일 경로**.
+    새 현장은 JSON 만 쓰면 되고 이 모듈은 안 고친다 — 안 그러면 현장마다 규칙이 갈라진다."""
+    if spec in ENVS:
+        return ENVS[spec]
+    d = json.load(open(spec))
+    for k in ("name", "description", "places", "confusers"):
+        if not d.get(k):
+            raise SystemExit(f"현장 프로필에 '{k}' 가 비어 있다: {spec}")
+    return EnvProfile(**{k: v for k, v in d.items() if k in EnvProfile.__dataclass_fields__})
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -145,25 +161,39 @@ def build_generation_prompt(env: EnvProfile, cls: str, n: int) -> str:
         f"3. Content requirement: {MUST_DESCRIBE[cls]}",
     ]
     if cls == "normal":
-        L += ["4. CRITICAL: no posture, collapse, lying, falling, fire, smoke, flame or emergency "
+        L += ["* CRITICAL: no posture, collapse, lying, falling, fire, smoke, flame or emergency "
               "vocabulary at all — not even negated. At this site the sentence "
               "\"A man is lying forward on an escalator instead of standing upright.\" is labeled "
               "normal and it steals 52 frames from the falldown class.",
-              "5. Cover this site's actual confusers: " + "; ".join(env.confusers) + "."]
+              "* Cover this site's actual confusers: " + "; ".join(env.confusers) + "."]
     else:
-        banned_desc = {"falldown": "the word \"escalator\"", "fire": "smoke, haze or smell",
-                       "smoke": "flame, fire or burning"}[cls]
-        L += [f"4. Do NOT mention {banned_desc} anywhere — a separate class covers that."]
+        # .get — 측정 클래스 밖(현장 고유 클래스)은 전역 금칙 설명이 없을 뿐, KeyError 가 아니다
+        banned_desc = {"fire": "smoke, haze or smell",
+                       "smoke": "flame, fire or burning"}.get(cls)
+        if banned_desc:
+            L += [f"* Do NOT mention {banned_desc} anywhere — a separate class covers that."]
+        if env.banned.get(cls):
+            L += [f"* Do NOT use any word matching this site-specific ban: {env.banned[cls]}"]
+        if env.confusers:
+            L += ["* These are ordinary background objects and activities at this site. They may "
+                  "appear incidentally, but NEVER make one the subject or the reason of the "
+                  "sentence — a sentence built around a site object retrieves that object, not the "
+                  "event: " + "; ".join(env.confusers) + "."]
         if env.known_traps:
-            L += ["5. These sentences already steal frames at this site. Do NOT imitate them:"] + \
+            L += ["* These sentences already steal frames at this site. Do NOT imitate them:"] + \
                  [f"   - {t}" for t in env.known_traps[:5]]
     L += [
-        f"6. Each sentence {LEN_MIN}-{LEN_MAX} words, one clause or two short clauses, plain present "
+        f"* Each sentence {LEN_MIN}-{LEN_MAX} words, one clause or two short clauses, plain present "
         "tense, no numbers, no proper nouns, no Korean, no camera IDs, no timestamps.",
-        "7. No two sentences may differ only by a place word — vary the event description itself.",
+        "* No two sentences may differ only by a place word — vary the event description itself.",
         "",
         f"Output exactly {n} entries: [\"sentence\", \"sentence\", ...]",
     ]
+    n_rule = 0
+    for i, line in enumerate(L):                # `*` 로 쓴 규칙에 순번을 붙인다 (조건부라 손번호는 어긋난다)
+        if line.startswith("*"):
+            n_rule += 1
+            L[i] = f"{n_rule + 3}." + line[1:]
     return "\n".join(L)
 
 
@@ -200,7 +230,9 @@ def _form_of(s: str) -> str:
 
 def validate(sentences, cls: str, env: EnvProfile = None):
     """반환 (kept, rejected). rejected 는 (문장, 사유) — 사유를 남겨야 프롬프트를 고칠 수 있다."""
-    pat = re.compile(BANNED[cls], re.I) if cls in BANNED else None
+    pats = [BANNED[cls]] if cls in BANNED else []
+    if env and env.banned.get(cls): pats.append(env.banned[cls])
+    pat = re.compile("|".join(pats), re.I) if pats else None
     kept, rejected, seen = [], [], set()
     for s in sentences:
         s = (s or "").strip()
@@ -296,12 +328,12 @@ def main():
                               length=[LEN_MIN, LEN_MAX], cuts=CUTS,
                               envs={k: asdict(v) for k, v in ENVS.items()}), ensure_ascii=False, indent=1))
     elif a.cmd == "generate":
-        inst = build_generation_prompt(ENVS[a.env], a.cls, a.n)
+        inst = build_generation_prompt(load_env(a.env), a.cls, a.n)
         if a.print_only: print(inst); return
         raw = _gemini(inst, a.model)
         m = re.search(r"\[.*\]", raw, re.S)
         arr = json.loads(m.group(0)) if m else []
-        kept, rej, rep = validate(arr, a.cls, ENVS[a.env])
+        kept, rej, rep = validate(arr, a.cls, load_env(a.env))
         print(json.dumps(dict(cls=a.cls, env=a.env, report=rep, sentences=kept,
                               rejected=[{"text": t, "why": w} for t, w in rej]), ensure_ascii=False, indent=1))
     elif a.cmd == "validate":
@@ -341,7 +373,17 @@ def selftest():
     # (3) 금칙어는 여전히 잡혀야 한다 (완화 회귀 방지)
     kept, rej, _ = validate(["A person is lying on the sales floor"], "normal", sourcei)
     assert not kept and "금칙어" in rej[0][1], rej
-    print(f"selftest OK — 형태 {len(cases)}건 · 장소구 2건 · 금칙어 1건")
+    # (4) 현장 프로필 JSON 경로도 --env 로 먹어야 한다 (현장 추가 = 코드 수정 없음)
+    import tempfile
+    with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
+        json.dump(dict(name="wh", description="A logistics warehouse.", places=["loading bay"],
+                       confusers=["a forklift moving pallets"]), f)
+        pth = f.name
+    e = load_env(pth); os.unlink(pth)
+    assert e.name == "wh" and e.confusers, e
+    assert "forklift" in build_generation_prompt(e, "falldown", 5), "이벤트 지시문에 현장 사물 경고가 없다"
+    assert "forklift" in build_generation_prompt(e, "normal", 5), "normal 지시문에 confuser 가 없다"
+    print(f"selftest OK — 형태 {len(cases)}건 · 장소구 2건 · 금칙어 1건 · 현장 JSON 1건")
 
 
 if __name__ == "__main__":
