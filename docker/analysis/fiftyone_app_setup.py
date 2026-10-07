@@ -702,7 +702,8 @@ def _gidx_to_class(prompts_name):
     sch = p.get_field_schema()
     if "gidx" not in sch or "category" not in sch:
         return {}
-    return dict(zip(p.values("gidx"), p.values("category.label")))
+    gidx, labels = p.values(["gidx", "category.label"])
+    return dict(zip(gidx, labels))
 
 
 def gidx_shift(ds, src_field, prompts_name, version):

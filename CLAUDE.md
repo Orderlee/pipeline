@@ -1,692 +1,86 @@
 # CLAUDE.md — VLM Data Pipeline
 
-> 코드를 읽으면 아는 것은 생략. 코드만으로는 알 수 없는 규칙·환경·운영 맥락만 기록.
-
----
-
-## 프로젝트 한 줄 요약
-
-CCTV/보안 영상을 수집 → 중복제거 → Gemini 라벨링 → SAM3 bbox 검출 → Label Studio 사람 검수 →
-학습 데이터셋 빌드하는 **Dagster + PostgreSQL + MinIO 기반 미디어 데이터 파이프라인**.
-
-> DuckDB write path 는 2026-05-19 에 Postgres 로 cutover 됐고, MotherDuck 동기화 코드는
-> `scripts/archive/` 로 이동해 **live 코드에 존재하지 않습니다** (`grep motherduck src/` → 0 hits).
-> bbox 는 `ENABLE_YOLO_DETECTION=false` 로 YOLO 대신 SAM3 가 담당합니다.
-
----
-
-## 🤖 AI Agent Core Action Rules
-
-- **Skill Discovery First:** 사용자가 작업을 지시하면, 스스로 코드를 처음부터 짜기 전에 반드시 시스템 도구를 거쳐 `.agent/skill/` 디렉토리를 먼저 검색하세요.
-- 요청과 관련된 스킬 문서가 발견되면, 해당 문서(`SKILL.md`)의 지침을 완벽하게 읽고 그 룰에 맞추어 작업을 수행하세요.
-- **페르소나 라우팅 힌트는 훅이 자동으로 준다:** `.claude/settings.json` 의 `UserPromptSubmit` 이
-  `.claude/hooks/persona_router.py` 를 실행해, 프롬프트에 트리거 키워드가 보이면 상위 3개
-  페르소나를 위임 후보로 제안한다 (합계 2점 미만이면 침묵, 예외는 조용히 통과). 페르소나 정의는
-  `.claude/agents/*.md` 24종, 라우팅표 정본은 `docs/references/agent-teams.md` §2.
-- **새 페르소나를 추가할 때:** 라우터는 별도 키워드 테이블이 아니라 `.claude/agents/<name>.md`
-  frontmatter `description` 안의 `Triggers — <쉼표 구분 키워드>` 구간만 읽는다. 그 구간이 없으면
-  파일이 있어도 **라우팅 대상이 아니다**(수동 위임만 가능) — 현재 24종 중
-  `codex`/`dagster-impl`/`deploy-auditor`/`pipeline-explorer`/`qa-strategist` 5종이 이 상태다.
-
----
-
-## 빌드 & 실행
-
-```bash
-# 의존성 설치 (editable)
-# ⚠️ pyproject.toml 은 git 미추적(.gitignore) — fresh clone 에는 없다. 호스트 잔존 파일로만
-#    동작하며 CI 는 이 경로를 타지 않는다(self-hosted 러너 고정 venv).
-pip install -e ".[dev]"
-
-# 로컬 테스트
-pytest tests/unit -q
-pytest tests/integration -q
-
-# Docker (production — main 브랜치)
-./scripts/compose-prod.sh up -d
-# Docker (staging — dev 브랜치, staging clone 에서 실행)
-./scripts/compose-staging.sh up -d
-
-# ⚠️ 주의: 수동으로 `docker compose ...` 직접 호출 금지. 두 wrapper 가 다음을 보장:
-#   - prod: `-p docker --env-file .env` 명시 → NAS_DATA_ROOT 가 nas_primary 로 정상 resolve
-#   - staging: `-p pipeline-test --env-file .env.test` 명시 → 프로젝트 이름 + 포트(:3031)+경로(/staging/) 모두 정상 (없으면 PROD 컨테이너 건드림)
-# 두 케이스 다 2026-05-19 QA 중 실제 발생. CI deploy-stack.sh 는 이미 --env-file 사용 중 — 수동 ops 만 wrapper 필수.
-
-# Dagster UI  (호스트 IP = 10.0.0.10 — 구 10.0.0.x 주소는 전부 죽었음)
-#   production : http://10.0.0.10:3030  (main)
-#   staging    : http://10.0.0.10:3031  (dev, 상시 기동 아님)
-
-# DB 쿼리 (호스트에서 직접) — scripts/query_local_duckdb.py 는 scripts/archive/ 로 이동됨
-docker exec docker-postgres-1 psql -U airflow -d vlm_pipeline -c "SELECT COUNT(*) FROM raw_files;"
-```
-
----
-
-## 환경 이중 구조 (Production vs Staging)
-
-두 환경은 **독립 git clone + 독립 docker compose 스택**으로 완전 분리됩니다.
-
-| 항목 | Production | Staging |
-|------|-----------|---------|
-| Dagster UI | `http://10.0.0.10:3030` | `http://10.0.0.10:3031` |
-| Git repo (호스트) | `/home/user/work_p/Datapipeline-Data-data_pipeline` | `/home/user/work_p/Datapipeline-Data-data_pipeline_test` |
-| Git branch | **`main`** (안정) | **`dev`** (검증) |
-| Compose project | `docker` | `pipeline-test` |
-| 컨테이너 이름 prefix | `docker-dagster-*` | `pipeline-test-dagster-*` |
-| **PostgreSQL** | `vlm_pipeline` @ `docker-postgres-1` (호스트 `:15433`) | `vlm_pipeline_staging` @ `pipeline-test-postgres-1` (호스트 `:15432`) |
-| MinIO endpoint | `http://10.0.0.51:9000` | `http://10.0.0.51:9002` |
-| MinIO Console | `http://10.0.0.51:9001` | `http://10.0.0.51:9003` |
-| NAS 루트 (호스트) | `/home/user/mou/nas_primary` | `/home/user/mou/nas_primary/staging` |
-| NAS 루트 (컨테이너) | `/nas/data` (단일 바인드) | `/nas/data` (단일 바인드) |
-| DAGSTER_HOME (컨테이너) | `/app/dagster_home` | `/app/dagster_home` (동일, 호스트 경로만 다름) |
-| env file | `docker/.env` | `docker/.env.test` (스테이징 clone 안에만 존재) |
-| dispatch-agent 연동 | `host.docker.internal:8080` | `host.docker.internal:8081` |
-
-두 repo는 각자 독립 `.git`을 보유하며, 브랜치 기준 배포는 CI/CD가 자동 수행합니다 (다음 섹션).
-
-> ⚠️ **스테이징은 상시 기동이 아닙니다.** 필요할 때 `./scripts/compose-staging.sh up -d` 로 올리고
-> 검증 후 내립니다. `:3031` 무응답 자체를 장애로 오인하지 마세요.
-> (2026-07 기준 `pipeline-test-*` 컨테이너는 장기 정지 상태였음.)
-
----
-
-## 브랜치 전략 & 배포 (CI/CD)
-
-### 브랜치 역할
-
-- **`dev`** — 스테이징(3031)이 추적. 신기능·실험·리팩터링 진입점.
-- **`main`** — 프로덕션(3030)이 추적. `dev`에서 충분히 검증된 뒤에만 머지.
-
-### 자동 배포 (GitHub Actions, self-hosted runner)
-
-| Workflow | 트리거 | 배포 대상 | Runner 라벨 |
-|----------|-------|-----------|------------|
-| [`deploy-test.yml`](.github/workflows/deploy-test.yml) | `push` → `dev` (+`paths-ignore`) | 스테이징 repo | `self-hosted, linux, test` |
-| [`deploy-production.yml`](.github/workflows/deploy-production.yml) | `push` → `main` (+`paths-ignore`) | 프로덕션 repo | `self-hosted, linux, production` |
-| [`lint.yml`](.github/workflows/lint.yml) | `push`/`PR` → `dev`,`main` | – | `ubuntu-latest` |
-| [`claude.yml`](.github/workflows/claude.yml) | `@claude` 코멘트 | – | `ubuntu-latest` |
-| [`claude-review.yml`](.github/workflows/claude-review.yml) | `pull_request_target` | – | `ubuntu-latest` |
-
-배포 워크플로 둘 다 [`scripts/deploy/deploy-stack.sh`](scripts/deploy/deploy-stack.sh)로 실행. 주요 단계:
-
-1. **test 잡** — `scripts/check_lib_layer_imports.py` + `pytest tests/unit` + `pytest tests/integration`
-   (PG 사이드카). `workflow_dispatch` 의 `skip_tests=true`로 우회 가능, 긴급시 전용
-2. **detect_image_rebuild 잡** — 아래 경로 변경 시 이미지 재빌드:
-   `docker/Dockerfile`, `docker/app/`, `configs/`, `scripts/`, `gcp/`, `split_dataset/`,
-   `src/python/`, **`src/vlm_pipeline/`**, `src/gemini/`,
-   `docker/{sam3,pg-backup,genai,embedding,trainer,mlflow,curation}/`,
-   `docker/analysis/Dockerfile`·`docker/analysis/requirements.txt`(analysis 는 이 두 파일만 —
-   `.py`·플러그인은 bind mount 라 재빌드 불요, `docker/analysis/**` 자체는 `paths-ignore`),
-   `docker/docker-compose.yaml`, 그리고 배포 workflow 파일 자체
-3. **deploy 잡** — 호스트 코드를 deployed SHA로 정렬:
-   - **(a) rsync** `-a --delete` 워크스페이스 → DEPLOY_ROOT 동기화 (`src/`, `configs/`, `gcp/`, `scripts/`, `split_dataset/` + `docker/app/` 일부 + compose/Dockerfile). `docker/app/` rsync 는 `dagster_home/`, `dagster_home_staging/`, `credentials/` 를 `--exclude`. `docker/data/` 는 애초에 rsync 소스가 아니고 gitignore 대상이라 양쪽 모두 안 건드림
-   - **(b) git hard-reset** `git -C ${DEPLOY_REPO_ROOT} fetch origin && reset --hard ${GITHUB_SHA}` — 호스트 git tree(`.git/HEAD`, `git log`, `git status`)를 deployed commit과 정확히 일치시킴. **rsync로 src 파일은 갱신되지만 `.git`은 안 건드리므로** 이 step이 없으면 호스트의 `git log`가 영원히 stale로 보임. tracked 파일만 reset되고 `dagster_home/` 등 untracked는 유지됨.
-4. env 파일 복원 + `REQUIRED_ENV_KEYS` 검증 (누락 시 hard fail), MinIO 키 자동 파생
-5. `postgres` healthy 대기 → dagster 3종 stop/rm → code-server → daemon → dagster 순차 기동 →
-   profile 별 조건부 build/recreate(`sam3`/`pg-backup`/`genai`/`embedding-service`/`trainer`/`analysis`) →
-   analysis 4서비스(analysis/analysis-fiftyone/analysis-streamlit/analysis-sync — `analysis-fiftyone-2~5`(좌석)·`analysis-fiftyone-proxy`·`fiftyone-mongo` 는 목록에 없어 배포가 살리지 않는다)는 `up -d` 로만 보증(force-recreate 아님 — FiftyOne 세션 보호) →
-   HEALTHCHECK_URL 응답 검증 (prod `:3030/server_info`, staging `:3031/server_info`)
-6. AI deploy 분석 (Claude CLI, best-effort, 실패해도 배포는 성공)
-
-> ✅ **단일 진리 원칙**: deploy 후 `호스트 git HEAD == 컨테이너 이미지 안 src == 실행 코드`가 항상 일치한다.
-> 호스트 src는 컨테이너에 mount되지 않으므로 (이미지 빌드 시 `COPY src/` 결과만 사용) **호스트에서 손으로**
-> src를 고쳐도 컨테이너 동작은 안 바뀐다 — 즉시 반영은 `docker compose build` 후 재기동.
-> 단, **CI 경로로 들어온 `src/vlm_pipeline/` 변경은 재빌드 트리거에 포함**되므로 자동 반영된다.
-
-> ⚠️ **배포 = 라벨링 중단**: `docs/**`, `*.md`, `tests/**`, `.cursor/**`, `.agent/**`,
-> `.github/copilot-instructions.md`, `.github/workflows/claude*.yml`, **`docker/analysis/**`**(2026-08-18
-> 추가) 는 `paths-ignore` 로 배포를 아예 트리거하지 않는다. 그 밖의 `main` push 는 **이미지 재빌드 여부와 무관하게** dagster 3종을
-> 항상 stop→rm→recreate 하므로 진행 중 run 이 끊긴다 (deploy-stack.sh 의 이 구간은 `BUILD_REQUIRED`
-> 가드 밖에 있음).
-
-> ⚠️ **fork 구분**: 두 워크플로 모두 `if: github.repository == 'Orderlee/Datapipeline-Data-data_pipeline'` 조건 있음 — self-hosted runner 도 `origin`(Orderlee)에만 등록돼 있어 `upstream`(upstream-org)으로 PR/머지가 가면 배포가 트리거되지 않음.
-
-### 권장 배포 플로우
-
-1. `feature/*` 브랜치를 `dev`에서 분기
-2. PR → `dev` 머지 → **자동 스테이징 배포** (3-10분)
-3. 스테이징(3031)에서 end-to-end 검증 (센서 tick, dispatch run, MinIO 결과물)
-4. `dev` → `main` PR → 머지 → **자동 프로덕션 배포**
-
-### 핫픽스 (프로덕션 긴급 수정)
-
-1. `fix/*` 브랜치를 `main`에서 분기
-2. PR → `main` 머지 → 프로덕션 즉시 배포
-3. 완료 후 `main` → `dev` 백머지하여 drift 방지
-
-### 수동 배포 / CI 우회
-
-- GitHub Actions UI → 해당 워크플로 `Run workflow` 버튼 (`skip_tests` 옵션 사용 가능)
-- CI 불가 시 호스트에서 직접:
-
-```bash
-# PROD
-cd /home/user/work_p/Datapipeline-Data-data_pipeline
-git pull origin main --ff-only
-cd docker && docker compose restart dagster dagster-daemon dagster-code-server
-
-# STAGING
-cd /home/user/work_p/Datapipeline-Data-data_pipeline_test
-git pull origin dev --ff-only
-cd docker && docker compose restart
-```
-
-### Drift 감지
-
-```bash
-# 두 repo src/ 바이트 비교 (dev ≠ main 시점에는 차이 존재 = 정상)
-diff -rq /home/user/work_p/Datapipeline-Data-data_pipeline/src \
-         /home/user/work_p/Datapipeline-Data-data_pipeline_test/src
-
-# 각 repo가 해당 브랜치 HEAD와 일치하는지
-git -C /home/user/work_p/Datapipeline-Data-data_pipeline status            # main clean?
-git -C /home/user/work_p/Datapipeline-Data-data_pipeline_test status       # dev clean?
-```
-
-### 금기사항
-
-- 호스트에서 `src/`·`configs/`·`scripts/`·compose 파일 **수동 수정 금지** — 다음 CI 배포의 `rsync --delete` + `git reset --hard`로 소실됨. 반드시 git commit → push 경로로 반영
-- `main`에 force-push 금지 (CI 미트리거 + 히스토리 손상)
-- `.env` / `.env.test`는 git 미추적. 변경 시 호스트에서 직접 편집 후 해당 환경 Dagster 재시작 필요
-- 스테이징에서 디버깅용 수정 → `dev`에 commit하지 않으면 다음 배포로 사라짐
-
----
-
-## 코딩 규칙
-
-- **Python 3.10+**, formatter/linter: `ruff` (line-length 120)
-- **Dagster**: `@asset` 우선, `@op+@job` 필요 시만
-- **Import 계층** — 코드에 5-layer 주석 있음. 하위→상위 import 금지
-  - L1-2: `lib/` (순수 Python, key_builders 포함) → L3: `ops` → L4: `assets/sensors` → L5: `definitions.py`
-  - `lib/spec_config.py`는 순수 태그 파싱만. DB 의존 함수는 `defs/spec/config_resolver.py`에 위치
-  - MinIO 키 빌더는 `lib/key_builders.py`에 통합. 각 `defs/` 모듈은 thin wrapper로 위임
-- **모듈 분할 규칙** — 대형 파일은 도메인별 서브모듈로 분할
-  - `defs/process/`: `assets.py`(라우팅) + `helpers.py` + `captioning.py` + `frame_extract.py` + `raw_frames.py`
-  - `defs/label/`: `assets.py`(라우팅) + `label_helpers.py` + `timestamp.py` + `artifact_*.py`
-  - `resources/`: `postgres_base.py` + `postgres_migration.py` + `postgres_ingest_*.py` +
-    도메인별 `postgres_{build,dedup,detection,embedding,genai,labeling,process,spec,train,...}.py`
-    (`duckdb_*.py` 파일은 전부 제거됨)
-- **커밋**: conventional commits (`feat:`, `fix:`, `refactor:`, `test:`, `docs:`, `chore:`)
-  - "어떻게 수정했다"보다 **"무엇과 왜 수정했는지"** (`.gitmessage.txt` 참고)
-- **에러 처리**: per-file fail-forward — 한 파일 실패해도 나머지 계속 처리
-- **테스트**: pytest, Postgres fixture, mocked MinIO (`unittest.mock`), `tests/conftest.py` 공통 fixture
-  - ⚠️ **새 테스트 파일의 기본값은 "CI 미실행"이다.** `.gitignore` 가 `tests/unit/*` 등을 blanket
-    무시하고 `!tests/unit/<파일>` allowlist 로만 편입한다. allowlist 에 안 넣으면 untracked 라
-    CI 가 절대 돌리지 않는다 — 로컬 pytest 초록/빨강은 CI 신호가 아니다. 편입 여부는
-    `git ls-files tests/` 로만 확인 (2026-09-15 기준 CI 899 passed / 31 skipped).
-    ⚠️ 이 함정은 실제 부채로 굳었던 이력이 있다 — 2026-09-15 실측에서 디스크 149 vs 추적 124,
-    즉 **25파일이 CI 에서 한 번도 안 돌아간 상태**였고 돌려보니 51 failed 였다(삭제된
-    `duckdb_resource` fixture·바뀐 시그니처를 검증 중). 그중 10파일을 수정 후 편입했고, 나머지 15파일도 그 뒤 편입(또는 삭제)된 것으로 보인다 — 2026-09-29 재확인: `git ls-files tests/unit`(145)·`tests/integration`(15) 개수가 디스크 파일 수와 정확히 일치해 tracked/untracked 갭이 0이다. 단 개별 15파일이 '고쳐서 편입'됐는지 '삭제'됐는지는 구분되지 않으므로, 갭이 닫혔다는 사실만 확인하고 구체 경위는 미확인으로 남긴다.
-
----
-
-## 핵심 운영 규칙 (코드에 안 드러나는 것)
-
-### 동시성 (DuckDB 시절 규칙 폐기됨)
-- **`duckdb_writer` 계열 태그는 더 이상 없다.** `build_asset_job(writer_tag=...)` 인자는 하위 호환용
-  시그니처로만 남아 있고 아무 동작도 하지 않는다 (`definitions_production.py` 의 `# noqa: ARG001`).
-  Postgres 는 파일 락이 아니라 커넥션 기반이라 writer-lane 직렬화가 불필요해짐.
-- 현재 `run_coordinator` (`docker/app/dagster_home/dagster.yaml`):
-  `max_concurrent_runs: 20`, `gpu_trainer` limit 1, `pg_writer` limit 1
-- ⚠️ **`pg_writer` 는 설정만 있고 이 태그를 붙인 asset/op 이 하나도 없다** (현재 no-op).
-  단위 테스트는 yaml 설정 존재만 검증하므로 초록색이어도 실제 직렬화는 안 걸린다.
-  `gpu_trainer` 는 `defs/embed/reembed.py` 가 실제로 사용 중.
-
-### NAS 장애 대응 (CIFS)
-- sensor에서 `OSError/PermissionError/TimeoutError` → graceful skip, 다음 tick 재시도
-- NAS 지연 시 권장 설정:
-  - `AUTO_BOOTSTRAP_DISCOVERY_MAX_TOP_ENTRIES=20`
-  - `AUTO_BOOTSTRAP_MAX_UNITS_PER_TICK=3`
-  - `DAGSTER_SENSOR_GRPC_TIMEOUT_SECONDS=300`
-
-### 파일 오류 정책
-- `file_missing`, `empty_file`, `ffprobe_failed` → **DB 미삽입 + archive 미이동**
-- 추적은 JSONL 실패 로그(`<manifest_dir>/failed/*.jsonl`)에만 기록
-- transient 오류 → retry manifest 자동 생성, failed row 아님
-- **중복 판정 2단계**: `raw_files.checksum` UNIQUE(정확 중복, 비디오·이미지 공통) +
-  이미지 전용 pHash Hamming ≤ 5(근사 중복 → `dup_group_id` 부여, run 은 계속).
-  단, 방금 업로드한 이미지의 phash **계산 자체가 실패**하면 `gated_failed` 로 run 전체가 실패한다.
-
-### Archive 이동
-- `source_unit_type=directory`이고 모든 파일 성공 → 폴더째 archive 이동
-- chunked manifest → 파일 단위 누적 이동 (조기 폴더 이동 방지)
-- archive 폴더명 충돌 → `__2`, `__3` suffix 자동 분기
-- archive 이동 완료된 파일**만** `ingest_status=completed` 유지
-
-### MinIO 버킷/경로 정책
-- `vlm-raw` · `vlm-labels` · `vlm-processed` · `vlm-dataset` · `vlm-classification` (5개 고정)
-- `raw_key = <source_unit_name>/<rel_path>` — `YYYY/MM` prefix 금지
-- 이벤트 JSON source of truth = `vlm-labels`만. `vlm-processed`에 중복 저장 금지
-- classification 결과: `vlm-classification/<folder_prefix>/{video|image}/<class>/<file>` 형태의 **원본 복사** (JSON/DB 미적재)
-
-### `labels` 테이블 의미 (E2E 검증시 흔히 혼동)
-- `labels` 는 **per-event** 레코드: `event_index`/`event_count`/`timestamp_start_sec`/`timestamp_end_sec`/`caption_text` 한 행 = Gemini 가 비디오 안에서 검출한 이벤트 1개. 한 비디오가 N events → N rows, **0 events → 0 rows**.
-- 따라서 `SELECT COUNT(*) FROM labels WHERE asset_id IN (...) = 0` 은 **라벨링 실패 아님** — Gemini 가 해당 source 비디오들에서 카테고리 조건에 맞는 이벤트를 찾지 못한 정상 결과일 수 있음.
-- **라벨링 stage 완료 지표**는 `labels` 행 수가 아니라 다음 셋:
-  - `video_metadata.timestamp_status='completed'`
-  - `video_metadata.timestamp_label_key` 세팅됨 (예: `<source>/events/<file>.json`)
-  - MinIO `vlm-labels/<source>/events/*.json` 객체 존재 (이벤트 0개여도 빈 events array JSON 업로드됨)
-- 동일 패턴: `bbox_status='completed'` + `image_labels` 행 존재로 bbox 단계 완료를 판단. `image_labels` 행이 0이면 bbox detect 가 검출 못한 상태 (정상 가능).
-- 운영 디버깅시: Gemini 호출이 실제로 일어났는지 확인하려면 Dagster run 의 `clip_timestamp` step 실행 시간을 보자. 20 videos → 90~120s 이면 정상 (≈5s/video). 0s 면 skip 된 것.
-
-### Staging 초기화 (깨끗한 재테스트)
-1. 스테이징 컨테이너 중지:
-   `docker stop pipeline-test-dagster-1 pipeline-test-dagster-daemon-1 pipeline-test-dagster-code-server-1`
-2. staging MinIO 5개 버킷(`vlm-raw`, `vlm-labels`, `vlm-processed`, `vlm-dataset`, `vlm-classification`) 객체 전체 삭제 — `:9003` 콘솔 또는 `mc rm --recursive --force local/<bucket>`
-3. staging Postgres 초기화 — `pipeline-test-postgres-1` 의 `vlm_pipeline_staging` DB.
-   (구 `docker/data/staging.duckdb` 파일은 이제 write path 가 아니라 무관한 잔재)
-4. `Datapipeline-Data-data_pipeline_test/docker/app/dagster_home/storage/` 내용 삭제 (run·sensor·schedule 상태 초기화)
-   - ⚠️ **storage 를 지우면 센서 RUNNING/STOPPED 토글도 초기화된다.** `dispatch_sensor` 와
-     `production_agent_dispatch_sensor` 는 **코드 기본값이 STOPPED** 이라, 재기동 후 UI 에서
-     다시 켜지 않으면 자동 라벨링이 조용히 멈춘 상태가 된다.
-5. 재기동: `./scripts/compose-staging.sh up -d` (스테이징 clone 에서)
-- ⚠️ staging incoming/archive 원본 폴더(`/home/user/mou/nas_primary/staging/incoming`, `/home/user/mou/nas_primary/staging/archive`)는 명시 요청 없으면 **절대 삭제 금지**
-
----
-
-## 서비스 네트워크 & 볼륨 (코드에서 놓치기 쉬운 것)
-
-- Docker network: `pipeline-network`
-- **호스트 ↔ 컨테이너 경로 매핑** (compose의 bind mount) — NAS_primary 는 **CIFS(vers=3.0) 로
-  `//10.0.0.51/data`** 에서 마운트된다 (NFS 아님, 구 `10.0.0.51` 주소 아님).
-  nas_secondary 는 별도 CIFS(`10.0.0.36`).
-
-  | 호스트 | 컨테이너 | 비고 |
-  |---|---|---|
-  | `${NAS_DATA_ROOT}` = `/home/user/mou/nas_primary` (staging: `.../staging`) | `/nas/data` | **단일 부모 바인드** |
-  | `${DATASETS_HOST_PATH}` = `/home/user/mou/nas_secondary/datasets` | `/nas/datasets` | rw |
-  | `${PROJECTS_HOST_PATH}` | `/nas/datasets/projects` | ro |
-  | `${DAGSTER_HOME_HOST_PATH}` = `./app/dagster_home` | `/app/dagster_home` | 런타임 상태 |
-  | `${DOCKER_DATA_HOST_PATH}` = `./data` | `/data` | 모델 캐시·fiftyone |
-
-  - `fiftyone-mongo` 는 `--wiredTigerCacheSizeGB 4` 로 캐시 상한이 걸려 있다
-    (2026-08-18 에 8→4GB 로 축소 — 호스트 RAM 62.5GB 공유 환경에서 회수 목적).
-    FiftyOne 이 느려졌다고 이 값을 올리기 전에 호스트 RAM 여유부터 확인할 것.
-
-  - incoming/archive/manifest 는 **별도 바인드가 아니라** 그 단일 바인드 안의 env 서브경로다:
-    `INCOMING_DIR=/nas/data/incoming`, `ARCHIVE_DIR=/nas/data/archive`,
-    `MANIFEST_DIR=/nas/data/incoming/.manifests`.
-    한 마운트로 합친 이유는 archive 폴더 단위 이동이 `os.rename` fast-path 를 타야 하기 때문
-    (쪼개면 `EXDEV` 로 전체 복사).
-  - ⚠️ `.env` 의 `INCOMING_HOST_PATH` / `ARCHIVE_HOST_PATH` 는 **compose volumes 에서 더 이상
-    참조되지 않는다** (참고용 잔재). 진실은 `NAS_DATA_ROOT` + `INCOMING_DIR`/`ARCHIVE_DIR`.
-  - **운영자 주의**: `user` 유저는 NAS_primary 상에서 quota 가 걸려있어 호스트에서 직접 `cp`/`mkdir` 시 "디스크 할당량 초과" 발생. 큰 파일을 incoming 에 넣을 땐 컨테이너(root) 경유 (`docker run --rm -v /home/user/mou/nas_primary/...:/dst alpine cp ...`) 또는 quota 정리 필요.
-  - 코드→실행 경로: **mount 없음**. 컨테이너는 이미지 빌드 시 Dockerfile `COPY src/ /src/vlm/`로 들어간 src만 사용 (`/src/vlm`, `/src/python`). 호스트에서 손으로 고친 src 는 `docker compose build` 전까지 반영되지 않음 (CI 배포는 재빌드 트리거에 `src/vlm_pipeline/` 이 포함돼 자동 반영).
-- **GPU 할당 정책 (2026-05-22 업데이트)**:
-  - **dagster 계열**: 호스트 GPU 0+1 둘 다 노출 (`CUDA_VISIBLE_DEVICES=0,1` + `NVIDIA_VISIBLE_DEVICES=0,1`).
-    - Python torch (Places365) → default `cuda:0` = 호스트 GPU 0 (CUDA cores)
-      ⚠️ 이건 **능력이지 관측된 워크로드가 아니다** — prod 는 `INGEST_DEFER_VIDEO_ENV_CLASSIFICATION=true`
-      로 인라인 경로가 막혀 있고 `video_env_backfill_job` 은 0 runs ever(2026-09-21 실측).
-      반면 **staging 은 defer 조건이 `not is_staging` 이라 실제로 GPU 0 에서 돈다.**
-    - ffmpeg NVENC → `REENCODE_NVENC_GPU_INDICES` (default "0,1") round-robin → 양 GPU 의 NVENC unit 활용 (RTX A4000 NVENC unit GPU 당 1개)
-  - **SAM3 (별도 컨테이너)**: 호스트 GPU 1 의 CUDA cores 만 사용 (`CUDA_VISIBLE_DEVICES=1`). 컨테이너 view 에서는 `cuda:0` 로 보이지만 호스트는 GPU 1.
-    - **workers=3** (`SAM3_WORKERS`, prod `.env` 현재값) — process 3개 model 로드 ≈ 11.1 GB / 16 GB.
-      2026-05-27 에 workers=4 (≈14.8 GB) 가 eng-b ComfyUI 등과 공유 시 파편화로 CUDA OOM(503) 발생 →
-      2 로 완화 후 3 으로 재상향한 값이다. 올릴 때 이 히스토리 확인.
-    - ⚠️ 정비 플래그(`/maintenance/enter`)는 **프로세스 메모리 기반**이라 uvicorn worker 3개에
-      공유되지 않는다 — 한 worker 에 enter 를 걸어도 나머지 2개는 계속 요청을 받는다 (drain 미완).
-  - **embedding-service**: 호스트 GPU **0+1** 둘 다 노출 (`CUDA_VISIBLE_DEVICES=0,1`, compose 리터럴). 슬롯이 둘이다 —
-    PE-Core 임베딩(`EMBEDDING_DEVICE=cuda:0`)은 종전대로 GPU0 에서 dagster torch/NVENC 와 공유하고,
-    PLM 캡션 생성 슬롯(`/caption`, PE-Lang+Llama = Perception-LM-3B, `PLM_DEVICE=cuda:1`)은 **GPU1 CUDA cores** 를 쓴다.
-    즉 이 컨테이너 하나가 GPU0·GPU1 양쪽에 걸쳐 있다.
-    - PLM 은 compose 기본 **OFF**(`PLM_ENABLED` 기본 false)이고 prod `.env` 현재값이 `true` 다. 코드는 이미지에
-      이미 실려 있어 켜고 끄는 데 배포가 필요 없다(`.env` 수정 + recreate).
-    - **온디맨드**: 기동 시엔 PE-Core 만 로드하고 PLM 은 첫 `/caption`(또는 `/warmup?target=plm`)에서 lazy load,
-      무요청 `PLM_IDLE_UNLOAD_SECONDS`(현재 120)초 뒤 idle watcher 가 VRAM 을 반납한다
-      (`docker/embedding/app.py`, `gpu_guard.py`).
-    - ⚠️ **cuda:1 은 SAM3 소유** — PLM 은 단방향으로 양보한다. GPU1 여유 VRAM 이 `PLM_MIN_FREE_GB`(현재 9)GB
-      미만이면 기다리지 않고 **503 으로 거절**하고 호출자가 재시도한다. 아래 '경합 분석' 의 "별개 hardware unit
-      이라 동시 사용 OK" 논리는 NVENC↔SAM3 얘기지 PLM 에는 적용되지 않는다 — PLM 과 SAM3 는 같은 GPU1 CUDA
-      cores/VRAM 을 나눈다.
-    - `PLM_MODEL_ID` 는 prod `.env` 가 사내 미러(`USER-LAB/Perception-LM-3B`)로 덮는다 — compose 기본
-      `facebook/Perception-LM-3B` 는 HF gated 라 `HF_TOKEN` 없이는 401.
-  - **trainer**: 호스트 GPU 1 — SAM3 와 같은 GPU 라 학습 전 정비 drain 필요
-  - **YOLO (별도 컨테이너)**: 호스트 GPU 1 — 현재 `ENABLE_YOLO_DETECTION=false` 정책으로 비활성 (컨테이너도 정지 상태)
-  - **ComfyUI (별도 컨테이너, `docker-comfyui-1`)**: 호스트 GPU **0** 만 노출(`CUDA_VISIBLE_DEVICES=0`) — `embedding-service` 메인 모델·`angle-dav2-1`(camera-angle 분류, 상시 가동)과 같은 GPU0 CUDA cores 공유. `.env` `COMPOSE_PROFILES` 에도 `comfyui` 가 들어 있다(아래 MLOps env 표). ⚠️ SAM3 항목의 'eng-b ComfyUI'(workers=4 파편화 이력, GPU1)와는 별개의, 이 프로젝트 소유 컨테이너다 — GenAI Studio 섹션에 상세
-  - **경합 분석**: dagster NVENC (GPU 0/1 의 NVENC unit) ↔ SAM3 (GPU 1 의 CUDA cores) — 별개 hardware unit 이라 같은 GPU 1 안에서도 동시 사용 OK.
-    ⚠️ 위 한 줄은 NVENC↔SAM3 얘기일 뿐이다. cb57301(2026-09-03) 부터는 `embedding-service` 의 PLM(PE-Lang+Llama,
-    이미지→문장 `/caption`) 슬롯이 `PLM_DEVICE=cuda:1` 로 **호스트 GPU1 의 CUDA cores** 를 쓰는 세 번째 소비자다
-    (SAM3(prod 서빙)·trainer(학습 중)와 동종 자원, NVENC 아님 — 진짜 경합 후보).
-    prod `.env` 는 `PLM_ENABLED=true` (compose 기본값 false). 계약은 **VRAM 단방향 양보**다(`docker/embedding/gpu_guard.py`):
-    로드 직전 GPU1 free VRAM < `PLM_MIN_FREE_GB`(기본 9) 면 로드하지 않고 `/caption` 이 503 — 위 SAM3 workers=3(≈11.1 GB)
-    가 상주해 있으면 PLM 은 애초에 못 뜬다. 역방향 게이트는 없다: PLM 이 먼저 올라가 있는 동안 SAM3 가 lazy reload 하면
-    그 VRAM 을 두고 부딪치고(코드 주석: "어기면 SAM3 가 죽는다"), 검사~할당 사이 레이스도 남는다. 완충은
-    `PLM_IDLE_UNLOAD_SECONDS`(기본 120) idle 반납과 `/unload?target=plm` 뿐이다. `/caption` 은 embedding-service 의
-    정비 게이트(`/maintenance/enter` → 503)도 타므로 정비창을 SAM3 에만 걸고 embedding-service 를 빼먹으면 학습 중
-    캡션이 GPU1 로 들어올 수 있다. 이건 능력이지 관측된 상시 경합은 아니다 — 겹치는지는 운영 시 `/health` 의
-    `slots.plm.loaded` 로 확인.
-- Places365 모델 캐시: `/data/models/places365` (auto_download=false, 고정 캐시만 사용)
-- `PYTHONPATH` (컨테이너): `/:/src/python:/src/vlm`
-- **호스트 포트 ≠ 컨테이너 포트인 서비스** (`.env` 로 매핑되므로 착각하기 쉬움):
-  `embedding-service` 8003→**8004**, `genai` 8088→**8089**, `mlflow` 5000→**5500**,
-  `analysis-fiftyone` 5151→**5158**(compose 기본값 `FIFTYONE_PORT_1` — `.env` 에 이 키는 없다; 프록시가 죽었을 때의 우회·디버깅용 직결 경로) / `analysis-fiftyone-proxy` 5151→**5153**(`.env` `FIFTYONE_PORT` — nginx 좌석 라우터, 사람마다 다른 FiftyOne 프로세스로 보낸다; 규칙은 `docker/analysis/nginx-seats.conf` 주석) / `analysis-streamlit` 8501→**8503**, `postgres` 5432→**15433**
-- **analysis 스택 = 서비스 4개**(2026-08-18 P0 편입, 2026-08-21 sync 추가 — `deploy-stack.sh` 의
-  `analysis_active()` 가 배포 때 `up -d --no-deps` 로 보증하는 범위만): `analysis`(JupyterLab,
-  `docker-analysis-1`, :8888) / `analysis-fiftyone`(좌석 1, 호스트 `:5158` 직결 — 프록시가 죽었을 때의
-  우회로 겸 디버깅 경로) / `analysis-streamlit`(:8503) / `analysis-sync`(내부 :8010, 호스트 포트 없음 —
-  FiftyOne 증분 동기화 API). ⚠️ **compose 의 analysis profile 은 이 넷이 다가 아니다**:
-  `analysis-fiftyone-2`~`-5`(좌석 2~5, 호스트 `:5154`~`:5157`, `x-fiftyone-seat` 앵커 —
-  `mem_limit: ${FIFTYONE_SEAT_MEM}` 상한, 좌석 1 은 상한 없음) + `analysis-fiftyone-proxy`(`nginx:alpine`,
-  **`:5153`/`:5443` 의 실제 소유자** — compose 기본값은 `${FIFTYONE_PORT:-5151}` 이고 5153 은 prod `.env`
-  의 `FIFTYONE_PORT` 가 만든 값. 쿠키/`?seat=N`/IP 표로 좌석별 백엔드에 갈라주는 라우터, 규칙은
-  `docker/analysis/nginx-seats.conf`) + `fiftyone-mongo`(백엔드 DB, 호스트 포트 없음) 까지 **총 10개**.
-  열 개 전부 `restart: unless-stopped` 다 — 8개는 `x-analysis-base`/`x-fiftyone-seat` 앵커로 물려받고
-  proxy·mongo 는 앵커 없이 각자 명시. 즉 "넷 다"가 아니라 전체가 자동 재기동 대상이다. 단 restart 정책은
-  **컨테이너 종료**에만 반응하고 `unhealthy` 에는 아무것도 안 한다(App 자식만 죽고 부모 python 이 남으면
-  컨테이너는 산 채로 unhealthy 만 뜬다 — compose 의 `analysis-fiftyone` 블록 주석이 예고한 모양).
-  **`analysis_active()` 의 `up -d` 는 위 4개 이름만 지정**하고(`--no-deps`, 좌석 2~5·proxy·mongo 는
-  목록 밖 — 스크립트 어디에도 서비스명 없는 `up -d` 는 없다) 그래서 이 6개는 최초 수동 기동 이후 자기
-  restart 정책에만 기댄다 — 배포가 만들어 주지도, 이미지가 바뀌었다고 recreate 해 주지도 않는다.
-  실측(2026-09-29): 좌석 4·5 는 컨테이너 자체가 없고, 좌석 2·3 은 `Up` 이지만 `unhealthy`(안에서 `:5151`
-  연결 거부, 로그는 `Could not connect session` 반복, RestartCount 0) 인 채로 **태그가 벗겨진 구 빌드
-  이미지**(ID `fae0309bc83c` — `datapipeline-analysis:latest` 태그는 이후 재빌드 `4e7e303feafe` 로 옮겨가
-  `docker ps` 에 ID 로만 보인다)로 떠 있다. 배포가 명시한 4개는 그 재빌드 때 recreate 됐지만 좌석 2·3 은
-  목록 밖이라 그대로 남은 드리프트다 — "analysis 4개 재기동"으로는 절대 안 잡힌다.
-- **FiftyOne 자동 동기화** (2026-08-21): Dagster `fiftyone_sync_sensor`(5분 tick, PG 카운트
-  스냅샷 diff) 가 `fiftyone_sync_job` 을 발화 → `analysis-sync` HTTP 로 `frames` 증분 add /
-  `frames-prompts` promptmap 재빌드. 라벨 재적재는 `fiftyone_label_refresh_schedule`(03:00 KST)
-  이 전담 — 옛 2h cron(`refresh_frames_labels.py`, 실제로는 crontab 미설치 상태였음)의 대체.
-  수동 실행: `docker exec docker-analysis-1 python3 /workspace/sync_incremental.py <target> [--dry-run]`.
-  신규 add 표본은 `emb_viz`(UMAP) 좌표가 없다 — 스캐터 반영은 `recompute_viz.py` 별도 실행.
-- **`/workspace` 는 `docker/analysis/` 의 bind mount** 이므로 "단일 진리 원칙"이 이 컨테이너에도
-  적용된다. 이 repo 가 곧 `DEPLOY_REPO_ROOT` 라 **여기서 커밋하면 그대로 실행 코드**이고,
-  `docker cp` 는 필요 없다. 플러그인 5종(`user-*`)도 `__plugins__/` 로 각각 마운트된다.
-  ⚠️ 마운트가 이미지 레이어를 가리므로 **컨테이너 안에서만 만든 파일은 보이지 않는다.**
-  재빌드가 필요한 것은 `docker/analysis/{Dockerfile,requirements.txt}` 뿐.
-- `docker/analysis/**` 는 배포 워크플로의 **`paths-ignore` 안**에 있다(커밋 ab89fe2) —
-  분석 코드만 push 하면 배포가 아예 안 돌아 **라벨링이 끊기지 않는다**. 동시에 CI 가 코드를
-  날라주지도 않지만, bind mount 라 이 repo 의 커밋이 이미 반영이다.
-- prod MinIO 는 compose 의 `minio` 서비스가 아니라 **NAS 박스의 MinIO**(`10.0.0.51:9000`)다.
-  로컬 `minio` 컨테이너는 prod 에서 기동하지 않는다.
-
----
-
-## 자주 쓰는 스크립트
-
-| 스크립트 | 용도 | 상태 |
-|---------|------|------|
-| ~~`scripts/query_local_duckdb.py`~~ | 로컬 DuckDB 읽기 쿼리 | **`scripts/archive/` 로 이동됨 ❌** — 대신 `docker exec docker-postgres-1 psql -U airflow -d vlm_pipeline -c "..."` |
-| `scripts/backfill_video_metadata.py` | video_metadata 결손 백필 | 사용 가능 (psycopg2 — DuckDB 잔재 없음) |
-| `scripts/cleanup_duplicate_assets.py` | checksum duplicate 정리 | 사용 가능 (psycopg2 — DuckDB 잔재 없음) |
-| `scripts/recompute_archive_checksums.py` | archive 원본 재해시 | 사용 가능 (psycopg2 — DuckDB 잔재 없음) |
-| `scripts/reupload_minio_from_archive.py` | archive 기준 MinIO 재업로드 | 사용 가능 (psycopg2 — DuckDB 잔재 없음) |
-| `scripts/staging_test_dispatch.py` | staging dispatch 테스트 | 사용 가능 (psycopg2 — DuckDB 잔재 없음) |
-| `scripts/promote_model.py` | MinIO 체크포인트 → 호스트 materialize + env + recreate (승격/롤백) | MLOps (만들되 기본 미실행; `--dry-run` CI-safe) |
-| `scripts/promote_pe_core.py` | PE-Core 포인터 전환 + partial-HNSW + 서빙 교체 (승격/롤백) | MLOps (만들되 기본 미실행; `--dry-run`) |
-| `scripts/dataset_pull.py` | dataset_catalog pin 해석 → `dvc get` (DVC 버전 데이터셋 pull) | MLOps (기본 dry-run) |
-| `scripts/clear_maintenance.sh` | GPU 정비락 수동 강제 해제 + `/maintenance/exit` + `/warmup` | MLOps 복구 (`.agent/skill/mlops-finetune/SKILL.md` §9) |
-| `scripts/repair_unsanitized_raw_keys.py` | 비정규 MinIO 키(원본 표기 그대로 올라간 객체) → 정본 `raw_key`(sanitize 로마자) 서버사이드 복사 | 복구 (기본 dry-run, `--apply`). 잔여 건수는 문서에 박지 말고 **실행 직전 DB 로 확인** — 대상 코호트 `raw_files` 는 여전히 전량 `ingest_status='uploading'`(실측 871행) |
-
-### Deprecated (scripts/archive/ 로 이동됨)
-
-다음 일회성 스크립트는 사용 완료로 `scripts/archive/` 로 이동됨 (OPS-STALE-DUCKDB-SCRIPTS Stage 1):
-
-- `scripts/archive/migrate_yolo_detection_json_to_coco.py` — YOLO JSON → COCO 마이그레이션 (완료)
-- `scripts/archive/migrate_gcp_raw_keys.py` — GCP raw_key prefix 마이그레이션 (완료)
-- `scripts/archive/fix_failed_status.py` — failed → completed 픽스 (완료)
-- `scripts/archive/fix_uploading_status.py` — uploading → completed 픽스 (완료)
-- `scripts/archive/recover_uploading.py` — uploading 복구 (완료)
-- `scripts/archive/backfill_vhc_sam3_bbox.py` — VHC 288건 SAM3 bbox 백필 (완료된 일회성, 제거된 duckdb 모듈 import 라 현행 미실행)
-- `scripts/archive/run_scanner.sh` — legacy 스캐너 shim (대체: auto_bootstrap 센서 / `scripts/bootstrap_manifest.sh`)
-- `scripts/archive/migrate_duckdb_to_postgres.py` — DuckDB → Postgres 1회 이관 (완료)
-- `scripts/archive/verify_mvp.sh` — 구 E2E 검증 (2026-09-15 이동). `:6` 이 없는 컨테이너
-  `pipeline-dagster-1` 을 가리키고 `:10,26,52` 가 `duckdb /data/pipeline.duckdb` 를 읽어
-  PG cutover 이후 첫 줄부터 실패한다. `scripts/setup.sh` 의 마지막 안내도 이 스크립트를
-  가리키고 있었다 — 함께 교정. PG 기준 재작성이 필요하면 archive 의 6단계 체크리스트를 출발점으로.
-
----
-
-## Label Studio 연동
-
-- compose: `docker compose -f docker-compose.yaml -f docker-compose.labelstudio.yaml up -d`
-  (현재 prod 는 `docker-compose.labelstudio.local.yaml` 까지 얹어 커스텀 이미지
-  `labelstudio-internal:1.23.0-c4` 로 기동 — 이 override 파일은 git 미추적)
-- **compose project 가 `pipeline`** 이라 컨테이너 이름이 `pipeline-labelstudio-1` /
-  `pipeline-ls-webhook-1` 이다 (파이프라인 본체의 `docker-*` prefix 와 다름)
-- LS UI: `http://10.0.0.10:8084` (기본 8080이나 dispatch-agent 충돌로 `LS_PORT=8084` 사용)
-- ⚠️ **LS 앱 DB 는 `pipeline-postgres-1` 의 `airflow` DB** — 파이프라인 DB(`docker-postgres-1`
-  의 `vlm_pipeline`) 와 다른 인스턴스다. 공유 `pipeline-network` 에 `postgres` alias 를 가진
-  컨테이너가 둘 있어 DNS round-robin 으로 엉뚱한 DB 에 붙는 사고가 있었으므로
-  `POSTGRE_HOST=pipeline-postgres-1` 처럼 **컨테이너명을 명시**해야 한다
-- 필수 env: `LS_API_KEY` (LS 계정 설정에서 발급), `WEBHOOK_HOST` (LS→webhook 접근 IP)
-- sensor `ls_task_create_sensor`: **코드 기본값이 RUNNING** (`defs/ls/sensor.py` 의
-  `default_status=DefaultSensorStatus.RUNNING`) — 수동 ON 불필요
-- presign 자동 갱신 스케줄 `ls_presign_renew_schedule` (05:00 KST) 는 기본 STOPPED — 필요 시 UI 에서 활성
-- 검수 흐름: LS submit(`/sync`) → `review_status='reviewed'` →
-  Slack `/sync-approve <project_id>` → `'finalized'` + `image_label_annotations` 투영 →
-  `post_review_clip_job`(clip 분할) + `build_dataset_on_finalize_sensor`
-- webhook 등록 (프로젝트별): `python src/gemini/ls_webhook.py register --project <id>`
-- presigned URL 만료(기본 7일) 시: `python src/gemini/ls_tasks.py renew --project-name <name>`
-- Slack 알림/slash command는 `SLACK_WEBHOOK_URL`, `SLACK_SIGNING_SECRET` 설정 시 활성화
-
----
-
-## GCS 외부 수집
-
-- 버킷 목록의 정본은 코드 상수 — `src/vlm_pipeline/defs/gcp/assets.py` 의 `DEFAULT_GCP_BUCKETS`(현재 2개).
-  `definitions_production.py` 가 이 상수를 `gcs_download_schedule` run_config 로 주입한다.
-  레거시 셸 스크립트(`gcp/download_from_gcs.sh`)의 기본 버킷은 이 상수와 **다르므로**
-  스케줄이 실제로 무엇을 받는지는 반드시 상수 쪽을 볼 것.
-- 스크립트: `gcp/download_from_gcs_rclone.py`
-- Dagster schedule: `gcs_download_schedule` (매일 04:00 KST)
-- 0바이트 파일 복구: `GCS_ZERO_BYTE_RETRIES` (기본 2)
-
----
+> 코드로 알 수 있는 것은 쓰지 않는다. 모르면 사고 나는 규칙·환경 사실·포인터만. 세부는 `.claude/rules/*.md`(로컬, 경로 매칭 시 로드)·README·docs.
+
+CCTV 영상·이미지 수집 → 중복제거 → Gemini(Vertex) 이벤트 라벨링 → SAM3 bbox → Label Studio 검수 → 학습셋.
+**Dagster + PostgreSQL + MinIO.** DuckDB/MotherDuck 는 write path 아님(2026-05-19 PG cutover, 잔재는 `scripts/archive/`). YOLO 비활성, bbox 는 SAM3.
+
+## 에이전트 규칙
+- 코드 짜기 전 `.agent/skill/<name>/SKILL.md` 먼저 검색·준수.
+- 페르소나 라우팅 훅(`.claude/hooks/persona_router.py`)은 `.claude/agents/*.md` frontmatter `triggers:` 한 줄만 읽는다(없으면 수동 위임만: codex·dagster-impl·pipeline-explorer). 라우팅표 `docs/references/agent-teams.md` §2, tier `multi-agent.md`.
+- 이 호스트의 PATH `python` 은 깨진 venv(arm64) — `/usr/bin/python3` 또는 `/home/user/anaconda3/bin/python` 명시.
+- `.env`·credential 의 비밀 값은 문서·로그에 옮기지 않는다(키 이름은 OK).
+
+## 1. 이 checkout = prod 배포 루트
+- CI 배포가 **이 디렉토리**에 `rsync -a --delete`(src·configs·gcp·scripts·split_dataset·docker/app·compose·Dockerfile) + `git reset --hard <SHA>` 를 건다(staging clone 도 dev push 마다 동일). tracked 수정은 reset 으로, **untracked 새 파일은 rsync 로** 다음 배포에 소실되고 **체크아웃 브랜치도 덮인다**(push 전 branch·`git status` 확인; worktree 도 격리 아님). 반영은 commit→push 뿐.
+- 실행 코드 = 이미지 안 `COPY src/` — 호스트 src 를 고쳐도 컨테이너는 안 바뀐다. 예외: `docker/analysis/`(`/workspace` bind → 미커밋 워킹트리 편집도 즉시 라이브), `pipeline-ls-webhook-1`(호스트 `src/` ro bind — 재시작 시 반영).
+- **`main` push = dagster 3종 stop→rm→recreate = 진행 중 라벨링 run 중단.** 재빌드 여부와 무관(deploy-stack.sh 의 이 구간은 `BUILD_REQUIRED` 가드 밖). paths-ignore 예외(`*.md` 는 루트만 — `.claude/**` 는 배포 트리거): `docs/**`, `*.md`, `tests/**`, `.cursor/**`, `.agent/**`, `.github/copilot-instructions.md`, `.github/workflows/claude*.yml`, `docker/analysis/**`. 학습·정비 윈도우 중 배포 보류.
+- 러너는 `Orderlee/…` fork 에만 — upstream(upstream-org) 머지는 배포 안 됨. `main` force-push 금지.
+- 브랜치: `feature/*` → `dev`(스테이징 자동 배포) → `main`(prod). 핫픽스 `fix/*` → `main` → `dev` 백머지. **push·핫픽스 전 `git rev-list --left-right --count origin/main...main`** — 로컬 main 에 미push 커밋이 쌓여 로컬 빌드로 운영될 수 있다(2026-10-07: 42) — origin 기준 fix 는 이를 걷어내고 로컬 main push 는 전부 배포.
+- compose 는 wrapper 만: `./scripts/compose-prod.sh` / `./scripts/compose-staging.sh`(스테이징 clone 에서). 직접 `docker compose` = project/env-file 누락 → prod 컨테이너 조작 또는 DSN 없는 crashloop(실발생).
+- `.env`/`.env.test`/`pyproject.toml` 은 git 미추적. `.env` 변경 = 호스트 편집 + 해당 서비스 recreate.
+- 상세: README §배포(CI/CD), `scripts/deploy/deploy-stack.sh`, 롤백 `scripts/deploy/rollback.sh`.
+
+## 2. 환경 식별자
+| | Production (`main`) | Staging (`dev`) |
+|---|---|---|
+| Dagster UI | `http://10.0.0.10:3030` | `:3031` — 상시 기동 아님, 무응답 ≠ 장애 |
+| repo / compose project | `…/Datapipeline-Data-data_pipeline` / `docker` (`docker-*`) | `…_test` / `pipeline-test` (`pipeline-test-*`) |
+| PostgreSQL | `vlm_pipeline` @ `docker-postgres-1`, 호스트 `:15433` | `vlm_pipeline_staging` @ `pipeline-test-postgres-1`, `:15432` |
+| MinIO (NAS 박스; 로컬 `minio` 컨테이너 아님) | `http://10.0.0.51:9000` (콘솔 9001) | `:9002` (9003) |
+| NAS 루트 → 컨테이너 `/nas/data` | `/home/user/mou/nas_primary` | `…/nas_primary/staging` |
+| env | `docker/.env` | `docker/.env.test` |
+
+- DB 읽기: `docker exec docker-postgres-1 psql -U airflow -d vlm_pipeline -c "SELECT …"`.
+- **`docker-postgres-1` recreate 금지**: pgvector 가 이미지가 아니라 컨테이너 레이어에 dpkg 설치돼 recreate·`POSTGRES_IMAGE` 교체 시 소실(배포 `up -d postgres` 도 정의가 바뀌면 recreate).
+- `docker-sam3-1`(:8002) 은 **prod·staging 공유**(staging `SAM3_API_URL` 이 이 컨테이너) — 정비·재시작은 양쪽에 영향.
+- Label Studio 는 별도 compose project `pipeline`(`pipeline-labelstudio-1`, UI :8084). **LS 앱 DB = `pipeline-postgres-1` 의 `airflow`**(파이프라인 DB 아님). `postgres` alias 컨테이너가 둘이라 `POSTGRE_HOST` 는 컨테이너명 명시.
+- 호스트≠컨테이너 포트: embedding `8004→8003`, genai `8089→8088`, mlflow `5500→5000`, postgres `15433→5432`, FiftyOne 프록시 `5153→5151`. 전체 포트·GPU 표: README §Infrastructure.
+- NAS_primary = CIFS `//10.0.0.51/data`. incoming/archive/manifest 는 `/nas/data` **단일 바인드 안의 서브경로**(쪼개면 archive 이동이 `EXDEV` 전체 복사). `user` 유저는 NAS quota → 호스트 직접 `cp` 는 "할당량 초과", 컨테이너(root) 경유.
+
+## 3. 코딩 규칙
+- Python 3.10+, ruff **0.7.4**(CI 핀, line 120). conventional commits — "무엇·왜".
+- Import 방향: `definitions*.py` → `defs/`(assets·sensors) → `resources/`·`lib/`(L1-2, 순수 Python). `lib/` 에서 `dagster`/`defs`/`resources`/`ops` import 금지(lazy 도) — `scripts/check_lib_layer_imports.py` 가 CI 첫 step·pre-commit 에서 차단. `lib/spec_config.py` 는 태그 파싱만(DB 의존은 `defs/spec/config_resolver.py`), 키 빌더는 `lib/key_builders.py`.
+- DB write 는 `PostgresResource`(`db`) 경유, 센서는 `lib/sensor_db.py` read-only. `@asset` 우선. 파일 오류는 per-file fail-forward.
+- **테스트 allowlist 함정**: `.gitignore` 가 `tests/unit/*` 를 blanket 무시하고 `!tests/unit/<파일>` 로만 편입한다. 새 테스트는 allowlist 에 넣지 않으면 **CI 가 영원히 안 돌린다** — 로컬 초록 ≠ CI. 확인은 `git ls-files tests/`. 낡은 테스트는 수치 갱신이 아니라 불변식으로 고친다.
+- CI 테스트 `tests/unit/test_claudemd_*.py` 가 이 문서의 MLOps 절 제목·심볼과 스크립트 표를, `test_mlops_skill_runbook.py` 가 mlops SKILL.md 헤딩을 단언한다 — 해당 토큰 삭제 금지.
+
+## 4. 데이터 불변식
+- MinIO 버킷 5개 고정 `vlm-raw`·`vlm-labels`·`vlm-processed`·`vlm-dataset`·`vlm-classification`. `raw_key = <source_unit_name>/<rel_path>`(sanitize 로마자가 정본, `YYYY/MM` prefix 금지). 라벨 JSON 정본은 `vlm-labels` 만. 키 패턴: README §MinIO.
+- **`labels` 는 per-event 행**(이벤트 1개 = 1행; 0 events = 0 rows) — 행 수 0 ≠ 실패. 라벨링 완료 지표 = `video_metadata.timestamp_status='completed'` + `timestamp_label_key` + `vlm-labels/<source>/events/*.json`(빈 배열도 업로드). bbox 완료 = `bbox_status='completed'` + `image_labels`(0 검출 정상). Gemini 실호출 여부는 `clip_timestamp` step 소요(20 videos ≈ 90~120s, 0s = skip).
+- 파일 오류 `file_missing`/`empty_file`/`ffprobe_failed` → DB 미삽입 + archive 미이동(`<manifest_dir>/failed/*.jsonl` 만). transient 는 retry manifest. **archive 이동이 끝난 파일만 `ingest_status='completed'`** — 이 상태가 dedup·build·labeling 쿼리를 전부 게이트한다. 중복 = `checksum` UNIQUE + 이미지 pHash Hamming ≤5(`dup_group_id`, run 계속); pHash **계산 실패**는 `gated_failed` 로 run 실패.
+- **자기학습 금지**: 모델 파생 라벨(`review_status='auto_generated'`, Gemini 캡션, `vlm-classification`)로 학습·eval 금지. GT = LS `finalized`(`image_label_annotations`) 또는 사람 어노테이션. `DATASET_REQUIRE_LS_FINALIZED=1` 유지. AL 은 `al_frames.label_source` 가 게이트, `eval_holdout` 은 봉인용 — per-class eval 분모로 쓰지 말 것.
+- SAM3 결과는 `image_labels`(`label_tool='sam3'`) + `vlm-labels/<source>/sam3_segmentations/`. 검수 전 스냅샷 `*.pseudo.json`(write-once) 이 pseudo-label QA 정본 — 라이브 JSON 은 LS 검수가 덮어쓴다.
+- 라벨 온톨로지 정본 `src/vlm_pipeline/data/label_ontology.json`(13) — 매핑 수정은 JSON 만(parity test 가 파생본 강제). DB `label_classes` 는 15(026 승격분; parity 는 022 만 읽어 못 잡음).
+- PG migration(`src/vlm_pipeline/sql/migrations/postgres/`): forward-only, **파일명 = 적용 키**(개명 금지, `030_*` 두 파일 유지). 러너는 한 파일 실패 시 **뒤 번호 전부 정지**하고 적용된 파일의 `@ASSERT_AFTER` 도 매 실행 재검증 → 인덱스 드롭 전 `grep -r ASSERT_AFTER`. 적용 시점은 배포가 아니라 첫 asset/센서 실행. 미커밋 마이그레이션을 prod 에 먼저 적용하지 말 것(rsync 로 파일 소실 → fresh DB 재현 불가).
+
+## 5. GPU 공유 계약 (16GB ×2)
+- NVENC 재인코딩은 GPU0/1 round-robin(CUDA 와 별 유닛). GPU0: dagster torch + embedding PE-Core(`cuda:0`) + ComfyUI + `angle-dav2-1`. GPU1: **SAM3**(`SAM3_WORKERS=3` ≈ 11GB; 4 에서 OOM 이력 — 올리기 전 확인) + embedding PLM 슬롯(`PLM_DEVICE=cuda:1`, free < `PLM_MIN_FREE_GB`=9 면 503 — SAM3 상주 시 사실상 못 뜸) + trainer.
+- 학습 전 서빙 drain: `POST /maintenance/enter` 를 SAM3 `:8002` **와** embedding `:8004` 둘 다(빼먹으면 `/caption` 이 GPU1 로 들어옴) → 학습 → `/maintenance/exit` + `/warmup`. 복구 `scripts/clear_maintenance.sh [sam3|pe_core|all]`. SAM3 정비 플래그는 컨테이너 파일 — `restart` 로는 안 풀리고(TTL 까지 503) recreate·`/maintenance/exit` 로 풀린다.
+- ComfyUI 입장 임계 `COMFYUI_MIN_FREE_VRAM_GB=14.5` 는 PE-Core unload **후** 측정(막는 대상은 `angle-dav2`). 런북 `docs/runbook/comfyui-local-genai.md`.
 
 ## MLOps — 파인튜닝 트랙
+- 불변식: 서빙 가중치 = `model_registry` 의 `status='promoted'` 행(심볼릭링크 아님 — rsync 가 지움). 학습셋 = `train_dataset_versions` + `vlm-dataset/_trainsets/<id>/` 동결 스냅샷. CI 는 학습 안 함 — 실제 학습은 `ENABLE_TRAINING=1`(미설정 = dry-run), `gpu_trainer` 태그 동시 1.
+- 학습은 Dagster run 과 분리된 `COMPOSE_PROFILES=trainer ./scripts/compose-prod.sh run --rm trainer`(배포는 trainer 를 절대 기동/recreate 안 함). eval 게이트 통과 → `status='promotable'` → `scripts/promote_model.py --model sam3 --model-version-id <id> --apply`(기본 dry-run; `--rollback` 은 직전 archived 자동 선택).
+- ⚠️ turnkey 아님: eval 채점부 `_score_candidate/_score_incumbent` 는 `NotImplementedError`. SAM3 승격은 compose 리터럴 경로의 바이트 덮어쓰기로 동작(env 아님). PE-Core 는 `scripts/promote_pe_core.py`(재임베딩 → `embedding_active_model` 포인터 전환). MLflow(`:5500`)는 `COMPOSE_PROFILES`·배포 밖 — 재부팅엔 restart 정책으로 복귀하나 삭제되면 수동 기동(trainer 는 fail-soft).
+- 런북 `.agent/skill/mlops-finetune/SKILL.md`, 설계 `docs/superpowers/specs/2026-06-29-mlops-finetune-scaffolding-design.md`.
 
-> SAM3 / PE-Core 를 도메인 데이터로 파인튜닝하는 골격. **인프라는 CI(dev→staging→main), 가중치 승격만 수동.**
-> 설계 source of truth: `docs/superpowers/specs/2026-06-29-mlops-finetune-scaffolding-design.md`.
-> 상세 운영 런북: `.agent/skill/mlops-finetune/SKILL.md` (정비락 복구·hung run 판별·검증 분리).
+## 6. 기본값 함정 (조용한 중단)
+- `dispatch_sensor`·`production_agent_dispatch_sensor` 는 **기본 STOPPED** — `dagster_home/storage` 초기화 후 UI 에서 다시 켜지 않으면 자동 라벨링이 조용히 멈춘다.
+- `pg_writer` 태그 limit 은 붙은 asset 이 없어 no-op(`gpu_trainer` 만 실사용).
+- 센서는 NAS `OSError/PermissionError/TimeoutError` 를 graceful skip 한다 — 침묵 ≠ 정상. 스테이징 초기화는 `.agent/skill/staging_reset/SKILL.md`; staging `incoming/archive` 원본은 명시 요청 없이 삭제 금지.
 
-### 핵심 불변식 (위반 금지)
+## 자주 쓰는 스크립트
+| 스크립트 | 용도 |
+|---|---|
+| `scripts/promote_model.py` / `scripts/promote_pe_core.py` | 모델 승격·롤백(기본 dry-run, `--apply`) |
+| `scripts/clear_maintenance.sh` | GPU 정비락 강제 해제 + `/maintenance/exit` + `/warmup` |
+| `scripts/dataset_pull.py` | DVC pin 해석 → `dvc get`(기본 dry-run) |
+| `scripts/repair_unsanitized_raw_keys.py` | 비정규 MinIO 키 → 정본 `raw_key` 서버사이드 복사(기본 dry-run) |
+| `scripts/{backfill_video_metadata,cleanup_duplicate_assets,recompute_archive_checksums,reupload_minio_from_archive}.py` | 백필·중복 정리·재해시·재업로드 |
+| `scripts/archive/*` | 폐기(DuckDB 시절) — 운영 명령으로 안내 금지 |
 
-- **레지스트리가 진실**: 서빙 중인 가중치 = `model_registry` 의 `status='promoted'` 행. **심볼릭링크 아님** (CI `rsync --delete`+`git reset --hard` 가 untracked 링크를 날림).
-- **학습셋은 동결 스냅샷**: `train_dataset_versions` 행 = `vlm-dataset/_trainsets/<id>/` 의 immutable 스냅샷. 라이브 라벨 흐름과 무간섭.
-- **자기학습 금지**: 모델 파생 라벨(`auto_generated`, Gemini 캡션, `vlm-classification`)로 학습/eval 금지. GT = LS `finalized` 또는 AL-선별-후-사람-어노테이트만.
-  ⚠️ **2026-09-21 부터 이 불변식이 스키마로도 강제된다** (커밋 edab724/e7be257): (1) `label_source` 게이트 — `LABEL_SOURCES`(기본 human,derived)로 GT 소비 경로 4곳을 필터링한다. 027 이 만든 컬럼이 실제로는 아무 데도 안 쓰여서 `GT_COHORTS` 에 sourcei 를 넣으면 Gemini 캡션파생 normal/unknown 행이 조용히 GT 로 섞이는 오염이 있었다(크래시 아님 — 수치만 조용히 틀어짐). 미라벨 선별 풀(`label_source='unlabeled'`)에는 안 건다(걸면 0건). (2) `al_frames.eval_holdout` 생성 컬럼(migration 031) — AL 이 다시는 못 고르도록 `group_key` 단위로 홀드아웃을 봉인한다(프레임 단위면 같은 영상 인접 프레임이 train/test 양쪽에 들어가 누수 — `group_key` 는 이제 `NOT NULL` 제약, e7be257). ⚠️ **그룹 수가 적은 코호트는 봉인이 사실상 무력하다**(예: source-b_bbox_gt 그룹 1개 = 봉인율 0%) — "이 코호트엔 평가 홀드아웃이 있다"고 넘겨짚지 말 것. (2026-09-29 재확인: `al_frames` 에 `label_source`/`eval_holdout`/`group_key` 컬럼 실재 — 031 은 이제 prod 적용됨, 커밋 시점 '미적용' 서술은 갱신)
-- **CI 는 학습 안 함**: GPU 학습은 `ENABLE_TRAINING` + 수동 게이트. CI(GPU 없음)는 마이그레이션·스냅샷빌더·eval로직·승격 dry-run·defs 로드만 검증.
-
-### 학습 트리거 (온디맨드 수동, prod 박스)
-
-1. 스냅샷 빌드 (Dagster asset, `defs/train/dataset.py`) → `train_dataset_versions` 행 + `_trainsets/<id>/` 동결. `al_confirmed_count=0` 은 정상(백필 전).
-2. **정비 윈도우 진입** (아래 GPU 정비 모드) — 공유 GPU 라 서빙 drain 필수.
-3. trainer 기동 — **Dagster run 과 분리된 독립 프로세스**(CI 재배포가 in-run op 고아화):
-   ```bash
-   # ENABLE_TRAINING=1 + 학습 대상 train_dataset_version_id 를 env 로 전달
-   COMPOSE_PROFILES=trainer ./scripts/compose-prod.sh run --rm trainer
-   ```
-   `profiles:["trainer"]` 라 자동기동 안 함. 서비스명을 명시하는 `run` 은 profile 미포함이어도
-   실행되지만, wrapper 사용 원칙에 맞춰 위 형태를 쓴다.
-   실제 안전 게이트는 `ENABLE_TRAINING` — 미설정이면 dry-run 으로 끝난다.
-   `gpu_trainer` concurrency=1 (run_coordinator) — 동시 학습 1개만.
-   배포는 trainer 를 절대 기동/recreate 하지 않는다 (deploy-stack.sh 명시).
-4. 산출물: `vlm-dataset/_models/<model>/<version>/` (merged full-weight + `env_lock.json` + `train_log.jsonl` + `training_summary.json`) + `model_registry` `status='candidate'` 행.
-
-### eval 게이트 읽기
-
-- eval asset(`defs/train/eval.py`)이 sealed test split 에서 candidate vs incumbent → `model_registry.metrics` / `incumbent_metrics` 기록.
-- ⚠️ **현재 실제 채점은 미구현**: `_score_candidate()` / `_score_incumbent()` 가
-  `NotImplementedError` 를 던진다. 게이트 판정 로직·상태 전이·레지스트리 기록만 구현돼 있고
-  GPU 채점부는 테스트에서 monkeypatch 로만 검증된다. **eval 게이트는 아직 turnkey 가 아니다.**
-- `incumbent_source='stock_base'` = 첫 run(이전 promoted 없음, stock 모델을 동일 split 에 통과시킨 점수).
-- **per-metric margin + per-class non-regression floor** 통과 시에만 `status='promotable'` 로 승격(평균이 클래스 퇴행 숨기지 않게). margin 기본값은 `model_registry.eval_config` **JSONB 컬럼**(별도 테이블 아님).
-- 현재 상태 확인:
-  ```sql
-  SELECT model, version, status, incumbent_source, metrics, incumbent_metrics
-  FROM model_registry ORDER BY created_at DESC LIMIT 10;
-  ```
-  `sam3_shadow_compare`(YOLO-동의도, mAP 아님)는 **게이트 아님, 2차 sanity 신호만**.
-
-### 승격 + 롤백 (`scripts/promote_model.py`) — 만들되 기본 미실행
-
-- 승격(`status='promotable'` 행만 대상): MinIO `checkpoint_key` → 호스트 모델 볼륨 다운로드 + `artifact_checksum` 검증 → env 세팅(SAM3=`SAM3_CHECKPOINT_PATH`, PE-Core=`EMBEDDING_CHECKPOINT_PATH`) → `docker recreate`.
-  ```bash
-  # ⚠️ `promote` 서브커맨드는 없다. 플래그만 있고 --model 은 필수, 기본은 dry-run.
-  python scripts/promote_model.py --model sam3 --model-version-id <id> --env prod --apply
-  python scripts/promote_model.py --model sam3 --model-version-id <id>            # 기본 dry-run
-  ```
-  성공 시 `status='promoted'`, `promoted_at`/`promoted_env` 기록.
-- ✅ **옛 `type=int` 버그는 수정됨** (커밋 337e57e, 2026-09-15 재확인): `promote_model.py:233` 은
-  `type` 없이 선언돼 `mv-3f9a2b1c4d5e` 형태 TEXT ID 를 그대로 받는다.
-- ⚠️ **SAM3 env 주입은 사실상 no-op**: compose 의 `sam3` 서비스는 `SAM3_CHECKPOINT_PATH` 를
-  `${...}` 치환 없이 리터럴 `/models/sam3.1_multiplex.pt` 로 박아뒀다. 승격이 동작하는 실제 이유는
-  같은 고정 호스트 경로에 새 체크포인트 **바이트를 덮어쓰기** 때문이지 env 때문이 아니다.
-  (PE-Core 쪽 `EMBEDDING_CHECKPOINT_PATH`/`EMBEDDING_MODEL_VERSION` 은 정상적으로 치환됨.)
-- **롤백**: `--rollback` 은 **직전 `archived` + `promoted_at IS NOT NULL` 행을 자동 선택**한다 —
-  임의의 옛 `--model-version-id` 를 지정해 되돌릴 수는 없다 (해당 인자는 rollback 분기에서 무시됨).
-  서빙 시작 로그에 resolved 경로 + checksum 출력 → 확인.
-- **PE-Core 승격은 다름** (`scripts/promote_pe_core.py`): 가중치는 벡터 → 재임베딩(`reembed_under_version` asset, gated) 으로 새 `model_name`(`...@ft-<ver>`) 커버리지 확보 → partial HNSW 빌드 → `embedding_active_model` 포인터 원자 전환(AL/검색이 즉시 새 벡터 read). GT(사람검수) < `pe_core_min_gt` 면 게이트가 abstain → GT 축적 전까지 PE 승격 비활성. 롤백 = 포인터를 옛 `model_name` 으로 (옛 벡터/인덱스 보존돼 즉시).
-
-### GPU 정비 모드 (서빙 drain) + 복구
-
-- 학습 전 GPU 서빙을 비워야 함. **공유 `docker-sam3-1`**(prod·staging 공유) 주의 — staging 도 같은 컨테이너를 본다.
-- 서버사이드 게이트: `POST /maintenance/enter` → `/segment`·`/embed` 가 `503` + lazy-reload 거부. 완료 후 `POST /maintenance/exit` + `/warmup`.
-- **fail-safe**: 정비 플래그(`gpu_maintenance_lock` 테이블)에 `owner_run_id`+heartbeat/TTL.
-  `maintenance_guard_sensor` 가 stale 감지 시 자동 해제. 수동 복구는 `scripts/clear_maintenance.sh`
-  → 상세 절차는 `.agent/skill/mlops-finetune/SKILL.md` §9.
-- ✅ **옛 "죽은 기본 URL + 조용한 성공" 버그는 수정됨** (커밋 337e57e, 2026-09-15 재확인):
-  `clear_maintenance.sh:16-17` 기본값이 `http://localhost:8002` / `http://localhost:8004` 로 고쳐졌고
-  `FAILURES` 카운터가 붙어 실패가 더는 WARN 으로 삼켜지지 않는다. env 명시는 이제 선택:
-  ```bash
-  SAM3_API_URL=http://localhost:8002 EMBEDDING_API_URL=http://localhost:8004 \
-    scripts/clear_maintenance.sh all       # 인자는 positional [sam3|pe_core|all] — `--env prod` 아님
-  ```
-  `.agent/skill/mlops-finetune/SKILL.md` §9 의 예시 호출(`--env prod`)도 같은 이유로 틀렸다.
-- **⚠️ prod-GPU 주의**: prod main push(docs/tests 제외)는 dagster 무조건 재가동(memory `project_prod_deploy_dagster_restart`). 학습 윈도우 중에는 prod 배포 보류 권장 — 재배포가 정비 상태/in-run op 를 흔든다.
-
-### DVC 데이터셋 버저닝 (선택)
-
-- 큐레이션 데이터셋은 bare git repo(`/srv/data-repos/dvc-datasets.git`, 앱 배포 경로와 격리) + MinIO `vlm-dataset/_dvc/` (5-버킷 정책). 커밋 = `dataset_catalog` 1행(커밋 메시지 보존).
-- ⚠️ **아직 dagster 컨테이너에 배선되지 않았다**: `/srv/data-repos/` 는 호스트에 실재하지만
-  compose 에 bind-mount 가 없고 `DVC_DATA_REPO_PATH` 도 미설정이라
-  `dataset_catalog_reconciliation_sensor` 는 self-skip 상태다.
-- ⚠️ `/srv/data-repos/dvc-ingest.env` (post-receive 훅이 source 하는 파일) 가 구 MinIO IP
-  `10.0.0.51` 를 하드코딩하고 있어 **git push 기반 자동 카탈로그 ingest 는 현재 깨져 있을 가능성이 높다.**
-- pin: `dataset_catalog_aliases`(task당 alias 1개) — `pin_alias()` API 만 갱신. pull: `python scripts/dataset_pull.py --task <t> --alias current --dest <dir>` (기본 dry-run, `--no-dry-run` 으로 실 pull).
-  ✅ 옛 md5 스텁 버그는 수정됨 — `_computed_md5()` 는 존재하지 않고 `dataset_pull.py:72` 가 실구현
-  `lib/dvc_pull.compute_dvc_md5()`(파일=내용 md5, 디렉토리=`.dir`)를 호출한다.
-- 학습셋 빌더가 pinned alias 를 source 로 쓰면 `train_dataset_versions.dataset_catalog_id` 로 역링크 + MLflow 에 `dvc_*` lineage 기록.
-
-### env 노브
-
-| env | 기본 | 의미 |
-|-----|------|------|
-| `ENABLE_TRAINING` | `false` | 1/true 일 때만 trainer 가 실제 GPU 학습. CI·staging 은 false 유지 |
-| `TRAIN_FULL_FT` | `0` | 1 이면 풀파인튠(16GB 공유 GPU 주의), 기본은 LoRA/PEFT |
-| `SAM3_CHECKPOINT_PATH` | compose 에 **리터럴 하드코딩** | `/models/sam3.1_multiplex.pt` — `${}` 치환 아님. 승격이 `.env` 에 써도 컨테이너는 안 읽는다 (위 §승격 주의 참고) |
-| `EMBEDDING_CHECKPOINT_PATH` | (미설정=stock) | PE-Core 서빙 가중치 경로. 미설정 시 HF Hub stock. compose 에서 정상 치환됨 |
-| `EMBEDDING_MODEL_VERSION` | (미설정) | PE-Core 서빙 model_name 버전 태그(`@ft-...`). 승격이 갱신 |
-| `MLFLOW_TRACKING_URI` | `http://mlflow:5000` | trainer 학습 추적 서버(compose 의 trainer 블록 기본값). unreachable 시 fail-soft(레지스트리=SoT) |
-| `COMPOSE_PROFILES` | (prod 실제값, 2026-09-29 확인) `sam3,backup,genai,embedding,analysis,comfyui` | **`trainer`·`mlflow` 는 들어 있지 않다.** 이 변수는 `up -d`/전체 `build` 만 게이트하고, 서비스명을 명시한 `run --rm trainer` 는 게이트하지 않는다 |
-
-> ⚠️ **MLflow 는 profile 밖에서 수동 기동된 상태**다 (`docker-mlflow-1` 가 떠 있지만
-> `COMPOSE_PROFILES` 에 없음). 호스트 재부팅이나 profile 기반 전체 재기동 후에는 **자동으로
-> 돌아오지 않고**, trainer 는 fail-soft 로 조용히 추적 없이 학습한다.
-> backend store = PG `mlflow` DB, artifact = `s3://vlm-dataset/_mlflow/`.
-
----
-
-## DuckDB (레거시 — 현재 write path 아님)
-
-2026-05-19 Postgres cutover 이후 파일 기반 DuckDB 는 **운영 경로에서 제외**됐습니다.
-
-- `docker/data/pipeline.duckdb` / `staging.duckdb` 는 남아 있어도 읽고 쓰지 않는 잔재입니다
-- `.env` 의 `DUCKDB_PATH` / `DATAOPS_DUCKDB_PATH` 도 잔재 (다만 배포 스크립트의
-  `REQUIRED_ENV_KEYS` 기본값에 아직 들어 있어 지우면 배포가 실패할 수 있음 — 건드리지 말 것)
-- DuckDB 문법은 `pg_duckdb` extension 경유 **분석 쿼리에서만** 재사용합니다
-- 옛 DuckDB 파일을 굳이 교체해야 한다면: 서비스 중지 → `.wal` 백업 후 삭제 → 교체
-  (stale WAL 재적용 시 corruption)
-
----
-
-## Gemini / Vertex AI
-
-- 프로젝트: `your-gcp-project`, 리전: `us-central1`
-- 기본 모델: `gemini-2.5-flash`
-- credential 우선순위: `GEMINI_GOOGLE_APPLICATION_CREDENTIALS` → `GOOGLE_APPLICATION_CREDENTIALS` → `GEMINI_SERVICE_ACCOUNT_JSON`
-- 450MB 초과 영상 → preview mp4 자동 생성 (Vertex 524MB 제한 회피)
-
----
-
-## SAM3 (현재 기본 bbox 엔진)
-
-- 컨테이너 `docker-sam3-1`, 호스트 포트 `8002`. **prod·staging 이 이 하나를 공유**
-  (staging 은 `SAM3_API_URL=http://docker-sam3-1:8002` 로 참조, 자기 SAM3 를 안 만든다)
-- 체크포인트 `/models/sam3.1_multiplex.pt`, workers 3, 호스트 GPU 1
-- 엔드포인트: `/segment` `/health` `/info` `/warmup` `/unload` `/maintenance/{enter,exit,heartbeat,status}`
-- 결과: COCO JSON → `vlm-labels/<source>/sam3_segmentations/<stem>.json` + `image_labels`
-  (`label_tool='sam3'`, `label_format='coco'`, `review_status='auto_generated'`)
-- 검수 전 스냅샷 `*.pseudo.json` 을 write-once 로 남긴다 — pseudo-label QA 가 이것만 읽는다
-  (라이브 JSON 은 LS 검수가 덮어써서 pseudo==GT 오염이 났던 이력)
-
----
-
-## 임베딩 / pgvector
-
-- `embedding-service` 컨테이너, 호스트 포트 **`8004`** → 컨테이너 8003, 호스트 GPU 0
-- 모델 PE-Core-L14-336 (`open_clip`, `hf-hub:timm/PE-Core-L-14-336`), 1024-d
-- 벡터 → `image_embeddings` (pgvector). `entity_type` = `frame`/`caption`/`video`/`detection`/**`al_frame`**(027·029, AL 후보 프레임 — `entity_id` = `cohort/frame_key`, partial HNSW 는 pgvector 없는 이미지에서 skip)/**`prompt`**
-  (뱅크 문장 텍스트 벡터, `entity_id` = 문장 `content_hash` — migration 021. 벡터는 텍스트만의
-  함수라 뱅크 간 공유 문장은 벡터 1개면 충분하고, 클래스 멤버십은 `bank_sentences` 쪽 속성),
-  `UNIQUE(entity_type, entity_id, model_name)`
-- 인덱스는 **entity_type 별 partial HNSW** (통합 인덱스는 제거됨)
-- 서빙 모델 포인터 = `embedding_active_model` 테이블 단일 행. 파인튠 승격은 재임베딩 후
-  이 포인터를 원자 전환하는 방식 (`scripts/promote_pe_core.py`)
-- **프롬프트/온톨로지 DB (migrations 018~023·026) 적용 상태 주의**: `prompt_banks`/`bank_sentences`(019)와
-  prompt partial HNSW(021)는 prod 에 **러너 밖에서 수동 선적용**됐다(`_pg_migrations` 에 기록).
-  ✅ **018/020/022/023 은 이미 prod 에 적용됐다** (2026-09-21 실측 정정 — 이전 서술은
-  "파일만 main, prod 미적용" 이었다). `_pg_migrations` 기준 018·020 = 2026-09-09 02:35,
-  022·023 = 2026-09-09 04:11. `label_classes` 는 실재하며 **canonical 15개**(022 의 13 +
-  026 의 `intrusion`/`no_harness`). 즉 예고됐던 "부팅 시 자동 적용"은 그때 일어났다.
-  `generation_prompts` 테이블도 실재하고 계보가 쌓이기 시작했다 — 2026-09-29 실측 1행(`video_event_timestamp`, `gemini-2.5-flash`, 2026-09-23 생성)이고 `video_metadata.timestamp_generation_prompt_id` 가 그 행을 가리키는 비디오가 16,815건이다. 행 수가 작은 것은 018 미적용 때문이 아니라 프롬프트 원문이 `UNIQUE(prompt_type, model_name, content_hash)` 로 dedup 되어 **같은 프롬프트면 몇 번을 돌려도 1행**이기 때문이다 — 행 수를 run 수로 읽지 말 것. write 경로는 2026-08-21 `clip_timestamp` 에 배선돼 있다(`postgres_labeling.py`, fail-soft — 018 이 없던 DB 에서는 WARN 만 남기고 조용히 0행이었다). 정본은 `src/vlm_pipeline/data/label_ontology.json` — `env_utils.CATEGORY_TO_CLASSES`·
-  `ls_tasks.CATEGORY_SYNONYMS`·GenAI `promote.html` PRESETS·022 는 파생본이고 `tests/unit/test_label_ontology.py`
-  parity 가 강제한다. **매핑 수정은 JSON 만.** `smoking` 은 canonical 이면서 `smoke` alias 이기도 함(미해결) —
-  소비자는 canonical 일치를 alias 보다 먼저(`env_utils.resolve_to_canonical`).
-- **migrations 024~033 (prod 는 033 까지 적용 — `_pg_migrations` 032·033 = 2026-09-25)**: 024 조회경로 인덱스
-  (CONCURRENTLY) · 025 `labels.caption_text_en`(ko 로 폴백하지 않음, 구 행은 원문 백필 불가) · 026 온톨로지 승격
-  (`intrusion`/`no_harness`) — JSON 정본은 아직 13 이라 **DB 투영이 정본보다 앞서 있고**, parity 테스트는 022 만
-  읽어 이 drift 를 못 잡는다 · 027~031(030_comfy_local 제외) AL 루프 — `al_frames` PK `(cohort, frame_key)`,
-  `label_source` 가 자기학습 금지 게이트의 판정 근거(CHECK 없는 자유 텍스트), `group_key` 가 홀드아웃 단위
-  (코호트마다 다름), 031 `eval_holdout` 생성 컬럼 봉인 — **per-class eval 분모로 쓰지 말 것** · 030_comfy_local
-  (`genai_job_provenance`·`generation_gpu_leases`, **`_REQUIRED_MIGRATIONS` 포함** — 미적용이면
-  `ensure_runtime_schema()` 가 raise) · 032/033 합성 coverage 사실·제어평면 — 전 테이블 0행으로 배포되고 사실
-  테이블을 채우는 **투영 job 은 없다**. planner job/schedule·dispatch sensor 는 있으나 **기본 STOPPED**, 승인 없는
-  campaign 진행은 CHECK 가 막는다.
-  ⚠️ **024·026·030_al_frames_unit 은 미커밋 상태로 prod 에 먼저 적용된 뒤 git 에 복원·재구성된 파일이다** —
-  미커밋 마이그레이션은 배포 `rsync --delete` 로 사라지고 fresh DB 는 그 스키마를 영영 못 얻는다. 적용 전에 커밋할 것.
-  ⚠️ **030 이 두 파일**(`030_al_frames_unit`·`030_comfy_local`) — 러너 키는 파일명 전체, 순서는 `sorted(glob)`,
-  재번호 금지(개명하면 prod 에서 재실행된다).
-  ⚠️ 러너에는 파일별 try/except 가 없어 **적용이든 단언이든 한 파일이 실패하면 그 뒤 번호 전부 정지**한다. 이미
-  적용된 파일의 `@ASSERT_AFTER` 도 매 실행 재검증하므로 단언이 보는 객체를 지우는 것만으로도 멈춘다(prod: 드롭된
-  HNSW 때문에 009 단언이 실패해 018 이후가 시도조차 안 됐다 — 2026-09-09 해소 / CI 2026-09-14: 027 의 pgvector 의존
-  인덱스가 적용 실패 → 029 로 분리). 인덱스 드롭 전 `grep -r ASSERT_AFTER` 필수, 단언은 존재·불변식만(행 수 상수 금지).
-  CONCURRENTLY 가 (주석 포함) 들어간 파일은 러너가 문장 단위로 쪼갠다(da8b66e; 스스로 `BEGIN;` 을 열면 일부러 안
-  쪼갠다). 적용 시점은 배포 부팅이 아니라 **첫 asset/센서 실행**(`ensure_runtime_schema()`) — 배포 직후
-  `_pg_migrations` 가 그대로여도 정상이다. 상세는 각 파일 헤더 주석(README §Database Schema 는 아직 001~023 만 다룬다).
-
----
-
-## YOLO-World (레거시 — 현재 비활성)
-
-- `ENABLE_YOLO_DETECTION=false`, `docker-yolo-1` 컨테이너도 정지 상태. bbox 는 SAM3 담당
-- 모델: `yolov8l-worldv2.pt` (`/data/models/yolo/`)
-- dependency 함정: `clip` 패키지 없으면 컨테이너 부팅 실패 → `git+https://github.com/ultralytics/CLIP.git` 필요
-- health check: `GET /health` → `model_loaded=true`
-- `sam3_shadow_compare` 는 기존 YOLO 라벨(`label_tool='yolo-world'`)이 있는 이미지만 비교 대상으로
-  잡으므로, YOLO 를 끈 뒤 새로 들어온 데이터에서는 사실상 동작하지 않는다 (게이트 아님)
-
----
-
-## GenAI Studio
-
-- 컨테이너 `docker-genai-1`, 호스트 포트 **`8089`** → 컨테이너 8088. Basic Auth
-- Kling / Veo / ComfyUI 로컬 생성(`comfy_local`, 상세는 아래 별도 항목) 기반 생성형 증강 (`GENAI_ENGINES_ENABLED=kling,veo,comfy_local`;
-  higgsfield·nanobanana·gpt_image 어댑터도 코드에는 있으나 prod 미활성)
-- `genai_poll_sensor` 가 HTTP 로 내부 API 를 폴링 (Dagster 가 어댑터 코드를 직접 import 하지 않음)
-- 생성물은 `/nas/data/genai_studio` 로 격리 — 일반 incoming 에 넣으면 auto-bootstrap 이
-  카메라 영상으로 오인해 수집한다. `promote-to-labeling` 이 dispatch JSON 을 만들어 정식 편입
-- 코드가 이미지에 COPY-baked 라 변경 시 재빌드 필요 (CI 는 `docker/genai/` 변경을 감지해 자동 재빌드)
-- **ComfyUI 로컬 생성 (`comfy_local` 엔진, 커밋 1a84270/33cc673, 2026-09-21)**: 승인된 워크플로 2개만 실행(`COMFYUI_ALLOWED_WORKFLOWS=flux2-klein-4b-edit-v1,sdxl-inpaint-cctv-v1`) — 그래프는 항상 repo 템플릿이고 사용자 입력은 승인된 scalar 만 재바인딩(임의 그래프 실행 금지). 결과물도 기존 GenAI 격리 NAS → Promote → dispatch 경로를 그대로 타고 `label_policy='required'` 로 사람 검수 없이는 학습셋에 못 들어간다(자기학습 금지 불변식과 동일 계약).
-  ⚠️ **이 코드는 2026-09-18 부터 prod 에서 이미 돌고 있었는데 2026-09-21 까지 git 에 한 줄도 없었다** — 그사이 배포가 왔다면 `rsync --delete`+`git reset --hard` 가 조용히 지웠을 상태였다(커밋 메시지 자백, '단일 진리 원칙' 위반 실사례). GPU0 VRAM 입장 게이트 `COMFYUI_MIN_FREE_VRAM_GB`(2026-09-29 확인: `.env`·실행 중 `docker-genai-1` 모두 **14.5**) — 13→14.5 로 올린 이유는 게이트가 PE-Core 를 unload 한 *뒤* free 를 재므로 embedding 이 아니라 GPU0 의 다른 상시 입주자 `angle-dav2-1`(`CUDA_VISIBLE_DEVICES=0`)을 막는 장치인데, warm FLUX 실측 소요가 14.25GB 라 구 임계 13 은 job 을 통과시킨 뒤 OOM 을 냈기 때문. `COMFY_LOCAL_MAX_CONCURRENT=1`(동시 1 job), `poll()` 은 wall-clock deadline(`COMFYUI_JOB_TIMEOUT_SECONDS`, 기본 900s)으로 lease 를 끊는다 — 이전엔 ComfyUI 재시작으로 죽은 job 이 영구 'running' 처리돼 embedding-service 가 3일간 503 났던 이력. 프록시는 `queue`/`interrupt`/`free`/`jobs/*/cancel` 원본 경로를 ComfyUI 로 직통시키지 않고 차단한다(`docker/genai/app.py` `_COMFY_BLOCKED_PATHS`) — job 제어는 genai 자체 게이트 경유만.
-- **Coverage 제어평면 (커밋 3a7e1c2/367846d, migration 032/033, 2026-09-21)**: 합성 생성이 얼마나/언제 필요한지 스키마가 판정하는 계층 — "승인 안 한 campaign 은 ComfyUI 요청 0건"을 코드 약속이 아니라 `policy_mode_at_plan`(plan_only/disabled) CHECK 제약으로 건다. `planned=0` 이 사실 없음/context 미검증/진짜 0 중 어느 쪽인지 구분하는 카운터 3개가 NOT NULL 이고 blocked 사유 어휘도 폐쇄형이라 "사유 없는 defer"를 스키마가 거부한다. reference 확정 주체는 planner 가 아니라 센서(367846d — `reference_id=NULL` 자리표를 계획 시점에 못박으면 유효기간 만료/holdout 재지정 문제가 생겨서). ⚠️ **기본 꺼짐으로 배포됐다** — 2026-09-29 확인: `coverage_unit_facts`/`generation_reference_pool` 은 실재해도 투영 job 이 없어 0행(정책 미가동)이고, `generation_gpu_leases`(030, comfy_local 이 씀)만 1행이라 생성 인프라 자체는 이미 쓰인 적이 있다.
+## 어디를 읽나
+- `README.md`(§환경·§Infrastructure 포트/GPU 표·§MinIO·§Database Schema·§배포), 목차 `docs/index.md`, 장애 대응 `docs/runbook.md` + `docs/runbook/`.
+- 에이전트 진입점 `AGENTS.md`, 리뷰 기준 `REVIEW.md`.
+- rules(`.claude/rules/`, 로컬·경로 매칭 로드): deployment · postgres · ingest · label-studio · media-services · analysis-fiftyone · mlops.

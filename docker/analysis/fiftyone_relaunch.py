@@ -113,4 +113,11 @@ fo.launch_app(ds, address="0.0.0.0", port=5151)
 # 카운터는 앱이 뜬 뒤에 연다 (핸들러의 :5151 준비 확인과 이중 안전) — 기동 중 "빈 좌석" 광고 방지.
 _start_occupancy_server()
 print("APP_LAUNCHED", flush=True)
-time.sleep(10 ** 9)
+# HTTP 는 resolve_input 동안 14~19초 멎을 수 있다 — 이벤트 루프와 무관한 TCP 연결만 확인한다.
+app_failures = 0
+while True:
+    time.sleep(20)
+    app_failures = 0 if _app_accepting() else app_failures + 1
+    if app_failures >= 3:
+        print("App listener unavailable for 3 checks — exiting for container restart", flush=True)
+        raise SystemExit(1)

@@ -129,6 +129,7 @@ PDB_SRC_FALLBACK = "데이터셋 text 필드(npz 파생)"
 
 _PDB_BANKS = None                # norm_ver -> (bank_id, version_tag, storage, n_sent)
 _PDB_BANKS_ERR = None            # 마지막 뱅크 조회 실패 사유 — 배너에 그대로 싣는다
+_PDB_BANKS_AT = 0.0              # 실패 캐시 시각 — 60초 뒤 재시도
 _PDB_TEXT = {}                   # (norm_ver, local_gidx) -> (text, class_label)
 _PDB_CONN = None
 _PDB_LOCK = threading.Lock()
@@ -195,8 +196,8 @@ def pdb_banks(refresh=False):
 
     실패는 예외가 아니라 **빈 dict + 사유 기록**이다 (패널이 죽으면 안 된다).
     """
-    global _PDB_BANKS, _PDB_BANKS_ERR
-    if _PDB_BANKS is not None and not refresh:
+    global _PDB_BANKS, _PDB_BANKS_ERR, _PDB_BANKS_AT
+    if _PDB_BANKS is not None and not refresh and not (_PDB_BANKS_ERR and time.time() - _PDB_BANKS_AT > 60):
         return _PDB_BANKS
     if not pdb_enabled():
         _PDB_BANKS, _PDB_BANKS_ERR = {}, "PROMPT_DB=off (수동 비활성)"
@@ -214,6 +215,7 @@ def pdb_banks(refresh=False):
             "HAVING min(s.gidx) = 0 OR count(s.sentence_id) = 0", ())
     except Exception as e:      # noqa: BLE001 — DSN 부재·DB 다운 전부 폴백 대상
         _PDB_BANKS, _PDB_BANKS_ERR = {}, f"{type(e).__name__}: {e}"
+        _PDB_BANKS_AT = time.time()
         return _PDB_BANKS
     out = {}
     for bank_id, tag, storage, n in rows:
@@ -380,8 +382,9 @@ def pdb_selftest():
     assert pdb_local_gidx(None) is None
     assert pdb_version_counts(["a", "a", None, "b"]) == {"a": 2, "b": 1}
 
-    global _PDB_BANKS, _PDB_BANKS_ERR
+    global _PDB_BANKS, _PDB_BANKS_ERR, _PDB_BANKS_AT
     saved, saved_err, saved_text = _PDB_BANKS, _PDB_BANKS_ERR, dict(_PDB_TEXT)
+    saved_at = _PDB_BANKS_AT
     try:
         # 게이트 ②: 행수가 다르면 그 버전은 통째로 폴백 (v1.0.2.0 실측 케이스)
         _PDB_BANKS, _PDB_BANKS_ERR = {"1.0.2.0": ("bid", "v1.0.2.0", "db_backed", 12568)}, None
@@ -416,10 +419,11 @@ def pdb_selftest():
 
         # 뱅크를 못 읽으면 전부 폴백 + 사유가 배너에 실린다
         _PDB_BANKS, _PDB_BANKS_ERR = {}, "OperationalError: down"
+        _PDB_BANKS_AT = time.time()      # 60초 재시도 창 안 — 실제 DB 를 두드리지 않는다
         out, meta = pdb_resolve_texts(["v1.0.8.0"], [0], ["fb"], {})
         assert out == ["fb"] and "down" in pdb_note(meta)
     finally:
-        _PDB_BANKS, _PDB_BANKS_ERR = saved, saved_err
+        _PDB_BANKS, _PDB_BANKS_ERR, _PDB_BANKS_AT = saved, saved_err, saved_at
         _PDB_TEXT.clear()
         _PDB_TEXT.update(saved_text)
 

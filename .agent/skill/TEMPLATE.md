@@ -1,24 +1,19 @@
 ---
-description: [Write a short one-line summary of the skill here. Example: Guide for staging data reset and restart scripts]
+name: <skill-name>
+description: <언제 이 스킬을 읽어야 하는지 한 줄>
 ---
 
-# 🎯 Skill Purpose (Trigger)
-- [Describe the situation or user request (or error) that should prompt an AI to read this document]
-- Example: "When the staging pipeline has stalled", "When a DuckDB lock error occurs"
+# <제목>
 
-# 🛠️ Dependencies
-- **Target script:** `scripts/target_script_name.py`
-- **Target container/DB:** `docker/data/staging.duckdb`
-- **Target logs:** `/nas/staging/archive/failed/`
+목적과 적용 범위를 1–2문장으로 쓴다. 유사 작업에서 다른 스킬을 써야 하면 한 줄로 연결한다.
 
-# 📝 Action Steps
-The AI agent executing this skill must perform the steps below strictly in order.
+1. 실행 전 확인할 대상·전제조건
+2. 실제 명령 또는 판단 절차
+3. 결과 검증 방법
 
-1. **[Check status]** First, verify container status via `docker compose ps`.
-2. **[Run script]** Execute the following command in the terminal: `python scripts/... --option`
-3. **[Validate result]** After running the script, query DuckDB (`query_local_duckdb.py`) to confirm data was applied.
+## 제약
 
-# 🚫 Constraints
-- [State any actions that are absolutely prohibited]
-- Example: "Never connect to the production DB (`pipeline.duckdb`)."
-- Example: "Do not use this script together with `docker-compose down`."
+- 되돌리기 어려운 작업의 정확한 대상과 승인 조건
+- 비밀값·운영 환경·데이터 계약 관련 금지 사항
+
+경로·컨테이너명·인자는 코드/스크립트에서 확인한 사실만 쓴다. 예시는 꼭 필요한 한 개만 둔다.

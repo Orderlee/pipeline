@@ -485,6 +485,7 @@ async def upload_delete(
     업로드 루트 직계인지 검사), ③ busy 중이면 409(인제스트가 읽고 있는 번들을 지우지 않는다).
     marker 없는 데이터셋은 스크립트가 절대 건드리지 않는다(sourcei/frames 보호).
     """
+    global _busy, _current, _job_counter
     _check_token(x_internal_token)
     payload = await _read_json_body(request)
     bundles = payload.get("bundles")
@@ -496,17 +497,27 @@ async def upload_delete(
     dry_run = bool(payload.get("dry_run", False))
     if not dry_run and payload.get("confirm") is not True:
         raise HTTPException(status_code=400, detail="삭제는 confirm:true 가 필요합니다 (dry_run:true 면 계획만)")
-    with _state_lock:
-        busy_now = _current if _busy else None
-    if busy_now:
-        raise HTTPException(status_code=409, detail=f"다른 작업 진행 중이라 삭제할 수 없습니다: {busy_now}")
-
     cmd = [sys.executable, DELETE_SCRIPT, *bundles, "--json"] + ([] if dry_run else ["--apply"])
+    with _state_lock:
+        if _busy:
+            raise HTTPException(status_code=409, detail=f"다른 작업 진행 중이라 삭제할 수 없습니다: {_current}")
+        _job_counter += 1
+        _busy = True
+        _current = {"job_id": f"delete-{_job_counter}", "target": "upload:delete", "started_at": time.time()}
+    def _run_delete():
+        # busy 해제는 **스레드가** 한다 — 요청이 (몇 번이든) 취소돼도 subprocess 는 계속 돌므로,
+        # 이벤트 루프 쪽 finally 에서 풀면 삭제 도중 인제스트가 같은 번들을 집어갈 수 있다.
+        global _busy, _current
+        try:
+            return subprocess.run(cmd, capture_output=True, text=True, timeout=UPLOAD_DELETE_TIMEOUT_S)
+        finally:
+            with _state_lock:
+                _current = None
+                _busy = False
+
     try:
         # asyncio.to_thread 필수 — upload_validate 주석 참고(이벤트 루프 블로킹 방지).
-        proc = await asyncio.to_thread(
-            subprocess.run, cmd, capture_output=True, text=True, timeout=UPLOAD_DELETE_TIMEOUT_S,
-        )
+        proc = await asyncio.to_thread(_run_delete)
     except subprocess.TimeoutExpired:
         raise HTTPException(status_code=502, detail=f"delete_bundle.py 타임아웃({UPLOAD_DELETE_TIMEOUT_S}s)") from None
     except Exception as exc:  # noqa: BLE001 — 스크립트 부재 등 실행 자체 실패
@@ -786,7 +797,7 @@ async def upload_archive(request: Request, name: str | None = None, overwrite: b
                 received += len(chunk)
                 if received > UPLOAD_MAX_BYTES:
                     raise HTTPException(status_code=413, detail=f"업로드 상한 {UPLOAD_MAX_BYTES} bytes 초과")
-                f.write(chunk)
+                await asyncio.to_thread(f.write, chunk)
         if received == 0:
             raise HTTPException(status_code=400, detail="빈 업로드")
         return await asyncio.to_thread(_install_archive, tmp_zip, name, overwrite)
@@ -1016,7 +1027,7 @@ async def upload_fetch(request: Request):
             detail=f"번들/데이터셋 이름 규칙 위반: {name!r} (영숫자로 시작, [A-Za-z0-9._-], -prompts 금지)")
     overwrite = bool(payload.get("overwrite", False))
 
-    url, host = _fetch_check_url(raw_url)          # 400/403/502 를 다운로드 전에 확정
+    url, host = await asyncio.to_thread(_fetch_check_url, raw_url)  # 400/403/502 를 다운로드 전에 확정
     # 이름 충돌은 **받기 전에** 거른다 — 20GB 를 받고 나서 409 를 주는 건 최악이다.
     if name is not None and os.path.exists(os.path.join(UPLOAD_ROOT, name)) and not overwrite:
         raise HTTPException(

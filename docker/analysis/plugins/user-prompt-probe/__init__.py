@@ -72,7 +72,11 @@ def _gidx_offset():
 # App 프로세스에서 도는 동기 연산이라 상한을 둔다. 13k 프레임 × 1024-d = 54MB 로
 # 충분히 빠르지만(<1s), 20만 프레임 데이터셋에서 그대로 돌면 앱이 멈춘다.
 MAX_FRAMES = 40_000
-BATCH = 8_000
+# 온디맨드 채점의 `S = X @ V.T` 는 프레임 × 뱅크 문장 수로 자란다 — MAX_FRAMES 만으로는 못 막는다
+# (40k 프레임 × 79,842문장 = 3.2G 셀 ≈ 50GB). 셀당 ≈12~16B(S + wave_iou Bi·임시배열).
+# ponytail: 5억 셀 ≈ 6~8GB 과도 — 현행 sourcei·sourcei-OPT × DB 최대 뱅크(49,140문장, 3.7억 셀)는
+# 통과시키고 frames 급 재앙만 막는 상한. 좌석 mem_limit 기준으로 조이려면 S 를 청크로 나눠 채점할 것.
+MAX_SCORE_CELLS = 500_000_000
 
 
 def _tags(dataset):
@@ -106,6 +110,7 @@ def _probe_tags_safe(ctx):
 # 커진 뒤 `count_values("bank_version.label")` 이 0.5s 라 **글자 하나 칠 때마다** 그만큼 멈춘다.
 # 표본 수로 키를 잡아 캐시한다 — 재빌드되면 개수가 바뀌므로 자동 무효화된다 (`count()` 는 0.00s).
 _VER_CACHE = {}
+_CAM_CACHE = {}        # `_rank_inputs` 의 프레임 카메라 목록 — (frames_name, count) 키, 1항목
 
 
 def _bank_versions(dataset):
@@ -370,8 +375,7 @@ def _rank_by_project(frames_view, winner_fld, classes, gidx_list, texts, labels,
     ⚠️ 이 순위는 **그 프로젝트의 GT 로 만든 값**이다 → 그 프로젝트에 적합(overfit)된 선택이고,
        다른 현장으로의 전이는 보장되지 않는다. 그래서 provenance 에 순위 조건을 박아 둔다.
     """
-    wg = frames_view.values(winner_fld)
-    gtl = frames_view.values("ground_truth.label")
+    wg, gtl = frames_view.values([winner_fld, "ground_truth.label"])   # 한 번의 집계 (§_score_texts)
 
     # ⚠️ gidx 오프셋 **세대 차이** 방어. 프레임의 `winner_gidx_*` 는 구 세대(뱅크-로컬 0~N)와
     #    신 세대(전역 = 버전순번×GIDX_OFFSET + 로컬)가 섞여 있다 (29버전 재빌드가 태그·오프셋을
@@ -577,8 +581,12 @@ class ExportBankVersion(foo.Operator):
         cams, err = [], None
         try:
             fds = fo.load_dataset(frames_name)
-            if "camera" in fds.get_field_schema():
-                cams = [c for c in sorted(fds.count_values("camera") or {}) if c]
+            key = (frames_name, fds.count())        # `_VER_CACHE` 와 같은 키 — 글자마다 count_values 금지
+            if key not in _CAM_CACHE:
+                _CAM_CACHE.clear()
+                _CAM_CACHE[key] = ([c for c in sorted(fds.count_values("camera") or {}) if c]
+                                   if "camera" in fds.get_field_schema() else [])
+            cams = _CAM_CACHE[key]
         except Exception as e:                       # noqa: BLE001 — 폼은 절대 죽지 않게
             err = f"{type(e).__name__}: {e}"
         if err:
@@ -610,7 +618,8 @@ class ExportBankVersion(foo.Operator):
                   "다른 현장으로의 전이는 보장되지 않습니다. 선정 조건은 provenance 에 기록됩니다"))
 
     def _rank_execute(self, ctx, version):
-        """상위 N 선정 → (선정 표, 대상 뷰, 선정조건 문자열). dry-run 이면 뷰는 None."""
+        """상위 N 선정 → (선정 표, 대상 뷰, 선정조건 문자열, 커버리지 경고). dry-run 이면 뷰는 None.
+        경고는 `self._missing` 에 두지 않고 반환한다 — `_drop_execute` 와 같은 이유(인스턴스 공유)."""
         rv = ctx.params["rank_version"]
         cam = ctx.params.get("camera") or "__ALL__"
         top_n = max(1, int(ctx.params.get("top_n") or 50))
@@ -630,7 +639,8 @@ class ExportBankVersion(foo.Operator):
             raise ValueError(f"카메라 {cam} 프레임이 0장입니다")
 
         pview = ctx.dataset.match({"bank_version.label": rv})
-        gidx, texts, labels = pview.values(["gidx", "text", "category.label"])
+        # "id" 도 같은 왕복에 싣는다 — 확정 경로에서 `values("id")` 를 또 부르면 컬렉션 재순회
+        gidx, texts, labels, pids = pview.values(["gidx", "text", "category.label", "id"])
         classes = sorted({x for x in labels if x})
         picked, won_idx = _rank_by_project(fview, fld, classes, gidx, texts, labels,
                                            top_n, per_class, min_wins, sort_by)
@@ -644,7 +654,7 @@ class ExportBankVersion(foo.Operator):
         #    (실측: 상가 복도 카메라에서 normal 만 5개). 그래서 빠진 클래스를 명시한다.
         got = {r["cls"] for r in picked}
         missing = [c for c in classes if c not in got]
-        self._missing = (
+        coverage = (
             f"⚠️ 이 선정에 {', '.join(missing)} 문장이 **0개**입니다 — 그 현장에 해당 이벤트 "
             "프레임이 없어 승수가 0이기 때문입니다. 이대로 확정하면 그 클래스를 절대 못 잡습니다. "
             "프로젝트를 「전체」로 하거나 최소 승수를 0으로 낮추세요"
@@ -654,10 +664,10 @@ class ExportBankVersion(foo.Operator):
                 f"per_class={per_class} min_wins={min_wins} sort_by={sort_by} "
                 f"frames={fview.count()} missing_classes={','.join(missing) or 'none'}")
         if ctx.params.get("dry_run", True):
-            return picked, None, spec
+            return picked, None, spec, coverage
         keep = {r["gidx"] for r in picked}
-        ids = [i for i, g in zip(pview.values("id"), gidx) if g in keep]
-        return picked, ctx.dataset.select(ids), spec
+        ids = [i for i, g in zip(pids, gidx) if g in keep]
+        return picked, ctx.dataset.select(ids), spec, coverage
 
     def execute(self, ctx):
         version = str(ctx.params["version"]).strip()
@@ -683,19 +693,19 @@ class ExportBankVersion(foo.Operator):
                 f"선택 {len(sel):,}개 = 패널 절단 상한({SELECTION_CAP}) — 라쏘가 더 컸다면 나머지는 "
                 "오퍼레이터에 도달하지 않습니다. 라쏘를 더 작게 나누거나, 사이드바 필터로 남길 집합을 "
                 "만들어 「현재 뷰 전체」로 발행하세요")
-        picked, spec, drop = None, None, None
+        picked, spec, drop, coverage = None, None, None, ""
 
         if src == "DROP":
             target, spec, drop_counts, n_kept, drop_warn = self._drop_execute(ctx)
             drop = (drop_counts, n_kept, drop_warn)
         elif src == "RANK":
-            picked, target, spec = self._rank_execute(ctx, version)
+            picked, target, spec, coverage = self._rank_execute(ctx, version)
             if target is None:                      # 미리보기 — 아무것도 쓰지 않는다
                 cnt = {}
                 for r in picked:
                     cnt[r["cls"]] = cnt.get(r["cls"], 0) + 1
                 return {"version": version, "tag": "(미리보기 — 저장 안 함)",
-                        "coverage": getattr(self, "_missing", ""),
+                        "coverage": coverage,
                         "csv": "-", "host_csv": "-", "next": "-",
                         "spec": spec, "n_picked": len(picked), "class_counts": str(cnt),
                         "picked": picked,
@@ -761,7 +771,7 @@ class ExportBankVersion(foo.Operator):
             out.update(spec=spec, n_picked=drop[1], class_counts=drop[0], coverage=drop[2])
         if picked is not None:
             out.update(spec=spec, n_picked=len(picked), picked=picked,
-                       coverage=getattr(self, "_missing", ""),
+                       coverage=coverage,
                        class_counts=str({r["cls"]: sum(1 for x in picked if x["cls"] == r["cls"])
                                          for r in picked}))
         return out
@@ -1222,6 +1232,7 @@ class GeneratePrompts(foo.Operator):
         bd = types.DropdownView()
         bd.add_choice("vertex", label="Vertex Gemini (이미 배선됨)")
         bd.add_choice("openai_compat", label="OpenAI 호환 (로컬 LLM·외부 API)")
+        bd.add_choice("plm", label="로컬 PLM (embedding-service /caption, GPU1 여유 부족 시 503)")
         inputs.enum("backend", list(GEN_BACKENDS), default="vertex", required=True,
                     label="모델 백엔드", view=bd)
         inputs.str("model", default=GEN_MODEL, required=True, label="모델명",
@@ -1734,19 +1745,23 @@ def _content_fingerprint(dataset):
     """데이터셋 최종 수정 시각 — 캐시 키에 넣어 **개수는 같은데 내용만 바뀐** 경우(재라벨링,
     태그 편집 등)도 잡는다(2026-09-21 지시② — "새로고침해도 캐시가 그대로다").
 
-    ⚠️ 표본별 `sample.last_modified_at` 의 최댓값이 더 정밀하지만, 그건 뷰 전체를 훑는 **O(N)
-    Mongo 조회**라 `resolve_input` 이 슬라이더 1틱마다 다시 부르면 §C.2 가 막으려던 바로 그
-    비용(실측 0.20s)이 매 틱마다 든다 — 그러면 캐시가 있으나 마나다. 그래서 데이터셋 전체
-    단일 타임스탬프(`dataset.last_modified_at`, 속성 조회라 사실상 O(1))로 낮췄다: 이 데이터셋의
-    **무관한** 다른 편집에도 반응하는 더 거친 무효화지만(과잉 재계산=안전, 누락 재계산=위험,
-    이 저장소가 늘 택해온 방향) 슬라이더 경로에 O(N) 조회를 새로 넣지 않는다. 표본 축을
-    쓰고 싶다면 이 코멘트를 바꾸고 실측을 다시 남길 것.
+    ⚠️ `dataset.last_modified_at` 만으로는 부족하다 — FiftyOne 1.19 는 이 값을 **데이터셋 메타
+    (info·필드 스키마 등) 편집에만** 올리고 표본 편집(재라벨링·태그)에는 안 올린다. 그래서
+    표본별 `last_modified_at` 의 최댓값을 함께 넣는다. 예전 문서화는 이걸 "뷰 전체를 훑는 O(N)
+    Mongo 조회(0.20s)" 라고 봤는데 실측이 다르다 — `last_modified_at` 은 색인 필드라
+    `dataset.max()` 집계가 sourcei 6,032장에서 2ms. 둘 중 큰 값을 쓴다(어느 축이 바뀌어도 반응).
     """
     try:
         v = dataset.last_modified_at
-        return v.timestamp() if v else 0
+        ts = v.timestamp() if v else 0
     except Exception:                      # noqa: BLE001 — 캐시 키 계산은 절대 죽지 않게
-        return 0
+        ts = 0
+    try:
+        m = dataset.max("last_modified_at")
+        ts = max(ts, m.timestamp() if m else 0)
+    except Exception:                      # noqa: BLE001 — 자체검증 _FakeDS 등 max() 없는 객체
+        pass
+    return ts
 
 
 def _bank_fingerprint(version):
@@ -2293,6 +2308,10 @@ def _rule_arrays_ondemand(dataset, view, embed_field, bank_version):
             raise ValueError(f"{view.count():,}장 — 상한 {MAX_FRAMES:,} 초과. 뷰를 좁히세요")
         pg = _pg_module()
         bank = pg.load_bank(bank_version)
+        n_cells = view.count() * len(bank["vec"])
+        if n_cells > MAX_SCORE_CELLS:
+            raise ValueError(f"{view.count():,}장 × 문장 {len(bank['vec']):,}개 = {n_cells:,} 셀 — "
+                             f"상한 {MAX_SCORE_CELLS:,} 초과. 뷰를 좁히거나 작은 뱅크를 고르세요")
         neg_class, neg_is_guess = _negative_class(dataset.name, ["normal"])
         members = {}
         for i, name in pg.CLASS_NAMES.items():
@@ -2308,7 +2327,6 @@ def _rule_arrays_ondemand(dataset, view, embed_field, bank_version):
         # 한 호출로 묶는다 — "id" 를 따로 조회하면 왕복이 하나 더 는다(2026-09-21 save_view
         # 정합성 수정, `_rule_arrays` 와 같은 원칙).
         gtl_all, emb_col, ids_all = view.values(["ground_truth.label", embed_field, "id"])
-        n_all = len(emb_col)
         missing_mask = np.array([v is None for v in emb_col])
         n_missing = int(missing_mask.sum())
         missing_breakdown = {}
@@ -2366,7 +2384,9 @@ def _rule_arrays_ondemand(dataset, view, embed_field, bank_version):
         # 참조. 여기가 어긋나면 조용한 오답이다).
         bank_cls_local = _bank_cls_to_local(bank["cls"], pg.CLASS_NAMES, classes)
         KM = min(K_MAX, S.shape[1])
-        part = np.argpartition(-S, KM - 1, axis=1)[:, :KM]
+        # `-S` 는 S 전체 사본(N×M float32)을 하나 더 만든다 — 뒤에서 어차피 내림차순 재정렬하므로
+        # 부호를 뒤집지 않고 큰 쪽 꼬리를 뽑는다(선별 집합 동일, ord_v/ord_c 불변).
+        part = np.argpartition(S, S.shape[1] - KM, axis=1)[:, -KM:]
         vpart = np.take_along_axis(S, part, 1)
         order = np.argsort(-vpart, axis=1)
         # ⚠️ **float32 로 저장한다.** 처음 사양은 float16 이었는데(메모리 절감), 그러면
@@ -3136,6 +3156,8 @@ def _self_check():
         def __init__(self, w, g):
             self._w, self._g = w, g
         def values(self, f):
+            if isinstance(f, (list, tuple)):          # 실제 계약과 동일하게 필드명 리스트도 받는다
+                return [self.values(x) for x in f]
             return self._w if f.startswith("winner_gidx") else self._g
     #  gidx 10=fire(3승 중 2정답) · 11=smoke(2승 0정답) · 12=fire(1승 1정답) · 13=미승리
     wg = [10, 10, 10, 11, 11, 12]
@@ -3323,7 +3345,7 @@ def _self_check():
     import prompt_cos_db as _pcdb
 
     def _build_rank_table(S, lab, km, dtype="float32"):
-        part = np.argpartition(-S, km - 1, axis=1)[:, :km]
+        part = np.argpartition(S, S.shape[1] - km, axis=1)[:, -km:]   # 운영 코드와 동일 산식
         vpart = np.take_along_axis(S, part, 1)
         order = np.argsort(-vpart, axis=1)
         ov = np.take_along_axis(vpart, order, 1).astype(dtype)

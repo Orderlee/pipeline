@@ -1,10 +1,6 @@
-# 🤖 AI Agent Core Action Rules
+# Copilot 지침
 
-1. **Skill Discovery First:** 
-   이 프로젝트의 모든 자동화 스크립트, 운영 팁, 문제 해결 가이드는 `.agent/skill/` 폴더 내에 마크다운(`SKILL.md`) 형태로 정리되어 있습니다.
-   
-2. **Mandatory Step:** 
-   사용자가 작업을 지시하면, 스스로 코드를 처음부터 짜기 전에 반드시 컨텍스트 검색 도구를 활용하여 `.agent/skill/` 디렉토리를 먼저 탐색하세요. 
-   
-3. **Execution:** 
-   요청과 관련된 스킬 문서가 발견되면, 해당 문서의 지침을 완벽하게 읽고 그 룰에 맞추어 작업을 수행하세요.
+- 작업 전 `.agent/skill/`에서 관련 지침을 찾는다.
+- 변경 범위를 좁히고 기존 데이터 계약과 레이어 경계를 따른다.
+- DB 변경은 `PostgresResource` 경로와 forward-only migration 규칙을 따른다.
+- 비밀 값과 로컬 환경 파일을 출력하거나 커밋하지 않는다.

@@ -1,86 +1,54 @@
 # AGENTS.md — VLM Data Pipeline
 
-이 문서는 에이전트를 위한 **짧은 맵**입니다.
-세부 설계, 계획, 운영 레퍼런스는 `docs/` 아래 기록 시스템을 우선 참조합니다.
+CCTV 영상·이미지 수집 → 중복 제거 → Gemini(Vertex) 이벤트 라벨링 → SAM3 bbox → Label Studio 검수 → 학습셋 구축.
+Dagster + PostgreSQL + MinIO. DuckDB는 `pg_duckdb` 분석 전용; YOLO는 기본 비활성(`ENABLE_YOLO_DETECTION=false`).
 
-## 먼저 볼 문서
+## 사고 방지
 
-1. `README.md` — 사람용 개요와 운영 흐름
-2. `CLAUDE.md` — 운영 컨텍스트·환경·금기사항 (가장 조밀함)
-3. `docs/index.md` — 문서 전체 목차
-4. 작업 성격에 맞는 하위 인덱스
-   - `docs/design-docs/index.md`
-   - `docs/exec-plans/index.md`
-   - `docs/references/index.md`
-5. 에이전트 라우팅·effort·escalation 룰: `docs/references/multi-agent.md` +
-   페르소나 로스터/라우팅표: `docs/references/agent-teams.md`
-6. 작업별 운영 절차: `.agent/skill/<name>/SKILL.md` (**코드를 짜기 전에 먼저 검색**)
+- 이 호스트 checkout은 운영 배포 루트. `src/`, `configs/`, `scripts/`, Compose 수동 핫픽스 금지 — 배포의 `rsync --delete` + `git reset --hard`가 덮어씀.
+- `main` 배포는 Dagster 3개 서비스를 재생성하여 실행 중 작업을 끊음. 배포·재시작은 작업 범위부터 확인.
+- Compose는 `scripts/compose-prod.sh` / `scripts/compose-staging.sh`만 사용 — project/env 누락 시 운영을 건드림. staging wrapper는 별도 `_test` clone에서 실행.
+- `.env`·인증 파일의 비밀 값 출력·문서화 금지. `scripts/archive/`는 폐기 코드 — 운영 명령으로 안내하지 않음.
 
-## 프로젝트 한 줄
+## 구현·데이터 계약
 
-CCTV/보안 영상 수집 → 중복 제거 → Gemini(Vertex) 이벤트 라벨링 → SAM3 검출 →
-Label Studio 사람 검수 → 학습 데이터셋 빌드.
-스택은 **Dagster + PostgreSQL + MinIO** 입니다.
+아래 패키지 경로는 `src/vlm_pipeline/` 기준.
 
-> ⚠️ DuckDB 와 MotherDuck 은 write path 에서 제거됐습니다 (2026-05-19 PG cutover).
-> DuckDB 는 `pg_duckdb` extension 경유 분석 쿼리로만 남아 있고, MotherDuck 동기화 코드는
-> `scripts/archive/` 로 이동됐습니다. YOLO-World 는 `ENABLE_YOLO_DETECTION=false` 로 비활성이며
-> bbox 는 SAM3 가 담당합니다.
+- DB 변경은 `PostgresResource`(`db`)로. 센서 조회는 `lib/sensor_db.py` 사용, 조회 연결에 write 금지.
+- import 방향: `definitions*` → `defs/` → `resources/`·`lib/`. `lib/`(L1–2)는 `dagster`, `vlm_pipeline.{defs,resources,ops}` import 금지 — lazy import도 검사 대상.
+- MinIO 버킷 5개 고정: `vlm-raw`, `vlm-labels`, `vlm-processed`, `vlm-dataset`, `vlm-classification`. 라벨 JSON 정본은 `vlm-labels`; processed에 중복 저장 금지.
+- `raw_key`는 정규화한 `<source_unit_name>/<rel_path>`; `YYYY/MM` 금지. file unit·GCP 예외는 `defs/ingest/ops_register.py`, `lib/env_utils.py` 확인.
+- `dispatch_stage_job`에 clip 분할 추가 금지. 사람 `finalized` 후 `post_review_clip_job`; dataset은 `DATASET_REQUIRE_LS_FINALIZED=1` 유지.
+- 파일 오류는 실패 기록 후 나머지 진행. 검증 실패 파일은 DB 등록·archive 이동 제외.
+- GCP manifest: `pending → processed → completed(summary)`. `_DONE` 후 chunk 이력 대신 unit/signature 요약 유지 (`defs/ingest/compaction.py`).
+- PG migration은 forward-only. 기존 파일명 변경 금지 — 적용 이력 키는 전체 파일명. 두 `030_*`도 유지.
 
-## 핵심 경로
+## 검사
 
-- `src/vlm_pipeline/` — 파이프라인 패키지 (Dagster assets/sensors/resources)
-- `src/gemini/` — Label Studio 연동 (`ls_*.py`: task 생성, webhook, finalize, sync)
-- `src/python/` — NAS 폴더 트리 → Postgres KPI 수집 도구
-- `docker/` — Compose, 서비스별 Dockerfile, workspace, env
-- `scripts/` — 운영/검증 스크립트 (`scripts/archive/` 는 사용 종료분)
-- `docs/` — 설계, 실행 계획, 운영 참고 문서
-- `.agent/skill/` — 작업 절차 스킬 문서
+저장소 루트, 의존성 있는 venv에서 실행(`pyproject.toml` 미추적). 이 호스트의 PATH `python`은 깨진 venv → `/home/user/anaconda3/bin/python` 명시.
+새 테스트는 `.gitignore`의 `!tests/unit/<파일>` allowlist에 넣어야 CI가 돈다(확인 `git ls-files tests/`).
 
-## 운영 환경 요약
+```bash
+PYTHONPATH=src python -m pytest tests/unit -q --tb=short
+python3 scripts/check_lib_layer_imports.py
+ruff check src/ tests/
+ruff format --check src/ tests/
+```
 
-| 항목 | Production (`main`) | Staging (`dev`) |
-|------|----------------------|--------------|
-| Dagster UI | `http://10.0.0.10:3030` | `http://10.0.0.10:3031` |
-| Postgres | `vlm_pipeline` @ `docker-postgres-1` (host `:15433`) | `vlm_pipeline_staging` @ `pipeline-test-postgres-1` |
-| MinIO endpoint | `http://10.0.0.51:9000` | `http://10.0.0.51:9002` |
-| Incoming (호스트) | `/home/user/mou/nas_primary/incoming` | `/home/user/mou/nas_primary/staging/incoming` |
-| Incoming (컨테이너) | `/nas/data/incoming` | `/nas/data/incoming` |
-| Compose project | `docker` | `pipeline-test` |
-| env | `docker/.env` | `docker/.env.test` |
-| compose wrapper | `./scripts/compose-prod.sh` | `./scripts/compose-staging.sh` |
+Ruff는 CI와 같은 `0.7.4` / `ruff.toml`. 통합 검사는 **별도 테스트 PG**의 `DATAOPS_TEST_POSTGRES_DSN`을 지정한 뒤 `PYTHONPATH=src python -m pytest tests/integration -q` — fixture가 DB 생성·삭제하며 운영 DSN으로도 fallback함.
 
-prod/staging 은 같은 compose 서비스 정의를 쓰고, branch 와 env 파일만 다릅니다.
-`docker compose` 를 직접 호출하지 말고 **wrapper 스크립트를 사용**하세요 (env-file/project 이름 누락 사고 방지).
+## 필요한 문서만 읽기
 
-> 스테이징 스택은 상시 기동이 아닙니다. 필요할 때 `./scripts/compose-staging.sh up -d` 로 올리고,
-> `:3031` 이 응답하지 않는다고 장애로 판단하지 마세요.
+코드 변경 전 `.agent/skill/*/SKILL.md`에서 해당 절차 검색. 전체 README·CLAUDE를 선독하지 않음.
 
-## 필수 규칙
+| 작업 | 진입점 |
+|---|---|
+| 라벨링·dispatch | `docs/logic/Auto_Labeling_기능_명세서.md` + `src/vlm_pipeline/definitions_production.py` |
+| DB·키 | `src/vlm_pipeline/sql/migrations/postgres/*.sql` 헤더 + `lib/key_builders.py` |
+| 배포·환경 | `docs/references/deployment-guide.md` + `scripts/deploy/deploy-stack.sh` |
+| LS 연동 | `docs/references/label-studio-ops-guide.md` + `src/gemini/ls_*.py` |
+| 학습 | `.agent/skill/mlops-finetune/SKILL.md` |
+| 리뷰·협업 | `REVIEW.md` / `docs/references/{multi-agent,agent-teams}.md` |
+| 그 외 | `docs/index.md` → 해당 하위 index; 운영 맥락은 `CLAUDE.md` 해당 절 |
 
-- **write 는 `PostgresResource`(`db`) 로만.** sensor 는 `lib/sensor_db.py` read-only 연결만 사용
-- MinIO 버킷은 `vlm-raw`, `vlm-labels`, `vlm-processed`, `vlm-dataset`, `vlm-classification` **5개 고정**
-- 라벨 JSON source of truth 는 `vlm-labels` — `vlm-processed` 에 중복 저장 금지
-- `raw_key = <source_unit_name>/<rel_path>` — `YYYY/MM` prefix 금지
-- `lib/`(L1-2)에서 `dagster`/`defs`/`resources`/`ops` import 금지 (CI + pre-commit 이 차단)
-- 파일 단위 오류는 per-file fail-forward — 한 파일 실패가 나머지를 중단시키면 안 됨
-- 호스트에서 `src/`·`configs/`·`scripts/`·compose 파일 **수동 수정 금지** —
-  이 저장소가 곧 프로덕션 배포 루트라, 다음 배포의 `rsync --delete` + `git reset --hard` 로 소실됨
-- GCP auto-bootstrap manifest 는 `pending -> processed -> completed(summary)`로 compact 하며,
-  `_DONE` 이후에는 chunk별 processed manifest 대신 source unit/signature summary 1개만 남김
-- 주요 설계 판단과 운영 규칙은 채팅만으로 끝내지 말고 `docs/`에 남깁니다
-- 새 작업은 `AGENTS.md -> .agent/skill/ -> docs/index.md -> 관련 하위 index` 순서로 탐색합니다
-
-## 문서 운영 원칙
-
-git 추적되는 문서 (팀 공유):
-
-- `README.md`: 제품/운영 개요
-- `AGENTS.md`: 에이전트용 진입점
-- `CLAUDE.md`: 운영 맥락·금기사항
-- `REVIEW.md`: PR 리뷰 기준
-- `docs/`: 설계, 계획, 참고 문서의 기록 시스템
-
-`.gitignore` 로 제외된 **로컬 전용** 메모 (fresh clone 에 없음 — 인용/링크 금지):
-`WORKLOG.md`, `CLAUDE2.md`, `LABEL_STORAGE_POLICY.md`, `ANTIGRAVITY.md`.
-공유가 필요한 내용이면 `docs/` 로 옮기세요.
+공유할 설계·운영 판단은 `docs/`에 기록. `.gitignore`의 로컬 전용 문서는 공유 근거로 인용하지 않음.

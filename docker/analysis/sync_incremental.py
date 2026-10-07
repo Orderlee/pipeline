@@ -54,7 +54,6 @@ from __future__ import annotations
 
 import argparse
 import gc
-import glob
 import json
 import os
 import subprocess
@@ -488,9 +487,9 @@ def sync_prompts(dry_run: bool) -> dict:
         raise RuntimeError(
             f"{PROMPTS_DATASET} 에 promptmap 이 복원하지 않는 파생 필드가 있다: "
             + ", ".join(f"{f}(<-{owner})" for f, owner in lost)
-            + f". promptmap 은 overwrite=True 라 이대로 돌면 이 필드들이 사라지고 이 함수는 "
-              f"후속 스테이지를 돌리지 않는다. 진행하려면 SYNC_PROMPTS_ALLOW_DESTRUCTIVE=1 로 "
-              f"명시하고, 리빌드 뒤 위 스크립트들을 다시 돌려 파생 필드를 복원할 것.")
+            + ". promptmap 은 overwrite=True 라 이대로 돌면 이 필드들이 사라지고 이 함수는 "
+              "후속 스테이지를 돌리지 않는다. 진행하려면 SYNC_PROMPTS_ALLOW_DESTRUCTIVE=1 로 "
+              "명시하고, 리빌드 뒤 위 스크립트들을 다시 돌려 파생 필드를 복원할 것.")
 
     env = dict(os.environ)
     env["BANK_LIST"] = bank_list

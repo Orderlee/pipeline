@@ -25,6 +25,7 @@ import hashlib
 import json
 import os
 import threading
+import time
 from collections import OrderedDict
 
 import fiftyone as fo
@@ -45,10 +46,10 @@ PROMPTS_SUFFIX = "-prompts"
 MAX_POINTS = 200_000
 # 이미지 단위라 문장 번들(192MB)보다 훨씬 작다. 다만 `<X>-prompts` 세션에서 문장 패널이
 # 쓰는 번들은 60만 행 × 축 10개라 2026-08-19 실측 59.8MB 로 옛 64MB 예산에 붙어 있었다
-# (DB 조인 키인 `gidx` 열 하나만 더해도 터진다) → 96MB. 엔트리는 여전히 1개만 유지한다.
+# (DB 조인 키인 `gidx` 열 하나만 더해도 터진다) → 96MB. 엔트리는 데이터셋당 1개·최대 2개(≤2×96MB).
 CACHE_CAP_BYTES = 96 * 2**20
 
-_CACHE = {}   # (dataset_name, brain_key, last_modified_at) -> bundle. 엔트리 1개 유지.
+_CACHE = {}   # (dataset_name, brain_key, data_version) -> bundle. 데이터셋당 1개, 전체 2개 유지.
 
 # 색칠 후보 — 프레임 데이터셋에 **실제로 있는 것만** 드롭다운에 뜬다 (sourcei/source-h 스키마가
 # 다르다: sourcei 는 event_kind·category 보유, source-h 은 없음).
@@ -173,6 +174,7 @@ PDB_SRC_FALLBACK = "데이터셋 text 필드(npz 파생)"
 
 _PDB_BANKS = None                # norm_ver -> (bank_id, version_tag, storage, n_sent)
 _PDB_BANKS_ERR = None            # 마지막 뱅크 조회 실패 사유 — 배너에 그대로 싣는다
+_PDB_BANKS_AT = 0.0              # 실패 캐시 시각 — 60초 뒤 재시도
 _PDB_TEXT = {}                   # (norm_ver, local_gidx) -> (text, class_label)
 _PDB_CONN = None
 _PDB_LOCK = threading.Lock()
@@ -239,8 +241,8 @@ def pdb_banks(refresh=False):
 
     실패는 예외가 아니라 **빈 dict + 사유 기록**이다 (패널이 죽으면 안 된다).
     """
-    global _PDB_BANKS, _PDB_BANKS_ERR
-    if _PDB_BANKS is not None and not refresh:
+    global _PDB_BANKS, _PDB_BANKS_ERR, _PDB_BANKS_AT
+    if _PDB_BANKS is not None and not refresh and not (_PDB_BANKS_ERR and time.time() - _PDB_BANKS_AT > 60):
         return _PDB_BANKS
     if not pdb_enabled():
         _PDB_BANKS, _PDB_BANKS_ERR = {}, "PROMPT_DB=off (수동 비활성)"
@@ -258,6 +260,7 @@ def pdb_banks(refresh=False):
             "HAVING min(s.gidx) = 0 OR count(s.sentence_id) = 0", ())
     except Exception as e:      # noqa: BLE001 — DSN 부재·DB 다운 전부 폴백 대상
         _PDB_BANKS, _PDB_BANKS_ERR = {}, f"{type(e).__name__}: {e}"
+        _PDB_BANKS_AT = time.time()
         return _PDB_BANKS
     out = {}
     for bank_id, tag, storage, n in rows:
@@ -282,7 +285,7 @@ def pdb_fetch_texts(version, locals_):
         return {}
     key = pdb_norm_ver(version)
     want = sorted({int(g) for g in locals_ if g is not None})
-    got = {g: _PDB_TEXT[(key, g)] for g in want if (key, g) in _PDB_TEXT}
+    got = {g: v for g in want if (v := _PDB_TEXT.get((key, g))) is not None}
     miss = [g for g in want if g not in got]
     if miss:
         rows = _pdb_query(
@@ -294,27 +297,6 @@ def pdb_fetch_texts(version, locals_):
             got[int(g)] = (text, label)
             _PDB_TEXT[(key, int(g))] = (text, label)
     return got
-
-
-def pdb_fetch_vectors(version, locals_):
-    """(버전, 로컬 gidx 목록) → {local_gidx: [float, …]} (1024-d).
-
-    `bank_sentences.content_hash` → `image_embeddings(entity_type='prompt')` 조인.
-    pgvector 값은 psycopg2 어댑터가 없어 `'[0.1,0.2,…]'` 문자열로 온다 — `::text` 로
-    의도를 못박고 여기서 파싱한다. 메모하지 않는다(1024-d × 수만 행 = GB 단위).
-    """
-    bank = pdb_banks().get(pdb_norm_ver(version))
-    if bank is None:
-        return {}
-    want = sorted({int(g) for g in locals_ if g is not None})
-    if not want:
-        return {}
-    rows = _pdb_query(
-        "SELECT s.gidx, e.embedding::text FROM bank_sentences s "
-        "  JOIN image_embeddings e ON e.entity_type = 'prompt' "
-        "   AND e.entity_id = s.content_hash AND e.model_name = %s "
-        " WHERE s.bank_id = %s AND s.gidx = ANY(%s)", (PDB_MODEL, bank[0], want))
-    return {int(g): [float(x) for x in str(v).strip("[]").split(",")] for g, v in rows}
 
 
 def pdb_version_counts(versions):
@@ -424,8 +406,9 @@ def pdb_selftest():
     assert pdb_local_gidx(None) is None
     assert pdb_version_counts(["a", "a", None, "b"]) == {"a": 2, "b": 1}
 
-    global _PDB_BANKS, _PDB_BANKS_ERR
+    global _PDB_BANKS, _PDB_BANKS_ERR, _PDB_BANKS_AT
     saved, saved_err, saved_text = _PDB_BANKS, _PDB_BANKS_ERR, dict(_PDB_TEXT)
+    saved_at = _PDB_BANKS_AT
     try:
         # 게이트 ②: 행수가 다르면 그 버전은 통째로 폴백 (v1.0.2.0 실측 케이스)
         _PDB_BANKS, _PDB_BANKS_ERR = {"1.0.2.0": ("bid", "v1.0.2.0", "db_backed", 12568)}, None
@@ -460,10 +443,11 @@ def pdb_selftest():
 
         # 뱅크를 못 읽으면 전부 폴백 + 사유가 배너에 실린다
         _PDB_BANKS, _PDB_BANKS_ERR = {}, "OperationalError: down"
+        _PDB_BANKS_AT = time.time()      # 60초 재시도 창 안 — 실제 DB 를 두드리지 않는다
         out, meta = pdb_resolve_texts(["v1.0.8.0"], [0], ["fb"], {})
         assert out == ["fb"] and "down" in pdb_note(meta)
     finally:
-        _PDB_BANKS, _PDB_BANKS_ERR = saved, saved_err
+        _PDB_BANKS, _PDB_BANKS_ERR, _PDB_BANKS_AT = saved, saved_err, saved_at
         _PDB_TEXT.clear()
         _PDB_TEXT.update(saved_text)
 
@@ -760,6 +744,11 @@ def _put_fig(ctx, panel, data, banner=None, layout=None):
     """
     key = _fig_key(ctx, panel)
     with _FIGS_LOCK:
+        # 같은 (패널, 데이터셋) 의 **옛 data_version** 엔트리는 다시 읽히지 않는다 — 29MB 급
+        # figure 가 상한(16)까지 쌓이지 않게 바로 버린다. 같은 버전의 다른 뷰/색칠축은 동시
+        # 클라이언트가 읽을 수 있어 남긴다(LRU 가 보호).
+        for k in [k for k in _FIGS if k[:2] == key[:2] and k[3] != key[3]]:
+            _FIGS.pop(k, None)
         _FIGS[key] = {"data": data, "banner": banner, "layout": layout}
         _FIGS.move_to_end(key)
         # 키에 뷰 지문이 들어가 카디널리티가 늘었다 — 상한도 같이 올린다(8 → 16).
@@ -932,7 +921,7 @@ def sentence_ids_to_frame_ids(prompts_name, sent_ids, frames_name):
         return []
 
 
-_REFCACHE = {}   # (session, frames, last_modified_at) -> frozenset(frame id). 엔트리 2개 유지.
+_REFCACHE = {}   # (session, frames, 세션 data_version, frames data_version) -> frozenset(frame id). 엔트리 2개 유지.
 
 
 def session_referenced_frame_ids(session_name, frames_name):
@@ -947,10 +936,11 @@ def session_referenced_frame_ids(session_name, frames_name):
     점 1개로 접힌다 — 강조와 필터를 뭉개는 그 실패는 이미 겪었다(`view_without_our_selection`).
     """
     ps = fo.load_dataset(session_name)
-    key = (session_name, frames_name, str(ps.last_modified_at))
+    frames = fo.load_dataset(frames_name)
+    # data_version: dataset.last_modified_at 은 샘플 편집에 안 움직인다(그 함수 docstring)
+    key = (session_name, frames_name, data_version(ps), data_version(frames))
     if key in _REFCACHE:
         return _REFCACHE[key]
-    frames = fo.load_dataset(frames_name)
     try:
         fps = [x for x in ps.distinct("filepath") if x]
         out = frozenset(str(i) for i in
@@ -958,7 +948,7 @@ def session_referenced_frame_ids(session_name, frames_name):
     except Exception:      # noqa: BLE001 — 실패 시 전량 그리기로 폴백(기능 정지보다 낫다)
         return None
     while len(_REFCACHE) >= 2:
-        _REFCACHE.pop(next(iter(_REFCACHE)))
+        _REFCACHE.pop(next(iter(_REFCACHE)), None)
     _REFCACHE[key] = out
     return out
 
@@ -1103,7 +1093,6 @@ def load_image_bundle(dataset_name):
         if len(real) >= 2:
             useful.append(f)
     b["_fields"] = useful
-    b["_degenerate"] = [f for f in have if f not in useful]
     # 축 메타를 번들에 실어 둔다 — 이후 배너/드롭다운/경고가 **대상 데이터셋의 축 정의**를
     # 따라간다 (이미지 패널과 문장 패널이 같은 함수를 공유하는 방법).
     b["_axes"] = list(axes)
@@ -1111,7 +1100,12 @@ def load_image_bundle(dataset_name):
     assert _bundle_nbytes(b) <= CACHE_CAP_BYTES, (
         f"캐시 예산 초과: {_bundle_nbytes(b)/2**20:.1f}MB "
         f"> {CACHE_CAP_BYTES/2**20:.0f}MB (배열 바이트 기준)")
-    _CACHE.clear()
+    # 데이터셋당 1개(옛 data_version 폐기), 전체 2개 — -prompts 워크스페이스의 두 패널
+    # (frames 번들 vs prompts 번들)이 서로를 매 refresh 마다 축출하지 않게 한다.
+    for k in [k for k in _CACHE if k[0] == dataset_name]:
+        _CACHE.pop(k, None)
+    while len(_CACHE) >= 2:
+        _CACHE.pop(next(iter(_CACHE)), None)
     _CACHE[key] = b
     return b
 

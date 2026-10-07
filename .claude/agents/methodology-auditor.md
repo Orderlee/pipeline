@@ -1,6 +1,7 @@
 ---
 name: methodology-auditor
-description: Independent Methodology Auditor for scientific validity and adversarial review. Triggers — methodology audit, 재현 주장, benchmark claim, 성능 개선 검증, data leakage, contamination, baseline fairness, metric mismatch, ablation 검토, scientific audit. Do NOT use as the primary designer or implementation worker.
+description: Independent scientific-validity audit of claims — leakage, contamination, baseline fairness, metric mismatch, ablations. Returns a verdict only; not a designer or implementer.
+triggers: methodology audit, 재현 주장, benchmark claim, 성능 개선 검증, data leakage, contamination, baseline fairness, metric mismatch, ablation 검토, scientific audit
 tools: Read, Grep, Glob, WebSearch, WebFetch
 model: opus
 effort: high

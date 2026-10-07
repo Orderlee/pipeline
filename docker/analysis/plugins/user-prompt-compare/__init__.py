@@ -123,6 +123,7 @@ PDB_SRC_FALLBACK = "데이터셋 text 필드(npz 파생)"
 
 _PDB_BANKS = None                # norm_ver -> (bank_id, version_tag, storage, n_sent)
 _PDB_BANKS_ERR = None            # 마지막 뱅크 조회 실패 사유 — 배너에 그대로 싣는다
+_PDB_BANKS_AT = 0.0   # 실패 캐시 시각 — 60초 뒤 재시도
 _PDB_TEXT = {}                   # (norm_ver, local_gidx) -> (text, class_label)
 _PDB_CONN = None
 _PDB_LOCK = threading.Lock()
@@ -189,8 +190,8 @@ def pdb_banks(refresh=False):
 
     실패는 예외가 아니라 **빈 dict + 사유 기록**이다 (패널이 죽으면 안 된다).
     """
-    global _PDB_BANKS, _PDB_BANKS_ERR
-    if _PDB_BANKS is not None and not refresh:
+    global _PDB_BANKS, _PDB_BANKS_ERR, _PDB_BANKS_AT
+    if _PDB_BANKS is not None and not refresh and not (_PDB_BANKS_ERR and time.time() - _PDB_BANKS_AT > 60):
         return _PDB_BANKS
     if not pdb_enabled():
         _PDB_BANKS, _PDB_BANKS_ERR = {}, "PROMPT_DB=off (수동 비활성)"
@@ -207,6 +208,7 @@ def pdb_banks(refresh=False):
             "HAVING min(s.gidx) = 0 OR count(s.sentence_id) = 0", ())
     except Exception as e:      # noqa: BLE001 — DSN 부재·DB 다운 전부 폴백 대상
         _PDB_BANKS, _PDB_BANKS_ERR = {}, f"{type(e).__name__}: {e}"
+        _PDB_BANKS_AT = time.time()
         return _PDB_BANKS
     out = {}
     for bank_id, tag, storage, n in rows:
@@ -519,8 +521,9 @@ def pdb_selftest():
     assert pdb_local_gidx(None) is None
     assert pdb_version_counts(["a", "a", None, "b"]) == {"a": 2, "b": 1}
 
-    global _PDB_BANKS, _PDB_BANKS_ERR
+    global _PDB_BANKS, _PDB_BANKS_ERR, _PDB_BANKS_AT
     saved, saved_err, saved_text = _PDB_BANKS, _PDB_BANKS_ERR, dict(_PDB_TEXT)
+    saved_at = _PDB_BANKS_AT
     try:
         # 게이트 ②: 행수가 다르면 그 버전은 통째로 폴백 (v1.0.2.0 실측 케이스)
         _PDB_BANKS, _PDB_BANKS_ERR = {"1.0.2.0": ("bid", "v1.0.2.0", "db_backed", 12568)}, None
@@ -554,11 +557,12 @@ def pdb_selftest():
         assert "class 불일치(정렬 붕괴)" in meta["reject"], meta
 
         # 뱅크를 못 읽으면 전부 폴백 + 사유가 배너에 실린다
-        _PDB_BANKS, _PDB_BANKS_ERR = {}, "OperationalError: down"
+        # 실패 시각을 지금으로 — 60초 실패 캐시 안이라 실 DB 재조회 없이 캐시된 사유가 나와야 한다
+        _PDB_BANKS, _PDB_BANKS_ERR, _PDB_BANKS_AT = {}, "OperationalError: down", time.time()
         out, meta = pdb_resolve_texts(["v1.0.8.0"], [0], ["fb"], {})
         assert out == ["fb"] and "down" in pdb_note(meta)
     finally:
-        _PDB_BANKS, _PDB_BANKS_ERR = saved, saved_err
+        _PDB_BANKS, _PDB_BANKS_ERR, _PDB_BANKS_AT = saved, saved_err, saved_at
         _PDB_TEXT.clear()
         _PDB_TEXT.update(saved_text)
 
@@ -932,15 +936,24 @@ def view_winner_gidx(ctx):
     #    읽으면 "이 뷰의 승자" = 문장 1종이 되어 `표시=채택만` 산점도가 점 1개로 붕괴한다
     #    (실측 배너: `표시 2/607,318 (0.0%)`). 선택은 **강조**이지 모집단이 아니다 —
     #    형제 패널 user-image-embeddings 의 `view_without_our_selection` 과 같은 처치.
+    #    ⚠️ 그래서 `ctx.view` 를 읽지 않고 **다시 만든다**: ctx.view 엔 우리 Select 와 lasso
+    #    (extended Select)가 구워져 있고, 스테이지만 보면 사이드바 필터만 건 뷰가 None 으로 빠진다.
+    rp = getattr(ctx, "request_params", None) or {}
     stages = [t for t in (_client_view_stages(ctx) or [])
               if not (isinstance(t, dict) and t.get("_uuid") == SHOW_SAMPLES_STAGE_ID)]
-    if not stages:
+    extended = {k: v for k, v in (rp.get("extended") or {}).items()
+                if k != "fiftyone.core.stages.Select"}
+    filters = rp.get("filters") or None
+    if not stages and not filters and not extended:
         return None            # 사용자 필터 없음 → 구워진 전역 채택 그대로 (기존 동작)
-    # 스테이지가 없으면 전량이다 — 전체 프레임 `values()` 왕복을 피한다.
-    if not getattr(view, "_stages", None):
-        return None
     field = _current_winner_field(ctx)
     try:
+        from fiftyone.server.view import get_view      # 지연 임포트 (형제 패널과 동일)
+        view = get_view(ctx.dataset, stages=stages, filters=filters,
+                        extended_stages=extended or None)
+        # 스테이지가 없으면 전량이다 — 전체 프레임 `values()` 왕복을 피한다.
+        if not getattr(view, "_stages", None):
+            return None
         if field not in view.get_field_schema():
             return None
         shift = gidx_shift(session, field)        # 오프셋 세대 보정 (gidx_shift 주석)
@@ -1555,11 +1568,19 @@ def build_mode_b(ds_name, group_field, groups, brain_key=BRAIN_KEY):
     if brain_key not in ds.list_brain_runs():
         return _notice(f"이 데이터셋에는 brain run '{brain_key}'가 없습니다 — 좌표 없음")
 
-    xy = np.asarray(ds.load_brain_results(brain_key).points, dtype="float32")
-    labels = ds.values(group_field)
+    res = ds.load_brain_results(brain_key)
+    xy = np.asarray(res.points, dtype="float32")
+    # ⚠️ 좌표↔라벨 정렬은 brain `sample_ids` 기준 (load_prompt_bundle 과 같은 계약). 데이터셋
+    #    위치로 xy 를 색인하면 brain 이 일부만 덮을 때 IndexError/좌표 밀림 — 실측 `frames`
+    #    203,869행 vs `emb_viz` 199,972점(동기화 신규 표본은 좌표가 없다).
+    ids, labels = ds.values(["id", group_field])
     if labels and hasattr(labels[0], "label"):
         labels = [v.label if v else None for v in labels]
-    labels = np.asarray(labels, dtype=object)
+    pos = {str(v): i for i, v in enumerate(ids)}
+    order = [pos.get(str(s), -1) for s in res.sample_ids]
+    keep = [k for k, o in enumerate(order) if o >= 0]   # brain 에만 있는 잔재 방어
+    xy = xy[np.asarray(keep, dtype=np.int64)]
+    labels = np.asarray([labels[order[k]] for k in keep], dtype=object)
     data = []
     per_group_cap = max(1, MAX_POINTS // max(1, len(groups)))
     for gi, grp in enumerate(groups):
@@ -1606,11 +1627,15 @@ def _has_our_stage(ctx):
 def _view_sig(ctx):
     """현재 **뷰 바 스테이지 + 사이드바 필터 + extended** 의 지문 (에코 판별용).
 
-    `_client_view_stages` 와 달리 우리 Select 스테이지도 포함한다 — "뷰가 바뀌었나"를
-    묻는 질문이라 출처를 가릴 이유가 없다.
+    우리 Select 스테이지(show_samples)는 **뺀다** — 모드 A figure 는 그 스테이지와 무관한데
+    (`view_winner_gidx` 가 빼고 본다), 넣으면 문장 클릭 직후 render 가 칩 하나 차이로 미스해
+    `_refresh` 가 막 만든 것과 같은 figure 를 한 번 더 만든다. extended(lasso)는 남긴다 —
+    lasso 하이라이트는 그 지문 변화로 render 가 다시 그린다(on_change_extended_selection).
     """
     rp = getattr(ctx, "request_params", None) or {}
-    raw = json.dumps([rp.get("view") or [], rp.get("filters") or {},
+    stages = [t for t in (rp.get("view") or [])
+              if not (isinstance(t, dict) and t.get("_uuid") == SHOW_SAMPLES_STAGE_ID)]
+    raw = json.dumps([stages, rp.get("filters") or {},
                       rp.get("extended") or {}], sort_keys=True, default=str)
     return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:16]
 
@@ -1903,8 +1928,10 @@ def _fig_key(ctx):
     #    에서는 B 의 렌더가 그 사이 쓰인 C 의 figure 를 집어간다.
     mode = _mem(ctx).mode or "A"      # 미설정 = 기본 모드 A (render 기본값과 일치)
     view_part = _view_sig(ctx) if mode == "A" else "-"
+    # 데이터 버전도 같은 이유로 모드 A 에만 — B/C 는 재구성 폴백이 없어, `frames` 처럼 동기화로
+    # 표본 수가 바뀌면 키가 미스해 산점도가 빈다. 낡은 figure 는 다음 갱신이 덮는다.
     return (ds.name if ds is not None else "-", inst,
-            data_version(ds) if ds is not None else "", mode, view_part)
+            data_version(ds) if ds is not None and mode == "A" else "", mode, view_part)
 
 
 def _put_fig(ctx, data, banner=None, layout=None):
@@ -1920,9 +1947,14 @@ def _put_fig(ctx, data, banner=None, layout=None):
     """
     key = _fig_key(ctx)
     with _FIGS_LOCK:
+        # 같은 (데이터셋, 패널, 모드)의 다른 엔트리는 버린다 — render 는 현재 키만 읽으므로 옛 뷰·
+        # 버전의 figure 는 다시 안 읽힌다(모드 A 미스는 render 가 재구성). 60만 점이면
+        # 엔트리당 ~70MB 라 16개를 쥐고 있으면 GB 급이다.
+        for k in [k for k in _FIGS if k[:2] == key[:2] and k[3] == key[3] and k != key]:
+            del _FIGS[k]
         _FIGS[key] = {"data": data, "banner": banner, "layout": layout}
         _FIGS.move_to_end(key)
-        # 키에 뷰 지문이 들어가 카디널리티가 늘었다 — 상한도 같이 올린다(8 → 16).
+        # 남는 건 (데이터셋, 패널, 모드)당 1개 — 상한은 서로 다른 패널·데이터셋 수에 걸린다.
         while len(_FIGS) > 16:
             _FIGS.popitem(last=False)
 
@@ -2223,6 +2255,12 @@ class PromptComparePanel(foo.Panel):
             return
 
         if _mem(ctx).mode == "B":
+            # update_plot=False(피커 여닫기·lasso)는 모드 B 의 입력(그룹 필드·그룹)을 안 바꾸고
+            # 표도 모드 B 는 안 그린다 — 같은 figure 를 다시 만들 이유가 없다. 캐시가 비었을 때만
+            # 만든다(render 에 모드 B 재구성 폴백이 없다).
+            # ⛔ 모드 C 에는 넣지 않는다: lasso 로 바뀐 선택 하이라이트를 여기서만 다시 그린다.
+            if not update_plot and _get_entry(ctx) is not None:
+                return
             # 모드 B는 ctx.dataset(현재 세션 데이터셋)을 그린다 — sourcei(ground_truth 등)에서도
             # 열리지만 본용도는 `frames`(구 frames_captions)에서 project 간 비교.
             groups = [g.strip() for g in (_mem(ctx).groups or "").split(",") if g.strip()]
@@ -2800,13 +2838,6 @@ class PromptComparePanel(foo.Panel):
         # 필드가 바뀌면 이전 필드의 값 선택은 의미가 없다 (그대로 두면 빈 화면이 된다).
         _mem(ctx).groups = ""
         _mem(ctx).picker = "groups"      # 바로 값 고르기로 이어 준다 (이름 규칙 = 컨트롤명)
-        self._refresh(ctx)
-
-    def on_groups_change(self, ctx):
-        v = ctx.params.get("value")
-        if v is None or _change_guard(ctx, "groups", v, v == _mem(ctx).groups):
-            return
-        _mem(ctx).groups = v
         self._refresh(ctx)
 
     # Task 12 — 뱅크 버전 드롭다운. Task 9 조사로 확정된 계약과 동일하게 값은

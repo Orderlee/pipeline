@@ -1,100 +1,19 @@
 ---
 name: daily_worklog
-description: Skill that automatically collects daily work activity and records it in WORKLOG.md and CLAUDE2.md every weekday at 5:30 PM
+description: 당일 Git·미커밋 변경·컨테이너 상태를 WORKLOG.md와 CLAUDE2.md에 기록할 때 사용
 ---
 
-# Daily Worklog Auto-Recording Skill
+# Daily worklog
 
-Runs automatically via crontab every weekday at 5:30 PM, collecting the day's work activity and recording it in `WORKLOG.md` and `CLAUDE2.md`.
+스크립트는 평일만 처리하고 같은 날짜 항목은 건너뛴다. Git·Docker가 없으면 가능한 정보만 기록한다.
 
-## 📋 Core Features
-
-### Items Collected
-- **Git commits**: commit messages, authors, and changed files across all branches for the day
-- **Changed file classification**: categorized by pipeline code / infrastructure & config / scripts / tests / documentation
-- **Problem and fix detection**: automatically detects keywords like `fix`, `bug`, `복구`, `해결` in commit messages
-- **IDE detection**: automatically detects whether **VSCode**, **Cursor**, or **Antigravity** was used that day
-- **Docker status**: records the status of pipeline service containers
-- **Uncommitted changes**: also detects file modifications outside of git
-
-### Recording Targets
-| File | Content |
-|------|---------|
-| `WORKLOG.md` | Detailed work history + problems/solutions + change statistics + service status |
-| `CLAUDE2.md` | Troubleshooting runbook entries + key file changes + fix commit summaries |
-
-### Safety Measures
-- **Duplicate prevention**: skips if an entry for that date already exists
-- **Weekend skip**: automatically skips execution on Saturdays and Sundays
-- **Log retention**: execution logs stored in `.worklog_logs/` (auto-purged after 30 days)
-
-## 🛠 Usage
-
-### 1. Automatic Execution (crontab)
-Already registered:
-```
-30 17 * * 1-5  /home/user/work_p/Datapipeline-Data-data_pipeline/.agent/skill/daily_worklog/scripts/daily_worklog_cron.sh
-```
-
-### 2. Manual Execution
 ```bash
-cd /home/user/work_p/Datapipeline-Data-data_pipeline
-
-# Run for today
-python3 .agent/skill/daily_worklog/scripts/daily_worklog.py
-
-# Dry run (no file modifications)
 python3 .agent/skill/daily_worklog/scripts/daily_worklog.py --dry-run
-
-# Run for a specific date
-python3 .agent/skill/daily_worklog/scripts/daily_worklog.py --date 2026-03-16
-
-# Update WORKLOG.md only
+python3 .agent/skill/daily_worklog/scripts/daily_worklog.py --date YYYY-MM-DD
 python3 .agent/skill/daily_worklog/scripts/daily_worklog.py --worklog-only
-
-# Update CLAUDE2.md only
 python3 .agent/skill/daily_worklog/scripts/daily_worklog.py --claude-only
 ```
 
-### 3. Run via Cron Wrapper (with Logging)
-```bash
-bash .agent/skill/daily_worklog/scripts/daily_worklog_cron.sh
-bash .agent/skill/daily_worklog/scripts/daily_worklog_cron.sh --dry-run
-```
-
-## 📁 File Structure
-```
-.agent/skill/daily_worklog/
-├── SKILL.md                          # This document
-└── scripts/
-    ├── daily_worklog.py              # Main Python script
-    └── daily_worklog_cron.sh         # Crontab wrapper (PATH/log setup)
-```
-
-## ⚙️ Crontab Management
-
-### Check Current Registration
-```bash
-crontab -l | grep daily_worklog
-```
-
-### Temporarily Disable
-```bash
-crontab -l | sed 's|^30 17|#30 17|' | crontab -
-```
-
-### Re-enable
-```bash
-crontab -l | sed 's|^#30 17|30 17|' | crontab -
-```
-
-### Remove Completely
-```bash
-crontab -l | grep -v daily_worklog | crontab -
-```
-
-## ⚠️ Caveats
-- **git required**: `git log` must work from the repository root.
-- **docker optional**: If Docker is unavailable, the service status section will simply be empty — it is not an error.
-- **IDE detection limitations**: IDE detection is based on file modification timestamps, so if an IDE is opened without modifying any files, it may not be detected.
-- **WORKLOG.md / CLAUDE2.md format**: Inserts directly below the date heading while preserving the existing file format. Does not conflict with manually written content.
+- 실제 기록은 `WORKLOG.md`, `CLAUDE2.md`를 수정한다. 먼저 `--dry-run`으로 결과를 확인한다.
+- cron wrapper는 `.agent/skill/daily_worklog/scripts/daily_worklog_cron.sh`이며 등록 여부는 `crontab -l | grep daily_worklog`로 확인한다.
+- cron 등록·해제는 사용자 권한과 의도가 필요한 외부 상태 변경이므로 명시 승인 후에만 한다.

@@ -1,6 +1,6 @@
 # 배포 가이드 — 운영/테스트 환경 분리
 
-> 작성일: 2026-04-10
+> 작성일: 2026-04-10 · 갱신 2026-10-07 (배포 단계·paths-ignore·주의사항을 `scripts/deploy/deploy-stack.sh`·워크플로 기준으로 정정)
 
 ## 아키텍처 개요
 
@@ -51,8 +51,8 @@ docker compose -f docker/docker-compose.dev.yaml up -d
 ### 3. pytest 실행
 
 ```bash
-pip install -e ".[dev]"
-pytest tests/unit -q
+# pyproject.toml 은 git 미추적 — fresh clone 에서 `pip install -e .` 불가. 의존성 갖춘 venv 에서:
+PYTHONPATH=src python -m pytest tests/unit -q
 ```
 
 ## 운영 서버 초기 설정
@@ -109,11 +109,12 @@ groups $USER | grep docker || sudo usermod -aG docker $USER
    - 서버의 production `.env` 사용
    - Dagster health check `http://10.0.0.10:3030/server_info`
 3. 공통 GitHub Actions 동작:
-   - Unit test → 실패 시 배포 중단
-   - 변경 범위가 Docker/runtime 영역이면 이미지 재빌드
-   - dagster-code-server 재시작 → 15초 대기
-   - dagster-daemon + dagster 재시작
-   - Health check (최대 60초)
+   - lib layer import 검사 + unit/integration test → 실패 시 배포 중단
+   - `detect_image_rebuild` 경로(`src/vlm_pipeline/`, `docker/` 서비스 디렉토리 등) 변경 시 이미지 재빌드
+   - 호스트 repo 를 `rsync --delete` + `git reset --hard <SHA>` 로 정렬 — 호스트 수동 수정은 소실
+   - postgres healthy 대기 → dagster 3종 **stop/rm 후 재생성**(재빌드 여부와 무관 — 진행 중 run 이 끊긴다) → code-server → daemon → dagster 순
+   - 재빌드 시 활성 profile 의 sam3·comfyui·genai·embedding-service 는 `--force-recreate`, analysis 4서비스는 `up -d` 로만 보증
+   - Health check `/server_info`
 
 ### 수동 배포 (긴급)
 
@@ -123,7 +124,8 @@ GitHub repo > Actions > "Deploy to Test" 또는 "Deploy to Production" > "Run wo
 ### 배포 제외 대상
 
 다음 경로만 변경된 push는 배포를 트리거하지 않습니다:
-- `docs/**`, `*.md`, `tests/**`, `.cursor/**`, `.agent/**`
+- `docs/**`, `*.md`, `tests/**`, `.cursor/**`, `.agent/**`, `.github/copilot-instructions.md`, `.github/workflows/claude*.yml`, `docker/analysis/**`
+- 정본은 `.github/workflows/deploy-{production,test}.yml` 의 `paths-ignore`. 그 밖의 `main` push 는 라벨링 run 을 끊는다.
 
 ## 롤백
 
@@ -161,10 +163,10 @@ bash scripts/deploy/rollback.sh datapipeline:abc12345
 
 ## 주의사항
 
-- **DuckDB**: 볼륨 마운트이므로 배포 시 영향 없음
-- **MinIO**: Docker named volume이므로 컨테이너 재시작에 안전
-- **Dagster run history**: `dagster_home/storage/` 볼륨으로 보존
-- **GPU 서비스 (YOLO, SAM3)**: 파이프라인 코드 변경과 무관 — 별도 재시작 불필요
+- **PostgreSQL**: 배포는 `up -d postgres` — compose 의 postgres 정의·`POSTGRES_IMAGE` 가 바뀌면 **recreate**(DB 재기동). prod 컨테이너는 pgvector 가 컨테이너 레이어에 설치돼 있어 recreate 시 소실 → 정의 변경 배포 금지(`CLAUDE.md` §2)
+- **MinIO**: prod 는 NAS 박스의 MinIO(`10.0.0.51:9000`) — compose 의 `minio` 서비스는 prod 에서 쓰지 않는다
+- **Dagster run history**: `dagster_home/storage/` 바인드로 보존(rsync 가 exclude)
+- **GPU 서비스**: 이미지 재빌드가 일어나면 sam3·embedding-service 등이 force-recreate 된다(로드된 모델·정비 상태 초기화). trainer 는 배포가 절대 기동/재생성하지 않는다
 - **NAS 마운트**: 호스트 바인드 마운트이므로 배포와 무관
 - **env 파일**: production은 서버 로컬 `.env`, test는 `docker/.env.test` 기반으로 관리
 - **MinIO Console 주소**: production `9001`, test `9003`

@@ -182,7 +182,7 @@ def _fetch_asset_captions(asset_ids: list[str]) -> dict[str, str]:
         return {}
 
 
-def _fetch_sam3_label_refs(image_ids: list[str]) -> dict[str, list[tuple[str, str]]]:
+def _fetch_sam3_label_refs(image_ids: list[str], raise_on_error: bool = False) -> dict[str, list[tuple[str, str]]]:
     if not image_ids:
         return {}
     refs: dict[str, list[tuple[str, str]]] = defaultdict(list)
@@ -204,6 +204,8 @@ def _fetch_sam3_label_refs(image_ids: list[str]) -> dict[str, list[tuple[str, st
                     refs[str(image_id)].append((str(bucket or "vlm-labels"), str(key)))
     except Exception as exc:  # noqa: BLE001 — analysis/staging may not have SAM3 rows yet
         print(f"attach_labels: SAM3 label lookup skipped: {exc}")
+        if raise_on_error:
+            raise
     return refs
 
 
@@ -515,26 +517,35 @@ def attach_labels_batched(
         ]
         caps = _fetch_asset_captions([a for a in aids if a])
         envs = _fetch_video_env([a for a in aids if a])
-        refs = _fetch_sam3_label_refs([i for i in iids if i])
+        try:
+            refs = _fetch_sam3_label_refs([i for i in iids if i], raise_on_error=True)
+            refs_ok = True
+        except Exception:  # noqa: BLE001 — 조회 실패는 라벨 없음으로 확정할 수 없음
+            refs = {}
+            refs_ok = False
 
         def read_dets(args):
             iid, fpth = args
             dets = []
+            read_ok = True
             for bucket, key in refs.get(iid, []):
                 try:
                     payload = _read_minio_json(bucket, key, mc=mc)
                     if isinstance(payload, dict):
                         dets.extend(_detections_from_coco(payload, fpth))
+                    else:
+                        read_ok = False
                 except Exception:  # noqa: BLE001 — per-file fail-forward
+                    read_ok = False
                     continue
-            return dets
+            return dets, read_ok
 
         # IO-bound — 낮은 병렬도로 NAS 부담을 줄이면서 순차보다 빠르게
         with ThreadPoolExecutor(max_workers=workers) as ex:
             det_lists = list(ex.map(read_dets, zip(iids, filepaths)))
 
         cap_d, dn_d, env_d, dc_d, nm_d, det_d = {}, {}, {}, {}, {}, {}
-        for sid, aid, dets in zip(sids, aids, det_lists):
+        for sid, iid, aid, (dets, read_ok) in zip(sids, iids, aids, det_lists):
             cap_d[sid] = caps.get(aid, "") if aid else ""
             dn, env = envs.get(aid, (None, None)) if aid else (None, None)
             dn_d[sid] = dn or "none"
@@ -544,6 +555,8 @@ def attach_labels_batched(
                 dc = Counter(d.label for d in dets).most_common(1)[0][0]
                 det_frames += 1
             else:
+                if iid and refs_ok and read_ok:
+                    det_d[sid] = fo.Detections()
                 dc = "none"
             dc_d[sid] = dc
             nm_d[sid] = normalize_class(dc)
@@ -583,7 +596,7 @@ def _fetch_video_env(asset_ids):
     return out
 
 
-def _load_caption_embeddings(model_name: str = DEFAULT_MODEL) -> list[dict[str, Any]]:
+def _load_caption_embeddings(model_name: str = DEFAULT_MODEL, limit: int | None = None) -> list[dict[str, Any]]:
     sql = """
         SELECT entity_id, asset_id, text_content, embedding
         FROM image_embeddings
@@ -592,10 +605,14 @@ def _load_caption_embeddings(model_name: str = DEFAULT_MODEL) -> list[dict[str, 
           AND asset_id IS NOT NULL
         ORDER BY entity_id
     """
+    params = {"model": model_name}
+    if limit is not None and limit > 0:
+        sql += "\n        LIMIT %(limit)s"
+        params["limit"] = limit
     rows: list[dict[str, Any]] = []
     try:
         with _pg_conn() as conn, conn.cursor() as cur:
-            cur.execute(sql, {"model": model_name})
+            cur.execute(sql, params)
             for entity_id, asset_id, text_content, emb in cur.fetchall():
                 rows.append(
                     {
@@ -638,8 +655,8 @@ def _fetch_asset_keyframe(asset_ids: list[str]) -> dict[str, tuple]:
 
 def load_caption_embeddings(limit: int | None = None, model_name: str = DEFAULT_MODEL) -> list[dict]:
     """caption 임베딩 + 대표 키프레임(bucket/key) → FiftyOne 'captions' 빌드용."""
-    rows = _load_caption_embeddings(model_name=model_name)
-    if limit:
+    rows = _load_caption_embeddings(model_name=model_name, limit=limit)
+    if limit and limit < 0:
         rows = rows[:limit]
     keyframes = _fetch_asset_keyframe([r.get("asset_id") for r in rows])
     for row in rows:
@@ -1785,7 +1802,13 @@ def class_separation_report(
             return {}
 
         # 라벨된 FiftyOne 프레임(≤2740)만 로드 — 132K 전체 풀로드 방지 (라벨 누락 없이 bounded)
-        dq_rows = _load_frames_for_dq(model_name, image_ids=list(fo_metadata.keys()))
+        image_ids = [
+            iid for iid, data in fo_metadata.items()
+            if not exclude_none or str(data.get("label") or "none") != "none"
+        ]
+        if not image_ids:
+            return {}
+        dq_rows = _load_frames_for_dq(model_name, image_ids=image_ids)
         if not dq_rows:
             return {}
 
@@ -2862,7 +2885,7 @@ def hdbscan_report(
         from sklearn.cluster import HDBSCAN
 
         if entity_type == "frame":
-            rows = _load_frames_for_dq(model_name, limit=DQ_FULL_MATRIX_MAX_N)
+            rows = _load_frames_for_dq(model_name, limit=DQ_FULL_MATRIX_MAX_N + 1)
             n_check = len(rows)
             embeddings_list = [r["embedding"] for r in rows]
         else:

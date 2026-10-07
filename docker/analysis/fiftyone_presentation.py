@@ -277,28 +277,6 @@ def apply(  # noqa: C901
             "workspaces": made_ws, "applied": True}
 
 
-def add_bin_field(ds, src: str, dst: str, width: float, *, unit: str = "") -> int:
-    """연속 수치 필드를 구간 Classification 으로 묶는다 (색칠·층화용).
-
-    App 은 고유값이 많은 float 을 카테고리 색상으로 못 만든다(실측: 고유값 628개 → 색 없음).
-    구간 폭은 **측정 노이즈보다 크게** 잡아야 의미가 있다.
-    """
-    import fiftyone as fo
-
-    vals = ds.values(src)
-    updates = {}
-    for sid, v in zip(ds.values("id"), vals):
-        if v is None:
-            label = "unknown"
-        else:
-            lo = int(float(v) // width) * width
-            label = f"{lo:g}-{lo + width:g}{unit}"
-        updates[sid] = fo.Classification(label=label)
-    ds.set_values(dst, updates, key_field="id")
-    ds.save()
-    return len(updates)
-
-
 if __name__ == "__main__":
     import sys
 

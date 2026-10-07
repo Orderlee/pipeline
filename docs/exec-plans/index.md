@@ -1,30 +1,14 @@
-# Exec Plans Index
-
-실행 계획, 작업 계획, 단계별 진행 문서의 진입점입니다.
+# 실행 계획 인덱스
 
 ## 활성 계획
+- [ComfyUI GenAI 파이프라인](active/comfyui-local-genai-pipeline-plan.md) — 로컬 생성 파이프라인 구축
+- [ComfyUI 잔여 작업](active/comfyui-remaining-work-plan.md) — 후속 작업 목록
+- [데이터 플랫폼 기반](active/data-platform-foundation-2026-05-27.md) — 플랫폼 기반 작업
+- [Production PostgreSQL 롤아웃](active/production-pg-rollout-plan.md) — DB 전환 단계와 롤백
+- [QA 시나리오 플레이북](active/qa-scenarios-playbook.md) — 검증 시나리오
+- [병목 개선](active/scale-bottleneck-fixes-2026-05-19.md) — 확장 병목 개선
+- [운영·테스트 환경 분리 및 자동 배포](운영_테스트_환경_분리_자동배포_계획.md) — 배포 자동화 계획
 
-- [Production PostgreSQL 전환 롤아웃 계획](active/production-pg-rollout-plan.md) — 7-phase, dual_pg_primary → postgres 단계적 전환 + 롤백 (2026-05-07)
-- [운영-테스트 환경 분리 및 자동 배포 계획](운영_테스트_환경_분리_자동배포_계획.md) — GitHub Actions + self-hosted runner 자동 배포 (2026-04-10)
-- MLOps 고도화 로드맵 & 3인 팀 R&R — 12가지 고도화 항목, 의존성, 6개월 타임라인, R&R (2026-04-08) *(문서 소실 — git 히스토리에만 존재)*
-- [DuckDB Lock Contention 수정 실행 계획](duckdb-lock-fix-plan.md) — 센서 ensure_runtime_schema 1회 초기화로 전환 (2026-04-03)
-
-## 현재 계획 문서
-
-- [운영-테스트 환경 분리 및 자동 배포 계획](운영_테스트_환경_분리_자동배포_계획.md)
-- [PLAN](../PLAN.md)
-- CODEX_STAGING_AUTO_LABELING_UNIFIED_SPEC_TASK *(문서 소실)*
-- CODEX_STAGING_UNIFIED_SPEC_REVIEW *(문서 소실)*
-- CODEX_SUBAGENT_VIDEO_EXTRACT_YOLO_TEST *(문서 소실)*
-
-## 역사 계획 문서
-
-- staging_agent_api_dispatch_plan *(문서 소실)*
-- staging_agent_waiting_dispatch_plan *(문서 소실)*
-
-## 앞으로의 위치
-
-- 진행 중 계획: `active/`
-- 완료된 계획: `completed/`
-
-기존 문서는 당장 이동하지 않고, 새 계획부터 위 구조를 우선 사용합니다.
+## 계획·기록
+- [DuckDB 락 수정 계획](duckdb-lock-fix-plan.md) — 과거 DuckDB 경합 개선
+- [프로젝트 계획](../PLAN.md) — 상위 프로젝트 계획

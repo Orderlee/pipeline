@@ -1,53 +1,10 @@
-# Dagster Lineage & Code Alignment Skill
+# 상태: 폐기 — 기존 명령은 `definitions.py`, `dagster-staging`, 직접 Compose 호출을 가정하지만 현재 운영 정의는 `definitions_production.py`와 wrapper를 사용한다.
 
-## Overview
-This skill ensures that the Dagster pipeline definitions are consistent, lineage is intact, and code follows the expected patterns (Staging vs Production). It proactively fixes errors found during lineage validation.
+# Dagster lineage 점검
 
-## Procedures
+새 asset·sensor·job 변경 때만 사용한다.
 
-### 1. Code Consistency Check
-- Ensure all imported assets in `src/vlm_pipeline/definitions.py` exist in their respective modules.
-- Verify that environment-specific logic (e.g., `IS_STAGING`) correctly toggles sensors and jobs.
-- Match Docker image tags in deployment scripts with the `-staging` suffix when in staging mode.
-
-### 2. Dagster Lineage Validation
-Use the following command to check for definition errors without running the pipeline:
-
-**Local Check (requires venv):**
-```bash
-dagster asset list -f src/vlm_pipeline/definitions.py
-```
-
-**Docker-based Check (Recommended for Staging):**
-Use these commands to validate lineage inside the actual project containers to ensure all environment variables and dependencies are consistent.
-
-For **Staging**:
-```bash
-docker compose -f docker/docker-compose.yaml run --rm --no-deps dagster-staging /app/dg asset list -f /src/vlm/vlm_pipeline/definitions.py
-```
-
-For **Production**:
-```bash
-docker compose -f docker/docker-compose.yaml run --rm --no-deps dagster /app/dg asset list -f /src/vlm/vlm_pipeline/definitions.py
-```
-
-- **Lineage Breaks**: If an asset's upstream dependency is missing or misnamed, identify the source module and fix the export/import.
-- **Resource Conflicts**: Ensure resources like `DuckDBResource` and `MinIOResource` are properly initialized for the current environment.
-- **Path Mapping**: In Docker, the source code is mounted at `/src/vlm`, making the definition file available at `/src/vlm/vlm_pipeline/definitions.py`.
-
-### 3. Automated Error Correction
-When an error is detected in Dagster definitions:
-1. **Analyze the Traceback**: Locate the specific line in `definitions.py` or the asset definition.
-2. **Review Upstream/Downstream**: Check the `selection` parameter in `define_asset_job`. 
-3. **Cross-Reference**: Check the actual asset definitions in `src/vlm_pipeline/defs/*/assets.py`.
-4. **Apply Fix**: Update the code to match the correct lineage or naming convention.
-
-### 4. Lineage Health Report
-- Maintain a log of lineage checks in `WORKLOG.md` or a dedicated artifact.
-- Flag any circular dependencies or disconnected assets.
-
-## Usage
-Run this skill whenever:
-- A new asset is added.
-- Pipeline configuration is changed.
-- Moving from staging to production prep.
+1. `definitions_production.py`에서 asset/sensor가 등록되는지와 해당 `defs/` export를 확인한다.
+2. asset dependency, `define_asset_job` selection, resource key를 코드에서 대조한다. `lib/`에는 Dagster/defs/resources/ops import를 넣지 않는다.
+3. host venv에서 definitions load 또는 관련 unit test를 실행한다. staging 컨테이너 검증이 필요하면 별도 `_test` clone에서 `scripts/compose-staging.sh`만 쓴다.
+4. 실패 시 upstream 이름·export·selection 중 하나만 고치고 다시 load한다. 배포/재시작은 이 문서의 범위가 아니다.
